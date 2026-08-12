@@ -491,6 +491,21 @@
         "vite": "catalog:",
       },
     },
+    "packages/flow": {
+      "name": "@opencode-ai/flow",
+      "version": "0.1.0",
+      "dependencies": {
+        "@opencode-ai/sdk": "workspace:*",
+        "solid-js": "catalog:",
+      },
+      "devDependencies": {
+        "@types/node": "catalog:",
+        "@typescript/native-preview": "catalog:",
+        "typescript": "catalog:",
+        "vite": "catalog:",
+        "vite-plugin-solid": "catalog:",
+      },
+    },
     "packages/function": {
       "name": "@opencode-ai/function",
       "version": "1.18.17",
@@ -1972,6 +1987,8 @@
     "@opencode-ai/effect-sqlite-node": ["@opencode-ai/effect-sqlite-node@workspace:packages/effect-sqlite-node"],
 
     "@opencode-ai/enterprise": ["@opencode-ai/enterprise@workspace:packages/enterprise"],
+
+    "@opencode-ai/flow": ["@opencode-ai/flow@workspace:packages/flow"],
 
     "@opencode-ai/function": ["@opencode-ai/function@workspace:packages/function"],
 
