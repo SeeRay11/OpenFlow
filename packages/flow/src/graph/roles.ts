@@ -17,7 +17,7 @@ export const ROLES: Role[] = [
         "You are the planner. Break the task into concrete, ordered steps. " +
         "Name the files and interfaces involved. Do not write implementation code. " +
         "End with a numbered plan.",
-      tools: { read: true, grep: true, glob: true, write: false, edit: false, bash: false },
+      tools: { read: true, grep: true, glob: true, edit: false, bash: false },
     },
   },
   {
@@ -28,7 +28,7 @@ export const ROLES: Role[] = [
       prompt:
         "You are the architect. Given the plan, decide module boundaries, data shapes, " +
         "and the public interfaces. Output signatures and file layout. No implementation.",
-      tools: { read: true, grep: true, glob: true, write: false, edit: false, bash: false },
+      tools: { read: true, grep: true, glob: true, edit: false, bash: false },
     },
   },
   {
@@ -37,7 +37,7 @@ export const ROLES: Role[] = [
     color: "#9ece6a",
     agent: {
       prompt: "You are the coder. Implement exactly what the upstream plan and architecture specify. Keep diffs tight.",
-      tools: { read: true, grep: true, glob: true, write: true, edit: true, bash: true },
+      tools: { read: true, grep: true, glob: true, edit: true, bash: true },
     },
   },
   {
@@ -48,7 +48,7 @@ export const ROLES: Role[] = [
       prompt:
         "You are the reviewer. Audit the upstream output for correctness bugs and missed requirements. " +
         "One line per finding, most severe first. No praise.",
-      tools: { read: true, grep: true, glob: true, write: false, edit: false, bash: false },
+      tools: { read: true, grep: true, glob: true, edit: false, bash: false },
     },
   },
   {

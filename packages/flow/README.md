@@ -99,6 +99,30 @@ allowlists take effect at runtime, because a session can only select tools
 through a named agent. Until you merge, nodes run as the server's default agent
 with its default tools.
 
+### Agent config shape
+
+The generated block uses the config's *input* vocabulary — `prompt`, `tools`,
+`model`, `mode` — which the server translates on load into the `system` and
+`permissions` that `GET /api/agent` reports back. Emitting the reported form
+instead gets both fields silently ignored. Verified against a running server in
+both directions.
+
+`tools: { name: false }` becomes `{ action, resource: "*", effect: "deny" }`,
+which drops the tool from the agent entirely. Enabling a tool emits `true` and
+leaves the default policy alone rather than auto-approving anything.
+
+Names matter, because an unrecognised one becomes a rule that matches nothing
+and silently does nothing:
+
+| toggle | permission action | note |
+|---|---|---|
+| `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `todowrite`, `skill` | same name | |
+| `edit` | `edit` | also covers the `write` and `patch` tools |
+| `question` | — | special-cased by the server, produces no rule |
+
+`write`, `patch` and `apply-patch` in older saved graphs are folded onto `edit`,
+and a deny anywhere in that group wins.
+
 ## Canvas
 
 Hand-rolled: HTML node cards over an SVG edge layer inside one CSS-transformed

@@ -34,8 +34,62 @@ export const store = {
 }
 
 /**
+ * Tool names an `agent.tools` map can switch off, and the permission action
+ * each one lands on once the server translates the config.
+ *
+ * Verified against a running server: `{ tools: { x: false } }` becomes the rule
+ * `{ action, resource: "*", effect: "deny" }`. `write`, `edit` and `patch` all
+ * collapse onto the single `edit` action, so they are offered here as one
+ * toggle — exposing them separately lets a graph ask for contradictory states.
+ * `question` is special-cased by the server and produces no rule at all.
+ * Unknown names are passed through verbatim and silently do nothing, so this
+ * list is the only guard against a typo becoming a no-op toggle.
+ */
+export const TOOL_ACTIONS: Record<string, string> = {
+  read: "read",
+  grep: "grep",
+  glob: "glob",
+  edit: "edit",
+  bash: "bash",
+  webfetch: "webfetch",
+  websearch: "websearch",
+  todowrite: "todowrite",
+  skill: "skill",
+}
+
+export const TOOLS = Object.keys(TOOL_ACTIONS)
+
+/** Older graphs (and the role presets) name the edit capability three ways. */
+const TOOL_ALIASES: Record<string, string> = {
+  write: "edit",
+  patch: "edit",
+  "apply-patch": "edit",
+}
+
+/**
+ * Folds a node's tool map onto the names the server acts on. Aliases merge, and
+ * a deny anywhere in a merged group wins — losing a restriction on the way to
+ * the config would hand an agent more access than the graph asked for.
+ */
+export function toolMap(tools: Record<string, boolean> | undefined) {
+  const merged: Record<string, boolean> = {}
+  for (const [name, value] of Object.entries(tools ?? {})) {
+    if (typeof value !== "boolean") continue
+    const resolved = TOOL_ALIASES[name] ?? name
+    if (!(resolved in TOOL_ACTIONS)) continue
+    merged[resolved] = resolved in merged ? merged[resolved] && value : value
+  }
+  return merged
+}
+
+/**
  * Graph -> opencode `agent` config block. Each node becomes one agent whose
  * system prompt is the node's role instructions.
+ *
+ * The shape is the config's own input vocabulary — `prompt` and `tools`, not
+ * the `system` and `permissions` that `GET /api/agent` reports back. The server
+ * translates the former into the latter at load time; feeding it the translated
+ * form instead gets both fields ignored.
  */
 export function agentKey(pipeline: Pipeline, node: Pipeline["nodes"][number]) {
   return `${pipeline.name}-${node.role}`.replace(/[^a-zA-Z0-9-_]/g, "-").toLowerCase()
@@ -45,7 +99,7 @@ export function agentBlock(pipeline: Pipeline) {
   const block: Record<string, unknown> = {}
   for (const node of pipeline.nodes) {
     const key = agentKey(pipeline, node)
-    const tools = Object.fromEntries(Object.entries(node.agent.tools ?? {}).filter(([, value]) => value !== undefined))
+    const tools = toolMap(node.agent.tools)
     block[key] = {
       mode: "primary",
       description: `OpenFlow node ${node.id} (${node.role}) of pipeline ${pipeline.name}`,

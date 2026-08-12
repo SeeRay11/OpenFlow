@@ -1,8 +1,7 @@
 import { For, Show, createMemo } from "solid-js"
 import { upstream } from "../graph/validate"
+import { TOOLS } from "../server/store"
 import { actions, runtimeOf, state } from "../state"
-
-const TOOLS = ["read", "grep", "glob", "write", "edit", "bash", "webfetch", "task"]
 
 export function Inspector(props: { agents: string[] }) {
   const node = createMemo(() => state.pipeline.nodes.find((entry) => entry.id === state.selected))
