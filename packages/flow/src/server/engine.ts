@@ -1,5 +1,6 @@
+import { buildPrompt } from "../graph/prompt"
 import type { FlowNode, NodeStatus, Pipeline, RunLog, RunNodeLog } from "../graph/types"
-import { layer, upstream } from "../graph/validate"
+import { ancestors, layer, upstream } from "../graph/validate"
 import * as api from "./client"
 import { store } from "./store"
 
@@ -219,38 +220,3 @@ async function unknownModels(pipeline: Pipeline) {
   return pinned.filter((node) => !available.has(node.agent.model!))
 }
 
-/** Every node that can reach `id` through the graph. */
-export function ancestors(pipeline: Pipeline, id: string) {
-  const found = new Set<string>()
-  const stack = upstream(pipeline, id)
-  while (stack.length) {
-    const next = stack.pop()!
-    if (found.has(next)) continue
-    found.add(next)
-    stack.push(...upstream(pipeline, next))
-  }
-  return found
-}
-
-/** Node prompt = role instructions + run task + serialized upstream outputs. */
-export function buildPrompt(
-  node: FlowNode,
-  sources: string[],
-  nodes: Map<string, FlowNode>,
-  outputs: Map<string, string>,
-  input: string,
-) {
-  const sections: string[] = []
-  if (node.agent.prompt.trim()) sections.push(node.agent.prompt.trim())
-  if (input.trim()) sections.push(`# Task\n\n${input.trim()}`)
-  const upstreamText = sources
-    .map((id) => {
-      const source = nodes.get(id)
-      const output = outputs.get(id)
-      if (!source || !output) return undefined
-      return `## ${source.role} (${source.id})\n\n${output}`
-    })
-    .filter(Boolean)
-  if (upstreamText.length) sections.push(`# Upstream output\n\n${upstreamText.join("\n\n")}`)
-  return sections.join("\n\n")
-}

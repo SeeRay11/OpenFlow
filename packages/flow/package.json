@@ -10,6 +10,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "test": "bun test",
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
@@ -17,6 +18,7 @@
     "solid-js": "catalog:"
   },
   "devDependencies": {
+    "@types/bun": "catalog:",
     "@types/node": "catalog:",
     "@typescript/native-preview": "catalog:",
     "typescript": "catalog:",

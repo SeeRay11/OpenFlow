@@ -81,3 +81,16 @@ export function upstream(pipeline: Pipeline, id: string) {
 export function downstream(pipeline: Pipeline, id: string) {
   return pipeline.edges.filter((edge) => edge.source === id).map((edge) => edge.target)
 }
+
+/** Every node that can reach `id` through the graph. Excludes `id` itself. */
+export function ancestors(pipeline: Pipeline, id: string) {
+  const found = new Set<string>()
+  const stack = upstream(pipeline, id)
+  while (stack.length) {
+    const next = stack.pop()!
+    if (found.has(next)) continue
+    found.add(next)
+    stack.push(...upstream(pipeline, next))
+  }
+  return found
+}

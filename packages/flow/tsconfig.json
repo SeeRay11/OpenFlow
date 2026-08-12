@@ -13,7 +13,7 @@
     "isolatedModules": true,
     "strict": true,
     "noEmit": true,
-    "types": ["node", "vite/client"],
+    "types": ["bun", "node", "vite/client"],
     "paths": {
       "@/*": ["./src/*"]
     }
