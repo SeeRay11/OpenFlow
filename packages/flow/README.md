@@ -99,6 +99,13 @@ allowlists take effect at runtime, because a session can only select tools
 through a named agent. Until you merge, nodes run as the server's default agent
 with its default tools.
 
+**Restart the server after merging.** `opencode serve` reads a project's
+`opencode.json` once and caches it — there is no reload route, and dispose does
+not re-read it. Agents merged into a running server stay invisible until it
+restarts, so the order is: merge agents, restart `opencode serve`, reload the
+page, run. Both the merge button and the run pre-flight check for this and say
+so rather than letting a node run under an agent that does not exist.
+
 ### Agent config shape
 
 The generated block uses the config's *input* vocabulary — `prompt`, `permission`,
