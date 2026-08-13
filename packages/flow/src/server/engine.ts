@@ -238,6 +238,21 @@ export function start(pipeline: Pipeline, input: string, hooks: EngineHooks, opt
         return log
       }
 
+      const missing = await unknownAgents(pipeline)
+      if (missing.length) {
+        for (const node of missing) {
+          failed.add(node.id)
+          patch(node.id, {
+            status: "error",
+            error: `the server does not know an agent named "${node.agent.name}" — it loads a project's opencode.json once, so restart \`opencode serve\` after merging agents`,
+            finished: Date.now(),
+          })
+        }
+        hooks.onNotice?.("error", `unknown agent on ${missing.map((node) => node.role).join(", ")} — restart the server`)
+        log.status = "error"
+        return log
+      }
+
       for (const ids of validation.layers) {
         if (controller.signal.aborted) break
         await Promise.all(ids.map((id) => runNode(nodes.get(id)!)))
@@ -292,5 +307,25 @@ async function unknownModels(pipeline: Pipeline) {
     .catch(() => undefined)
   if (!available) return []
   return pinned.filter((node) => !available.has(node.agent.model!))
+}
+
+/**
+ * Nodes pointing at an agent the server has never heard of.
+ *
+ * The server reads a project's opencode.json once and caches it, so agents
+ * merged after it started are invisible until it restarts. Running anyway is
+ * the worst failure mode available: the session comes up with an empty
+ * permission ruleset and every tool call dies with "Unable to read ...", which
+ * reads like a broken model rather than a stale config.
+ */
+async function unknownAgents(pipeline: Pipeline) {
+  const named = pipeline.nodes.filter((node) => node.agent.name)
+  if (!named.length) return []
+  const available = await api
+    .agents()
+    .then((list) => new Set(list.map((agent) => agent.id)))
+    .catch(() => undefined)
+  if (!available) return []
+  return named.filter((node) => !available.has(node.agent.name!))
 }
 

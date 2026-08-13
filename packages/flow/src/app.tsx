@@ -74,8 +74,21 @@ export function App() {
   async function mergeAgents() {
     try {
       const result = await store.saveAgents(state.pipeline.name, agentBlock(state.pipeline), true)
+      const keys = state.pipeline.nodes.map((node) => agentKey(state.pipeline, node))
       for (const node of state.pipeline.nodes) actions.updateAgent(node.id, { name: agentKey(state.pipeline, node) })
-      setAgents([...new Set([...agents(), ...state.pipeline.nodes.map((node) => agentKey(state.pipeline, node))])])
+      setAgents([...new Set([...agents(), ...keys])])
+
+      // The server caches a project's config, so a merge is invisible to a
+      // server that is already running. Check rather than claim success.
+      const live = new Set((await api.agents().catch(() => [])).map((agent) => agent.id))
+      const invisible = keys.filter((key) => !live.has(key))
+      if (invisible.length) {
+        actions.notice(
+          "error",
+          `wrote ${result.path}, but the server has not loaded ${invisible.join(", ")} — restart \`opencode serve\`, then reload this page`,
+        )
+        return
+      }
       actions.notice("info", `merged into ${result.path}${result.backup ? ` (backup ${result.backup})` : ""}`)
     } catch (error) {
       actions.notice("error", api.describe(error))
