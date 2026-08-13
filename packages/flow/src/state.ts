@@ -15,6 +15,14 @@ export type NodeRuntime = {
   finished?: number
 }
 
+export type PendingPermission = {
+  requestID: string
+  nodeID: string
+  role: string
+  action: string
+  resources: string[]
+}
+
 export type FlowState = {
   pipeline: Pipeline
   selected?: string
@@ -23,6 +31,7 @@ export type FlowState = {
   running: boolean
   input: string
   notice?: { kind: "info" | "error"; text: string }
+  permissions: PendingPermission[]
 }
 
 const [state, setState] = createStore<FlowState>({
@@ -30,9 +39,14 @@ const [state, setState] = createStore<FlowState>({
   runtime: {},
   running: false,
   input: "",
+  permissions: [],
 })
 
 export { state }
+
+/** Resolvers live outside the store — they are callbacks, not state. */
+const waiting = new Map<string, (reply: PermissionReply) => void>()
+type PermissionReply = "once" | "always" | "reject"
 
 let counter = 0
 function nodeID() {
@@ -152,6 +166,29 @@ export const actions = {
         draft.runtime[id] = { ...(draft.runtime[id] ?? { status: "idle" }), ...patch }
       }),
     )
+  },
+
+  /** Shows a permission request and resolves once someone answers it. */
+  askPermission(request: PendingPermission) {
+    return new Promise<PermissionReply>((resolve) => {
+      waiting.set(request.requestID, resolve)
+      setState("permissions", (pending) => [...pending, request])
+    })
+  },
+
+  answerPermission(requestID: string, reply: PermissionReply) {
+    waiting.get(requestID)?.(reply)
+    waiting.delete(requestID)
+    setState("permissions", (pending) => pending.filter((request) => request.requestID !== requestID))
+  },
+
+  /** Stopping a run must not leave the UI holding unanswered prompts. */
+  rejectPermissions() {
+    for (const [requestID, resolve] of waiting) {
+      resolve("reject")
+      waiting.delete(requestID)
+    }
+    setState("permissions", [])
   },
 
   resetRuntime(statuses: Record<string, NodeStatus>) {

@@ -19,6 +19,13 @@ export type EngineHooks = {
   onNode: (id: string, patch: NodePatch) => void
   onRun?: (run: RunLog) => void
   onNotice?: (kind: "info" | "error", text: string) => void
+  /** Only called under the `manual` policy. Resolve with the reply to send. */
+  onPermission?: (request: PermissionRequest) => Promise<api.PermissionReply>
+}
+
+export type RunOptions = {
+  pipe?: PipeMode
+  permissions?: PermissionPolicy
 }
 
 export type Run = {
@@ -35,6 +42,25 @@ export type Run = {
 export type PipeMode = "direct" | "ancestors"
 
 /**
+ * What to do when an agent asks for permission mid-run.
+ * - `auto`: approve immediately, for the current call only.
+ * - `manual`: hand the request to the UI and wait for a person.
+ *
+ * There is no third option where nobody answers: an unanswered request stalls
+ * the node until the idle wait times out half an hour later.
+ */
+export type PermissionPolicy = "auto" | "manual"
+
+export type PermissionRequest = {
+  requestID: string
+  sessionID: string
+  nodeID: string
+  role: string
+  action: string
+  resources: string[]
+}
+
+/**
  * Executes a pipeline over `opencode serve`.
  *
  * One node = one primary session. Nodes are grouped into topological layers;
@@ -43,7 +69,9 @@ export type PipeMode = "direct" | "ancestors"
  * then the whole layer is awaited via `POST /api/session/:id/wait` before the
  * next layer starts. Live per-node status comes from the `/api/event` bus.
  */
-export function start(pipeline: Pipeline, input: string, hooks: EngineHooks, pipe: PipeMode = "ancestors"): Run {
+export function start(pipeline: Pipeline, input: string, hooks: EngineHooks, options: RunOptions = {}): Run {
+  const pipe = options.pipe ?? "ancestors"
+  const policy = options.permissions ?? "auto"
   const validation = layer(pipeline)
   if (!validation.ok) throw new Error(validation.error)
   const order = new Map(validation.layers.flatMap((ids, index) => ids.map((id) => [id, index] as const)))
@@ -51,6 +79,7 @@ export function start(pipeline: Pipeline, input: string, hooks: EngineHooks, pip
   const controller = new AbortController()
   const sessions = new Map<string, string>() // sessionID -> nodeID
   const active = new Set<string>() // sessionIDs still running
+  const answered = new Set<string>() // permission requests already replied to
   const nodes = new Map(pipeline.nodes.map((node) => [node.id, node] as const))
   const outputs = new Map<string, string>()
   const failed = new Set<string>()
@@ -98,11 +127,56 @@ export function start(pipeline: Pipeline, input: string, hooks: EngineHooks, pip
           return patch(id, { activity: "writing" })
         case "session.next.step.failed":
           return patch(id, { activity: "failed" })
+        case "permission.v2.asked":
+          void answer(id, sessionID, event.data as any)
+          return
         default:
           return
       }
     }, controller.signal)
     .catch(() => undefined)
+
+  /**
+   * Answers one permission request. Every decision is recorded on the node and
+   * in the run log — an approval that leaves no trace is how a run quietly
+   * edits things nobody expected.
+   */
+  async function answer(nodeID: string, sessionID: string, data: { id: string; action: string; resources?: string[] }) {
+    const requestID = data.id
+    if (answered.has(requestID)) return
+    answered.add(requestID)
+    const resources = data.resources ?? []
+    const node = nodes.get(nodeID)
+
+    let reply: api.PermissionReply = "once"
+    if (controller.signal.aborted) {
+      reply = "reject"
+    } else if (policy === "manual") {
+      patch(nodeID, { activity: `awaiting permission: ${data.action}` })
+      reply = hooks.onPermission
+        ? await hooks.onPermission({
+            requestID,
+            sessionID,
+            nodeID,
+            role: node?.role ?? nodeID,
+            action: data.action,
+            resources,
+          }).catch(() => "reject" as const)
+        : "reject"
+    }
+
+    try {
+      await api.replyPermission(sessionID, requestID, reply)
+    } catch (error) {
+      hooks.onNotice?.("error", `permission reply failed: ${api.describe(error)}`)
+      return
+    }
+
+    const decision = { requestID, action: data.action, resources, reply, policy, at: Date.now() }
+    const record = entry(nodeID)
+    record.permissions = [...(record.permissions ?? []), decision]
+    patch(nodeID, { activity: `permission ${data.action}: ${reply}` })
+  }
 
   async function runNode(node: FlowNode) {
     const sources = upstream(pipeline, node.id)

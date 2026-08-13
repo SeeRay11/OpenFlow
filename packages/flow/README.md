@@ -101,15 +101,20 @@ with its default tools.
 
 ### Agent config shape
 
-The generated block uses the config's *input* vocabulary — `prompt`, `tools`,
+The generated block uses the config's *input* vocabulary — `prompt`, `permission`,
 `model`, `mode` — which the server translates on load into the `system` and
 `permissions` that `GET /api/agent` reports back. Emitting the reported form
 instead gets both fields silently ignored. Verified against a running server in
 both directions.
 
-`tools: { name: false }` becomes `{ action, resource: "*", effect: "deny" }`,
-which drops the tool from the agent entirely. Enabling a tool emits `true` and
-leaves the default policy alone rather than auto-approving anything.
+Each tool toggle is written out explicitly: enabled becomes `"allow"`, disabled
+becomes `"deny"`, both landing as `{ action, resource: "*", effect }`. The older
+`agent.tools` field is marked `@deprecated Use 'permission' field instead` in the
+config schema and can only say allow or deny, so it is not used.
+
+Actions the graph says nothing about — `external_directory` above all — are left
+out of the map and keep their default, usually `ask`. Those are answered at
+runtime, see below.
 
 Names matter, because an unrecognised one becomes a rule that matches nothing
 and silently does nothing:
@@ -122,6 +127,25 @@ and silently does nothing:
 
 `write`, `patch` and `apply-patch` in older saved graphs are folded onto `edit`,
 and a deny anywhere in that group wins.
+
+### Permission prompts during a run
+
+An agent can still hit an action whose effect is `ask` — reading a `.env`,
+touching a path outside the project. Nobody is watching a headless pipeline, so
+an unanswered request would stall that node until the idle wait gives up half an
+hour later. The engine subscribes to `permission.v2.asked` and answers every
+request for a session it owns, under the toolbar's **permissions** policy:
+
+- **auto** (default) — replies `once`, approving that single call. Deliberately
+  not `always`, which would write the approval into the project's saved
+  permissions and outlive the run.
+- **ask me** — the request surfaces as a card with allow once / always / reject,
+  and the node reports `awaiting permission: <action>` until you answer.
+
+Every decision is recorded on the node and in the run log with the action,
+resources, reply and policy — an approval that leaves no trace is how a run
+quietly changes something nobody expected. Stopping a run rejects anything still
+pending rather than leaving the node waiting on an answer that will never come.
 
 ## Canvas
 

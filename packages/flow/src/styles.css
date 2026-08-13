@@ -125,6 +125,39 @@ button.danger {
   color: var(--bad);
 }
 
+/* permission prompts --------------------------------------------------- */
+
+.permissions {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.permission {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 12px;
+  background: #2a2418;
+}
+
+.permission code {
+  color: var(--warn);
+}
+
+.permission-what .dim {
+  color: var(--dim);
+}
+
+.permission-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 /* layout -------------------------------------------------------------- */
 
 main {

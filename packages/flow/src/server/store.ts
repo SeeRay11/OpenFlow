@@ -83,13 +83,31 @@ export function toolMap(tools: Record<string, boolean> | undefined) {
 }
 
 /**
+ * A node's tool toggles as an explicit permission map.
+ *
+ * `agent.tools` is marked "@deprecated Use 'permission' field instead" in the
+ * config schema, and it can only say allow or deny. `permission` is the current
+ * field and takes "allow" | "ask" | "deny" per action, so every toggle is
+ * written out explicitly rather than leaning on whatever the default happens to
+ * be. Actions the graph says nothing about are left off the map entirely and
+ * keep asking — the engine answers those at runtime.
+ */
+export function permissionBlock(tools: Record<string, boolean> | undefined) {
+  const block: Record<string, "allow" | "deny"> = {}
+  for (const [name, enabled] of Object.entries(toolMap(tools))) {
+    block[TOOL_ACTIONS[name]] = enabled ? "allow" : "deny"
+  }
+  return block
+}
+
+/**
  * Graph -> opencode `agent` config block. Each node becomes one agent whose
  * system prompt is the node's role instructions.
  *
- * The shape is the config's own input vocabulary — `prompt` and `tools`, not
- * the `system` and `permissions` that `GET /api/agent` reports back. The server
- * translates the former into the latter at load time; feeding it the translated
- * form instead gets both fields ignored.
+ * The shape is the config's own input vocabulary — `prompt` and `permission`,
+ * not the `system` and `permissions` that `GET /api/agent` reports back. The
+ * server translates the former into the latter at load time; feeding it the
+ * translated form instead gets both fields ignored.
  */
 export function agentKey(pipeline: Pipeline, node: Pipeline["nodes"][number]) {
   return `${pipeline.name}-${node.role}`.replace(/[^a-zA-Z0-9-_]/g, "-").toLowerCase()
@@ -99,13 +117,13 @@ export function agentBlock(pipeline: Pipeline) {
   const block: Record<string, unknown> = {}
   for (const node of pipeline.nodes) {
     const key = agentKey(pipeline, node)
-    const tools = toolMap(node.agent.tools)
+    const permission = permissionBlock(node.agent.tools)
     block[key] = {
       mode: "primary",
       description: `OpenFlow node ${node.id} (${node.role}) of pipeline ${pipeline.name}`,
       ...(node.agent.model ? { model: node.agent.model } : {}),
       ...(node.agent.prompt ? { prompt: node.agent.prompt } : {}),
-      ...(Object.keys(tools).length ? { tools } : {}),
+      ...(Object.keys(permission).length ? { permission } : {}),
     }
   }
   return block

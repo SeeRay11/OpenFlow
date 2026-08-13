@@ -31,11 +31,21 @@ export type Pipeline = {
   edges: FlowEdge[]
 }
 
+export type PermissionDecision = {
+  requestID: string
+  action: string
+  resources: string[]
+  reply: "once" | "always" | "reject"
+  policy: "auto" | "manual"
+  at: number
+}
+
 export type RunNodeLog = {
   id: string
   role: string
   status: NodeStatus
   sessionID?: string
+  permissions?: PermissionDecision[]
   model?: string
   agent?: string
   prompt?: string

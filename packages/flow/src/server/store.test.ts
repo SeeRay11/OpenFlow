@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { pipeline } from "../graph/test-support"
 import type { Pipeline } from "../graph/types"
-import { agentBlock, agentKey, TOOL_ACTIONS, TOOLS, toolMap } from "./store"
+import { agentBlock, agentKey, permissionBlock, TOOL_ACTIONS, TOOLS, toolMap } from "./store"
 
 function withAgents(graph: Pipeline, agents: Record<string, Partial<Pipeline["nodes"][number]["agent"]>>) {
   return {
@@ -80,6 +80,36 @@ describe("toolMap", () => {
   })
 })
 
+describe("permissionBlock", () => {
+  test("spells out an allow and a deny for every toggle", () => {
+    expect(permissionBlock({ read: true, bash: false })).toEqual({ read: "allow", bash: "deny" })
+  })
+
+  test("folds aliases before deciding", () => {
+    expect(permissionBlock({ write: true, edit: true })).toEqual({ edit: "allow" })
+    expect(permissionBlock({ write: false, edit: true })).toEqual({ edit: "deny" })
+  })
+
+  test("says nothing about actions the graph never mentions", () => {
+    // Silence leaves them on ask, which the engine answers at runtime; naming
+    // them here would widen access the graph never asked for.
+    const block = permissionBlock({ read: true })
+    expect(block).not.toHaveProperty("external_directory")
+    expect(block).not.toHaveProperty("question")
+    expect(Object.keys(block)).toEqual(["read"])
+  })
+
+  test("is empty when there are no toggles", () => {
+    expect(permissionBlock(undefined)).toEqual({})
+    expect(permissionBlock({})).toEqual({})
+  })
+
+  test("only ever emits allow or deny", () => {
+    const values = Object.values(permissionBlock({ read: true, grep: false, edit: true, bash: false }))
+    expect(new Set(values)).toEqual(new Set(["allow", "deny"]))
+  })
+})
+
 describe("agentBlock", () => {
   const graph = withAgents(pipeline("planner->coder"), {
     planner: { prompt: "You are the planner.", model: "opencode/some-model", tools: { read: true, edit: false } },
@@ -92,12 +122,16 @@ describe("agentBlock", () => {
   })
 
   test("uses the config's input vocabulary, not the reported form", () => {
-    // The server translates prompt -> system and tools -> permissions on load;
-    // emitting the translated names instead gets both fields ignored.
+    // The server translates prompt -> system and permission -> permissions on
+    // load; emitting the translated names instead gets both fields ignored.
     expect(block["test-planner"].prompt).toBe("You are the planner.")
-    expect(block["test-planner"].tools).toEqual({ read: true, edit: false })
+    expect(block["test-planner"].permission).toEqual({ read: "allow", edit: "deny" })
     expect(block["test-planner"]).not.toHaveProperty("system")
     expect(block["test-planner"]).not.toHaveProperty("permissions")
+  })
+
+  test("writes permission, not the deprecated tools field", () => {
+    expect(block["test-planner"]).not.toHaveProperty("tools")
   })
 
   test("runs nodes as primary agents", () => {
@@ -113,7 +147,7 @@ describe("agentBlock", () => {
   })
 
   test("normalises tool aliases on the way out", () => {
-    expect(block["test-coder"].tools).toEqual({ edit: true, bash: true })
+    expect(block["test-coder"].permission).toEqual({ edit: "allow", bash: "allow" })
   })
 
   test("describes which node and pipeline an agent came from", () => {
@@ -121,10 +155,10 @@ describe("agentBlock", () => {
     expect(block["test-planner"].description).toContain("test")
   })
 
-  test("omits an empty prompt and an empty tool map", () => {
+  test("omits an empty prompt and an empty permission map", () => {
     const bare = agentBlock(pipeline("solo")) as Record<string, any>
     expect(bare["test-solo"]).not.toHaveProperty("prompt")
-    expect(bare["test-solo"]).not.toHaveProperty("tools")
+    expect(bare["test-solo"]).not.toHaveProperty("permission")
   })
 
   test("is empty for a pipeline with no nodes", () => {

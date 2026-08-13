@@ -3,7 +3,7 @@ import { Canvas } from "./canvas/canvas"
 import type { Pipeline, RunLog } from "./graph/types"
 import { layer } from "./graph/validate"
 import * as api from "./server/client"
-import { start, type PipeMode, type Run } from "./server/engine"
+import { start, type PermissionPolicy, type PipeMode, type Run } from "./server/engine"
 import { agentBlock, agentKey, store, type PipelineEntry, type RunEntry } from "./server/store"
 import { actions, state } from "./state"
 import { Inspector } from "./ui/inspector"
@@ -17,6 +17,7 @@ export function App() {
   const [runs, setRuns] = createSignal<RunEntry[]>([])
   const [project, setProject] = createSignal("")
   const [pipe, setPipe] = createSignal<PipeMode>("ancestors")
+  const [policy, setPolicy] = createSignal<PermissionPolicy>("auto")
   let current: Run | undefined
 
   onMount(async () => {
@@ -95,8 +96,16 @@ export function App() {
           onNode: (id, patch) => actions.patchRuntime(id, patch),
           onRun: (log) => actions.setRun(clone(log)),
           onNotice: actions.notice,
+          onPermission: (request) =>
+            actions.askPermission({
+              requestID: request.requestID,
+              nodeID: request.nodeID,
+              role: request.role,
+              action: request.action,
+              resources: request.resources,
+            }),
         },
-        pipe(),
+        { pipe: pipe(), permissions: policy() },
       )
       const log = await current.done
       const failure = log.nodes.find((node) => node.status === "error")
@@ -108,12 +117,14 @@ export function App() {
       actions.notice("error", api.describe(error))
     } finally {
       actions.setRunning(false)
+      actions.rejectPermissions()
       current = undefined
       await refresh()
     }
   }
 
   async function stop() {
+    actions.rejectPermissions()
     await current?.stop()
     actions.notice("info", "stopping run…")
   }
@@ -178,6 +189,15 @@ export function App() {
           <option value="ancestors">pipe: ancestors</option>
           <option value="direct">pipe: direct</option>
         </select>
+        <select
+          class="pipe"
+          value={policy()}
+          title="what happens when an agent asks for permission mid-run"
+          onChange={(event) => setPolicy(event.currentTarget.value as PermissionPolicy)}
+        >
+          <option value="auto">permissions: auto</option>
+          <option value="manual">permissions: ask me</option>
+        </select>
         <input
           class="task"
           placeholder="task for this run"
@@ -201,6 +221,32 @@ export function App() {
             {notice().text}
           </div>
         )}
+      </Show>
+
+      <Show when={state.permissions.length}>
+        <div class="permissions">
+          <For each={state.permissions}>
+            {(request) => (
+              <div class="permission">
+                <span class="permission-what">
+                  <strong>{request.role}</strong> wants <code>{request.action}</code>
+                  <Show when={request.resources.length}>
+                    <span class="dim"> on {request.resources.slice(0, 3).join(", ")}</span>
+                  </Show>
+                </span>
+                <span class="permission-actions">
+                  <button onClick={() => actions.answerPermission(request.requestID, "once")}>allow once</button>
+                  <button onClick={() => actions.answerPermission(request.requestID, "always")} title="persists to the project's saved permissions, beyond this run">
+                    always
+                  </button>
+                  <button class="danger" onClick={() => actions.answerPermission(request.requestID, "reject")}>
+                    reject
+                  </button>
+                </span>
+              </div>
+            )}
+          </For>
+        </div>
       </Show>
 
       <main>

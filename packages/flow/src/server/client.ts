@@ -143,6 +143,21 @@ async function lastAssistant(sessionID: string) {
   return (body.data ?? []).find((message: any) => message.type === "assistant")
 }
 
+export type PermissionReply = "once" | "always" | "reject"
+
+/**
+ * Answers a pending permission request.
+ *
+ * "once" approves just this call; "always" writes the approval into the
+ * project's saved-permission store, which outlives the run.
+ */
+export async function replyPermission(sessionID: string, requestID: string, reply: PermissionReply) {
+  const { client } = await connect()
+  const result = (await client.v2.session.permission.reply({ sessionID, requestID, reply })) as any
+  if (result.error) throw new Error(describe(result.error))
+  return result.data
+}
+
 export async function interrupt(sessionID: string) {
   const { client } = await connect()
   await client.v2.session.interrupt({ sessionID }).catch(() => undefined)
