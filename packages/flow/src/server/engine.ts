@@ -26,13 +26,52 @@ export type EngineHooks = {
 export type RunOptions = {
   pipe?: PipeMode
   permissions?: PermissionPolicy
+  /**
+   * How many nodes may run at once. A layer is dispatched through a pool of
+   * this size rather than all at once: eight parallel workers means eight
+   * concurrent sessions against one provider, which is how a wide graph earns
+   * 429s and an unplanned bill.
+   */
+  maxParallel?: number
+  /**
+   * How long one node may sit without its session finishing, in milliseconds.
+   * A node that never goes idle otherwise holds the whole run — and every node
+   * behind it — for the full wait.
+   */
+  nodeTimeout?: number
 }
+
+export const DEFAULT_MAX_PARALLEL = 4
+export const DEFAULT_NODE_TIMEOUT = 30 * 60_000
 
 export type Run = {
   log: RunLog
   stop: () => Promise<void>
   done: Promise<RunLog>
 }
+
+/**
+ * Everything the engine reaches outside itself. Defaults to the real server
+ * client and the real store; tests pass fakes instead of standing up a server.
+ */
+export type EngineDeps = {
+  api: Pick<
+    typeof api,
+    | "subscribe"
+    | "createSession"
+    | "prompt"
+    | "waitForIdle"
+    | "transcript"
+    | "interrupt"
+    | "replyPermission"
+    | "models"
+    | "agents"
+    | "describe"
+  >
+  saveRun: (log: RunLog) => Promise<unknown>
+}
+
+const live: EngineDeps = { api, saveRun: (log) => store.saveRun(log) }
 
 /**
  * How much upstream context a node receives.
@@ -69,9 +108,18 @@ export type PermissionRequest = {
  * then the whole layer is awaited via `POST /api/session/:id/wait` before the
  * next layer starts. Live per-node status comes from the `/api/event` bus.
  */
-export function start(pipeline: Pipeline, input: string, hooks: EngineHooks, options: RunOptions = {}): Run {
+export function start(
+  pipeline: Pipeline,
+  input: string,
+  hooks: EngineHooks,
+  options: RunOptions = {},
+  deps: EngineDeps = live,
+): Run {
+  const api = deps.api
   const pipe = options.pipe ?? "ancestors"
   const policy = options.permissions ?? "auto"
+  const limit = Math.max(1, Math.floor(options.maxParallel ?? DEFAULT_MAX_PARALLEL))
+  const nodeTimeout = Math.max(1_000, options.nodeTimeout ?? DEFAULT_NODE_TIMEOUT)
   const validation = layer(pipeline)
   if (!validation.ok) throw new Error(validation.error)
   const order = new Map(validation.layers.flatMap((ids, index) => ids.map((id) => [id, index] as const)))
@@ -202,7 +250,7 @@ export function start(pipeline: Pipeline, input: string, hooks: EngineHooks, opt
 
       await api.prompt(session.id, text)
       if (controller.signal.aborted) throw new StopError()
-      await api.waitForIdle(session.id, { signal: controller.signal })
+      await api.waitForIdle(session.id, { signal: controller.signal, timeout: nodeTimeout })
       active.delete(session.id)
       if (controller.signal.aborted) throw new StopError()
 
@@ -227,7 +275,7 @@ export function start(pipeline: Pipeline, input: string, hooks: EngineHooks, opt
 
   const done = (async () => {
     try {
-      const unresolved = await unknownModels(pipeline)
+      const unresolved = await unknownModels(pipeline, api)
       if (unresolved.length) {
         for (const node of unresolved) {
           failed.add(node.id)
@@ -238,7 +286,7 @@ export function start(pipeline: Pipeline, input: string, hooks: EngineHooks, opt
         return log
       }
 
-      const missing = await unknownAgents(pipeline)
+      const missing = await unknownAgents(pipeline, api)
       if (missing.length) {
         for (const node of missing) {
           failed.add(node.id)
@@ -255,7 +303,7 @@ export function start(pipeline: Pipeline, input: string, hooks: EngineHooks, opt
 
       for (const ids of validation.layers) {
         if (controller.signal.aborted) break
-        await Promise.all(ids.map((id) => runNode(nodes.get(id)!)))
+        await pool(ids, limit, controller.signal, (id) => runNode(nodes.get(id)!))
       }
       log.status = controller.signal.aborted
         ? "stopped"
@@ -273,7 +321,9 @@ export function start(pipeline: Pipeline, input: string, hooks: EngineHooks, opt
       controller.abort()
       void bus
       hooks.onRun?.(log)
-      await store.saveRun(log).catch((error) => hooks.onNotice?.("error", `run log not saved: ${api.describe(error)}`))
+      await deps
+        .saveRun(log)
+        .catch((error) => hooks.onNotice?.("error", `run log not saved: ${api.describe(error)}`))
     }
     return log
   })()
@@ -295,10 +345,30 @@ class StopError extends Error {
 }
 
 /**
+ * Runs `work` over `items` with at most `limit` in flight. Nodes in a layer are
+ * independent, so order within the layer does not matter — only that the whole
+ * layer finishes before the next one starts.
+ */
+async function pool<T>(items: T[], limit: number, signal: AbortSignal, work: (item: T) => Promise<void>) {
+  if (items.length <= limit) {
+    await Promise.all(items.map(work))
+    return
+  }
+  const queue = [...items]
+  const workers = Array.from({ length: limit }, async () => {
+    while (queue.length) {
+      if (signal.aborted) return
+      await work(queue.shift()!)
+    }
+  })
+  await Promise.all(workers)
+}
+
+/**
  * Nodes pinned to a model the server does not offer. Checked before any
  * dispatch so a typo fails in a second instead of after a wait timeout.
  */
-async function unknownModels(pipeline: Pipeline) {
+async function unknownModels(pipeline: Pipeline, api: EngineDeps["api"]) {
   const pinned = pipeline.nodes.filter((node) => node.agent.model)
   if (!pinned.length) return []
   const available = await api
@@ -318,7 +388,7 @@ async function unknownModels(pipeline: Pipeline) {
  * permission ruleset and every tool call dies with "Unable to read ...", which
  * reads like a broken model rather than a stale config.
  */
-async function unknownAgents(pipeline: Pipeline) {
+async function unknownAgents(pipeline: Pipeline, api: EngineDeps["api"]) {
   const named = pipeline.nodes.filter((node) => node.agent.name)
   if (!named.length) return []
   const available = await api

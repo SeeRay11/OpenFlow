@@ -5,7 +5,11 @@ pipeline (planner → architect → coder), save it, and run it with real parall
 agents on top of a headless `opencode serve`.
 
 Everything lives in this package. No other package in the repo is modified, so
-upstream merges stay clean.
+upstream merges stay clean. It is not published to npm — it is an app, run it
+from the repo.
+
+The plan it was built from, and the original build brief, are kept in
+[docs/](docs) for the reasoning; the code is the authority where they disagree.
 
 ## Run it
 
@@ -18,25 +22,61 @@ bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4
 Then the canvas:
 
 ```bash
-bun --cwd packages/flow dev
+bun run --cwd packages/flow dev
 ```
 
 Open http://localhost:5174. The header shows `connected` once the UI can reach
 the server.
 
+### Built, without vite
+
+`bun run build` emits a static bundle, and a static bundle on its own is a dead
+page: the `/flow/api` store and the proxy to `opencode serve` are what make save,
+load and run work. `server.ts` serves all three.
+
+```bash
+bun run --cwd packages/flow build
+bun run --cwd packages/flow start
+```
+
+Same URL, same behaviour, no vite.
+
+### Loopback only
+
+`/flow/api` writes pipelines and run logs into the project and merges agents into
+its `opencode.json`, and nothing authenticates the caller. On loopback that is
+you talking to your own machine; on a real interface it is a remote file-write
+hole in whatever repository OpenFlow is pointed at.
+
+So both hosts refuse to serve anything but loopback unless `FLOW_ALLOW_REMOTE=1`
+says otherwise — `bun start` exits, and `vite --host` fails to start rather than
+coming up with the store quietly exposed. Request bodies are capped at 8 MB on
+both.
+
 Environment overrides:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OPENCODE_SERVER_URL` | `http://127.0.0.1:4096` | server the dev proxy forwards to |
+| `OPENCODE_SERVER_URL` | `http://127.0.0.1:4096` | server the proxy forwards to |
 | `OPENFLOW_PROJECT` | repo root | project the agents work in, and where `.openflow/` is written |
+| `FLOW_PORT` | `5174` | port for `bun start` (dev server is fixed at 5174) |
+| `FLOW_HOST` | `127.0.0.1` | interface for `bun start` |
+| `FLOW_ALLOW_REMOTE` | unset | `1` allows a non-loopback bind, for both hosts |
 
 ## How it talks to opencode
 
-The vite dev server proxies `/api`, `/global` and `/event` to `opencode serve`,
-so the browser is same-origin with the server — no CORS and no password
-plumbing. The client is `createOpencodeClient` from `@opencode-ai/sdk/v2/client`
-(the same client `packages/app` uses).
+Both hosts proxy `/api`, `/global` and `/event` to `opencode serve`, so the
+browser is same-origin with the server — no CORS and no password plumbing. The
+client is `createOpencodeClient` from `@opencode-ai/sdk/v2/client` (the same
+client `packages/app` uses).
+
+The store routes live in `lib/store.ts` and are mounted by both the vite plugin
+(`vite/flow-store.ts`) and `server.ts`, so dev and built cannot drift into two
+different stores.
+
+`@opencode-ai/sdk-next` is deliberately *not* used: its `OpenCode.create` builds
+`createEmbeddedRoutes()` and runs the server in-process through Effect layers,
+which is not something a browser app can do.
 
 `@opencode-ai/sdk-next` is deliberately *not* used: its `OpenCode.create` builds
 `createEmbeddedRoutes()` and runs the server in-process through Effect layers,
@@ -60,14 +100,14 @@ finished assistant turn.
 
 ## Engine
 
-One node = one primary session. Nodes are grouped into topological layers;
-every node in a layer is dispatched concurrently (`prompt` only admits the input
-and schedules the agent loop, so the fan-out is real), then the whole layer is
+One node = one primary session. Nodes are grouped into topological layers; the
+nodes in a layer are dispatched concurrently (`prompt` only admits the input and
+schedules the agent loop, so the fan-out is real), then the whole layer is
 awaited before the next starts.
 
 1. Validate — DAG, reachable nodes, models resolvable against `GET /api/model`.
 2. Layer with Kahn's algorithm.
-3. Dispatch each layer concurrently; prompt = role instructions + run task +
+3. Dispatch each layer through a pool; prompt = role instructions + run task +
    serialized upstream output.
 4. Live status from the event bus maps `session.next.*` events onto node badges.
 5. Capture each node's final assistant text; write `.openflow/runs/<id>.json`.
@@ -78,6 +118,16 @@ nothing further.
 
 **Pipe mode** (toolbar): `ancestors` (default) gives a node every upstream node's
 output in execution order; `direct` gives only the nodes wired straight into it.
+
+**Parallel** (toolbar): how many nodes may run at once, 4 by default. Every
+concurrent node is another live session against the provider, so a wide layer
+run flat out is how a graph earns 429s and a bill nobody sized. The layer barrier
+is unaffected — a layer still finishes before the next one starts.
+
+**Timeout** (toolbar): how long a single node may run before the engine gives up
+on it, 30 minutes by default. A node whose session never goes idle holds its
+whole layer, and everything behind it, for the full wait — worth turning down to
+5 minutes when a run should be quick.
 
 ## Files it writes
 
@@ -93,8 +143,8 @@ Under `OPENFLOW_PROJECT`:
 pipelines in version control.
 
 **save** writes the pipeline and the generated agent block. **merge agents**
-folds that block into the project's `opencode.json` (after writing a `.bak`) and
-points every node at its own agent — this is the only way per-node tool
+folds that block into the project's `opencode.json` (backed up first, see below)
+and points every node at its own agent — this is the only way per-node tool
 allowlists take effect at runtime, because a session can only select tools
 through a named agent. Until you merge, nodes run as the server's default agent
 with its default tools.
@@ -105,6 +155,20 @@ not re-read it. Agents merged into a running server stay invisible until it
 restarts, so the order is: merge agents, restart `opencode serve`, reload the
 page, run. Both the merge button and the run pre-flight check for this and say
 so rather than letting a node run under an agent that does not exist.
+
+### Backups of your opencode.json
+
+A merge rewrites the project's `opencode.json`, so it copies the file aside
+first:
+
+| file | what it holds |
+|---|---|
+| `opencode.json.bak` | the config as it was before OpenFlow ever touched it — written once, never overwritten |
+| `opencode.json.prev.bak` | the state before the most recent merge |
+
+Two files because one is not enough: `.bak` alone, rewritten on every merge,
+would hold an already-merged copy after the second merge and the original would
+be gone — quietly, since `opencode.json` is usually gitignored.
 
 ### Agent config shape
 

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "diamond-planner": {
+      "mode": "primary",
+      "description": "OpenFlow node nmsqpvewx1 (planner) of pipeline diamond",
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "prompt": "You are the planner. Answer in ONE sentence. Never call any tool. Never read files. Answer only from the text given.",
+      "tools": {
+        "read": true,
+        "grep": true,
+        "glob": true,
+        "write": false,
+        "edit": false,
+        "bash": false
+      }
+    },
+    "diamond-worker-a": {
+      "mode": "primary",
+      "description": "OpenFlow node nmsqpvewy2 (worker-a) of pipeline diamond",
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "prompt": "You are the worker-a. Answer in ONE sentence. Never call any tool. Never read files. Answer only from the text given.",
+      "tools": {
+        "read": true,
+        "grep": true,
+        "glob": true,
+        "write": true,
+        "edit": true,
+        "bash": true
+      }
+    },
+    "diamond-worker-b": {
+      "mode": "primary",
+      "description": "OpenFlow node nmsqpvewy3 (worker-b) of pipeline diamond",
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "prompt": "You are the worker-b. Answer in ONE sentence. Never call any tool. Never read files. Answer only from the text given.",
+      "tools": {
+        "read": true,
+        "grep": true,
+        "glob": true,
+        "write": true,
+        "edit": true,
+        "bash": true
+      }
+    },
+    "diamond-reviewer": {
+      "mode": "primary",
+      "description": "OpenFlow node nmsqpvewy4 (reviewer) of pipeline diamond",
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "prompt": "You are the reviewer. Answer in ONE sentence. Never call any tool. Never read files. Answer only from the text given.",
+      "tools": {
+        "read": true,
+        "grep": true,
+        "glob": true,
+        "write": false,
+        "edit": false,
+        "bash": false
+      }
+    }
+  }
+}

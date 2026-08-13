@@ -3,7 +3,14 @@ import { Canvas } from "./canvas/canvas"
 import type { Pipeline, RunLog } from "./graph/types"
 import { layer } from "./graph/validate"
 import * as api from "./server/client"
-import { start, type PermissionPolicy, type PipeMode, type Run } from "./server/engine"
+import {
+  DEFAULT_MAX_PARALLEL,
+  DEFAULT_NODE_TIMEOUT,
+  start,
+  type PermissionPolicy,
+  type PipeMode,
+  type Run,
+} from "./server/engine"
 import { agentBlock, agentKey, store, type PipelineEntry, type RunEntry } from "./server/store"
 import { actions, state } from "./state"
 import { Inspector } from "./ui/inspector"
@@ -18,6 +25,8 @@ export function App() {
   const [project, setProject] = createSignal("")
   const [pipe, setPipe] = createSignal<PipeMode>("ancestors")
   const [policy, setPolicy] = createSignal<PermissionPolicy>("auto")
+  const [parallel, setParallel] = createSignal(DEFAULT_MAX_PARALLEL)
+  const [nodeTimeout, setNodeTimeout] = createSignal(DEFAULT_NODE_TIMEOUT)
   let current: Run | undefined
 
   onMount(async () => {
@@ -118,7 +127,7 @@ export function App() {
               resources: request.resources,
             }),
         },
-        { pipe: pipe(), permissions: policy() },
+        { pipe: pipe(), permissions: policy(), maxParallel: parallel(), nodeTimeout: nodeTimeout() },
       )
       const log = await current.done
       const failure = log.nodes.find((node) => node.status === "error")
@@ -210,6 +219,24 @@ export function App() {
         >
           <option value="auto">permissions: auto</option>
           <option value="manual">permissions: ask me</option>
+        </select>
+        <select
+          class="pipe"
+          value={String(parallel())}
+          title="how many nodes may run at once — every concurrent node is another live session against the provider"
+          onChange={(event) => setParallel(Number(event.currentTarget.value))}
+        >
+          <For each={[1, 2, 4, 8]}>{(value) => <option value={value}>parallel: {value}</option>}</For>
+        </select>
+        <select
+          class="pipe"
+          value={String(nodeTimeout())}
+          title="how long one node may run before the engine gives up on it"
+          onChange={(event) => setNodeTimeout(Number(event.currentTarget.value))}
+        >
+          <For each={[5, 15, 30, 60]}>
+            {(minutes) => <option value={minutes * 60_000}>timeout: {minutes}m</option>}
+          </For>
         </select>
         <input
           class="task"

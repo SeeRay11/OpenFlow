@@ -1,3 +1,54 @@
+# OpenFlow
+
+**This is a fork of [opencode](https://github.com/anomalyco/opencode) that adds a
+visual builder for multi-agent workflows.** Drag role cards onto a canvas, wire a
+pipeline (planner → architect → coder), save it, and run it with real parallel
+agents on top of a headless `opencode serve`.
+
+All of it lives in [`packages/flow`](packages/flow) — no other package is
+modified, so upstream merges stay clean. The upstream README follows below.
+
+### Run it
+
+Two processes. The server first:
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+Then the canvas, on http://localhost:5174:
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+Or run it built, which serves the same app without vite:
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+### Before the first run
+
+- **Log a provider in first.** The server owns the credentials and Flow inherits
+  them; there is no key-entry UI. Use opencode's own `providers login`, provider
+  env vars, or `OPENCODE_AUTH_CONTENT`. The model dropdown filling up is the
+  signal that auth worked.
+- **Set `OPENFLOW_PROJECT`** to the repo the agents should work in. It defaults
+  to this one, and these agents write real files.
+- **Restart `opencode serve` after "merge agents".** The server reads a project's
+  `opencode.json` once and caches it, so freshly merged agents stay invisible
+  until it restarts. Flow's pre-flight check refuses the run rather than letting
+  a node execute as an agent that does not exist.
+- **Permissions default to `auto`,** which approves each request for that one
+  call. Switch the toolbar to `ask me` if you want to see them. Every decision is
+  written to the run log either way.
+
+Details — endpoints, engine, data model, generated agent config — are in
+[`packages/flow/README.md`](packages/flow/README.md).
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

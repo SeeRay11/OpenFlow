@@ -1,0 +1,108 @@
+{
+  "id": "83a84560-33cf-49a7-a7ac-683b591157cf",
+  "name": "diamond",
+  "nodes": [
+    {
+      "id": "nmsqpvewx1",
+      "role": "planner",
+      "agent": {
+        "prompt": "You are the planner. Answer in ONE sentence. Never call any tool. Never read files. Answer only from the text given.",
+        "tools": {
+          "read": true,
+          "grep": true,
+          "glob": true,
+          "write": false,
+          "edit": false,
+          "bash": false
+        },
+        "model": "opencode/nemotron-3.5-lightning-free"
+      },
+      "position": {
+        "x": 40,
+        "y": 40
+      }
+    },
+    {
+      "id": "nmsqpvewy2",
+      "role": "worker-a",
+      "agent": {
+        "prompt": "You are the worker-a. Answer in ONE sentence. Never call any tool. Never read files. Answer only from the text given.",
+        "tools": {
+          "read": true,
+          "grep": true,
+          "glob": true,
+          "write": true,
+          "edit": true,
+          "bash": true
+        },
+        "model": "opencode/nemotron-3.5-lightning-free"
+      },
+      "position": {
+        "x": 340,
+        "y": 40
+      }
+    },
+    {
+      "id": "nmsqpvewy3",
+      "role": "worker-b",
+      "agent": {
+        "prompt": "You are the worker-b. Answer in ONE sentence. Never call any tool. Never read files. Answer only from the text given.",
+        "tools": {
+          "read": true,
+          "grep": true,
+          "glob": true,
+          "write": true,
+          "edit": true,
+          "bash": true
+        },
+        "model": "opencode/nemotron-3.5-lightning-free"
+      },
+      "position": {
+        "x": 640,
+        "y": 40
+      }
+    },
+    {
+      "id": "nmsqpvewy4",
+      "role": "reviewer",
+      "agent": {
+        "prompt": "You are the reviewer. Answer in ONE sentence. Never call any tool. Never read files. Answer only from the text given.",
+        "tools": {
+          "read": true,
+          "grep": true,
+          "glob": true,
+          "write": false,
+          "edit": false,
+          "bash": false
+        },
+        "model": "opencode/nemotron-3.5-lightning-free"
+      },
+      "position": {
+        "x": 40,
+        "y": 240
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "emsqpvf7a0",
+      "source": "nmsqpvewx1",
+      "target": "nmsqpvewy2"
+    },
+    {
+      "id": "emsqpvf9x1",
+      "source": "nmsqpvewx1",
+      "target": "nmsqpvewy3"
+    },
+    {
+      "id": "emsqpvfcj2",
+      "source": "nmsqpvewy2",
+      "target": "nmsqpvewy4"
+    },
+    {
+      "id": "emsqpvff53",
+      "source": "nmsqpvewy3",
+      "target": "nmsqpvewy4"
+    }
+  ]
+}

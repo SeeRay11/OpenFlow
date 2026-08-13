@@ -1,0 +1,579 @@
+import { describe, expect, test } from "bun:test"
+import { pipeline } from "../graph/test-support"
+import type { Pipeline, RunLog } from "../graph/types"
+import type { BusEvent, PermissionReply } from "./client"
+import {
+  DEFAULT_NODE_TIMEOUT,
+  start,
+  type EngineDeps,
+  type EngineHooks,
+  type PermissionRequest,
+  type RunOptions,
+} from "./engine"
+
+/**
+ * The engine is exercised against a fake server client. Everything the real one
+ * does over HTTP — sessions, prompts, the idle wait, the event bus, permission
+ * replies — is stubbed here, so these tests cover layering, context piping,
+ * failure containment, stop and the permission policy without a running
+ * `opencode serve`.
+ */
+
+type Behavior = {
+  /** Text the node's session reports back. Defaults to "<id> output". */
+  output?: string
+  /** Makes the node fail: the transcript comes back carrying this error. */
+  error?: string
+  /** Keeps the node running until the test calls `release(id)`. */
+  hold?: boolean
+}
+
+type HarnessOptions = {
+  behavior?: Record<string, Behavior>
+  /** "providerID/id" strings the server admits. Empty = no model check runs. */
+  models?: string[]
+  /** Agent ids the server knows about. */
+  agents?: string[]
+  onPermission?: (request: PermissionRequest) => Promise<PermissionReply>
+}
+
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>((r) => (resolve = r))
+  return { promise, resolve }
+}
+
+/** Lets queued promises and timers settle before the test looks at anything. */
+function flush() {
+  return new Promise<void>((resolve) => setTimeout(resolve, 5))
+}
+
+function harness(options: HarnessOptions = {}) {
+  const behavior = options.behavior ?? {}
+  const nodeOf = new Map<string, string>() // sessionID -> nodeID
+  const sessionOf = new Map<string, string>() // nodeID -> sessionID
+  const gates = new Map<string, ReturnType<typeof deferred>>()
+  const dispatched: string[] = []
+  const prompts = new Map<string, string>()
+  const interrupted: string[] = []
+  const replies: { sessionID: string; requestID: string; reply: PermissionReply }[] = []
+  const waits: { node: string; timeout?: number }[] = []
+  const notices: { kind: string; text: string }[] = []
+  const saved: RunLog[] = []
+  let deliver: (event: BusEvent) => void = () => {}
+  let created = 0
+  let inflight = 0
+  let peak = 0
+
+  for (const [id, spec] of Object.entries(behavior)) if (spec.hold) gates.set(id, deferred())
+
+  const api: EngineDeps["api"] = {
+    async subscribe(onEvent, signal) {
+      deliver = onEvent
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) return resolve()
+        signal.addEventListener("abort", () => resolve(), { once: true })
+      })
+    },
+    async createSession() {
+      return { id: `s${++created}` }
+    },
+    async prompt(sessionID: string, text: string) {
+      const node = nodeOf.get(sessionID)!
+      dispatched.push(node)
+      prompts.set(node, text)
+      inflight++
+      peak = Math.max(peak, inflight)
+      return {}
+    },
+    async waitForIdle(sessionID: string, waitOptions: { signal?: AbortSignal; timeout?: number } = {}) {
+      const node = nodeOf.get(sessionID)!
+      waits.push({ node, timeout: waitOptions.timeout })
+      const gate = gates.get(node)
+      if (gate) {
+        await Promise.race([
+          gate.promise,
+          new Promise<void>((resolve) => {
+            const signal = waitOptions.signal
+            if (!signal) return
+            if (signal.aborted) return resolve()
+            signal.addEventListener("abort", () => resolve(), { once: true })
+          }),
+        ])
+      }
+      inflight--
+    },
+    async transcript(sessionID: string) {
+      const node = nodeOf.get(sessionID)!
+      const spec = behavior[node] ?? {}
+      if (spec.error) return { text: "", error: spec.error }
+      return { text: spec.output ?? `${node} output` }
+    },
+    async interrupt(sessionID: string) {
+      interrupted.push(sessionID)
+    },
+    async replyPermission(sessionID: string, requestID: string, reply: PermissionReply) {
+      replies.push({ sessionID, requestID, reply })
+      return {}
+    },
+    async models() {
+      return (options.models ?? []).map((value) => {
+        const index = value.indexOf("/")
+        return { providerID: value.slice(0, index), id: value.slice(index + 1) }
+      }) as any
+    },
+    async agents() {
+      return (options.agents ?? []).map((id) => ({ id })) as any
+    },
+    describe(error: unknown) {
+      return error instanceof Error ? error.message : String(error)
+    },
+  }
+
+  const hooks: EngineHooks = {
+    onNode(id, patch) {
+      if (patch.sessionID) {
+        nodeOf.set(patch.sessionID, id)
+        sessionOf.set(id, patch.sessionID)
+      }
+    },
+    onNotice(kind, text) {
+      notices.push({ kind, text })
+    },
+    onPermission: options.onPermission,
+  }
+
+  const deps: EngineDeps = {
+    api,
+    async saveRun(log) {
+      saved.push(structuredClone(log))
+      return {}
+    },
+  }
+
+  return {
+    deps,
+    hooks,
+    dispatched,
+    prompts,
+    interrupted,
+    replies,
+    waits,
+    notices,
+    saved,
+    sessionOf,
+    peak: () => peak,
+    release(id: string) {
+      gates.get(id)?.resolve()
+    },
+    /** Pushes an event onto the bus the engine subscribed to. */
+    emit(event: BusEvent) {
+      deliver(event)
+    },
+    ask(nodeID: string, request: { id: string; action: string; resources?: string[] }) {
+      deliver({ type: "permission.v2.asked", data: { sessionID: sessionOf.get(nodeID), ...request } })
+    },
+    run(graph: Pipeline, input = "do the thing", runOptions: RunOptions = {}) {
+      return start(graph, input, hooks, runOptions, deps)
+    },
+  }
+}
+
+function statuses(log: RunLog) {
+  return Object.fromEntries(log.nodes.map((node) => [node.id, node.status]))
+}
+
+describe("validation", () => {
+  test("refuses a cyclic graph before anything is dispatched", () => {
+    const h = harness()
+    expect(() => h.run(pipeline("a->b", "b->a"))).toThrow()
+    expect(h.dispatched).toEqual([])
+  })
+
+  test("fails every node when a model is not one the server offers", async () => {
+    const graph = pipeline("a->b")
+    graph.nodes[0].agent.model = "opencode/ghost-model"
+    const h = harness({ models: ["opencode/real-model"] })
+
+    const log = await h.run(graph).done
+
+    expect(h.dispatched).toEqual([])
+    expect(log.status).toBe("error")
+    expect(log.nodes[0].error).toContain("unknown model")
+  })
+
+  test("accepts a model the server does offer", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.model = "opencode/real-model"
+    const h = harness({ models: ["opencode/real-model"] })
+
+    const log = await h.run(graph).done
+
+    expect(log.status).toBe("done")
+  })
+
+  test("names the server restart when a node points at an agent the server has not loaded", async () => {
+    // The server reads opencode.json once. Running anyway gives the session an
+    // empty permission ruleset, which fails every tool and reads like a broken
+    // model — so this has to be caught before dispatch.
+    const graph = pipeline("a")
+    graph.nodes[0].agent.name = "test-a"
+    const h = harness({ agents: ["build"] })
+
+    const log = await h.run(graph).done
+
+    expect(h.dispatched).toEqual([])
+    expect(log.status).toBe("error")
+    expect(log.nodes[0].error).toContain("restart")
+    expect(h.notices.some((notice) => notice.text.includes("restart"))).toBe(true)
+  })
+})
+
+describe("layering", () => {
+  test("runs a chain in topological order", async () => {
+    const h = harness()
+    const log = await h.run(pipeline("a->b", "b->c")).done
+
+    expect(h.dispatched).toEqual(["a", "b", "c"])
+    expect(log.status).toBe("done")
+    expect(h.peak()).toBe(1)
+  })
+
+  test("dispatches independent nodes concurrently", async () => {
+    const h = harness({ behavior: { b: { hold: true }, c: { hold: true } } })
+    const run = h.run(pipeline("a->b", "a->c", "b->d", "c->d"))
+
+    await flush()
+    expect(h.dispatched).toEqual(["a", "b", "c"])
+    expect(h.peak()).toBe(2)
+
+    h.release("b")
+    h.release("c")
+    const log = await run.done
+    expect(h.dispatched).toEqual(["a", "b", "c", "d"])
+    expect(log.status).toBe("done")
+  })
+
+  test("never runs more than maxParallel nodes at once", async () => {
+    // Every concurrent node is another live session against the provider.
+    const graph = pipeline("a->w", "a->x", "a->y", "a->z")
+    const h = harness({ behavior: { w: { hold: true }, x: { hold: true }, y: { hold: true }, z: { hold: true } } })
+    const run = h.run(graph, "do the thing", { maxParallel: 2 })
+
+    await flush()
+    expect(h.dispatched).toEqual(["a", "w", "x"])
+    expect(h.peak()).toBe(2)
+
+    h.release("w")
+    await flush()
+    expect(h.dispatched).toEqual(["a", "w", "x", "y"])
+
+    h.release("x")
+    h.release("y")
+    h.release("z")
+    const log = await run.done
+    expect(h.peak()).toBe(2)
+    expect(log.status).toBe("done")
+  })
+
+  test("defaults to four at a time", async () => {
+    const spec = ["v", "w", "x", "y", "z"]
+    const h = harness({ behavior: Object.fromEntries(spec.map((id) => [id, { hold: true }])) })
+    const run = h.run(pipeline(...spec.map((id) => `a->${id}`)))
+
+    await flush()
+    expect(h.peak()).toBe(4)
+
+    for (const id of spec) h.release(id)
+    await run.done
+    expect(h.peak()).toBe(4)
+  })
+
+  test("dispatches nothing further once a stop lands mid-layer", async () => {
+    const spec = ["w", "x", "y", "z"]
+    const h = harness({ behavior: Object.fromEntries(spec.map((id) => [id, { hold: true }])) })
+    const run = h.run(pipeline(...spec.map((id) => `a->${id}`)), "do the thing", { maxParallel: 2 })
+
+    await flush()
+    expect(h.dispatched).toEqual(["a", "w", "x"])
+
+    await run.stop()
+    const log = await run.done
+
+    expect(h.dispatched).toEqual(["a", "w", "x"])
+    expect(statuses(log)).toMatchObject({ a: "done", w: "stopped", x: "stopped", y: "stopped", z: "stopped" })
+  })
+
+  test("waits for the whole layer before starting the next", async () => {
+    const h = harness({ behavior: { b: { hold: true } } })
+    const run = h.run(pipeline("a->c", "b->c", "a", "b"))
+
+    await flush()
+    expect([...h.dispatched].sort()).toEqual(["a", "b"])
+    expect(h.dispatched).not.toContain("c")
+
+    h.release("b")
+    await run.done
+    expect(h.dispatched).toContain("c")
+  })
+})
+
+describe("node timeout", () => {
+  test("gives every node the run's timeout", async () => {
+    const h = harness()
+    await h.run(pipeline("a->b"), "do the thing", { nodeTimeout: 90_000 }).done
+
+    expect(h.waits).toEqual([
+      { node: "a", timeout: 90_000 },
+      { node: "b", timeout: 90_000 },
+    ])
+  })
+
+  test("defaults to thirty minutes", async () => {
+    const h = harness()
+    await h.run(pipeline("a")).done
+
+    expect(h.waits[0].timeout).toBe(DEFAULT_NODE_TIMEOUT)
+    expect(DEFAULT_NODE_TIMEOUT).toBe(30 * 60_000)
+  })
+
+  test("refuses a timeout too short to be meant", async () => {
+    const h = harness()
+    await h.run(pipeline("a"), "do the thing", { nodeTimeout: 0 }).done
+
+    expect(h.waits[0].timeout).toBe(1_000)
+  })
+
+  test("surfaces the timeout as a node error", async () => {
+    // The client throws when the wait expires; the node has to carry that,
+    // not sit in "running" forever.
+    const h = harness()
+    h.deps.api.waitForIdle = async () => {
+      throw new Error("timed out waiting for the session to finish")
+    }
+
+    const log = await h.run(pipeline("a->b")).done
+
+    expect(statuses(log)).toEqual({ a: "error", b: "skipped" })
+    expect(log.nodes[0].error).toContain("timed out")
+  })
+})
+
+describe("context piping", () => {
+  test("gives a node every ancestor's output in execution order", async () => {
+    const h = harness()
+    await h.run(pipeline("a->b", "b->c")).done
+
+    const prompt = h.prompts.get("c")!
+    expect(prompt).toContain("a output")
+    expect(prompt).toContain("b output")
+    expect(prompt.indexOf("a output")).toBeLessThan(prompt.indexOf("b output"))
+  })
+
+  test("direct mode gives only the nodes wired straight in", async () => {
+    const h = harness()
+    await h.run(pipeline("a->b", "b->c"), "do the thing", { pipe: "direct" }).done
+
+    const prompt = h.prompts.get("c")!
+    expect(prompt).toContain("b output")
+    expect(prompt).not.toContain("a output")
+  })
+
+  test("carries the run task into every node", async () => {
+    const h = harness()
+    await h.run(pipeline("a->b"), "ship the parser").done
+
+    expect(h.prompts.get("a")).toContain("ship the parser")
+    expect(h.prompts.get("b")).toContain("ship the parser")
+  })
+
+  test("records the prompt it sent on the run log", async () => {
+    const h = harness()
+    const log = await h.run(pipeline("a")).done
+
+    expect(log.nodes[0].prompt).toBe(h.prompts.get("a"))
+    expect(log.nodes[0].output).toBe("a output")
+    expect(log.nodes[0].sessionID).toBe(h.sessionOf.get("a"))
+  })
+})
+
+describe("failure containment", () => {
+  test("stops the downstream branch and lets siblings finish", async () => {
+    const graph = pipeline("a->b", "a->c", "b->d", "c->e")
+    const h = harness({ behavior: { b: { error: "model exploded" } } })
+
+    const log = await h.run(graph).done
+
+    expect(statuses(log)).toEqual({ a: "done", b: "error", c: "done", d: "skipped", e: "done" })
+    expect(log.nodes.find((node) => node.id === "b")!.error).toBe("model exploded")
+    expect(log.nodes.find((node) => node.id === "d")!.error).toBe("upstream failed")
+    expect(h.dispatched).not.toContain("d")
+    expect(log.status).toBe("error")
+  })
+
+  test("a skip travels the whole branch", async () => {
+    const h = harness({ behavior: { a: { error: "boom" } } })
+    const log = await h.run(pipeline("a->b", "b->c")).done
+
+    expect(statuses(log)).toEqual({ a: "error", b: "skipped", c: "skipped" })
+  })
+})
+
+describe("stop", () => {
+  test("interrupts what is running and dispatches nothing further", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a->b"))
+    await flush()
+
+    await run.stop()
+    const log = await run.done
+
+    expect(h.interrupted).toEqual([h.sessionOf.get("a")!])
+    expect(h.dispatched).toEqual(["a"])
+    expect(statuses(log)).toEqual({ a: "stopped", b: "stopped" })
+    expect(log.status).toBe("stopped")
+  })
+
+  test("still writes the run log", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+    await run.stop()
+    await run.done
+
+    expect(h.saved).toHaveLength(1)
+    expect(h.saved[0].status).toBe("stopped")
+  })
+})
+
+describe("permissions", () => {
+  test("auto policy approves the single call and records the decision", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+
+    h.ask("a", { id: "req-1", action: "read", resources: [".env"] })
+    await flush()
+
+    // "once", never "always": always writes into the project's saved
+    // permissions and outlives the run.
+    expect(h.replies).toEqual([{ sessionID: h.sessionOf.get("a")!, requestID: "req-1", reply: "once" }])
+
+    h.release("a")
+    const log = await run.done
+    expect(log.nodes[0].permissions).toHaveLength(1)
+    expect(log.nodes[0].permissions![0]).toMatchObject({
+      requestID: "req-1",
+      action: "read",
+      resources: [".env"],
+      reply: "once",
+      policy: "auto",
+    })
+  })
+
+  test("answers a repeated request only once", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+
+    h.ask("a", { id: "req-1", action: "read" })
+    h.ask("a", { id: "req-1", action: "read" })
+    await flush()
+
+    expect(h.replies).toHaveLength(1)
+    h.release("a")
+    await run.done
+  })
+
+  test("ignores requests for sessions it does not own", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+
+    h.emit({ type: "permission.v2.asked", data: { sessionID: "someone-else", id: "req-1", action: "read" } })
+    await flush()
+
+    expect(h.replies).toEqual([])
+    h.release("a")
+    await run.done
+  })
+
+  test("manual policy hands the request to the UI and sends its answer", async () => {
+    const asked: PermissionRequest[] = []
+    const h = harness({
+      behavior: { a: { hold: true } },
+      onPermission: async (request) => {
+        asked.push(request)
+        return "always"
+      },
+    })
+    const run = h.run(pipeline("a"), "do the thing", { permissions: "manual" })
+    await flush()
+
+    h.ask("a", { id: "req-1", action: "bash", resources: ["rm -rf /"] })
+    await flush()
+
+    expect(asked).toHaveLength(1)
+    expect(asked[0]).toMatchObject({ nodeID: "a", role: "a", action: "bash", resources: ["rm -rf /"] })
+    expect(h.replies[0].reply).toBe("always")
+
+    h.release("a")
+    const log = await run.done
+    expect(log.nodes[0].permissions![0]).toMatchObject({ reply: "always", policy: "manual" })
+  })
+
+  test("manual policy rejects when there is nobody to ask", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"), "do the thing", { permissions: "manual" })
+    await flush()
+
+    h.ask("a", { id: "req-1", action: "bash" })
+    await flush()
+
+    expect(h.replies[0].reply).toBe("reject")
+    h.release("a")
+    await run.done
+  })
+
+  test("rejects anything still pending once the run is stopped", async () => {
+    // Leaving a request unanswered would strand the node until the idle wait
+    // gives up half an hour later.
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+    await run.stop()
+
+    h.ask("a", { id: "req-1", action: "edit" })
+    await flush()
+
+    expect(h.replies[0].reply).toBe("reject")
+    await run.done
+  })
+})
+
+describe("run log", () => {
+  test("is saved once, with timings and the run status", async () => {
+    const h = harness()
+    const log = await h.run(pipeline("a->b"), "ship it").done
+
+    expect(h.saved).toHaveLength(1)
+    expect(h.saved[0].id).toBe(log.id)
+    expect(h.saved[0].status).toBe("done")
+    expect(h.saved[0].input).toBe("ship it")
+    expect(h.saved[0].pipelineID).toBe("test-pipeline")
+    expect(log.finished).toBeGreaterThanOrEqual(log.started)
+    for (const node of log.nodes) expect(node.finished).toBeGreaterThanOrEqual(node.started!)
+  })
+
+  test("reports a store failure instead of throwing", async () => {
+    const h = harness()
+    h.deps.saveRun = async () => {
+      throw new Error("disk full")
+    }
+
+    const log = await h.run(pipeline("a")).done
+
+    expect(log.status).toBe("done")
+    expect(h.notices.some((notice) => notice.text.includes("disk full"))).toBe(true)
+  })
+})

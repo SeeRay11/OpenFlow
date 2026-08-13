@@ -1,0 +1,44 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "feature-build-planner": {
+      "mode": "primary",
+      "description": "OpenFlow node nmsqpnwo61 (planner) of pipeline feature-build",
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "prompt": "You are the planner. Break the task into concrete, ordered steps. Name the files and interfaces involved. Do not write implementation code. End with a numbered plan. Answer in at most 2 short sentences. Do not use tools.",
+      "tools": {
+        "read": true,
+        "grep": true,
+        "glob": true,
+        "edit": false,
+        "bash": false
+      }
+    },
+    "feature-build-architect": {
+      "mode": "primary",
+      "description": "OpenFlow node nmsqpnwo72 (architect) of pipeline feature-build",
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "prompt": "You are the architect. Given the plan, decide module boundaries, data shapes, and the public interfaces. Output signatures and file layout. No implementation. Answer in at most 2 short sentences. Do not use tools.",
+      "tools": {
+        "read": true,
+        "grep": true,
+        "glob": true,
+        "edit": false,
+        "bash": false
+      }
+    },
+    "feature-build-coder": {
+      "mode": "primary",
+      "description": "OpenFlow node nmsqpnwo83 (coder) of pipeline feature-build",
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "prompt": "You are the coder. Implement exactly what the upstream plan and architecture specify. Keep diffs tight. Answer in at most 2 short sentences. Do not use tools.",
+      "tools": {
+        "read": true,
+        "grep": true,
+        "glob": true,
+        "edit": true,
+        "bash": true
+      }
+    }
+  }
+}
