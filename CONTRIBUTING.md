@@ -1,3 +1,25 @@
+# Contributing to OpenFlow
+
+OpenFlow is a fork of [OpenCode](https://github.com/anomalyco/opencode). Almost all of
+this repo is upstream OpenCode, kept verbatim so merges stay clean. The visual
+workflow builder — the only thing this fork adds — lives entirely in
+[`packages/flow`](packages/flow).
+
+**Where to send a change:**
+
+- **OpenFlow / the canvas (`packages/flow`)** — open an issue or PR here on
+  [`SeeRay11/openflow`](https://github.com/SeeRay11/openflow). Read
+  [`packages/flow/README.md`](packages/flow/README.md) first.
+- **OpenCode core, providers, TUI, desktop, docs** — contribute upstream at
+  [`anomalyco/opencode`](https://github.com/anomalyco/opencode). This fork does not
+  modify those packages.
+
+Everything below is OpenCode's own contributing guide, kept for the engine setup and
+style conventions. Its references to "the core team", the label links, design reviews,
+and automated issue-closing describe the **upstream** project, not this fork.
+
+---
+
 # Contributing to OpenCode
 
 We want to make it easy for you to contribute to OpenCode. Here are the most common type of changes that get merged:
