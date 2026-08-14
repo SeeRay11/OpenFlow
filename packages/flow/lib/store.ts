@@ -1,5 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
+import { cliAuthPath, importCliKeys, readCliKeys } from "./cli-auth"
+import { zenModels } from "./zen"
 
 /**
  * OpenFlow's persistence, as plain functions over a project directory.
@@ -18,6 +20,10 @@ import path from "node:path"
  *   GET    /flow/api/runs                  -> [{ id, pipeline, status, started, finished }]
  *   GET    /flow/api/runs/:id              -> run log json
  *   PUT    /flow/api/runs/:id              -> write run log json
+ *   GET    /flow/api/cli-keys              -> { path, providers } from the CLI's auth.json
+ *   POST   /flow/api/cli-keys/import       -> connect those keys to `opencode serve`
+ *   GET    /flow/api/env?names=A,B         -> { present: ["A"] } — names only, never values
+ *   GET    /flow/api/zen-models            -> { ids: [...] | null } — what zen really serves
  *
  * Keeping it host-neutral is the point: the dev server and the built app must
  * not drift into two different stores.
@@ -45,6 +51,8 @@ export type FlowRequest = {
   path: string
   search: URLSearchParams
   json: () => Promise<any>
+  /** Base URL of the `opencode serve` this host proxies, for the key import. */
+  upstream?: string
 }
 
 export type FlowResponse = { status: number; body: unknown }
@@ -86,6 +94,44 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
       await fs.rm(file, { force: true })
       return ok({ name })
     }
+  }
+
+  if (segments[0] === "cli-keys") {
+    // Only the provider names cross to the browser. Importing runs here, so
+    // the secrets in auth.json are never served over HTTP.
+    if (!segments[1] && method === "GET") {
+      const keys = await readCliKeys()
+      return ok({ path: cliAuthPath(), providers: keys.map((entry) => entry.providerID) })
+    }
+    if (segments[1] === "import" && method === "POST") {
+      if (!request.upstream) return { status: 500, body: { error: "no opencode server configured" } }
+      const body = await request.json()
+      const only = Array.isArray(body?.providers) ? body.providers.map(String) : undefined
+      const keys = await readCliKeys()
+      if (!keys.length) return { status: 404, body: { error: `no API keys in ${cliAuthPath()}` } }
+      return ok({ results: await importCliKeys({ upstream: request.upstream, keys, only }) })
+    }
+  }
+
+  if (segments[0] === "env" && method === "GET") {
+    // Which of the asked-for names are set, and nothing else: the answer is a
+    // subset of the question, so no value and no unrelated variable can leak
+    // to the browser. `opencode serve` reads the same environment when it is
+    // started from the same shell — a server launched elsewhere may not, and
+    // then a provider reads as locked until its key is stored here instead.
+    const asked = (request.search.get("names") ?? "")
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean)
+    return ok({ present: asked.filter((name) => Boolean(process.env[name])) })
+  }
+
+  if (segments[0] === "zen-models" && method === "GET") {
+    // Fetched here rather than in the browser: opencode.ai serves no CORS
+    // headers for this, and the host is already the side that talks to the
+    // network on OpenFlow's behalf. `null` means "could not read" — the caller
+    // must then leave the catalog alone rather than empty it.
+    return ok({ ids: (await zenModels()) ?? null })
   }
 
   if (segments[0] === "runs") {

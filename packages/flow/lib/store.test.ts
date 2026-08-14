@@ -70,6 +70,37 @@ describe("routing", () => {
   })
 })
 
+describe("env", () => {
+  const NAME = "OPENFLOW_TEST_PROVIDER_KEY"
+
+  afterEach(() => {
+    delete process.env[NAME]
+  })
+
+  test("answers with the asked-for names that are set, and only those", async () => {
+    process.env[NAME] = "sk-secret"
+    const result = await call("GET", "/flow/api/env", { search: `names=${NAME},MISSING_KEY` })
+    expect(result).toEqual({ status: 200, body: { present: [NAME] } })
+  })
+
+  test("never returns a value, or a variable nobody asked about", async () => {
+    process.env[NAME] = "sk-secret"
+    const result = await call("GET", "/flow/api/env", { search: "names=MISSING_KEY" })
+    expect(result!.body).toEqual({ present: [] })
+    expect(JSON.stringify(result)).not.toContain("sk-secret")
+  })
+
+  test("an empty variable does not count as set", async () => {
+    process.env[NAME] = ""
+    const result = await call("GET", "/flow/api/env", { search: `names=${NAME}` })
+    expect(result!.body).toEqual({ present: [] })
+  })
+
+  test("no names asked, nothing answered", async () => {
+    expect(await call("GET", "/flow/api/env")).toEqual({ status: 200, body: { present: [] } })
+  })
+})
+
 describe("pipelines", () => {
   test("saves and reads one back", async () => {
     const saved = await call("PUT", "/flow/api/pipelines/feature-build", { body: graph })

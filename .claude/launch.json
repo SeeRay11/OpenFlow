@@ -2,6 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "opencode-server",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["run", "--cwd", "packages/opencode", "--conditions=browser", "src/index.ts", "serve", "--port", "4096"],
+      "port": 4096
+    },
+    {
       "name": "openflow",
       "runtimeExecutable": "bun",
       "runtimeArgs": ["--cwd", "packages/flow", "dev"],

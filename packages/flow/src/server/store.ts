@@ -31,6 +31,24 @@ export const store = {
   run: (id: string) => request<RunLog>(`/runs/${encodeURIComponent(id)}`),
   saveRun: (run: RunLog) =>
     request<{ path: string }>(`/runs/${encodeURIComponent(run.id)}`, { method: "PUT", body: JSON.stringify(run) }),
+  /** Providers the opencode CLI already holds keys for. Names only, no secrets. */
+  cliKeys: () => request<{ path: string; providers: string[] }>("/cli-keys"),
+  /**
+   * Model ids opencode zen actually serves, or `null` when the list could not
+   * be read — `null` must leave the catalog unfiltered, not empty it.
+   */
+  zenModels: () => request<{ ids: string[] | null }>("/zen-models"),
+  /** Which of these environment variables the host has set. Names only, no values. */
+  envPresent: (names: string[]) =>
+    names.length
+      ? // Commas stay raw so ~250 provider variables still fit in one URL.
+        request<{ present: string[] }>(`/env?names=${names.map(encodeURIComponent).join(",")}`)
+      : Promise.resolve({ present: [] as string[] }),
+  importCliKeys: (providers?: string[]) =>
+    request<{ results: Array<{ providerID: string; ok: boolean; error?: string }> }>("/cli-keys/import", {
+      method: "POST",
+      body: JSON.stringify({ providers }),
+    }),
 }
 
 /**

@@ -17,10 +17,32 @@ const proxy = {
   // SSE streams must not be buffered or timed out by the dev proxy.
   timeout: 0,
   proxyTimeout: 0,
+  /**
+   * Say why the upstream call failed instead of letting http-proxy answer a
+   * bare 500 with an empty body.
+   *
+   * `opencode serve` not running is the single most common way OpenFlow
+   * breaks, and an empty 500 reaches the browser as `cannot reach opencode
+   * serve: {}` — the SDK has no body to build a message from. A JSON body with
+   * a `message` field is what every error path here already knows how to read.
+   */
+  configure: (instance: any) => {
+    instance.on("error", (error: NodeJS.ErrnoException, _request: any, socket: any) => {
+      const reason =
+        error.code === "ECONNREFUSED" || error.code === "ECONNRESET"
+          ? `cannot reach opencode serve at ${server} — start it with \`opencode serve --port ${new URL(server).port || 80}\``
+          : `opencode serve request failed: ${error.message}`
+      // On an upgrade/socket error there is no ServerResponse to write to.
+      if (!socket || typeof socket.writeHead !== "function") return socket?.destroy?.()
+      if (socket.headersSent) return socket.end()
+      socket.writeHead(502, { "content-type": "application/json" })
+      socket.end(JSON.stringify({ message: reason }))
+    })
+  },
 }
 
 export default defineConfig({
-  plugins: [solid(), flowStore({ project })],
+  plugins: [solid(), flowStore({ project, upstream: server })],
   server: {
     port: 5174,
     strictPort: true,

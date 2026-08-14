@@ -296,6 +296,368 @@ label.check input {
   background: var(--role-color);
 }
 
+/* opencode surfaces ---------------------------------------------------- */
+
+/*
+ * The model menu and the provider dialog are the one part of OpenFlow that is
+ * not OpenFlow's own look: they copy opencode's app. The tokens below are the
+ * dark values from `packages/ui/src/v2/styles/theme.css` (grey-900 layer, 8%
+ * and 10% white borders, 6% hover overlay, the floating elevation), inlined
+ * because the flow page does not load that stylesheet. Everything under `.oc`
+ * also leaves the monospace body font behind — opencode is a sans interface,
+ * 13px at weight 440, and the menu stops reading like opencode the moment it
+ * is set in a terminal typeface.
+ */
+.oc {
+  --oc-layer-01: #2e2e2e;
+  --oc-layer-02: #3a3a3a;
+  --oc-layer-03: #5c5c5c;
+  --oc-text: #f2f2f2;
+  --oc-text-muted: #aeaeae;
+  --oc-text-faint: #808080;
+  --oc-border-muted: #ffffff14;
+  --oc-border-base: #ffffff1a;
+  --oc-hover: #ffffff0f;
+  --oc-pressed: #ffffff1a;
+  --oc-danger: #f7768e;
+  --oc-floating:
+    0 8px 16px 0 #0000004d, 0 4px 8px 0 #0000004d, 0 0 0 0.5px #ffffff29, 0 -0.5px 0 0 #ffffff0f;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  font-weight: 440;
+  line-height: 20px;
+  letter-spacing: -0.04px;
+  color: var(--oc-text);
+}
+
+.oc-icon {
+  flex-shrink: 0;
+  color: var(--oc-text-faint);
+}
+
+.oc-faint {
+  color: var(--oc-text-faint);
+}
+
+.oc-divider {
+  height: 1px;
+  background: var(--oc-border-muted);
+}
+
+.oc-group {
+  padding: 6px 12px 4px;
+  color: var(--oc-text-muted);
+}
+
+/* one list row — a model, a provider, or the action pinned at the bottom */
+.oc-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--oc-text);
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.oc-item:hover,
+.oc-item[data-active] {
+  background: var(--oc-hover);
+}
+
+.oc-item[data-selected] .oc-item-label {
+  font-weight: 560;
+}
+
+.oc-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oc-tag {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border: 0.5px solid var(--oc-border-base);
+  border-radius: 3px;
+  background: var(--oc-layer-02);
+  color: var(--oc-text-muted);
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.05px;
+}
+
+.oc-check {
+  display: flex;
+  color: var(--oc-text-muted);
+}
+
+.oc-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--oc-text-faint);
+  cursor: pointer;
+}
+
+.oc-clear:hover {
+  background: var(--oc-hover);
+}
+
+.oc-button {
+  height: 28px;
+  padding: 0 10px;
+  border: 0.5px solid var(--oc-border-base);
+  border-radius: 5px;
+  background: var(--oc-layer-02);
+  color: var(--oc-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.oc-button:hover:not(:disabled) {
+  background: var(--oc-layer-03);
+}
+
+.oc-button:disabled {
+  color: var(--oc-text-faint);
+  cursor: default;
+}
+
+.oc-button.oc-primary {
+  background: var(--oc-text);
+  color: #242424;
+  font-weight: 530;
+}
+
+.oc-button.oc-primary:hover:not(:disabled) {
+  background: #ffffff;
+}
+
+.oc-button.oc-danger {
+  color: var(--oc-danger);
+}
+
+.oc-menu-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 10px 0 12px;
+}
+
+.oc-menu-search input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--oc-text);
+  font: inherit;
+  letter-spacing: inherit;
+  outline: none;
+}
+
+.oc-menu-search input::placeholder {
+  color: var(--oc-text-faint);
+}
+
+.oc-menu-empty {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 12px;
+  color: var(--oc-text-faint);
+}
+
+/* model picker --------------------------------------------------------- */
+
+.oc-picker {
+  position: relative;
+  margin-top: 3px;
+}
+
+.oc-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 8px 4px 10px;
+  border: 0.5px solid var(--oc-border-base);
+  border-radius: 5px;
+  background: var(--oc-layer-01);
+  color: var(--oc-text);
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  word-break: break-all;
+  cursor: pointer;
+}
+
+.oc-trigger:hover:not(:disabled) {
+  background: var(--oc-layer-02);
+}
+
+.oc-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 284px;
+  max-width: 100%;
+  padding: 2px 0;
+  border-radius: 6px;
+  background: var(--oc-layer-01);
+  box-shadow: var(--oc-floating);
+  overflow: hidden;
+}
+
+.oc-menu > .oc-item,
+.oc-menu-list,
+.oc-menu-search {
+  padding-left: 2px;
+  padding-right: 2px;
+}
+
+.oc-menu-list {
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* providers dialog ----------------------------------------------------- */
+
+.oc-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #00000099;
+}
+
+.oc-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(440px, 100%);
+  max-height: min(560px, 100%);
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--oc-layer-01);
+  box-shadow: var(--oc-floating);
+  overflow: hidden;
+}
+
+.oc-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 12px;
+}
+
+.oc-dialog-head h2 {
+  flex: 1;
+  margin: 0;
+  color: var(--oc-text);
+  font-size: 13px;
+  font-weight: 560;
+  /* the app's own h2 is an uppercase 11px section label — not this one */
+  text-transform: none;
+  letter-spacing: -0.04px;
+}
+
+.oc-dialog-search {
+  height: 32px;
+  margin: 0 2px 4px;
+  border: 0.5px solid var(--oc-border-base);
+  border-radius: 5px;
+  background: var(--oc-layer-02);
+}
+
+.oc-dialog-body {
+  flex: 1;
+  min-height: 0;
+  padding: 0 2px 6px;
+  overflow-y: auto;
+}
+
+.oc-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 2px;
+  padding: 8px 12px;
+  border-radius: 5px;
+  background: var(--oc-layer-02);
+  color: var(--oc-text-muted);
+}
+
+.oc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 12px 16px;
+  overflow-y: auto;
+}
+
+.oc-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 530;
+}
+
+.oc-form input {
+  height: 32px;
+  padding: 0 10px;
+  border: 0.5px solid var(--oc-border-base);
+  border-radius: 5px;
+  background: var(--oc-layer-02);
+  color: var(--oc-text);
+  font: inherit;
+  letter-spacing: inherit;
+  outline: none;
+}
+
+.oc-form input:focus {
+  border-color: #3b7dd8;
+}
+
+.oc-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.oc-note {
+  margin: 0;
+  color: var(--oc-text-muted);
+}
+
+.oc-error {
+  margin: -8px 0 0;
+  color: var(--oc-danger);
+  font-size: 12px;
+}
+
 /* canvas -------------------------------------------------------------- */
 
 .canvas {

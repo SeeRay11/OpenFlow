@@ -31,18 +31,42 @@ export function project() {
   return context.project
 }
 
-function unwrap<T>(result: { data?: T; error?: unknown }): T {
-  if (result.error) throw new Error(describe(result.error))
+function unwrap<T>(result: { data?: T; error?: unknown; response?: Response }): T {
+  if (result.error) throw new Error(describe(result.error, result.response))
+  if (result.response && !result.response.ok) throw new Error(describe(undefined, result.response))
   if (result.data === undefined) throw new Error("empty response")
   return result.data
 }
 
-export function describe(error: unknown): string {
-  if (!error) return "unknown error"
-  if (typeof error === "string") return error
-  if (error instanceof Error) return error.message
+/**
+ * Turns whatever the client produced into a line a user can act on.
+ *
+ * The generated client hands back the *parsed body* on the result-tuple path,
+ * so a failure with no body — the dev proxy's answer when `opencode serve` is
+ * down — arrives as `{}` and used to render as the literal string `{}`. The
+ * status is the only fact left in that case, so it is carried separately and
+ * used whenever the body says nothing.
+ */
+export function describe(error: unknown, response?: Response): string {
+  const status =
+    response && !response.ok
+      ? `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`
+      : undefined
+  const text = reason(error)
+  if (text && status) return `${text} (${status})`
+  return text ?? status ?? "unknown error"
+}
+
+function reason(error: unknown): string | undefined {
+  if (!error) return undefined
+  if (typeof error === "string") return error || undefined
+  if (error instanceof Error) return error.message || undefined
   const record = error as Record<string, any>
-  return record.message ?? record._tag ?? JSON.stringify(error)
+  if (typeof record.message === "string" && record.message) return record.message
+  if (typeof record.data?.message === "string" && record.data.message) return record.data.message
+  if (typeof record._tag === "string" && record._tag) return record._tag
+  const json = JSON.stringify(error)
+  return json && json !== "{}" && json !== "[]" ? json : undefined
 }
 
 export async function health() {
@@ -61,6 +85,76 @@ export async function models(): Promise<ModelV2Info[]> {
   const { client } = await connect()
   const body = unwrap<any>((await client.v2.model.list()) as any)
   return (body.data ?? body) as ModelV2Info[]
+}
+
+/**
+ * One provider the server knows about, with whatever credentials it currently
+ * holds for it.
+ *
+ * The catalog carries all ~184 models.dev providers whether or not they are
+ * usable; `connections` is what decides. A provider with no connection and no
+ * environment variable contributes no models to `models()`, which is why an
+ * un-keyed OpenFlow only ever sees the free zen models.
+ */
+export type Integration = {
+  id: string
+  name: string
+  methods: Array<{ type: string; names?: string[] }>
+  connections: Array<{ type: string; id: string; label?: string }>
+}
+
+export async function integrations(): Promise<Integration[]> {
+  const { client } = await connect()
+  const body = unwrap<any>((await client.v2.integration.list()) as any)
+  return (body.data ?? body) as Integration[]
+}
+
+/**
+ * Stores an API key for a provider and makes its models selectable.
+ *
+ * The catalog picks the credential up immediately — no `opencode serve`
+ * restart, unlike a config merge. The key is NOT verified here: the server
+ * stores whatever it is given, so a typo surfaces later as a 401 at run time.
+ * Use `testModel` to find that out now instead.
+ */
+export async function connectKey(integrationID: string, key: string, label?: string) {
+  const { client } = await connect()
+  const result = (await client.v2.integration.connect.key({ integrationID, key, label })) as any
+  if (result.error) throw new Error(describe(result.error))
+  return true
+}
+
+export async function removeCredential(credentialID: string) {
+  const { client } = await connect()
+  const result = (await client.v2.credential.remove({ credentialID })) as any
+  if (result.error) throw new Error(describe(result.error))
+  return true
+}
+
+export type ModelTest = { ok: boolean; error?: string; ms: number }
+
+/**
+ * Proves a model actually answers, by running one throwaway session against it.
+ *
+ * A stored key and a listed model are both necessary and neither is
+ * sufficient: the catalog advertises models an account may not be entitled to
+ * (`north-mini-code-free` answers `HTTP 401 Model ... is not supported`), and
+ * a mistyped key looks identical until something is sent. This spends a few
+ * tokens on purpose.
+ */
+export async function testModel(model: string, options: { timeout?: number } = {}): Promise<ModelTest> {
+  const started = Date.now()
+  try {
+    const session = await createSession({ model })
+    await prompt(session.id, "Reply with the single word: ok")
+    await waitForIdle(session.id, { timeout: options.timeout ?? 60_000, interval: 500 })
+    const result = await transcript(session.id)
+    if (result.error) return { ok: false, error: result.error, ms: Date.now() - started }
+    if (!result.text) return { ok: false, error: "the model returned no text", ms: Date.now() - started }
+    return { ok: true, ms: Date.now() - started }
+  } catch (error) {
+    return { ok: false, error: describe(error), ms: Date.now() - started }
+  }
 }
 
 export function parseModel(value?: string): ModelRef | undefined {

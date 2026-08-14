@@ -1,11 +1,36 @@
-import { For, Show, createMemo } from "solid-js"
+import { For, Show, createMemo, createSignal } from "solid-js"
 import { upstream } from "../graph/validate"
+import * as api from "../server/client"
+import type { ProviderRow } from "../server/providers"
 import { TOOLS } from "../server/store"
 import { actions, runtimeOf, state } from "../state"
+import { ModelPicker } from "./model-picker"
 
-export function Inspector(props: { agents: string[] }) {
+export function Inspector(props: {
+  agents: string[]
+  providers: ProviderRow[]
+  onManageKeys?: (query?: string) => void
+}) {
   const node = createMemo(() => state.pipeline.nodes.find((entry) => entry.id === state.selected))
   const runtime = createMemo(() => (state.selected ? runtimeOf(state.selected) : undefined))
+  const [testing, setTesting] = createSignal(false)
+
+  /**
+   * Sends one throwaway prompt to the selected model.
+   *
+   * A model being listed does not mean the account may use it — the zen
+   * catalog advertises models that answer `401 Model ... is not supported` —
+   * and a stored key is never verified when it is saved. This is the only
+   * thing that answers "does this actually work" short of a full run.
+   */
+  async function test(model: string) {
+    setTesting(true)
+    actions.notice("info", `testing ${model}…`)
+    const result = await api.testModel(model)
+    setTesting(false)
+    if (result.ok) return actions.notice("info", `${model} answered in ${(result.ms / 1000).toFixed(1)}s`)
+    actions.notice("error", `${model} failed — ${result.error}`)
+  }
 
   return (
     <aside class="panel inspector">
@@ -23,13 +48,23 @@ export function Inspector(props: { agents: string[] }) {
 
             <label>
               model
-              <input
-                list="openflow-models"
-                placeholder="provider/model — blank uses the agent default"
+              <ModelPicker
                 value={selected().agent.model ?? ""}
-                onInput={(event) => actions.updateAgent(selected().id, { model: event.currentTarget.value })}
+                rows={props.providers}
+                onChange={(value) => actions.updateAgent(selected().id, { model: value })}
+                onManage={props.onManageKeys}
               />
             </label>
+            <div class="row">
+              <span class="hint">blank runs on the agent's own default</span>
+              <button
+                disabled={!selected().agent.model || testing()}
+                title="run one throwaway prompt against this model to see whether the key and entitlement are real"
+                onClick={() => test(selected().agent.model!)}
+              >
+                test
+              </button>
+            </div>
 
             <label>
               agent

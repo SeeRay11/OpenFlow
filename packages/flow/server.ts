@@ -55,6 +55,7 @@ const server = Bun.serve({
           path: url.pathname,
           search: url.searchParams,
           json: () => body(request),
+          upstream,
         })
         if (result) return Response.json(result.body, { status: result.status })
         return Response.json({ error: "not found" }, { status: 404 })

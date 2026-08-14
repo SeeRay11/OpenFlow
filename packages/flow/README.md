@@ -78,10 +78,6 @@ different stores.
 `createEmbeddedRoutes()` and runs the server in-process through Effect layers,
 which is not something a browser app can do.
 
-`@opencode-ai/sdk-next` is deliberately *not* used: its `OpenCode.create` builds
-`createEmbeddedRoutes()` and runs the server in-process through Effect layers,
-which is not something a browser app can do.
-
 Endpoints driven, all v2:
 
 | Call | Endpoint |
@@ -93,6 +89,69 @@ Endpoints driven, all v2:
 | live status | `GET /api/event` (SSE) |
 | stop | `POST /api/session/{id}/interrupt` |
 | pickers | `GET /api/agent`, `GET /api/model` |
+| provider list + stored keys | `GET /api/integration` |
+| store a key | `POST /api/integration/{id}/connect/key` |
+| remove a key | `DELETE /api/credential/{id}` |
+
+## API keys and models
+
+A fresh install has **no models** — only providers. The **api keys** button
+opens opencode's own two-step connect dialog: search the ~184 providers
+models.dev knows, pick one, paste its key. Keys go to the integration store the
+model catalog reads, so a saved key takes effect immediately — no
+`opencode serve` restart, unlike an agent merge. Only then do that provider's
+models appear in the model menu, which is opencode's `dialog-select-model`
+menu: 284px, search at the top, one heading per provider, `↑`/`↓`, `Enter`,
+`Esc`.
+
+A provider counts as connected when a key is stored here **or** one of its
+environment variables is really set on the host — `GET /flow/api/env` answers
+which of the names asked about are set, never their values. That distinction is
+what keeps the free zen models out of a fresh install: `opencode serve` serves
+them to a browser that has never seen a key
+(`core/src/plugin/provider/opencode.ts`), so a model list alone cannot tell a
+provider the user connected from one they did not.
+
+The catalog also lies about what exists. Its `opencode` models come from
+models.dev, and on 2026-08-13 it listed 90 while zen served 61 — the other 29
+answer a run with `401 Model kimi-k2 is not supported` in about 1.4s. Zen's list
+is public, so the host reads it (`lib/zen.ts`, `GET /flow/api/zen-models`,
+10-minute cache) and drops the models zen does not serve. When that fetch fails
+the answer is `null` and the catalog is left alone — an offline user must not
+lose every zen model at once. No other provider can be checked this way: their
+`/models` needs the credential, which lives in the opencode server's store and
+never reaches OpenFlow.
+
+Three things have to line up before a model runs, and the UI distinguishes them
+because they fail in completely different ways:
+
+1. **A credential.** No stored key and no environment variable means the
+   provider is locked and contributes no models at all — including zen, whose
+   free models the server otherwise hands out to a browser with no key.
+2. **A runner for the provider's API.** `core/src/session/runner/model.ts`
+   routes exactly three shapes: `@ai-sdk/openai`, `@ai-sdk/anthropic`, and
+   `@ai-sdk/openai-compatible` with a base URL. Anything else — `@ai-sdk/groq`,
+   `@openrouter/ai-sdk-provider`, `@ai-sdk/google` — fails at dispatch with
+   `UnsupportedApiError` no matter how valid the key is. Those models are
+   listed as **no runner** and their providers sink to the bottom. On this
+   build that is 349 of openrouter's models and all 15 of groq's.
+3. **A key that is actually accepted, for a model the account may use.**
+   Nothing verifies a key when it is stored, and the catalog advertises models
+   an account has no entitlement for. The **test** button beside a node's model
+   runs one throwaway session and reports the provider's own answer — a real
+   `403 Authorization failed` or `410 ... end of life` beats guessing.
+
+`opencode providers login` writes to `auth.json`, which this server does **not**
+read for its catalog. If the CLI already holds keys, the panel offers to import
+them; the keys are read and connected by the OpenFlow host, so they are never
+served to the browser.
+
+| Store route | Purpose |
+|---|---|
+| `GET /flow/api/cli-keys` | provider names in the CLI's `auth.json` — names only |
+| `POST /flow/api/cli-keys/import` | connect those keys to the running server |
+| `GET /flow/api/env?names=A,B` | which of those variables the host has set — names only |
+| `GET /flow/api/zen-models` | model ids opencode zen really serves, or `null` if unreadable |
 
 `POST /api/session/{id}/wait` answers `503 Session wait is not available yet` on
 this server build, so idleness is derived from `/api/session/active` plus a
@@ -230,3 +289,6 @@ last published 2022, three versions, built for Solid 1.5.
 - click an edge to delete it; `Delete` removes the selected node
 - click a node to edit role, model, agent, prompt and tools, and to read its
   sent prompt and output
+- the model field is opencode's model menu — searchable, grouped by provider,
+  `↑`/`↓`, `Enter`, `Esc` — and it lists nothing until a provider is connected;
+  a search that only matches unconnected providers offers to connect them

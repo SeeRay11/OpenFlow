@@ -11,15 +11,19 @@ import {
   type PipeMode,
   type Run,
 } from "./server/engine"
+import { providerRows, type ProviderRow } from "./server/providers"
 import { agentBlock, agentKey, store, type PipelineEntry, type RunEntry } from "./server/store"
 import { actions, state } from "./state"
 import { Inspector } from "./ui/inspector"
 import { Palette } from "./ui/palette"
+import { ProvidersPanel } from "./ui/providers-panel"
 
 export function App() {
   const [status, setStatus] = createSignal("connecting…")
   const [agents, setAgents] = createSignal<string[]>([])
-  const [models, setModels] = createSignal<string[]>([])
+  const [providers, setProviders] = createSignal<ProviderRow[]>([])
+  const [showProviders, setShowProviders] = createSignal(false)
+  const [providerQuery, setProviderQuery] = createSignal("")
   const [pipelines, setPipelines] = createSignal<PipelineEntry[]>([])
   const [runs, setRuns] = createSignal<RunEntry[]>([])
   const [project, setProject] = createSignal("")
@@ -35,15 +39,57 @@ export function App() {
       setProject(context.project)
       await api.health()
       setStatus("connected")
-      const [agentList, modelList] = await Promise.all([api.agents(), api.models()])
+      const agentList = await api.agents()
       setAgents(agentList.filter((agent) => !agent.hidden).map((agent) => agent.id))
-      setModels(modelList.map((model) => `${model.providerID}/${model.id}`))
+      await refreshProviders()
     } catch (error) {
-      setStatus(`offline — ${api.describe(error)}`)
-      actions.notice("error", `cannot reach opencode serve: ${api.describe(error)}`)
+      // The dev proxy already names the server when it is the thing that is
+      // down, so the prefix is only added when the message lacks it.
+      const detail = api.describe(error)
+      setStatus(`offline — ${detail}`)
+      actions.notice("error", detail.includes("opencode serve") ? detail : `cannot reach opencode serve: ${detail}`)
     }
     await refresh()
   })
+
+  /**
+   * Re-reads the catalog and the credential store together.
+   *
+   * They have to be read as a pair: a model list alone cannot say whether a
+   * provider is missing because no key is stored or because the key stored is
+   * wrong. The third read asks the host which provider environment variables
+   * are set, which is the only way to tell an env-authenticated provider from
+   * the free zen models the server hands out with no key at all. Called after
+   * every key change, since a connected key changes the catalog immediately —
+   * no server restart, unlike an agent merge.
+   */
+  async function refreshProviders() {
+    const [integrationList, modelList] = await Promise.all([
+      api.integrations().catch(() => []),
+      api.models().catch(() => []),
+    ])
+    const names = [
+      ...new Set(
+        integrationList.flatMap((item) =>
+          item.methods.flatMap((method) => (method.type === "env" ? (method.names ?? []) : [])),
+        ),
+      ),
+    ]
+    const [env, zen] = await Promise.all([
+      store.envPresent(names).catch(() => ({ present: [] as string[] })),
+      store.zenModels().catch(() => ({ ids: null })),
+    ])
+    // Only providers whose real model list could be read are constrained; the
+    // rest stay as the catalog reports them.
+    const serves = zen.ids ? new Map([["opencode", new Set(zen.ids)]]) : undefined
+    setProviders(providerRows(integrationList, modelList, env.present, serves))
+  }
+
+  /** `query` carries a provider name the model search could not satisfy. */
+  function openProviders(query?: string) {
+    setProviderQuery(query ?? "")
+    setShowProviders(true)
+  }
 
   async function refresh() {
     setPipelines(await store.pipelines().catch(() => []))
@@ -201,6 +247,9 @@ export function App() {
         <button onClick={mergeAgents} title="merge generated agent defs into the project opencode.json">
           merge agents
         </button>
+        <button onClick={() => openProviders()} title="store provider api keys and see which models are usable">
+          api keys
+        </button>
 
         <select
           class="pipe"
@@ -292,8 +341,18 @@ export function App() {
       <main>
         <Palette />
         <Canvas />
-        <Inspector agents={agents()} />
+        <Inspector agents={agents()} providers={providers()} onManageKeys={openProviders} />
       </main>
+
+      <Show when={showProviders()}>
+        <ProvidersPanel
+          rows={providers()}
+          initialQuery={providerQuery()}
+          onClose={() => setShowProviders(false)}
+          onChanged={refreshProviders}
+          onNotice={actions.notice}
+        />
+      </Show>
 
       <footer class="runs">
         <div class="run-current">
@@ -337,10 +396,6 @@ export function App() {
           <span class="hint mono">{project()}</span>
         </div>
       </footer>
-
-      <datalist id="openflow-models">
-        <For each={models()}>{(model) => <option value={model} />}</For>
-      </datalist>
     </div>
   )
 }

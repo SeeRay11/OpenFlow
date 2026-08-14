@@ -9,8 +9,9 @@ import { flowPaths, handleFlow } from "../lib/store"
  * standalone server, so `bun dev` and a built deployment cannot drift into two
  * different stores.
  */
-export function flowStore(options: { project: string }): Plugin {
+export function flowStore(options: { project: string; upstream?: string }): Plugin {
   const paths = flowPaths(options.project)
+  const upstream = options.upstream ?? process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096"
 
   return {
     name: "openflow-store",
@@ -28,6 +29,7 @@ export function flowStore(options: { project: string }): Plugin {
             path: url.pathname,
             search: url.searchParams,
             json: () => read(req),
+            upstream,
           })
           if (!result) return next()
           json(res, result.status, result.body)
