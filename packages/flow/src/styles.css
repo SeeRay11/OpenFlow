@@ -1,16 +1,474 @@
-:root {
-  --bg: #0f1117;
-  --panel: #161923;
-  --panel-2: #1c2030;
-  --line: #262c3d;
-  --text: #d5d9e5;
-  --dim: #7f88a3;
-  --accent: #7aa2f7;
-  --good: #9ece6a;
-  --bad: #f7768e;
-  --warn: #e0af68;
-  color-scheme: dark;
+/*
+ * OpenFlow wears opencode's clothes.
+ *
+ * The flow page is a standalone vite entry — it does not load
+ * `@opencode-ai/ui`, so the design tokens cannot be imported, only copied. The
+ * two blocks below are verbatim transcriptions of
+ * `packages/ui/src/v2/styles/colors.css` (primitives) and the two
+ * `[data-color-scheme]` rules in `packages/ui/src/v2/styles/theme.css`
+ * (semantics). Nothing else in this file may state a colour: every rule
+ * resolves through a `--v2-*` token so the app and OpenFlow drift together.
+ */
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/Inter.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
 }
+
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  src: url("/fonts/JetBrainsMonoNerdFontMono-Regular.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* ── Grey ── */
+  --v2-grey-50: #ffffffff;
+  --v2-grey-100: #fafafaff;
+  --v2-grey-200: #f2f2f2ff;
+  --v2-grey-300: #eeeeeeff;
+  --v2-grey-400: #dbdbdbff;
+  --v2-grey-500: #aeaeaeff;
+  --v2-grey-600: #808080ff;
+  --v2-grey-700: #5c5c5cff;
+  --v2-grey-800: #3a3a3aff;
+  --v2-grey-900: #2e2e2eff;
+  --v2-grey-1000: #242424ff;
+  --v2-grey-1100: #161616ff;
+  --v2-grey-1200: #080808ff;
+
+  /* ── Alpha Dark ── */
+  --v2-alpha-dark-100: #000000ff;
+  --v2-alpha-dark-90: #000000e5;
+  --v2-alpha-dark-80: #000000cc;
+  --v2-alpha-dark-70: #000000b2;
+  --v2-alpha-dark-60: #00000099;
+  --v2-alpha-dark-50: #00000080;
+  --v2-alpha-dark-40: #00000066;
+  --v2-alpha-dark-30: #0000004d;
+  --v2-alpha-dark-24: #0000003d;
+  --v2-alpha-dark-20: #00000033;
+  --v2-alpha-dark-16: #00000029;
+  --v2-alpha-dark-14: #00000024;
+  --v2-alpha-dark-12: #0000001f;
+  --v2-alpha-dark-10: #0000001a;
+  --v2-alpha-dark-8: #00000014;
+  --v2-alpha-dark-6: #0000000f;
+  --v2-alpha-dark-4: #0000000a;
+  --v2-alpha-dark-2: #00000005;
+  --v2-alpha-dark-0: #00000000;
+
+  /* ── Alpha Light ── */
+  --v2-alpha-light-100: #ffffffff;
+  --v2-alpha-light-90: #ffffffe5;
+  --v2-alpha-light-80: #ffffffcc;
+  --v2-alpha-light-70: #ffffffb2;
+  --v2-alpha-light-60: #ffffff99;
+  --v2-alpha-light-50: #ffffff80;
+  --v2-alpha-light-40: #ffffff66;
+  --v2-alpha-light-30: #ffffff4d;
+  --v2-alpha-light-24: #ffffff3d;
+  --v2-alpha-light-20: #ffffff33;
+  --v2-alpha-light-16: #ffffff29;
+  --v2-alpha-light-14: #ffffff24;
+  --v2-alpha-light-12: #ffffff1f;
+  --v2-alpha-light-10: #ffffff1a;
+  --v2-alpha-light-8: #ffffff14;
+  --v2-alpha-light-6: #ffffff0f;
+  --v2-alpha-light-4: #ffffff0a;
+  --v2-alpha-light-2: #ffffff05;
+  --v2-alpha-light-0: #ffffff00;
+
+  /* ── Red ── */
+  --v2-red-100: #fcecebff;
+  --v2-red-200: #f6d5d3ff;
+  --v2-red-300: #f2bbb7ff;
+  --v2-red-400: #f29b96ff;
+  --v2-red-500: #f17471ff;
+  --v2-red-600: #f1484fff;
+  --v2-red-700: #d92e3cff;
+  --v2-red-800: #b82d35ff;
+  --v2-red-900: #97252bff;
+  --v2-red-1000: #7a1f23ff;
+  --v2-red-1100: #5f1a1cff;
+  --v2-red-1200: #461516ff;
+
+  /* ── Orange ── */
+  --v2-orange-100: #fdf2edff;
+  --v2-orange-200: #ffe7dcff;
+  --v2-orange-300: #ffd8c6ff;
+  --v2-orange-400: #ffc1a4ff;
+  --v2-orange-500: #ffa478ff;
+  --v2-orange-600: #ff8648ff;
+  --v2-orange-700: #ee7330ff;
+  --v2-orange-800: #d16427ff;
+  --v2-orange-900: #b35624ff;
+  --v2-orange-1000: #954c27ff;
+  --v2-orange-1100: #723d22ff;
+  --v2-orange-1200: #5a2c14ff;
+
+  /* ── Yellow ── */
+  --v2-yellow-100: #fefaecff;
+  --v2-yellow-200: #fcefd0ff;
+  --v2-yellow-300: #f7e5b5ff;
+  --v2-yellow-400: #f3da9bff;
+  --v2-yellow-500: #f2cf76ff;
+  --v2-yellow-600: #f6c251ff;
+  --v2-yellow-700: #e7af36ff;
+  --v2-yellow-800: #cb9f34ff;
+  --v2-yellow-900: #ac8833ff;
+  --v2-yellow-1000: #8e7231ff;
+  --v2-yellow-1100: #68552bff;
+  --v2-yellow-1200: #4b4025ff;
+
+  /* ── Green ── */
+  --v2-green-100: #e7f9eaff;
+  --v2-green-200: #d0f0d5ff;
+  --v2-green-300: #b8e9c1ff;
+  --v2-green-400: #96e3a6ff;
+  --v2-green-500: #6bd586ff;
+  --v2-green-600: #49c970ff;
+  --v2-green-700: #2eaf5aff;
+  --v2-green-800: #198b43ff;
+  --v2-green-900: #1d783cff;
+  --v2-green-1000: #196130ff;
+  --v2-green-1100: #164c26ff;
+  --v2-green-1200: #14361dff;
+
+  /* ── Cyan ── */
+  --v2-cyan-100: #e2f7fbff;
+  --v2-cyan-200: #c4edf4ff;
+  --v2-cyan-300: #a3e4efff;
+  --v2-cyan-400: #65d9ebff;
+  --v2-cyan-500: #00c5dfff;
+  --v2-cyan-600: #00abcfff;
+  --v2-cyan-700: #0096b8ff;
+  --v2-cyan-800: #007d9bff;
+  --v2-cyan-900: #006c85ff;
+  --v2-cyan-1000: #005a6eff;
+  --v2-cyan-1100: #004756ff;
+  --v2-cyan-1200: #00353fff;
+
+  /* ── Blue ── */
+  --v2-blue-100: #ecf1feff;
+  --v2-blue-200: #d7e2fcff;
+  --v2-blue-300: #c3d4fdff;
+  --v2-blue-400: #a2bcffff;
+  --v2-blue-500: #7698fdff;
+  --v2-blue-600: #3b5cf6ff;
+  --v2-blue-700: #3250dfff;
+  --v2-blue-800: #2c47c8ff;
+  --v2-blue-900: #263fa9ff;
+  --v2-blue-1000: #22388fff;
+  --v2-blue-1100: #1c2e70ff;
+  --v2-blue-1200: #1b2852ff;
+
+  /* ── Purple ── */
+  --v2-purple-100: #ebecfeff;
+  --v2-purple-200: #d5d5fcff;
+  --v2-purple-300: #b9b8f5ff;
+  --v2-purple-400: #9e99f7ff;
+  --v2-purple-500: #8271f8ff;
+  --v2-purple-600: #7152f4ff;
+  --v2-purple-700: #623be2ff;
+  --v2-purple-800: #5230c2ff;
+  --v2-purple-900: #442aa1ff;
+  --v2-purple-1000: #361f83ff;
+  --v2-purple-1100: #2b1b6aff;
+  --v2-purple-1200: #221358ff;
+
+  /* ── Pink ── */
+  --v2-pink-100: #fdecf3ff;
+  --v2-pink-200: #f7d5e4ff;
+  --v2-pink-300: #fabcd8ff;
+  --v2-pink-400: #f799c6ff;
+  --v2-pink-500: #f26cb2ff;
+  --v2-pink-600: #f64aabff;
+  --v2-pink-700: #e4429eff;
+  --v2-pink-800: #c83d8bff;
+  --v2-pink-900: #aa3576ff;
+  --v2-pink-1000: #8c2d61ff;
+  --v2-pink-1100: #6f284fff;
+  --v2-pink-1200: #5c1d3fff;
+
+  /*
+   * The dark semantics live on `:root`, not on `[data-color-scheme="dark"]`,
+   * so the first paint is already dark. index.html sets the attribute too, but
+   * an attribute-only rule leaves a light flash on a cold cache.
+   */
+  color-scheme: dark;
+
+  --v2-background-bg-base: var(--v2-grey-1100);
+  --v2-background-bg-deep: var(--v2-grey-1200);
+  --v2-background-bg-layer-01: var(--v2-grey-1000);
+  --v2-background-bg-layer-02: var(--v2-grey-900);
+  --v2-background-bg-layer-03: var(--v2-grey-800);
+  --v2-background-bg-layer-04: var(--v2-grey-700);
+  --v2-background-bg-inverse: var(--v2-grey-50);
+  --v2-background-bg-contrast: var(--v2-grey-700);
+  --v2-background-bg-button-neutral: var(--v2-alpha-light-6);
+  --v2-background-bg-accent: var(--v2-blue-600);
+
+  --v2-text-text-base: var(--v2-grey-100);
+  --v2-text-text-muted: var(--v2-grey-500);
+  --v2-text-text-faint: var(--v2-grey-600);
+  --v2-text-text-inverse: var(--v2-grey-1100);
+  --v2-text-text-contrast: var(--v2-grey-50);
+  --v2-text-text-accent: var(--v2-blue-400);
+  --v2-text-text-accent-hover: var(--v2-blue-300);
+  --v2-text-text-code-accent: var(--v2-blue-400);
+
+  --v2-icon-icon-base: var(--v2-grey-400);
+  --v2-icon-icon-muted: var(--v2-grey-600);
+  --v2-icon-icon-inverse: var(--v2-grey-1100);
+  --v2-icon-icon-contrast: var(--v2-grey-100);
+  --v2-icon-icon-accent: var(--v2-blue-400);
+  --v2-icon-icon-accent-hover: var(--v2-blue-300);
+
+  --v2-border-border-muted: var(--v2-alpha-light-8);
+  --v2-border-border-base: var(--v2-alpha-light-10);
+  --v2-border-border-strong: var(--v2-alpha-light-20);
+  --v2-border-border-inverse: var(--v2-grey-100);
+  --v2-border-border-focus: var(--v2-blue-500);
+
+  --v2-overlay-simple-overlay-hover: var(--v2-alpha-light-6);
+  --v2-overlay-simple-overlay-pressed: var(--v2-alpha-light-10);
+  --v2-overlay-simple-overlay-contrast-hover: var(--v2-alpha-dark-24);
+  --v2-overlay-simple-overlay-contrast-pressed: var(--v2-alpha-dark-40);
+  --v2-overlay-simple-overlay-scrim: var(--v2-alpha-dark-60);
+  --v2-overlay-gradient-depth-overlay-depth-top: var(--v2-alpha-light-100);
+  --v2-overlay-gradient-depth-overlay-depth-bot: var(--v2-alpha-light-0);
+  --v2-overlay-simple-tab-active-scrim: #24242400;
+  --v2-overlay-simple-tab-hover-scrim: #3a3a3a00;
+  --v2-overlay-simple-tab-scrim: #08080800;
+
+  --v2-state-bg-success: var(--v2-green-1200);
+  --v2-state-fg-success: var(--v2-green-500);
+  --v2-state-border-success: var(--v2-green-900);
+  --v2-state-bg-warning: var(--v2-yellow-1200);
+  --v2-state-fg-warning: var(--v2-yellow-500);
+  --v2-state-border-warning: var(--v2-yellow-900);
+  --v2-state-bg-danger: var(--v2-red-1200);
+  --v2-state-fg-danger: var(--v2-red-500);
+  --v2-state-border-danger: var(--v2-red-900);
+  --v2-state-bg-info: var(--v2-blue-1200);
+  --v2-state-fg-info: var(--v2-blue-500);
+  --v2-state-border-info: var(--v2-blue-900);
+
+  --v2-agent-plan-solid: var(--v2-pink-400);
+  --v2-agent-plan-border: rgba(247, 153, 198, 0.2);
+  --v2-agent-plan-background: rgba(170, 53, 118, 0.05);
+  --v2-agent-build-solid: var(--v2-blue-300);
+  --v2-agent-build-border: rgba(162, 188, 255, 0.2);
+  --v2-agent-build-background: rgba(38, 63, 169, 0.05);
+  --v2-agent-explore-solid: var(--v2-yellow-300);
+  --v2-agent-explore-border: rgba(243, 218, 155, 0.2);
+  --v2-agent-explore-background: rgba(172, 136, 51, 0.05);
+  --v2-agent-review-solid: var(--v2-green-300);
+  --v2-agent-writer-solid: var(--v2-purple-400);
+
+  --v2-avatar-fg: #ffffffff;
+  --v2-avatar-bg-orange: #723d22ff;
+  --v2-avatar-border-orange: #ff8648ff;
+  --v2-avatar-bg-yellow: #68552bff;
+  --v2-avatar-border-yellow: #e7af36ff;
+  --v2-avatar-bg-cyan: #005a6eff;
+  --v2-avatar-border-cyan: #0096b8ff;
+  --v2-avatar-bg-green: #196130ff;
+  --v2-avatar-border-green: #49c970ff;
+  --v2-avatar-bg-red: #7a1f23ff;
+  --v2-avatar-border-red: #d92e3cff;
+  --v2-avatar-bg-pink: #8c2d61ff;
+  --v2-avatar-border-pink: #e4429eff;
+  --v2-avatar-bg-blue: #263fa9ff;
+  --v2-avatar-border-blue: #7698fdff;
+  --v2-avatar-bg-purple: #361f83ff;
+  --v2-avatar-border-purple: #7152f4ff;
+  --v2-avatar-bg-gray: #5c5c5cff;
+  --v2-avatar-border-gray: #aeaeaeff;
+
+  --v2-elevation-raised:
+    0px 2px 4px 0px var(--v2-alpha-dark-30), 0px 1px 2px 0px var(--v2-alpha-dark-30),
+    0px 0px 0px 0.5px var(--v2-alpha-light-16), 0px -0.5px 0px 0px var(--v2-alpha-light-6);
+  --v2-elevation-floating:
+    0px 8px 16px 0px var(--v2-alpha-dark-30), 0px 4px 8px 0px var(--v2-alpha-dark-30),
+    0px 0px 0px 0.5px var(--v2-alpha-light-16), 0px -0.5px 0px 0px var(--v2-alpha-light-6);
+  --v2-elevation-overlay:
+    0px 16px 32px 0px var(--v2-alpha-dark-30), 0px 8px 16px 0px var(--v2-alpha-dark-30),
+    0px 0px 0px 0.5px var(--v2-alpha-light-16), 0px -0.5px 0px 0px var(--v2-alpha-light-6);
+  --v2-elevation-button-neutral:
+    0px 1px 2px 0px var(--v2-alpha-dark-40), 0px 0px 0px 0.5px var(--v2-alpha-light-20),
+    0px -0.5px 0px 0px var(--v2-alpha-light-10);
+  --v2-elevation-button-contrast:
+    0px 1px 2px 0px var(--v2-alpha-dark-40), 0px 0px 0px 0.5px var(--v2-alpha-light-40),
+    inset 0px 0px 0px 0px var(--v2-alpha-light-0), inset 0px 0px 0px 0px var(--v2-alpha-light-0),
+    0px -0.5px 0px 0px var(--v2-alpha-light-30);
+  --v2-elevation-elements: 0px 0.5px 0.5px 0px var(--v2-alpha-dark-40);
+  --v2-elevation-switch-off:
+    inset 0px -0.5px 0px 0px var(--v2-alpha-light-10), inset 0px 0px 0px 0px var(--v2-alpha-light-0),
+    inset 0px 0px 0px 0.5px var(--v2-alpha-light-16);
+  --v2-elevation-switch-on:
+    inset 0px -0.5px 0px 0px var(--v2-alpha-light-10), inset 0px 0px 0px 0px var(--v2-alpha-light-0),
+    inset 0px 0px 0px 0.5px var(--v2-alpha-light-16);
+
+  --v2-illustration-illustration-layer-01: var(--v2-grey-900);
+  --v2-illustration-illustration-layer-02: var(--v2-grey-800);
+  --v2-illustration-illustration-layer-03: var(--v2-grey-700);
+
+  --v2-font-family-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --v2-font-family-mono: "JetBrainsMono Nerd Font Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /*
+   * The `.oc-*` menu and dialog rules were written against their own palette.
+   * They now read these aliases instead, so there is one set of colours in the
+   * file and the menus follow the theme like everything else.
+   */
+  --oc-layer-01: var(--v2-background-bg-layer-01);
+  --oc-layer-02: var(--v2-background-bg-layer-02);
+  --oc-layer-03: var(--v2-background-bg-layer-03);
+  --oc-text: var(--v2-text-text-base);
+  --oc-text-muted: var(--v2-text-text-muted);
+  --oc-text-faint: var(--v2-text-text-faint);
+  --oc-border-muted: var(--v2-border-border-muted);
+  --oc-border-base: var(--v2-border-border-base);
+  --oc-hover: var(--v2-overlay-simple-overlay-hover);
+  --oc-pressed: var(--v2-overlay-simple-overlay-pressed);
+  --oc-danger: var(--v2-state-fg-danger);
+  --oc-floating: var(--v2-elevation-floating);
+}
+
+/*
+ * OpenFlow ships dark and nothing toggles this yet, but a token layer that only
+ * knows one theme is a lie waiting to be found. This is theme.css's light block,
+ * verbatim, so the day a switch appears the sheet already answers.
+ */
+[data-color-scheme="light"] {
+  color-scheme: light;
+
+  --v2-background-bg-base: var(--v2-grey-50);
+  --v2-background-bg-deep: var(--v2-grey-100);
+  --v2-background-bg-layer-01: var(--v2-grey-100);
+  --v2-background-bg-layer-02: var(--v2-grey-200);
+  --v2-background-bg-layer-03: var(--v2-grey-300);
+  --v2-background-bg-layer-04: var(--v2-grey-400);
+  --v2-background-bg-inverse: var(--v2-grey-1100);
+  --v2-background-bg-contrast: var(--v2-grey-1000);
+  --v2-background-bg-button-neutral: var(--v2-grey-50);
+  --v2-background-bg-accent: var(--v2-blue-600);
+
+  --v2-text-text-base: var(--v2-grey-1100);
+  --v2-text-text-muted: var(--v2-grey-700);
+  --v2-text-text-faint: var(--v2-grey-600);
+  --v2-text-text-inverse: var(--v2-grey-50);
+  --v2-text-text-contrast: var(--v2-grey-50);
+  --v2-text-text-accent: var(--v2-blue-600);
+  --v2-text-text-accent-hover: var(--v2-blue-700);
+  --v2-text-text-code-accent: var(--v2-blue-900);
+
+  --v2-icon-icon-base: var(--v2-grey-800);
+  --v2-icon-icon-muted: var(--v2-grey-600);
+  --v2-icon-icon-inverse: var(--v2-grey-50);
+  --v2-icon-icon-contrast: var(--v2-grey-100);
+  --v2-icon-icon-accent: var(--v2-blue-600);
+  --v2-icon-icon-accent-hover: var(--v2-blue-700);
+
+  --v2-border-border-muted: var(--v2-alpha-dark-8);
+  --v2-border-border-base: var(--v2-alpha-dark-10);
+  --v2-border-border-strong: var(--v2-alpha-dark-20);
+  --v2-border-border-inverse: var(--v2-grey-1000);
+  --v2-border-border-focus: var(--v2-blue-500);
+
+  --v2-overlay-simple-overlay-hover: var(--v2-alpha-dark-4);
+  --v2-overlay-simple-overlay-pressed: var(--v2-alpha-dark-8);
+  --v2-overlay-simple-overlay-contrast-hover: var(--v2-alpha-light-12);
+  --v2-overlay-simple-overlay-contrast-pressed: var(--v2-alpha-light-24);
+  --v2-overlay-simple-overlay-scrim: var(--v2-alpha-dark-40);
+  --v2-overlay-gradient-depth-overlay-depth-top: var(--v2-alpha-light-100);
+  --v2-overlay-gradient-depth-overlay-depth-bot: var(--v2-alpha-light-0);
+  --v2-overlay-simple-tab-active-scrim: #fafafa00;
+  --v2-overlay-simple-tab-hover-scrim: #eeeeee00;
+  --v2-overlay-simple-tab-scrim: #fafafa00;
+
+  --v2-state-bg-success: var(--v2-green-100);
+  --v2-state-fg-success: var(--v2-green-800);
+  --v2-state-border-success: var(--v2-green-300);
+  --v2-state-bg-warning: var(--v2-yellow-100);
+  --v2-state-fg-warning: var(--v2-yellow-800);
+  --v2-state-border-warning: var(--v2-yellow-300);
+  --v2-state-bg-danger: var(--v2-red-100);
+  --v2-state-fg-danger: var(--v2-red-800);
+  --v2-state-border-danger: var(--v2-red-300);
+  --v2-state-bg-info: var(--v2-blue-100);
+  --v2-state-fg-info: var(--v2-blue-800);
+  --v2-state-border-info: var(--v2-blue-300);
+
+  --v2-agent-plan-solid: var(--v2-pink-800);
+  --v2-agent-plan-border: rgba(200, 61, 139, 0.2);
+  --v2-agent-plan-background: rgba(253, 236, 243, 0.1);
+  --v2-agent-build-solid: var(--v2-blue-800);
+  --v2-agent-build-border: rgba(44, 71, 200, 0.1);
+  --v2-agent-build-background: rgba(236, 241, 254, 0.1);
+  --v2-agent-explore-solid: var(--v2-yellow-900);
+  --v2-agent-explore-border: rgba(203, 159, 52, 0.2);
+  --v2-agent-explore-background: rgba(254, 250, 236, 0.1);
+  --v2-agent-review-solid: var(--v2-green-800);
+  --v2-agent-writer-solid: var(--v2-purple-700);
+
+  --v2-elevation-raised:
+    0px 2px 4px 0px var(--v2-alpha-dark-4), 0px 1px 2px -1px var(--v2-alpha-dark-8),
+    0px 0px 0px 0.5px var(--v2-alpha-dark-12), 0px 0px 0px 0px var(--v2-alpha-dark-0);
+  --v2-elevation-floating:
+    0px 8px 16px 0px var(--v2-alpha-dark-4), 0px 4px 8px 0px var(--v2-alpha-dark-8),
+    0px 0px 0px 0.5px var(--v2-alpha-dark-12), 0px 0px 0px 0px var(--v2-alpha-dark-0);
+  --v2-elevation-overlay:
+    0px 16px 32px 0px var(--v2-alpha-dark-4), 0px 8px 16px 0px var(--v2-alpha-dark-8),
+    0px 0px 0px 0.5px var(--v2-alpha-dark-12), 0px 0px 0px 0px var(--v2-alpha-dark-0);
+  --v2-elevation-button-neutral:
+    0px 1px 1.5px 0px var(--v2-alpha-dark-10), 0px 0px 0px 0.5px var(--v2-alpha-dark-14),
+    0px 0px 0px 0px var(--v2-alpha-dark-0);
+  --v2-elevation-button-contrast:
+    0px 1px 1.5px 0px var(--v2-alpha-dark-20), 0px 0px 0px 0.5px var(--v2-grey-800),
+    inset 0px 1px 2px 0px var(--v2-alpha-light-14), inset 0px -1px 2px 0px var(--v2-alpha-dark-6),
+    0px 0px 0px 0px var(--v2-alpha-dark-0);
+  --v2-elevation-elements: 0px 0.5px 0.5px 0px var(--v2-alpha-dark-40);
+  --v2-elevation-switch-off:
+    inset 0px 1px 1px 0px var(--v2-alpha-dark-8), inset 0px 0.5px 0.5px 0px var(--v2-alpha-dark-8),
+    inset 0px 0px 0px 0.5px var(--v2-alpha-dark-10);
+  --v2-elevation-switch-on:
+    inset 0px 2px 2px 0px var(--v2-alpha-dark-10), inset 0px 1px 1px 0px var(--v2-alpha-dark-10),
+    inset 0px 0px 0px 0.5px var(--v2-alpha-dark-20);
+
+  --v2-illustration-illustration-layer-01: var(--v2-grey-300);
+  --v2-illustration-illustration-layer-02: var(--v2-grey-400);
+  --v2-illustration-illustration-layer-03: var(--v2-grey-500);
+
+  --v2-avatar-fg: #ffffffff;
+  --v2-avatar-bg-orange: #ee7330ff;
+  --v2-avatar-border-orange: #d16427ff;
+  --v2-avatar-bg-yellow: #e7af36ff;
+  --v2-avatar-border-yellow: #cb9f34ff;
+  --v2-avatar-bg-cyan: #0096b8ff;
+  --v2-avatar-border-cyan: #007d9bff;
+  --v2-avatar-bg-green: #2eaf5aff;
+  --v2-avatar-border-green: #198b43ff;
+  --v2-avatar-bg-red: #d92e3cff;
+  --v2-avatar-border-red: #b82d35ff;
+  --v2-avatar-bg-pink: #e4429eff;
+  --v2-avatar-border-pink: #c83d8bff;
+  --v2-avatar-bg-blue: #3250dfff;
+  --v2-avatar-border-blue: #2c47c8ff;
+  --v2-avatar-bg-purple: #623be2ff;
+  --v2-avatar-border-purple: #5230c2ff;
+  --v2-avatar-bg-gray: #5c5c5cff;
+  --v2-avatar-border-gray: #3a3a3aff;
+}
+
+/* base ----------------------------------------------------------------- */
 
 * {
   box-sizing: border-box;
@@ -23,76 +481,158 @@ body,
   margin: 0;
 }
 
+/*
+ * The whole interface is Inter at 13/20, weight 440, tracking -0.04px. It is
+ * set once here rather than per component, which is why `.oc` no longer needs
+ * a font of its own.
+ */
 body {
-  background: var(--bg);
-  color: var(--text);
-  font: 13px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  background: var(--v2-background-bg-base);
+  color: var(--v2-text-text-base);
+  font-family: var(--v2-font-family-sans);
+  font-size: 13px;
+  font-weight: 440;
+  line-height: 20px;
+  letter-spacing: -0.04px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-.app {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-size: inherit;
+  font-weight: 560;
+  line-height: inherit;
 }
 
-/* toolbar ------------------------------------------------------------- */
-
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
+p {
+  margin: 0;
 }
 
-.brand {
-  color: var(--accent);
-  letter-spacing: 0.08em;
-  margin-right: 4px;
+/* the mono face is for machine text only — ids, paths, code, transcripts */
+code,
+pre,
+kbd,
+samp,
+.mono {
+  font-family: var(--v2-font-family-mono);
+  font-size: 12px;
+  line-height: 18px;
+  letter-spacing: 0;
 }
 
-.toolbar .name {
-  width: 160px;
+.mono {
+  word-break: break-all;
 }
 
-.toolbar .task {
-  flex: 1;
-  min-width: 180px;
+.dim {
+  color: var(--v2-text-text-muted);
 }
 
-.status {
-  color: var(--good);
-  white-space: nowrap;
+.hint {
+  color: var(--v2-text-text-faint);
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.05px;
 }
 
-.status.bad {
-  color: var(--bad);
+::selection {
+  background: color-mix(in srgb, var(--v2-background-bg-accent) 35%, transparent);
 }
 
+/* a quiet dark app does not advertise its scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--v2-alpha-light-10) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--v2-alpha-light-10);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--v2-alpha-light-20);
+  background-clip: padding-box;
+}
+
+/*
+ * One ring, everywhere, and never the browser default. This sits at element +
+ * pseudo-class specificity so a plain `.btn` cannot outrank it; component rules
+ * that need a different focus treatment override it with a class selector.
+ */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 1px var(--v2-border-border-focus);
+}
+
+/* opencode's controls settle rather than move; nothing here animates position */
+.btn,
+.icon-btn,
+.field,
+.role-card,
+.tool-check,
+.run-node,
+.node,
+.port,
+.notice-close,
+.oc-item,
+.oc-trigger,
+.oc-button,
+.oc-clear,
 input,
 select,
-textarea,
-button {
-  font: inherit;
-  color: var(--text);
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 5px 8px;
-}
-
 textarea {
-  width: 100%;
-  resize: vertical;
+  transition:
+    background-color 120ms ease-in-out,
+    box-shadow 120ms ease-in-out,
+    color 120ms ease-in-out,
+    opacity 120ms ease-in-out,
+    border-color 120ms ease-in-out;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* shared primitives ----------------------------------------------------- */
+
+/*
+ * An unclassed <button> reads as ghost text rather than native chrome, so a
+ * control that slips through without `.btn` still looks like it belongs.
+ */
 button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
   cursor: pointer;
-}
-
-button:hover:not(:disabled) {
-  border-color: var(--accent);
 }
 
 button:disabled {
@@ -100,39 +640,397 @@ button:disabled {
   cursor: default;
 }
 
-button.primary {
-  background: var(--accent);
-  color: #0b0d13;
-  border-color: var(--accent);
-  font-weight: 600;
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0.5px solid var(--v2-border-border-base);
+  border-radius: 5px;
+  background: var(--v2-background-bg-button-neutral);
+  box-shadow: var(--v2-elevation-button-neutral);
+  color: var(--v2-text-text-base);
+  white-space: nowrap;
 }
 
-button.danger {
-  border-color: #4a2733;
-  color: var(--bad);
+.btn:hover:not(:disabled) {
+  background: var(--v2-overlay-simple-overlay-hover);
 }
 
-.notice {
-  padding: 6px 12px;
-  background: #1b2436;
-  border-bottom: 1px solid var(--line);
-  color: var(--accent);
+.btn:active:not(:disabled) {
+  background: var(--v2-overlay-simple-overlay-pressed);
+}
+
+/* the global ring replaces box-shadow outright, so raised controls re-state it */
+.btn:focus-visible,
+.oc-button:focus-visible {
+  box-shadow: var(--v2-elevation-button-neutral), 0 0 0 1px var(--v2-border-border-focus);
+}
+
+.btn-primary {
+  border-color: transparent;
+  background: var(--v2-background-bg-accent);
+  box-shadow: var(--v2-elevation-button-contrast);
+  color: var(--v2-text-text-contrast);
+  font-weight: 530;
+}
+
+.btn-primary:hover:not(:disabled),
+.btn-primary:active:not(:disabled) {
+  background: var(--v2-background-bg-accent);
+}
+
+.btn-danger {
+  border-color: var(--v2-state-border-danger);
+  background: transparent;
+  box-shadow: none;
+  color: var(--v2-state-fg-danger);
+}
+
+.btn-danger:hover:not(:disabled),
+.btn-danger:active:not(:disabled) {
+  background: var(--v2-state-bg-danger);
+}
+
+.btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* each variant restates the ring on its own shadow, or it would inherit .btn's */
+.btn-primary:focus-visible {
+  box-shadow: var(--v2-elevation-button-contrast), 0 0 0 1px var(--v2-border-border-focus);
+}
+
+.btn-danger:focus-visible,
+.btn-ghost:focus-visible {
+  box-shadow: 0 0 0 1px var(--v2-border-border-focus);
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--v2-icon-icon-base);
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--v2-overlay-simple-overlay-hover);
+  color: var(--v2-text-text-base);
+}
+
+.icon-btn:active:not(:disabled) {
+  background: var(--v2-overlay-simple-overlay-pressed);
+}
+
+/* icons inside a control take the control's colour, not the faint default */
+.btn .oc-icon,
+.icon-btn .oc-icon,
+.oc-button .oc-icon {
+  color: inherit;
+}
+
+/*
+ * Inputs get the field treatment from the element selector, not a class, so an
+ * input the markup forgot to label still matches the rest of the app. The
+ * exclusion sits inside `:where()` so this stays a zero-specificity default —
+ * `.oc-menu-search input` and friends must be able to undo it with one class.
+ */
+.field:not(textarea),
+input:where(:not([type="checkbox"], [type="radio"])),
+select,
+textarea {
+  height: 28px;
+  padding: 0 8px;
+  border: 0.5px solid var(--v2-border-border-muted);
+  border-radius: 5px;
+  background: var(--v2-background-bg-layer-02);
+  color: var(--v2-text-text-base);
+  font: inherit;
+  letter-spacing: inherit;
+  outline: 0;
+}
+
+textarea {
+  width: 100%;
+  height: auto;
+  min-height: 72px;
+  padding: 6px 8px;
+  line-height: 20px;
+  resize: vertical;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--v2-text-text-faint);
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--v2-background-bg-accent);
   cursor: pointer;
 }
 
-.notice.bad {
-  background: #2a1a20;
-  color: var(--bad);
+/* status pills ---------------------------------------------------------- */
+
+.badge {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border: 0.5px solid var(--v2-border-border-base);
+  border-radius: 3px;
+  background: var(--v2-background-bg-layer-02);
+  color: var(--v2-text-text-faint);
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.05px;
+  text-transform: lowercase;
 }
 
-/* permission prompts --------------------------------------------------- */
+.badge[data-status="running"] {
+  border-color: var(--v2-state-border-info);
+  background: var(--v2-state-bg-info);
+  color: var(--v2-state-fg-info);
+}
+
+.badge[data-status="done"] {
+  border-color: var(--v2-state-border-success);
+  background: var(--v2-state-bg-success);
+  color: var(--v2-state-fg-success);
+}
+
+.badge[data-status="error"] {
+  border-color: var(--v2-state-border-danger);
+  background: var(--v2-state-bg-danger);
+  color: var(--v2-state-fg-danger);
+}
+
+.badge[data-status="stopped"] {
+  border-color: var(--v2-state-border-warning);
+  background: var(--v2-state-bg-warning);
+  color: var(--v2-state-fg-warning);
+}
+
+/* queued and skipped are both "nothing happened here" — faint, not coloured */
+.badge[data-status="queued"],
+.badge[data-status="skipped"] {
+  background: var(--v2-background-bg-layer-02);
+  color: var(--v2-text-text-faint);
+}
+
+/* an offline message is a whole sentence, so the status has to be able to give
+   ground — without a floor of its own it would push the run menu off the bar */
+.status {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--v2-text-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the dot carries the connection state, so the text beside it follows the dot
+   rather than needing its own modifier class */
+.statusbar-dot[data-state="bad"] ~ .status {
+  color: var(--v2-state-fg-danger);
+}
+
+/* chrome ---------------------------------------------------------------- */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  /* the bars' hairline borders add up to a pixel of document overflow, which
+     the browser answers with a scrollbar on a page that never scrolls */
+  overflow: hidden;
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  flex-shrink: 0;
+  padding: 0 8px;
+  background: var(--v2-background-bg-base);
+  border-bottom: 1px solid var(--v2-border-border-muted);
+}
+
+.titlebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+  font-weight: 560;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.titlebar-brand .oc-icon {
+  color: var(--v2-icon-icon-base);
+}
+
+.titlebar-sep {
+  width: 1px;
+  height: 16px;
+  flex-shrink: 0;
+  background: var(--v2-border-border-muted);
+}
+
+/* the pipeline name is a label first and a field second — no box until touched */
+.titlebar-name {
+  width: 200px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.titlebar-name:hover:not(:focus) {
+  background: var(--v2-overlay-simple-overlay-hover);
+}
+
+.titlebar-name:focus,
+.titlebar-name:focus-visible {
+  border-color: var(--v2-border-border-muted);
+  background: var(--v2-background-bg-layer-02);
+  box-shadow: 0 0 0 1px var(--v2-border-border-focus);
+}
+
+.titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.runbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  flex-shrink: 0;
+  padding: 0 8px;
+  background: var(--v2-background-bg-layer-01);
+  border-bottom: 1px solid var(--v2-border-border-muted);
+}
+
+/* the task is the point of the bar, so it keeps a floor the settings cannot
+   squeeze it past — past that the settings ellipsise their labels */
+.runbar-task {
+  flex: 1;
+  min-width: 160px;
+  height: 28px;
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.runbar-task:hover {
+  background: var(--v2-overlay-simple-overlay-hover);
+}
+
+.runbar-task:focus,
+.runbar-task:focus-visible {
+  background: var(--v2-background-bg-layer-02);
+  border-color: var(--v2-border-border-muted);
+  box-shadow: none;
+}
+
+/* shrinks by ellipsising its trigger labels rather than scrolling: an
+   `overflow` here would clip the menus, which are absolutely positioned
+   inside it */
+.runbar-settings {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.runbar-settings .oc-picker,
+.runbar-settings .oc-trigger {
+  min-width: 0;
+}
+
+.runbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* notice banner --------------------------------------------------------- */
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 8px 12px;
+  background: var(--v2-state-bg-info);
+  border-bottom: 1px solid var(--v2-state-border-info);
+  color: var(--v2-text-text-base);
+}
+
+.notice-icon {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--v2-state-fg-info);
+}
+
+.notice-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.notice-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  color: var(--v2-icon-icon-muted);
+}
+
+.notice-close:hover {
+  background: var(--v2-overlay-simple-overlay-hover);
+  color: var(--v2-text-text-base);
+}
+
+/* the kind rides an attribute, not a class — app.tsx sets data-kind from the
+   notice itself, so info and error cannot drift apart from what was raised */
+.notice[data-kind="error"] {
+  background: var(--v2-state-bg-danger);
+  border-bottom-color: var(--v2-state-border-danger);
+}
+
+.notice[data-kind="error"] .notice-icon {
+  color: var(--v2-state-fg-danger);
+}
+
+/* permission prompts ---------------------------------------------------- */
 
 .permissions {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  background: var(--line);
-  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
 }
 
 .permission {
@@ -140,16 +1038,18 @@ button.danger {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 7px 12px;
-  background: #2a2418;
+  padding: 8px 12px;
+  background: var(--v2-state-bg-warning);
+  border-bottom: 1px solid var(--v2-border-border-muted);
 }
 
-.permission code {
-  color: var(--warn);
+.permission-what {
+  flex: 1;
+  min-width: 0;
 }
 
-.permission-what .dim {
-  color: var(--dim);
+.permission-what code {
+  color: var(--v2-state-fg-warning);
 }
 
 .permission-actions {
@@ -158,91 +1058,176 @@ button.danger {
   flex-shrink: 0;
 }
 
-/* layout -------------------------------------------------------------- */
+/* layout ---------------------------------------------------------------- */
 
 main {
+  display: flex;
   flex: 1;
-  display: grid;
-  grid-template-columns: 210px 1fr 330px;
   min-height: 0;
 }
 
 .panel {
-  background: var(--panel);
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex-shrink: 0;
   padding: 12px;
+  background: var(--v2-background-bg-layer-01);
+  overflow-y: auto;
 }
 
 .palette {
-  border-right: 1px solid var(--line);
+  width: 240px;
+  border-right: 1px solid var(--v2-border-border-muted);
 }
 
 .inspector {
-  border-left: 1px solid var(--line);
+  width: 300px;
+  border-left: 1px solid var(--v2-border-border-muted);
+}
+
+.panel-section {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-h2 {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--dim);
-  margin: 14px 0 6px;
+/* an <h2> in the markup, so the UA margin has to be cleared explicitly */
+.panel-title {
+  margin: 0;
+  color: var(--v2-text-text-muted);
+  font-size: 13px;
+  font-weight: 440;
+  line-height: 16px;
+  user-select: none;
 }
 
-.panel h2:first-child {
-  margin-top: 0;
+/* the roles section flexes to fill the palette, so the graph section below it
+   stays put and the role list scrolls in its own frame instead of the whole
+   panel — a dozen saved roles should not push "graph" off the bottom */
+.roles-section {
+  flex: 1;
+  min-height: 0;
 }
 
-.hint {
-  color: var(--dim);
-  font-size: 11px;
-  margin: 4px 0;
+.role-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 6px;
+  overflow-y: auto;
 }
 
-.mono {
-  word-break: break-all;
+/* the role is a dot, never a filled card — colour marks, it does not shout */
+.role-card {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 6px 0 10px;
+  border: 0.5px solid var(--v2-border-border-base);
+  border-radius: 5px;
+  background: var(--v2-background-bg-button-neutral);
+  cursor: grab;
+  user-select: none;
+}
+
+.role-card:hover {
+  background: var(--v2-overlay-simple-overlay-hover);
+}
+
+.role-card:active {
+  background: var(--v2-overlay-simple-overlay-pressed);
+  cursor: grabbing;
+}
+
+.role-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--role-color, var(--v2-grey-500));
+}
+
+.role-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* edit/delete only matter for a role you saved yourself, so they stay out of
+   the way until the card has attention — hover for a mouse, focus for a
+   keyboard, so they are never mouse-only */
+.role-card-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+}
+
+.role-card:hover .role-card-actions,
+.role-card:focus-within .role-card-actions {
+  opacity: 1;
+}
+
+.icon-btn-tiny {
+  width: 22px;
+  height: 22px;
+}
+
+.role-color-field {
+  gap: 6px;
+}
+
+.role-color-input {
+  width: 100%;
+  height: 32px;
+  padding: 3px;
+  cursor: pointer;
 }
 
 .stat {
-  color: var(--dim);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--v2-text-text-muted);
 }
 
-label {
-  display: block;
-  color: var(--dim);
-  font-size: 11px;
+.field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-label input,
-label select,
-label textarea {
-  display: block;
-  width: 100%;
-  margin-top: 3px;
-  color: var(--text);
+.field-label {
+  color: var(--v2-text-text-muted);
+  line-height: 16px;
 }
 
 .tools {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 2px 8px;
-  margin-top: 6px;
 }
 
-label.check {
+.tool-check {
   display: flex;
   align-items: center;
-  gap: 5px;
-  color: var(--text);
-  font-size: 12px;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 4px;
+  margin: 0 -4px;
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
 }
 
-label.check input {
-  width: auto;
-  margin: 0;
+.tool-check:hover {
+  background: var(--v2-overlay-simple-overlay-hover);
 }
 
 .row {
@@ -250,84 +1235,387 @@ label.check input {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-top: 6px;
 }
 
+/* a transcript is machine output, so it states the mono face rather than relying
+   on being marked up as <pre> */
 .transcript {
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 8px;
-  margin: 0;
   max-height: 260px;
+  margin: 0;
+  padding: 8px;
+  font-family: var(--v2-font-family-mono);
+  font-size: 12px;
+  line-height: 18px;
+  border: 0.5px solid var(--v2-border-border-muted);
+  border-radius: 6px;
+  background: var(--v2-background-bg-deep);
+  color: var(--v2-text-text-muted);
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 12px;
 }
 
-.transcript.error {
-  color: var(--bad);
+.transcript-error {
+  color: var(--v2-state-fg-danger);
 }
 
-.role-card {
+.empty-state {
+  display: grid;
+  place-items: center;
+  padding: 24px 12px;
+  color: var(--v2-text-text-faint);
+  text-align: center;
+}
+
+/* status bar ------------------------------------------------------------ */
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 28px;
+  flex-shrink: 0;
+  padding: 0 8px;
+  background: var(--v2-background-bg-layer-01);
+  border-top: 1px solid var(--v2-border-border-muted);
+  color: var(--v2-text-text-muted);
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.05px;
+}
+
+.statusbar-left,
+.statusbar-right {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 9px;
-  margin-bottom: 6px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--role-color);
+  min-width: 0;
+}
+
+/* the left half yields first: the run menu and the project path on the right
+   are controls, the status is prose */
+.statusbar-left {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.statusbar-right {
+  flex: 0 1 auto;
+}
+
+/* the path is the one thing on the right that may be cut — it has a title */
+.statusbar-right .mono {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the project switcher is an .icon-btn with a label, so it needs its own width */
+.statusbar-project {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  max-width: 320px;
+  padding: 2px 8px;
+}
+
+.statusbar-project .mono {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusbar-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--v2-text-text-faint);
+}
+
+.statusbar-dot[data-state="ok"] {
+  background: var(--v2-state-fg-success);
+}
+
+.statusbar-dot[data-state="bad"] {
+  background: var(--v2-state-fg-danger);
+}
+
+.statusbar .badge {
+  line-height: 14px;
+}
+
+.run-nodes {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.run-node {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  flex-shrink: 0;
+  padding: 0 6px;
+  border: 0.5px solid var(--v2-border-border-muted);
   border-radius: 4px;
+  color: var(--v2-text-text-muted);
+  font-size: 11px;
+  letter-spacing: 0.05px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.run-node:hover {
+  background: var(--v2-overlay-simple-overlay-hover);
+  color: var(--v2-text-text-base);
+}
+
+/* canvas ---------------------------------------------------------------- */
+
+/*
+ * The grid is drawn at 6% white on the base surface — one shade off invisible.
+ * It exists so a drag has something to read against; the moment it is legible
+ * as a pattern the canvas stops looking like opencode and starts looking like a
+ * diagramming tool.
+ */
+.canvas {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  background:
+    radial-gradient(circle at 1px 1px, var(--v2-alpha-light-6) 1px, transparent 0) 0 0 / 24px 24px,
+    var(--v2-background-bg-base);
+  overflow: hidden;
+  touch-action: none;
   cursor: grab;
+}
+
+.canvas:active {
+  cursor: grabbing;
+}
+
+.viewport {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+}
+
+.edges {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.edge-line {
+  fill: none;
+  stroke: var(--v2-border-border-strong);
+  stroke-width: 1.5;
+}
+
+.edge-line.pending {
+  stroke: var(--v2-text-text-accent);
+  stroke-dasharray: 4 4;
+}
+
+/* a fat invisible stroke gives the hairline a clickable target */
+.edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.edge:hover .edge-line {
+  stroke: var(--v2-state-fg-danger);
+}
+
+.node {
+  position: absolute;
+  border: 0.5px solid var(--v2-border-border-base);
+  border-radius: 8px;
+  background: var(--v2-background-bg-layer-01);
+  box-shadow: var(--v2-elevation-raised);
+}
+
+/* the role reads as a 2px spine, so the card stays a neutral surface */
+.node::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 8px 0 0 8px;
+  background: var(--role-color, var(--v2-grey-500));
+}
+
+.node.status-running {
+  border-color: var(--v2-state-border-info);
+}
+
+.node.status-error {
+  border-color: var(--v2-state-border-danger);
+}
+
+/* selection outranks status: it is the thing the user just did */
+.node.selected {
+  border-color: var(--v2-border-border-focus);
+  box-shadow: var(--v2-elevation-raised), 0 0 0 1px var(--v2-border-border-focus);
+}
+
+/* the shared focus ring replaces box-shadow outright, which would drop the
+   card's elevation and flatten it against the canvas — restate both */
+.node:focus-visible {
+  box-shadow: var(--v2-elevation-raised), 0 0 0 1px var(--v2-border-border-focus);
+}
+
+.node-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 10px 6px 12px;
+  border-bottom: 0.5px solid var(--v2-border-border-muted);
+  cursor: move;
   user-select: none;
 }
 
-.role-card:hover {
-  border-color: var(--role-color);
-  border-left-color: var(--role-color);
+.node-role {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.dot {
-  width: 7px;
-  height: 7px;
+.node-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px 8px 12px;
+}
+
+.node-line {
+  font-size: 12px;
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-meta {
+  color: var(--v2-text-text-muted);
+  font-size: 12px;
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-error {
+  color: var(--v2-state-fg-danger);
+  font-size: 12px;
+  line-height: 18px;
+  word-break: break-word;
+}
+
+/* the model's own words — machine text, clamped so a card cannot run away */
+.node-output {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  color: var(--v2-text-text-muted);
+  font-family: var(--v2-font-family-mono);
+  font-size: 12px;
+  line-height: 18px;
+  overflow: hidden;
+}
+
+/* the live activity line, which only exists while the node runs — so it takes
+   the running badge's colour rather than a second accent of its own */
+.node-line.accent {
+  color: var(--v2-state-fg-info);
+}
+
+.port {
+  position: absolute;
+  top: 21px;
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--v2-border-border-strong);
   border-radius: 50%;
-  background: var(--role-color);
+  background: var(--v2-background-bg-layer-03);
 }
 
-/* opencode surfaces ---------------------------------------------------- */
+.port-in {
+  left: -5px;
+}
+
+.port-out {
+  right: -5px;
+  cursor: crosshair;
+}
+
+.port:hover {
+  border-color: var(--v2-background-bg-accent);
+  background: var(--v2-background-bg-accent);
+}
+
+.canvas-hud {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 4px;
+  border: 0.5px solid var(--v2-border-border-base);
+  border-radius: 6px;
+  background: var(--v2-background-bg-layer-01);
+  box-shadow: var(--v2-elevation-raised);
+  color: var(--v2-text-text-muted);
+  font-size: 11px;
+  letter-spacing: 0.05px;
+}
+
+/* `align-content` matters as much as `place-items` here: auto rows in a grid
+   this tall stretch by default, which pushed the two lines to opposite ends of
+   the canvas instead of stacking them in the middle. */
+.canvas-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 4px;
+  color: var(--v2-text-text-faint);
+  text-align: center;
+  pointer-events: none;
+}
+
+/* opencode menus and dialogs -------------------------------------------- */
 
 /*
- * The model menu and the provider dialog are the one part of OpenFlow that is
- * not OpenFlow's own look: they copy opencode's app. The tokens below are the
- * dark values from `packages/ui/src/v2/styles/theme.css` (grey-900 layer, 8%
- * and 10% white borders, 6% hover overlay, the floating elevation), inlined
- * because the flow page does not load that stylesheet. Everything under `.oc`
- * also leaves the monospace body font behind — opencode is a sans interface,
- * 13px at weight 440, and the menu stops reading like opencode the moment it
- * is set in a terminal typeface.
+ * `.oc` used to carry opencode's font and a private palette. `body` carries the
+ * type now and `:root` carries the tokens, so the class survives only as the
+ * stacking context a floating root needs — the markup still emits it, and a
+ * dialog that shares a stacking context with the canvas is a bug waiting.
  */
 .oc {
-  --oc-layer-01: #2e2e2e;
-  --oc-layer-02: #3a3a3a;
-  --oc-layer-03: #5c5c5c;
-  --oc-text: #f2f2f2;
-  --oc-text-muted: #aeaeae;
-  --oc-text-faint: #808080;
-  --oc-border-muted: #ffffff14;
-  --oc-border-base: #ffffff1a;
-  --oc-hover: #ffffff0f;
-  --oc-pressed: #ffffff1a;
-  --oc-danger: #f7768e;
-  --oc-floating:
-    0 8px 16px 0 #0000004d, 0 4px 8px 0 #0000004d, 0 0 0 0.5px #ffffff29, 0 -0.5px 0 0 #ffffff0f;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 13px;
-  font-weight: 440;
-  line-height: 20px;
-  letter-spacing: -0.04px;
-  color: var(--oc-text);
+  isolation: isolate;
 }
 
 .oc-icon {
@@ -341,12 +1629,16 @@ label.check input {
 
 .oc-divider {
   height: 1px;
+  margin: 2px 0;
   background: var(--oc-border-muted);
 }
 
 .oc-group {
-  padding: 6px 12px 4px;
+  margin: 6px 0;
+  padding: 0 12px;
   color: var(--oc-text-muted);
+  line-height: 16px;
+  user-select: none;
 }
 
 /* one list row — a model, a provider, or the action pinned at the bottom */
@@ -364,22 +1656,48 @@ label.check input {
   font: inherit;
   letter-spacing: inherit;
   text-align: left;
-  cursor: pointer;
+  /* opencode's rows do not take the pointer cursor, and they keep a margin so
+     a row scrolled into view by the keyboard is not flush with the edge */
+  cursor: default;
+  scroll-margin: 6px 0;
 }
 
-.oc-item:hover,
+.oc-item:hover:not(:disabled),
 .oc-item[data-active] {
   background: var(--oc-hover);
+}
+
+/* the keyboard row and the mouse row look the same — no second focus idiom */
+.oc-item:focus-visible {
+  background: var(--oc-hover);
+  box-shadow: none;
+}
+
+.oc-item:active:not(:disabled) {
+  background: var(--oc-pressed);
 }
 
 .oc-item[data-selected] .oc-item-label {
   font-weight: 560;
 }
 
+/* opencode sets row titles a notch above body weight — 530, not the 440 the
+   rest of the interface runs at */
 .oc-item-label {
   flex: 1;
   min-width: 0;
   overflow: hidden;
+  color: inherit;
+  font-weight: 530;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oc-item-hint {
+  flex-shrink: 0;
+  max-width: 50%;
+  overflow: hidden;
+  color: var(--oc-text-muted);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -398,6 +1716,7 @@ label.check input {
 
 .oc-check {
   display: flex;
+  flex-shrink: 0;
   color: var(--oc-text-muted);
 }
 
@@ -407,6 +1726,7 @@ label.check input {
   justify-content: center;
   width: 20px;
   height: 20px;
+  flex-shrink: 0;
   padding: 0;
   border: 0;
   border-radius: 4px;
@@ -417,40 +1737,71 @@ label.check input {
 
 .oc-clear:hover {
   background: var(--oc-hover);
+  color: var(--oc-text);
 }
 
 .oc-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   height: 28px;
   padding: 0 10px;
   border: 0.5px solid var(--oc-border-base);
   border-radius: 5px;
-  background: var(--oc-layer-02);
+  background: var(--v2-background-bg-button-neutral);
+  box-shadow: var(--v2-elevation-button-neutral);
   color: var(--oc-text);
   font: inherit;
+  letter-spacing: inherit;
   cursor: pointer;
 }
 
 .oc-button:hover:not(:disabled) {
-  background: var(--oc-layer-03);
+  background: var(--oc-hover);
 }
 
+.oc-button:active:not(:disabled) {
+  background: var(--oc-pressed);
+}
+
+/* the base `button:disabled` fade is the whole treatment — faint text stacked on
+   top of it read as broken rather than disabled */
 .oc-button:disabled {
-  color: var(--oc-text-faint);
   cursor: default;
 }
 
 .oc-button.oc-primary {
-  background: var(--oc-text);
-  color: #242424;
+  border-color: transparent;
+  background: var(--v2-background-bg-accent);
+  box-shadow: var(--v2-elevation-button-contrast);
+  color: var(--v2-text-text-contrast);
   font-weight: 530;
 }
 
-.oc-button.oc-primary:hover:not(:disabled) {
-  background: #ffffff;
+.oc-button.oc-primary:hover:not(:disabled),
+.oc-button.oc-primary:active:not(:disabled) {
+  background: var(--v2-background-bg-accent);
 }
 
 .oc-button.oc-danger {
+  border-color: var(--v2-state-border-danger);
+  background: transparent;
+  box-shadow: none;
   color: var(--oc-danger);
+}
+
+.oc-button.oc-danger:hover:not(:disabled),
+.oc-button.oc-danger:active:not(:disabled) {
+  background: var(--v2-state-bg-danger);
+}
+
+.oc-button.oc-primary:focus-visible {
+  box-shadow: var(--v2-elevation-button-contrast), 0 0 0 1px var(--v2-border-border-focus);
+}
+
+.oc-button.oc-danger:focus-visible {
+  box-shadow: 0 0 0 1px var(--v2-border-border-focus);
 }
 
 .oc-menu-search {
@@ -467,11 +1818,16 @@ label.check input {
   height: 28px;
   padding: 0;
   border: 0;
+  border-radius: 0;
   background: transparent;
   color: var(--oc-text);
   font: inherit;
   letter-spacing: inherit;
   outline: none;
+}
+
+.oc-menu-search input:focus-visible {
+  box-shadow: none;
 }
 
 .oc-menu-search input::placeholder {
@@ -486,11 +1842,10 @@ label.check input {
   color: var(--oc-text-faint);
 }
 
-/* model picker --------------------------------------------------------- */
+/* pickers --------------------------------------------------------------- */
 
 .oc-picker {
   position: relative;
-  margin-top: 3px;
 }
 
 .oc-trigger {
@@ -500,69 +1855,103 @@ label.check input {
   gap: 8px;
   width: 100%;
   min-height: 28px;
-  padding: 4px 8px 4px 10px;
-  border: 0.5px solid var(--oc-border-base);
+  padding: 0 6px 0 10px;
+  border: 0.5px solid var(--oc-border-muted);
   border-radius: 5px;
-  background: var(--oc-layer-01);
+  background: var(--oc-layer-02);
   color: var(--oc-text);
   font: inherit;
   letter-spacing: inherit;
   text-align: left;
-  word-break: break-all;
   cursor: pointer;
 }
 
 .oc-trigger:hover:not(:disabled) {
-  background: var(--oc-layer-02);
+  background: var(--oc-layer-03);
+}
+
+/*
+ * `select.tsx` labels its trigger text, the older `model-picker.tsx` leaves it
+ * as a bare span. Both shapes get the same ellipsis so the two pickers cannot
+ * be told apart.
+ */
+.oc-trigger-label,
+.oc-trigger > span:first-of-type {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oc-trigger-ghost {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.oc-trigger-ghost:hover:not(:disabled) {
+  background: var(--oc-hover);
 }
 
 .oc-menu {
   position: absolute;
   z-index: 20;
-  top: calc(100% + 6px);
+  top: calc(100% + 4px);
   left: 0;
-  width: 284px;
-  max-width: 100%;
-  padding: 2px 0;
+  width: var(--oc-menu-width, 284px);
+  max-width: min(100vw, 480px);
+  padding: 4px;
   border-radius: 6px;
   background: var(--oc-layer-01);
   box-shadow: var(--oc-floating);
-  overflow: hidden;
 }
 
-.oc-menu > .oc-item,
-.oc-menu-list,
-.oc-menu-search {
-  padding-left: 2px;
-  padding-right: 2px;
+/* a picker near the bottom edge flips up, one near the right edge flips over */
+.oc-picker-top .oc-menu {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+
+.oc-picker-end .oc-menu {
+  left: auto;
+  right: 0;
 }
 
 .oc-menu-list {
-  max-height: 220px;
+  max-height: 320px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  outline: 0;
 }
 
-/* providers dialog ----------------------------------------------------- */
+/* providers dialog ------------------------------------------------------ */
 
+/*
+ * Top-anchored, not centred. opencode pins its dialogs to where the top edge
+ * of a full-height one would sit and lets the body grow downwards, so the
+ * frame does not jump up and down as a search filters the list under it.
+ */
 .oc-backdrop {
   position: fixed;
   inset: 0;
   z-index: 50;
   display: grid;
-  place-items: center;
+  place-items: start center;
   padding: 24px;
-  background: #00000099;
+  background: var(--v2-overlay-simple-overlay-scrim);
 }
 
 .oc-dialog {
   display: flex;
   flex-direction: column;
   width: min(440px, 100%);
+  min-height: min(360px, 100%);
+  margin-top: max(24px, calc((100vh - 560px) / 2));
   max-height: min(560px, 100%);
   padding: 2px;
-  border-radius: 8px;
-  background: var(--oc-layer-01);
+  border-radius: 12px;
+  background: var(--v2-background-bg-base);
   box-shadow: var(--oc-floating);
   overflow: hidden;
 }
@@ -580,33 +1969,48 @@ label.check input {
   color: var(--oc-text);
   font-size: 13px;
   font-weight: 560;
-  /* the app's own h2 is an uppercase 11px section label — not this one */
-  text-transform: none;
   letter-spacing: -0.04px;
 }
 
 .oc-dialog-search {
-  height: 32px;
-  margin: 0 2px 4px;
-  border: 0.5px solid var(--oc-border-base);
-  border-radius: 5px;
+  height: 36px;
+  margin: 0 4px 4px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--oc-layer-02) 60%, transparent);
+}
+
+.oc-dialog-search:hover,
+.oc-dialog-search:focus-within {
   background: var(--oc-layer-02);
+}
+
+.oc-dialog-search input {
+  height: 36px;
 }
 
 .oc-dialog-body {
   flex: 1;
   min-height: 0;
-  padding: 0 2px 6px;
+  padding: 0 4px 6px;
   overflow-y: auto;
+}
+
+/* dialog rows are the command palette's 36px, not the menu's 28px */
+.oc-dialog-body .oc-item {
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 6px;
 }
 
 .oc-banner {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 2px;
+  margin: 2px 4px;
   padding: 8px 12px;
-  border-radius: 5px;
+  border-radius: 6px;
   background: var(--oc-layer-02);
   color: var(--oc-text-muted);
 }
@@ -634,12 +2038,15 @@ label.check input {
   background: var(--oc-layer-02);
   color: var(--oc-text);
   font: inherit;
+  font-weight: 440;
   letter-spacing: inherit;
   outline: none;
 }
 
-.oc-form input:focus {
-  border-color: #3b7dd8;
+.oc-form input:focus,
+.oc-form input:focus-visible {
+  border-color: transparent;
+  box-shadow: 0 0 0 1px var(--v2-border-border-focus);
 }
 
 .oc-form-actions {
@@ -656,233 +2063,4 @@ label.check input {
   margin: -8px 0 0;
   color: var(--oc-danger);
   font-size: 12px;
-}
-
-/* canvas -------------------------------------------------------------- */
-
-.canvas {
-  position: relative;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 1px 1px, #232839 1px, transparent 0) 0 0 / 24px 24px,
-    var(--bg);
-  touch-action: none;
-  cursor: grab;
-}
-
-.viewport {
-  position: absolute;
-  inset: 0;
-  transform-origin: 0 0;
-}
-
-.edges {
-  position: absolute;
-  left: 0;
-  top: 0;
-  overflow: visible;
-  pointer-events: none;
-}
-
-.edge-line {
-  fill: none;
-  stroke: #3d465e;
-  stroke-width: 2;
-}
-
-.edge-line.pending {
-  stroke: var(--accent);
-  stroke-dasharray: 5 4;
-}
-
-.edge-hit {
-  fill: none;
-  stroke: transparent;
-  stroke-width: 14;
-  pointer-events: stroke;
-  cursor: pointer;
-}
-
-.edge:hover .edge-line {
-  stroke: var(--bad);
-}
-
-.node {
-  position: absolute;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--role-color);
-  border-radius: 6px;
-  box-shadow: 0 6px 18px #0006;
-}
-
-.node.selected {
-  border-color: var(--accent);
-  border-left-color: var(--role-color);
-}
-
-.node.status-running {
-  box-shadow: 0 0 0 1px var(--accent);
-}
-
-.node.status-error {
-  box-shadow: 0 0 0 1px var(--bad);
-}
-
-.node-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 6px 9px;
-  border-bottom: 1px solid var(--line);
-  cursor: move;
-  user-select: none;
-}
-
-.node-role {
-  color: var(--role-color);
-  font-weight: 600;
-}
-
-.node-body {
-  padding: 7px 9px;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.node-line {
-  font-size: 11px;
-}
-
-.node-line.dim {
-  color: var(--dim);
-}
-
-.node-line.accent {
-  color: var(--accent);
-}
-
-.node-line.error {
-  color: var(--bad);
-}
-
-.node-line.clamp {
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.port {
-  position: absolute;
-  top: 20px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--panel-2);
-  border: 2px solid var(--dim);
-}
-
-.port-in {
-  left: -8px;
-}
-
-.port-out {
-  right: -8px;
-  cursor: crosshair;
-}
-
-.port:hover {
-  border-color: var(--accent);
-  background: var(--accent);
-}
-
-.canvas-hud {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--dim);
-}
-
-.canvas-empty {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  color: var(--dim);
-  pointer-events: none;
-}
-
-/* run footer ---------------------------------------------------------- */
-
-.runs {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 7px 12px;
-  background: var(--panel);
-  border-top: 1px solid var(--line);
-  overflow-x: auto;
-}
-
-.run-current,
-.run-history {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.run-node {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 7px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.run-node:hover {
-  border-color: var(--accent);
-}
-
-.badge {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--panel-2);
-  color: var(--dim);
-  text-transform: lowercase;
-}
-
-.badge[data-status="running"] {
-  background: #1d2a45;
-  color: var(--accent);
-}
-
-.badge[data-status="done"] {
-  background: #1d2b1d;
-  color: var(--good);
-}
-
-.badge[data-status="error"] {
-  background: #2f1c22;
-  color: var(--bad);
-}
-
-.badge[data-status="queued"] {
-  background: #262c3d;
-  color: var(--warn);
-}
-
-.badge[data-status="skipped"],
-.badge[data-status="stopped"] {
-  background: #23222c;
-  color: var(--dim);
 }

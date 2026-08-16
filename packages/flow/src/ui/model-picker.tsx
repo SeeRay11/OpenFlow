@@ -52,7 +52,12 @@ export function ModelPicker(props: {
   const lockedMatches = createMemo(() =>
     query().trim() ? searchProviders(props.rows.filter((row) => !row.unlocked), query()).slice(0, 3) : [],
   )
-  const keys = createMemo(() => [...matches().map((model) => model.value), CONNECT])
+  const CLEAR = "action:clear"
+  const keys = createMemo(() => [
+    ...matches().map((model) => model.value),
+    ...(props.value ? [CLEAR] : []),
+    CONNECT,
+  ])
 
   function show() {
     if (props.disabled) return
@@ -91,6 +96,9 @@ export function ModelPicker(props: {
     if (event.key !== "Enter" || event.isComposing) return
     event.preventDefault()
     if (active() === CONNECT) return connect()
+    // "clear" carries a key of its own because the value it picks is "", which
+    // a truthiness check would swallow.
+    if (active() === CLEAR) return choose("")
     if (active()) choose(active())
   }
 
@@ -102,14 +110,16 @@ export function ModelPicker(props: {
   onCleanup(() => document.removeEventListener("mousedown", onPointerDown))
 
   return (
-    <div class="oc oc-picker" ref={root}>
+    <div class="oc-picker" ref={root}>
       <button
         type="button"
         class="oc-trigger"
         disabled={props.disabled}
         onClick={() => (open() ? setOpen(false) : show())}
       >
-        <span classList={{ "oc-faint": !props.value }}>{props.value || "Agent default"}</span>
+        <span class="oc-trigger-label" classList={{ "oc-faint": !props.value }}>
+          {props.value || "Agent default"}
+        </span>
         <IconChevron />
       </button>
 
@@ -207,8 +217,9 @@ export function ModelPicker(props: {
               <button
                 type="button"
                 class="oc-item"
-                data-key="clear"
-                onMouseEnter={() => setActive("")}
+                data-key={CLEAR}
+                data-active={active() === CLEAR ? true : undefined}
+                onMouseEnter={() => setActive(CLEAR)}
                 onClick={() => choose("")}
               >
                 <span class="oc-item-label oc-faint">Agent default</span>

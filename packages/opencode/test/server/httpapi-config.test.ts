@@ -72,7 +72,7 @@ describe("config HttpApi", () => {
           formatter: false,
           lsp: false,
           provider: {
-            omniroute: {
+            openai: {
               models: {
                 "gpt-4o": {
                   status: "active",
@@ -96,7 +96,7 @@ describe("config HttpApi", () => {
       expect(response.status).toBe(200)
       expect(yield* Effect.promise(() => response.json())).toMatchObject({
         provider: {
-          omniroute: {
+          openai: {
             models: {
               "gpt-4o": {
                 status: "active",

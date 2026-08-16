@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { backupConfig, flowPaths, handleFlow, slug, type FlowPaths } from "./store"
+import { backupConfig, browseDirectory, flowPaths, handleFlow, slug, type FlowPaths } from "./store"
 
 /**
  * This is the surface that writes to a user's real repository — pipelines, run
@@ -220,6 +220,84 @@ describe("agents", () => {
 
     expect(result!.body).toMatchObject({ merged: false, error: expect.stringContaining("not valid JSON") })
     expect(await read(path.join(dir, "opencode.json"))).toBe("{not json")
+  })
+})
+
+describe("browseDirectory", () => {
+  test("lists subdirectories, not files, and skips dotfiles", async () => {
+    await fs.mkdir(path.join(dir, "sub-a"))
+    await fs.mkdir(path.join(dir, "sub-b"))
+    await fs.mkdir(path.join(dir, ".hidden"))
+    await fs.writeFile(path.join(dir, "not-a-dir.txt"), "x")
+
+    const result = await browseDirectory(dir)
+    expect(result.entries.map((entry) => entry.name)).toEqual(["sub-a", "sub-b"])
+    expect(result.path).toBe(path.resolve(dir))
+  })
+
+  test("parent points one level up, and each entry's path resolves back to itself", async () => {
+    await fs.mkdir(path.join(dir, "child"))
+    const result = await browseDirectory(path.join(dir, "child"))
+    expect(result.parent).toBe(path.resolve(dir))
+  })
+
+  test("rejects a path that is not a directory", async () => {
+    const file = path.join(dir, "plain.txt")
+    await fs.writeFile(file, "x")
+    await expect(browseDirectory(file)).rejects.toThrow("not a directory")
+  })
+
+  test("rejects a path that does not exist", async () => {
+    await expect(browseDirectory(path.join(dir, "ghost"))).rejects.toThrow("not a directory")
+  })
+
+  test("omitted target lists roots without throwing", async () => {
+    const result = await browseDirectory()
+    expect(result.path).toBeNull()
+    expect(result.parent).toBeNull()
+    expect(Array.isArray(result.entries)).toBe(true)
+  })
+})
+
+describe("routes: browse and project", () => {
+  test("GET /browse defaults to the current project directory's siblings via an explicit path", async () => {
+    await fs.mkdir(path.join(dir, "child"))
+    const result = await call("GET", "/flow/api/browse", { search: `path=${encodeURIComponent(dir)}` })
+    expect(result!.status).toBe(200)
+    expect((result!.body as any).entries.map((entry: any) => entry.name)).toEqual(["child"])
+  })
+
+  test("GET /browse answers 400 for a path that is not a directory", async () => {
+    const file = path.join(dir, "plain.txt")
+    await fs.writeFile(file, "x")
+    const result = await call("GET", "/flow/api/browse", { search: `path=${encodeURIComponent(file)}` })
+    expect(result!.status).toBe(400)
+  })
+
+  test("POST /project switches every path in place, live", async () => {
+    const next = await fs.mkdtemp(path.join(os.tmpdir(), "openflow-store-next-"))
+    try {
+      const result = await call("POST", "/flow/api/project", { body: { path: next } })
+      expect(result!.status).toBe(200)
+      expect((result!.body as any).project).toBe(path.resolve(next))
+      // The same object handleFlow was given reflects the switch — this is
+      // what lets both hosts pick it up with no restart.
+      expect(paths.project).toBe(path.resolve(next))
+      expect(paths.pipelines).toBe(path.join(path.resolve(next), ".openflow", "pipelines"))
+    } finally {
+      await fs.rm(next, { recursive: true, force: true })
+    }
+  })
+
+  test("POST /project rejects a path that does not exist", async () => {
+    const result = await call("POST", "/flow/api/project", { body: { path: path.join(dir, "ghost") } })
+    expect(result!.status).toBe(400)
+    expect(paths.project).toBe(path.resolve(dir))
+  })
+
+  test("POST /project requires a path", async () => {
+    const result = await call("POST", "/flow/api/project", { body: {} })
+    expect(result!.status).toBe(400)
   })
 })
 

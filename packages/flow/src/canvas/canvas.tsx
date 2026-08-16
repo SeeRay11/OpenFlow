@@ -96,8 +96,11 @@ export function Canvas() {
 
   const onKey = (event: KeyboardEvent) => {
     if (event.key !== "Delete" && event.key !== "Backspace") return
+    // Matched by ancestor rather than by tag name: the native `<select>`s are
+    // gone, so a menu that is open (or a dialog on top) is a button, and a
+    // tag-name test would let Backspace delete the selected node underneath it.
     const target = event.target as HTMLElement | null
-    if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return
+    if (target?.closest("input, textarea, select, [contenteditable], .oc-picker, .oc-backdrop")) return
     if (state.selected) actions.removeNode(state.selected)
   }
   window.addEventListener("keydown", onKey)
@@ -152,13 +155,22 @@ export function Canvas() {
         </For>
       </div>
 
+      {/* The hud is a floating pill over the canvas, so its reset control uses
+          the ghost button primitive rather than a bare browser button. */}
       <div class="canvas-hud">
-        <button onClick={() => setView({ x: 60, y: 60, k: 1 })}>reset view</button>
-        <span>{Math.round(view().k * 100)}%</span>
+        <button class="btn btn-ghost" onClick={() => setView({ x: 60, y: 60, k: 1 })}>
+          reset view
+        </button>
+        <span title="zoom">{Math.round(view().k * 100)}%</span>
       </div>
 
+      {/* This block covers the whole canvas, so its rule must keep
+          `pointer-events: none` or it would swallow drops and panning. */}
       <Show when={!state.pipeline.nodes.length}>
-        <div class="canvas-empty">drag a role card from the palette</div>
+        <div class="canvas-empty">
+          <div>no nodes yet</div>
+          <div class="dim">drag a role card from the palette</div>
+        </div>
       </Show>
     </div>
   )

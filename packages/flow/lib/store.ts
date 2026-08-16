@@ -24,9 +24,15 @@ import { zenModels } from "./zen"
  *   POST   /flow/api/cli-keys/import       -> connect those keys to `opencode serve`
  *   GET    /flow/api/env?names=A,B         -> { present: ["A"] } — names only, never values
  *   GET    /flow/api/zen-models            -> { ids: [...] | null } — what zen really serves
+ *   GET    /flow/api/browse?path=          -> { path, parent, entries } — subdirectories of `path`
+ *                                             (drive roots on Windows when `path` is omitted)
+ *   POST   /flow/api/project               -> { path } — switch the live project directory
  *
  * Keeping it host-neutral is the point: the dev server and the built app must
- * not drift into two different stores.
+ * not drift into two different stores. `browse`/`project` read the same host
+ * filesystem `/flow/api` already writes into, so they carry no wider blast
+ * radius than the rest of this surface — both stay behind the loopback-only
+ * guard in `lib/guard.ts`.
  */
 export type FlowPaths = {
   project: string
@@ -43,6 +49,68 @@ export function flowPaths(project: string): FlowPaths {
     runs: path.join(root, ".openflow", "runs"),
     generated: path.join(root, ".openflow", "generated"),
   }
+}
+
+/**
+ * Points an already-issued `FlowPaths` at a new project, in place.
+ *
+ * Both hosts (`server.ts`, `vite/flow-store.ts`) hand `handleFlow` the same
+ * object on every request rather than a fresh one, so mutating its fields —
+ * instead of returning a new object the caller would have to remember to
+ * swap in — is what makes a project switch take effect immediately, with no
+ * server restart and no route left reading a stale directory.
+ */
+export function setProjectPath(paths: FlowPaths, project: string) {
+  const next = flowPaths(project)
+  paths.project = next.project
+  paths.pipelines = next.pipelines
+  paths.runs = next.runs
+  paths.generated = next.generated
+}
+
+export type BrowseEntry = { name: string; path: string }
+export type BrowseResult = { path: string | null; parent: string | null; entries: BrowseEntry[] }
+
+/**
+ * Lists the subdirectories of `target`, for a server-side folder picker.
+ *
+ * A browser cannot hand back a real OS path from a folder-picker input — the
+ * File System Access API only yields a sandboxed handle — so browsing has to
+ * happen here, where the process already has a real filesystem. `target`
+ * omitted lists roots: on Windows that means probing drive letters (there is
+ * no direct "list drives" call in Node), elsewhere it is `/`. Dotfiles are
+ * filtered out to keep the listing to things a user would plausibly pick as
+ * a project root.
+ */
+export async function browseDirectory(target?: string): Promise<BrowseResult> {
+  if (!target) {
+    if (process.platform !== "win32") return browseDirectory("/")
+    const entries: BrowseEntry[] = []
+    for (let code = 65; code <= 90; code++) {
+      const root = `${String.fromCharCode(code)}:\\`
+      const reachable = await fs
+        .access(root)
+        .then(() => true)
+        .catch(() => false)
+      if (reachable) entries.push({ name: root, path: root })
+    }
+    return { path: null, parent: null, entries }
+  }
+
+  const resolved = path.resolve(target)
+  const stat = await fs.stat(resolved).catch(() => undefined)
+  if (!stat || !stat.isDirectory()) throw new Error(`not a directory: ${resolved}`)
+
+  const names = await fs.readdir(resolved, { withFileTypes: true })
+  const entries = names
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => ({ name: entry.name, path: path.join(resolved, entry.name) }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  const up = path.dirname(resolved)
+  const atRoot = up === resolved
+  const parent = atRoot ? (process.platform === "win32" ? null : "/") : up
+  return { path: resolved, parent: atRoot && process.platform === "win32" ? null : parent, entries }
 }
 
 export type FlowRequest = {
@@ -124,6 +192,26 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
       .map((name) => name.trim())
       .filter(Boolean)
     return ok({ present: asked.filter((name) => Boolean(process.env[name])) })
+  }
+
+  if (segments[0] === "browse" && method === "GET") {
+    const target = request.search.get("path") ?? undefined
+    try {
+      return ok(await browseDirectory(target))
+    } catch (error) {
+      return { status: 400, body: { error: error instanceof Error ? error.message : String(error) } }
+    }
+  }
+
+  if (segments[0] === "project" && method === "POST") {
+    const body = await request.json()
+    const target = typeof body?.path === "string" ? body.path : undefined
+    if (!target) return { status: 400, body: { error: "path required" } }
+    const resolved = path.resolve(target)
+    const stat = await fs.stat(resolved).catch(() => undefined)
+    if (!stat || !stat.isDirectory()) return { status: 400, body: { error: `not a directory: ${resolved}` } }
+    setProjectPath(paths, resolved)
+    return ok(paths)
   }
 
   if (segments[0] === "zen-models" && method === "GET") {

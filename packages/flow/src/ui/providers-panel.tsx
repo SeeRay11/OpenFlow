@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal, onMount } from "solid-js"
+import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import * as api from "../server/client"
 import {
   isConnected,
@@ -54,6 +54,20 @@ export function ProvidersPanel(props: {
   onMount(async () => {
     setCli(await store.cliKeys().catch(() => undefined))
   })
+
+  /**
+   * Escape backs out one step, then closes — the same two-step retreat
+   * opencode's dialog gives you, so a mistyped provider does not force a
+   * round trip through the mouse.
+   */
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key !== "Escape") return
+    event.stopPropagation()
+    if (picked()) return setPicked(undefined)
+    props.onClose()
+  }
+  document.addEventListener("keydown", onKey)
+  onCleanup(() => document.removeEventListener("keydown", onKey))
 
   function open(row: ProviderRow) {
     setPicked(row.id)

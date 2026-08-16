@@ -12,6 +12,10 @@ export function NodeCard(props: {
   const runtime = () => runtimeOf(props.node.id)
   const selected = () => state.selected === props.node.id
 
+  // The card is focusable so a keyboard can reach it, but selection is bound to
+  // Enter rather than to focus. Pressing on the header focuses the card as a
+  // browser side effect, and selecting from focus would silently change what a
+  // header drag does today.
   return (
     <div
       class="node"
@@ -22,8 +26,14 @@ export function NodeCard(props: {
         width: `${NODE_WIDTH}px`,
         "--role-color": roleColor(props.node.role),
       }}
+      tabindex={0}
       onPointerDown={(event) => {
         event.stopPropagation()
+        actions.select(props.node.id)
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter") return
+        event.preventDefault()
         actions.select(props.node.id)
       }}
     >
@@ -37,16 +47,18 @@ export function NodeCard(props: {
       <div class="node-body">
         <div class="node-line">{props.node.agent.model || "default model"}</div>
         <Show when={props.node.agent.name}>
-          <div class="node-line dim">agent: {props.node.agent.name}</div>
+          <div class="node-meta">agent: {props.node.agent.name}</div>
         </Show>
         <Show when={runtime().activity}>
           <div class="node-line accent">{runtime().activity}</div>
         </Show>
         <Show when={runtime().error}>
-          <div class="node-line error">{runtime().error}</div>
+          <div class="node-error">{runtime().error}</div>
         </Show>
+        {/* The preview is one class now, so the three-line clamp lives on
+            `.node-output` instead of a separate `.clamp` modifier. */}
         <Show when={!runtime().error && runtime().output}>
-          <div class="node-line dim clamp">{runtime().output}</div>
+          <div class="node-output">{runtime().output}</div>
         </Show>
       </div>
 

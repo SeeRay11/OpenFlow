@@ -4,7 +4,9 @@ import * as api from "../server/client"
 import type { ProviderRow } from "../server/providers"
 import { TOOLS } from "../server/store"
 import { actions, runtimeOf, state } from "../state"
+import { IconTrash } from "./icons"
 import { ModelPicker } from "./model-picker"
+import { Select } from "./select"
 
 export function Inspector(props: {
   agents: string[]
@@ -34,100 +36,121 @@ export function Inspector(props: {
 
   return (
     <aside class="panel inspector">
-      <Show when={node()} fallback={<p class="hint">select a node to edit it</p>}>
+      <Show when={node()} fallback={<div class="empty-state">select a node to edit it</div>}>
         {(selected) => (
           <>
-            <h2>node</h2>
-            <label>
-              role
-              <input
-                value={selected().role}
-                onInput={(event) => actions.updateNode(selected().id, { role: event.currentTarget.value })}
-              />
-            </label>
+            <div class="panel-section">
+              <h2 class="panel-title">node</h2>
 
-            <label>
-              model
-              <ModelPicker
-                value={selected().agent.model ?? ""}
-                rows={props.providers}
-                onChange={(value) => actions.updateAgent(selected().id, { model: value })}
-                onManage={props.onManageKeys}
-              />
-            </label>
-            <div class="row">
-              <span class="hint">blank runs on the agent's own default</span>
-              <button
-                disabled={!selected().agent.model || testing()}
-                title="run one throwaway prompt against this model to see whether the key and entitlement are real"
-                onClick={() => test(selected().agent.model!)}
-              >
-                test
-              </button>
-            </div>
+              {/*
+                native controls keep their wrapping <label> so clicking the caption
+                still focuses the input; the two pickers below are buttons, not form
+                controls, so they get a plain row and a <span> caption instead.
+              */}
+              <label class="field-row">
+                <span class="field-label">role</span>
+                <input
+                  class="field"
+                  value={selected().role}
+                  onInput={(event) => actions.updateNode(selected().id, { role: event.currentTarget.value })}
+                />
+              </label>
 
-            <label>
-              agent
-              <select
-                value={selected().agent.name ?? ""}
-                onChange={(event) => actions.updateAgent(selected().id, { name: event.currentTarget.value })}
-              >
-                <option value="">(server default)</option>
-                <For each={props.agents}>{(agent) => <option value={agent}>{agent}</option>}</For>
-              </select>
-            </label>
+              <div class="field-row">
+                <span class="field-label">model</span>
+                <ModelPicker
+                  value={selected().agent.model ?? ""}
+                  rows={props.providers}
+                  onChange={(value) => actions.updateAgent(selected().id, { model: value })}
+                  onManage={props.onManageKeys}
+                />
+              </div>
+              <div class="row">
+                <span class="hint">blank runs on the agent's own default</span>
+                <button
+                  class="btn"
+                  disabled={!selected().agent.model || testing()}
+                  title="run one throwaway prompt against this model to see whether the key and entitlement are real"
+                  onClick={() => test(selected().agent.model!)}
+                >
+                  test
+                </button>
+              </div>
 
-            <label>
-              prompt
-              <textarea
-                rows="8"
-                value={selected().agent.prompt}
-                onInput={(event) => actions.updateAgent(selected().id, { prompt: event.currentTarget.value })}
-              />
-            </label>
+              <div class="field-row">
+                <span class="field-label">agent</span>
+                <Select
+                  value={selected().agent.name ?? ""}
+                  options={[
+                    { value: "", label: "(server default)" },
+                    ...props.agents.map((agent) => ({ value: agent, label: agent })),
+                  ]}
+                  onChange={(value) => actions.updateAgent(selected().id, { name: value })}
+                />
+              </div>
 
-            <div class="tools">
-              <For each={TOOLS}>
-                {(tool) => (
-                  <label class="check">
-                    <input
-                      type="checkbox"
-                      checked={selected().agent.tools?.[tool] ?? false}
-                      onChange={(event) => actions.toggleTool(selected().id, tool, event.currentTarget.checked)}
-                    />
-                    {tool}
-                  </label>
-                )}
-              </For>
-            </div>
+              <label class="field-row">
+                <span class="field-label">prompt</span>
+                <textarea
+                  class="field"
+                  rows="8"
+                  value={selected().agent.prompt}
+                  onInput={(event) => actions.updateAgent(selected().id, { prompt: event.currentTarget.value })}
+                />
+              </label>
 
-            <div class="row">
-              <span class="hint">
-                inputs: {upstream(state.pipeline, selected().id).length} · id {selected().id}
-              </span>
-              <button class="danger" onClick={() => actions.removeNode(selected().id)}>
-                delete
-              </button>
+              <div class="tools">
+                <For each={TOOLS}>
+                  {(tool) => (
+                    <label class="tool-check">
+                      <input
+                        type="checkbox"
+                        checked={selected().agent.tools?.[tool] ?? false}
+                        onChange={(event) => actions.toggleTool(selected().id, tool, event.currentTarget.checked)}
+                      />
+                      {tool}
+                    </label>
+                  )}
+                </For>
+              </div>
+
+              <div class="row">
+                <span class="hint">
+                  inputs: {upstream(state.pipeline, selected().id).length} · id {selected().id}
+                </span>
+                <button class="btn btn-danger" type="button" onClick={() => actions.removeNode(selected().id)}>
+                  <IconTrash />
+                  delete
+                </button>
+              </div>
             </div>
 
             <Show when={runtime()?.sessionID}>
-              <h2>session</h2>
-              <div class="hint mono">{runtime()!.sessionID}</div>
+              <div class="panel-section">
+                <h2 class="panel-title">session</h2>
+                <div class="hint mono">{runtime()!.sessionID}</div>
+              </div>
             </Show>
 
             <Show when={runtime()?.prompt}>
-              <h2>sent prompt</h2>
-              <pre class="transcript">{runtime()!.prompt}</pre>
+              <div class="panel-section">
+                <h2 class="panel-title">sent prompt</h2>
+                <pre class="transcript">{runtime()!.prompt}</pre>
+              </div>
             </Show>
 
             <Show when={runtime()?.error}>
-              <h2>error</h2>
-              <pre class="transcript error">{runtime()!.error}</pre>
+              <div class="panel-section">
+                <h2 class="panel-title">error</h2>
+                <pre class="transcript transcript-error">{runtime()!.error}</pre>
+              </div>
             </Show>
 
             <Show when={runtime()?.output}>
-              <h2>output</h2>
-              <pre class="transcript">{runtime()!.output}</pre>
+              <div class="panel-section">
+                <h2 class="panel-title">output</h2>
+                <pre class="transcript">{runtime()!.output}</pre>
+              </div>
             </Show>
           </>
         )}

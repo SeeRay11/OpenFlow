@@ -31,6 +31,17 @@ export function project() {
   return context.project
 }
 
+/**
+ * Drops the cached client and context so the next call to `connect()` rereads
+ * `/flow/api/context` and rebuilds the client against whatever project is
+ * live there. Used after switching the project — every session created
+ * before this still points at the old directory, but nothing new does.
+ */
+export function disconnect() {
+  client = undefined
+  context = undefined
+}
+
 function unwrap<T>(result: { data?: T; error?: unknown; response?: Response }): T {
   if (result.error) throw new Error(describe(result.error, result.response))
   if (result.response && !result.response.ok) throw new Error(describe(undefined, result.response))

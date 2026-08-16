@@ -14,15 +14,53 @@ import {
 import { providerRows, type ProviderRow } from "./server/providers"
 import { agentBlock, agentKey, store, type PipelineEntry, type RunEntry } from "./server/store"
 import { actions, state } from "./state"
+import {
+  IconAlert,
+  IconClose,
+  IconFlow,
+  IconFolder,
+  IconHistory,
+  IconInfo,
+  IconKey,
+  IconLayers,
+  IconPlay,
+  IconPlus,
+  IconSave,
+  IconStop,
+} from "./ui/icons"
 import { Inspector } from "./ui/inspector"
 import { Palette } from "./ui/palette"
+import { ProjectPicker } from "./ui/project-picker"
 import { ProvidersPanel } from "./ui/providers-panel"
+import { Select, type SelectOption } from "./ui/select"
+
+// The four run settings are fixed lists, so they are built once here rather
+// than rebuilt on every render. Each label is only the value — the trigger
+// prints the name through the `prefix` prop, so a row reads "auto" while the
+// bar reads "permissions: auto".
+const PIPE_OPTIONS: SelectOption[] = [
+  { value: "ancestors", label: "ancestors", hint: "every upstream node" },
+  { value: "direct", label: "direct", hint: "immediate parents only" },
+]
+const POLICY_OPTIONS: SelectOption[] = [
+  { value: "auto", label: "auto", hint: "answer for me" },
+  { value: "manual", label: "ask me", hint: "prompt on the bar" },
+]
+const PARALLEL_OPTIONS: SelectOption[] = [1, 2, 4, 8].map((value) => ({
+  value: String(value),
+  label: String(value),
+}))
+const TIMEOUT_OPTIONS: SelectOption[] = [5, 15, 30, 60].map((minutes) => ({
+  value: String(minutes * 60_000),
+  label: `${minutes}m`,
+}))
 
 export function App() {
   const [status, setStatus] = createSignal("connecting…")
   const [agents, setAgents] = createSignal<string[]>([])
   const [providers, setProviders] = createSignal<ProviderRow[]>([])
   const [showProviders, setShowProviders] = createSignal(false)
+  const [showProjectPicker, setShowProjectPicker] = createSignal(false)
   const [providerQuery, setProviderQuery] = createSignal("")
   const [pipelines, setPipelines] = createSignal<PipelineEntry[]>([])
   const [runs, setRuns] = createSignal<RunEntry[]>([])
@@ -33,7 +71,13 @@ export function App() {
   const [nodeTimeout, setNodeTimeout] = createSignal(DEFAULT_NODE_TIMEOUT)
   let current: Run | undefined
 
-  onMount(async () => {
+  /**
+   * Connects (or reconnects, after a project switch) and reloads everything
+   * that is scoped to the project directory: the agent list, the provider
+   * catalog, saved pipelines, recorded runs.
+   */
+  async function bootstrap() {
+    setStatus("connecting…")
     try {
       const { context } = await api.connect()
       setProject(context.project)
@@ -50,7 +94,15 @@ export function App() {
       actions.notice("error", detail.includes("opencode serve") ? detail : `cannot reach opencode serve: ${detail}`)
     }
     await refresh()
-  })
+  }
+
+  onMount(bootstrap)
+
+  async function switchProject(next: string) {
+    setShowProjectPicker(false)
+    await bootstrap()
+    actions.notice("info", `switched project to ${next}`)
+  }
 
   /**
    * Re-reads the catalog and the credential store together.
@@ -217,97 +269,165 @@ export function App() {
     }
   }
 
+  /**
+   * Enter in the task field starts the run, the way the prompt box in opencode
+   * does. Guarded on `state.running` so a second press cannot open a parallel
+   * run behind the disabled button, and on `isComposing` so an IME candidate
+   * being accepted is not read as a submit.
+   */
+  function onTaskKey(event: KeyboardEvent) {
+    if (event.key !== "Enter" || event.isComposing || state.running) return
+    event.preventDefault()
+    void run()
+  }
+
   return (
     <div class="app">
-      <header class="toolbar">
-        <strong class="brand">OpenFlow</strong>
+      <header class="titlebar">
+        <span class="titlebar-brand">
+          <IconFlow />
+          OpenFlow
+        </span>
+        <span class="titlebar-sep" aria-hidden="true" />
         <input
-          class="name"
+          class="titlebar-name"
           value={state.pipeline.name}
           onInput={(event) => actions.rename(event.currentTarget.value)}
           title="pipeline name"
+          aria-label="pipeline name"
         />
-        <button onClick={() => actions.reset()}>new</button>
-        <button onClick={save}>save</button>
-        <select
-          onChange={(event) => {
-            void load(event.currentTarget.value)
-            event.currentTarget.value = ""
-          }}
-        >
-          <option value="">load…</option>
-          <For each={pipelines()}>
-            {(entry) => (
-              <option value={entry.name}>
-                {entry.name} ({entry.nodes})
-              </option>
-            )}
-          </For>
-        </select>
-        <button onClick={mergeAgents} title="merge generated agent defs into the project opencode.json">
-          merge agents
-        </button>
-        <button onClick={() => openProviders()} title="store provider api keys and see which models are usable">
-          api keys
-        </button>
+        <div class="titlebar-actions">
+          <button
+            class="icon-btn"
+            type="button"
+            title="new pipeline"
+            aria-label="new pipeline"
+            onClick={() => actions.reset()}
+          >
+            <IconPlus />
+          </button>
+          <button
+            class="icon-btn"
+            type="button"
+            title="save the pipeline and its generated agent defs"
+            aria-label="save pipeline"
+            onClick={save}
+          >
+            <IconSave />
+          </button>
+          <Select
+            label="Open"
+            leading={<IconFolder />}
+            variant="ghost"
+            align="end"
+            width={320}
+            title="open a saved pipeline"
+            value=""
+            options={pipelines().map((entry) => ({
+              value: entry.name,
+              label: entry.name,
+              hint: `${entry.nodes} nodes`,
+            }))}
+            onChange={(name) => void load(name)}
+            empty="No saved pipelines yet."
+          />
+          <button
+            class="icon-btn"
+            type="button"
+            title="merge generated agent defs into the project opencode.json"
+            aria-label="merge agents"
+            onClick={mergeAgents}
+          >
+            <IconLayers />
+          </button>
+          <button
+            class="icon-btn"
+            type="button"
+            title="store provider api keys and see which models are usable"
+            aria-label="api keys"
+            onClick={() => openProviders()}
+          >
+            <IconKey />
+          </button>
+        </div>
+      </header>
 
-        <select
-          class="pipe"
-          value={pipe()}
-          title="how much upstream output each node receives"
-          onChange={(event) => setPipe(event.currentTarget.value as PipeMode)}
-        >
-          <option value="ancestors">pipe: ancestors</option>
-          <option value="direct">pipe: direct</option>
-        </select>
-        <select
-          class="pipe"
-          value={policy()}
-          title="what happens when an agent asks for permission mid-run"
-          onChange={(event) => setPolicy(event.currentTarget.value as PermissionPolicy)}
-        >
-          <option value="auto">permissions: auto</option>
-          <option value="manual">permissions: ask me</option>
-        </select>
-        <select
-          class="pipe"
-          value={String(parallel())}
-          title="how many nodes may run at once — every concurrent node is another live session against the provider"
-          onChange={(event) => setParallel(Number(event.currentTarget.value))}
-        >
-          <For each={[1, 2, 4, 8]}>{(value) => <option value={value}>parallel: {value}</option>}</For>
-        </select>
-        <select
-          class="pipe"
-          value={String(nodeTimeout())}
-          title="how long one node may run before the engine gives up on it"
-          onChange={(event) => setNodeTimeout(Number(event.currentTarget.value))}
-        >
-          <For each={[5, 15, 30, 60]}>
-            {(minutes) => <option value={minutes * 60_000}>timeout: {minutes}m</option>}
-          </For>
-        </select>
+      <div class="runbar">
         <input
-          class="task"
-          placeholder="task for this run"
+          class="runbar-task"
+          placeholder="task for this run — Enter to start"
+          title="task for this run — Enter to start"
+          aria-label="task for this run — Enter to start"
           value={state.input}
           onInput={(event) => actions.setInput(event.currentTarget.value)}
+          onKeyDown={onTaskKey}
         />
-        <button class="primary" disabled={state.running} onClick={run}>
-          run
-        </button>
-        <button class="danger" disabled={!state.running} onClick={stop}>
-          stop
-        </button>
-        <span class="status" classList={{ bad: status().startsWith("offline") }}>
-          {status()}
-        </span>
-      </header>
+        <div class="runbar-settings">
+          <Select
+            variant="ghost"
+            prefix="pipe: "
+            width={320}
+            title="how much upstream output each node receives"
+            value={pipe()}
+            options={PIPE_OPTIONS}
+            onChange={(value) => setPipe(value as PipeMode)}
+          />
+          <Select
+            variant="ghost"
+            prefix="permissions: "
+            width={320}
+            title="what happens when an agent asks for permission mid-run"
+            value={policy()}
+            options={POLICY_OPTIONS}
+            onChange={(value) => setPolicy(value as PermissionPolicy)}
+          />
+          <Select
+            variant="ghost"
+            prefix="parallel: "
+            title="how many nodes may run at once — every concurrent node is another live session against the provider"
+            value={String(parallel())}
+            options={PARALLEL_OPTIONS}
+            onChange={(value) => setParallel(Number(value))}
+          />
+          <Select
+            variant="ghost"
+            prefix="timeout: "
+            title="how long one node may run before the engine gives up on it"
+            value={String(nodeTimeout())}
+            options={TIMEOUT_OPTIONS}
+            onChange={(value) => setNodeTimeout(Number(value))}
+          />
+        </div>
+        <div class="runbar-actions">
+          <button class="btn btn-primary" type="button" disabled={state.running} onClick={run}>
+            <IconPlay />
+            Run
+          </button>
+          <button class="btn btn-danger" type="button" disabled={!state.running} onClick={stop}>
+            <IconStop />
+            Stop
+          </button>
+        </div>
+      </div>
 
       <Show when={state.notice}>
         {(notice) => (
-          <div class="notice" classList={{ bad: notice().kind === "error" }} onClick={actions.clearNotice}>
-            {notice().text}
+          <div class="notice" data-kind={notice().kind} onClick={actions.clearNotice}>
+            <span class="notice-icon">
+              <Show when={notice().kind === "error"} fallback={<IconInfo />}>
+                <IconAlert />
+              </Show>
+            </span>
+            <span class="notice-text">{notice().text}</span>
+            <button
+              class="icon-btn notice-close"
+              type="button"
+              title="dismiss"
+              aria-label="dismiss"
+              onClick={actions.clearNotice}
+            >
+              <IconClose />
+            </button>
           </div>
         )}
       </Show>
@@ -324,11 +444,22 @@ export function App() {
                   </Show>
                 </span>
                 <span class="permission-actions">
-                  <button onClick={() => actions.answerPermission(request.requestID, "once")}>allow once</button>
-                  <button onClick={() => actions.answerPermission(request.requestID, "always")} title="persists to the project's saved permissions, beyond this run">
+                  <button class="btn" type="button" onClick={() => actions.answerPermission(request.requestID, "once")}>
+                    allow once
+                  </button>
+                  <button
+                    class="btn"
+                    type="button"
+                    onClick={() => actions.answerPermission(request.requestID, "always")}
+                    title="persists to the project's saved permissions, beyond this run"
+                  >
                     always
                   </button>
-                  <button class="danger" onClick={() => actions.answerPermission(request.requestID, "reject")}>
+                  <button
+                    class="btn btn-danger"
+                    type="button"
+                    onClick={() => actions.answerPermission(request.requestID, "reject")}
+                  >
                     reject
                   </button>
                 </span>
@@ -354,46 +485,77 @@ export function App() {
         />
       </Show>
 
-      <footer class="runs">
-        <div class="run-current">
+      <Show when={showProjectPicker()}>
+        <ProjectPicker current={project()} onClose={() => setShowProjectPicker(false)} onSwitched={switchProject} />
+      </Show>
+
+      <footer class="statusbar">
+        <div class="statusbar-left">
+          <span class="statusbar-dot" data-state={status().startsWith("offline") ? "bad" : "ok"} aria-hidden="true" />
+          <span class="status">{status()}</span>
           <Show when={state.run} fallback={<span class="hint">no run yet</span>}>
             {(log) => (
               <>
-                <strong>{log().id}</strong>
+                <span class="mono">{log().id}</span>
                 <span class="badge" data-status={log().status}>
                   {log().status}
                 </span>
-                <For each={log().nodes}>
-                  {(node) => (
-                    <span class="run-node" data-status={node.status} onClick={() => actions.select(node.id)}>
-                      {node.role}
-                      <span class="badge" data-status={node.status}>
-                        {node.status}
+                <span class="run-nodes">
+                  <For each={log().nodes}>
+                    {(node) => (
+                      <span
+                        class="run-node"
+                        data-status={node.status}
+                        title="show this node in the inspector"
+                        role="button"
+                        tabindex={0}
+                        onClick={() => actions.select(node.id)}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter" && event.key !== " ") return
+                          event.preventDefault()
+                          actions.select(node.id)
+                        }}
+                      >
+                        {node.role}
+                        <span class="badge" data-status={node.status}>
+                          {node.status}
+                        </span>
                       </span>
-                    </span>
-                  )}
-                </For>
+                    )}
+                  </For>
+                </span>
               </>
             )}
           </Show>
         </div>
-        <div class="run-history">
-          <select
-            onChange={(event) => {
-              void openRun(event.currentTarget.value)
-              event.currentTarget.value = ""
-            }}
+        <div class="statusbar-right">
+          <Select
+            label="Runs"
+            leading={<IconHistory />}
+            variant="ghost"
+            placement="top"
+            align="end"
+            width={380}
+            title="reopen a recorded run"
+            value=""
+            options={runs().map((entry) => ({
+              value: entry.id,
+              label: entry.id,
+              hint: `${entry.pipeline} · ${entry.status}`,
+            }))}
+            onChange={(id) => void openRun(id)}
+            empty="No runs recorded yet."
+          />
+          <button
+            type="button"
+            class="icon-btn statusbar-project"
+            title={`${project()} — click to switch project`}
+            aria-label="switch project"
+            onClick={() => setShowProjectPicker(true)}
           >
-            <option value="">run log…</option>
-            <For each={runs()}>
-              {(entry) => (
-                <option value={entry.id}>
-                  {entry.id} · {entry.pipeline} · {entry.status}
-                </option>
-              )}
-            </For>
-          </select>
-          <span class="hint mono">{project()}</span>
+            <IconFolder />
+            <span class="mono dim">{project()}</span>
+          </button>
         </div>
       </footer>
     </div>

@@ -12,6 +12,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export type PipelineEntry = { name: string; id?: string; nodes: number; updated: number }
 export type RunEntry = { id: string; pipeline?: string; status?: string; started?: number; finished?: number }
+export type BrowseEntry = { name: string; path: string }
+export type BrowseResult = { path: string | null; parent: string | null; entries: BrowseEntry[] }
+export type FlowPaths = { project: string; pipelines: string; runs: string; generated: string }
 
 export const store = {
   pipelines: () => request<PipelineEntry[]>("/pipelines"),
@@ -49,6 +52,10 @@ export const store = {
       method: "POST",
       body: JSON.stringify({ providers }),
     }),
+  /** Subdirectories of `target`, or drive/root listing when omitted — for a folder picker. */
+  browse: (target?: string) => request<BrowseResult>(`/browse${target ? `?path=${encodeURIComponent(target)}` : ""}`),
+  /** Switches the live project directory. Takes effect immediately, no restart. */
+  setProject: (path: string) => request<FlowPaths>("/project", { method: "POST", body: JSON.stringify({ path }) }),
 }
 
 /**
