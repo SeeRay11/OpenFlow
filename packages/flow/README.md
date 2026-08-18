@@ -10,6 +10,9 @@ agents underneath. Everything OpenFlow-specific lives in this package. No other
 package in the repo is modified, so upstream merges stay clean. It is not published
 to npm — it is an app, run it from the repo.
 
+> OpenFlow is an independent fork. It is not affiliated with, sponsored by, or
+> endorsed by the OpenCode team.
+
 The plan it was built from, and the original build brief, are kept in
 [docs/](docs) for the reasoning; the code is the authority where they disagree.
 
