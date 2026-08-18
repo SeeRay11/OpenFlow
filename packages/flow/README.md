@@ -4,12 +4,28 @@ Visual builder for multi-agent workflows. Drag role cards onto a canvas, wire a
 pipeline (planner → architect → coder), save it, and run it with real parallel
 agents on top of a headless `opencode serve`.
 
-Everything lives in this package. No other package in the repo is modified, so
-upstream merges stay clean. It is not published to npm — it is an app, run it
-from the repo.
+OpenFlow is its own project, built on — and shipped as a fork of —
+[opencode](https://github.com/anomalyco/opencode), whose headless engine drives the
+agents underneath. Everything OpenFlow-specific lives in this package. No other
+package in the repo is modified, so upstream merges stay clean. It is not published
+to npm — it is an app, run it from the repo.
 
 The plan it was built from, and the original build brief, are kept in
 [docs/](docs) for the reasoning; the code is the authority where they disagree.
+
+## Install
+
+**Prerequisites:** [Bun](https://bun.sh) 1.3+ and [Git](https://git-scm.com).
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` pulls the whole workspace — the OpenCode engine plus this package.
+First install is large; it downloads the engine's native deps and runs a
+`postinstall` that builds `node-pty`.
 
 ## Run it
 
