@@ -1,3 +1,70 @@
+# OpenFlow
+
+**‏OpenFlow هو أداة بناء مرئية لسير عمل الذكاء الاصطناعي متعدد الوكلاء.** اسحب بطاقات
+الأدوار إلى لوحة، وصِّل خط أنابيب (مخطِّط ← مهندس معماري ← مبرمج)، احفظه، ثم شغِّله
+بوكلاء متوازين حقيقيين.
+
+‏OpenFlow مشروع قائم بذاته. إنه مبني على
+[opencode](https://github.com/anomalyco/opencode) — ويُوزَّع كنسخة متفرعة (fork) منه —
+ويقود محركه بلا واجهة (`opencode serve`) الوكلاءَ في الأسفل. يوجد كل كود OpenFlow الخاص
+في [`packages/flow`](packages/flow)؛ ولا يُعدَّل أي حزمة upstream، لذا يبقى محرك
+OpenCode محدَّثًا وتبقى عمليات الدمج مع upstream نظيفة. يلي ذلك أدناه ملف README الأصلي
+لـ OpenCode.
+
+### التثبيت
+
+**المتطلبات المسبقة**
+
+- [Bun](https://bun.sh) 1.3 أو أحدث — بيئة التشغيل الوحيدة التي يحتاجها OpenFlow (تشغِّل
+  المحرك والبناء واللوحة). تحقَّق عبر `bun --version`.
+- [Git](https://git-scm.com).
+
+**احصل على الكود**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+يجلب `bun install` مساحة العمل بأكملها — محرك OpenCode بالإضافة إلى كود OpenFlow الخاص
+في [`packages/flow`](packages/flow). التثبيت الأول كبير؛ إذ يُنزِّل التبعيات الأصلية
+للمحرك ويشغِّل `postinstall` الذي يبني `node-pty`.
+
+### التشغيل
+
+**بداية سريعة — أمر واحد يبدأ كلتا العمليتين:**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+يبدأ المشغِّل المحرك، وينتظر حتى يبدأ الاستماع، ثم يفتح اللوحة على
+http://localhost:5174؛ ويوقف Ctrl+C كليهما. وجِّه الوكلاء إلى مستودع آخر باستخدام
+`-Project <dir>` (PowerShell) أو `-p <dir>` (shell)؛ ومرِّر `-Built` / `-b` لتقديم
+الحزمة المبنية. مع ذلك، سجِّل الدخول لدى مزوّد أولًا (انظر أدناه).
+
+أو ابدأ العمليتين يدويًا. الخادم أولًا:
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+ثم اللوحة، على http://localhost:5174:
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+أو شغِّله مبنيًا، وهو ما يقدِّم التطبيق نفسه دون vite:
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

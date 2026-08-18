@@ -1,3 +1,70 @@
+# OpenFlow
+
+**OpenFlow er en visuell bygger for multi-agent-KI-arbeidsflyter.** Dra rollekort
+ut på et lerret, koble sammen en pipeline (planlegger → arkitekt → koder), lagre
+den, og kjør den med ekte parallelle agenter.
+
+OpenFlow er sitt eget prosjekt. Det er bygget på
+[opencode](https://github.com/anomalyco/opencode) — og distribueres som en fork av
+det — hvis headless-motor (`opencode serve`) driver agentene under panseret. All
+OpenFlows egen kode ligger i [`packages/flow`](packages/flow); ingen upstream-pakke
+endres, så OpenCode-motoren holder seg oppdatert og upstream-merger forblir rene. Den
+opprinnelige OpenCode-README-en følger nedenfor.
+
+### Installasjon
+
+**Forutsetninger**
+
+- [Bun](https://bun.sh) 1.3 eller nyere — den eneste kjøretiden OpenFlow trenger
+  (den kjører motoren, byggingen og lerretet). Sjekk med `bun --version`.
+- [Git](https://git-scm.com).
+
+**Hent koden**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` henter hele arbeidsområdet — OpenCode-motoren pluss OpenFlows egen kode
+i [`packages/flow`](packages/flow). Den første installasjonen er stor; den laster ned
+motorens native avhengigheter og kjører et `postinstall` som bygger `node-pty`.
+
+### Kjør det
+
+**Hurtigstart — én kommando starter begge prosessene:**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+Starteren starter motoren, venter til den lytter, og åpner så lerretet på
+http://localhost:5174; Ctrl+C stopper begge. Pek agentene mot et annet repo med
+`-Project <dir>` (PowerShell) eller `-p <dir>` (shell); bruk `-Built` / `-b` for å
+servere den bygde bunten. Logg likevel inn hos en leverandør først (se nedenfor).
+
+Eller start de to prosessene for hånd. Serveren først:
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+Deretter lerretet, på http://localhost:5174:
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+Eller kjør den bygde, som serverer den samme appen uten vite:
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

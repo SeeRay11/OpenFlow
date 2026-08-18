@@ -1,3 +1,73 @@
+# OpenFlow
+
+**OpenFlow ist ein visueller Builder für Multi-Agent-KI-Workflows.** Ziehe
+Rollenkarten auf eine Arbeitsfläche, verdrahte eine Pipeline (Planer → Architekt →
+Coder), speichere sie und führe sie mit echten parallelen Agenten aus.
+
+OpenFlow ist ein eigenständiges Projekt. Es baut auf
+[opencode](https://github.com/anomalyco/opencode) auf und wird als Fork davon
+ausgeliefert; dessen Headless-Engine (`opencode serve`) steuert die Agenten im
+Hintergrund. Der gesamte eigene Code von OpenFlow liegt in
+[`packages/flow`](packages/flow); kein Upstream-Paket wird verändert, sodass die
+OpenCode-Engine aktuell bleibt und Upstream-Merges sauber bleiben. Die
+ursprüngliche OpenCode-README folgt weiter unten.
+
+### Installation
+
+**Voraussetzungen**
+
+- [Bun](https://bun.sh) 1.3 oder neuer — die einzige Runtime, die OpenFlow
+  benötigt (sie betreibt Engine, Build und Canvas). Mit `bun --version` prüfen.
+- [Git](https://git-scm.com).
+
+**Code holen**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` zieht den gesamten Workspace — die OpenCode-Engine plus OpenFlows
+eigenen Code in [`packages/flow`](packages/flow). Die erste Installation ist groß;
+sie lädt die nativen Abhängigkeiten der Engine und führt ein `postinstall` aus, das
+`node-pty` baut.
+
+### Ausführen
+
+**Schnellstart — ein Befehl startet beide Prozesse:**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+Der Launcher startet die Engine, wartet, bis sie lauscht, und öffnet dann die
+Canvas unter http://localhost:5174; Ctrl+C stoppt beide. Richte die Agenten mit
+`-Project <dir>` (PowerShell) oder `-p <dir>` (Shell) auf ein anderes Repo; mit
+`-Built` / `-b` wird das gebaute Bundle serviert. Melde dich vorher trotzdem bei
+einem Provider an (siehe unten).
+
+Oder starte die beiden Prozesse von Hand. Zuerst der Server:
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+Dann die Canvas, unter http://localhost:5174:
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+Oder gebaut ausführen, was dieselbe App ohne vite serviert:
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

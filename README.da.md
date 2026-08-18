@@ -1,3 +1,70 @@
+# OpenFlow
+
+**OpenFlow er en visuel builder til multi-agent-AI-workflows.** Træk rollekort ud
+på et lærred, forbind en pipeline (planlægger → arkitekt → koder), gem den, og kør
+den med rigtige parallelle agenter.
+
+OpenFlow er sit eget projekt. Det er bygget på
+[opencode](https://github.com/anomalyco/opencode) — og udgives som en fork af det —
+hvis headless-motor (`opencode serve`) driver agenterne nedenunder. Al OpenFlows egen
+kode ligger i [`packages/flow`](packages/flow); ingen upstream-pakke ændres, så
+OpenCode-motoren forbliver opdateret, og upstream-merges forbliver rene. Den
+oprindelige OpenCode-README følger nedenfor.
+
+### Installation
+
+**Forudsætninger**
+
+- [Bun](https://bun.sh) 1.3 eller nyere — den eneste runtime, OpenFlow har brug for
+  (den kører motoren, build'et og lærredet). Tjek med `bun --version`.
+- [Git](https://git-scm.com).
+
+**Hent koden**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` henter hele workspace'et — OpenCode-motoren plus OpenFlows egen kode i
+[`packages/flow`](packages/flow). Den første installation er stor; den henter
+motorens native afhængigheder og kører et `postinstall`, der bygger `node-pty`.
+
+### Kør det
+
+**Hurtig start — én kommando starter begge processer:**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+Launcheren starter motoren, venter, til den lytter, og åbner så lærredet på
+http://localhost:5174; Ctrl+C stopper begge. Peg agenterne mod et andet repo med
+`-Project <dir>` (PowerShell) eller `-p <dir>` (shell); brug `-Built` / `-b` for at
+serve det byggede bundle. Log alligevel ind hos en provider først (se nedenfor).
+
+Eller start de to processer i hånden. Serveren først:
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+Derefter lærredet, på http://localhost:5174:
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+Eller kør det byggede, som serverer den samme app uden vite:
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

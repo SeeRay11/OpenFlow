@@ -1,3 +1,71 @@
+# OpenFlow
+
+**OpenFlow は、マルチエージェント AI ワークフローのためのビジュアルビルダーです。** ロール
+カードをキャンバスにドラッグし、パイプライン（プランナー → アーキテクト → コーダー）を配線
+して保存し、実際の並列エージェントで実行します。
+
+OpenFlow は独立したプロジェクトです。
+[opencode](https://github.com/anomalyco/opencode) の上に構築され、そのフォークとして提供
+されます。opencode のヘッドレスエンジン（`opencode serve`）が背後でエージェントを駆動しま
+す。OpenFlow 独自のコードはすべて [`packages/flow`](packages/flow) にあります。上流の
+パッケージは一切変更しないため、OpenCode エンジンは最新のまま保たれ、上流とのマージもクリーン
+に保たれます。オリジナルの OpenCode README は以下に続きます。
+
+### インストール
+
+**前提条件**
+
+- [Bun](https://bun.sh) 1.3 以降 — OpenFlow が必要とする唯一のランタイム（エンジン、ビル
+  ド、キャンバスを動かします）。`bun --version` で確認してください。
+- [Git](https://git-scm.com)。
+
+**コードを取得する**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` はワークスペース全体を取得します — OpenCode エンジンに加えて、
+[`packages/flow`](packages/flow) にある OpenFlow 独自のコードです。初回インストールは大き
+く、エンジンのネイティブ依存関係をダウンロードし、`node-pty` をビルドする `postinstall` を
+実行します。
+
+### 実行する
+
+**クイックスタート — 1 つのコマンドで両方のプロセスが起動します：**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+ランチャーはエンジンを起動し、リッスンし始めるまで待ってから、http://localhost:5174 でキャン
+バスを開きます。Ctrl+C で両方を停止します。`-Project <dir>`（PowerShell）または
+`-p <dir>`（shell）でエージェントを別のリポジトリに向けられます。`-Built` / `-b` を渡すとビ
+ルド済みバンドルを提供します。それでも、まずプロバイダーにログインしてください（下記参照）。
+
+または、2 つのプロセスを手動で起動します。まずサーバー：
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+次にキャンバス、http://localhost:5174 で：
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+または、ビルド済みで実行します。これは vite を使わずに同じアプリを提供します：
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

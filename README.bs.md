@@ -1,3 +1,70 @@
+# OpenFlow
+
+**OpenFlow je vizuelni graditelj višeagentskih AI radnih tokova.** Prevucite kartice
+uloga na platno, povežite pipeline (planer → arhitekta → koder), sačuvajte ga i
+pokrenite sa stvarnim paralelnim agentima.
+
+OpenFlow je zaseban projekat. Izgrađen je na
+[opencode](https://github.com/anomalyco/opencode) — i isporučuje se kao njegov fork
+— čiji headless motor (`opencode serve`) pokreće agente ispod haube. Sav vlastiti kod
+OpenFlow-a nalazi se u [`packages/flow`](packages/flow); nijedan upstream paket se ne
+mijenja, pa OpenCode motor ostaje ažuran, a upstream spajanja ostaju čista. Originalni
+OpenCode README slijedi ispod.
+
+### Instalacija
+
+**Preduslovi**
+
+- [Bun](https://bun.sh) 1.3 ili noviji — jedini runtime koji je OpenFlow-u potreban
+  (pokreće motor, build i platno). Provjerite sa `bun --version`.
+- [Git](https://git-scm.com).
+
+**Preuzmite kod**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` preuzima cijeli workspace — OpenCode motor plus vlastiti kod OpenFlow-a
+u [`packages/flow`](packages/flow). Prva instalacija je velika; preuzima nativne
+zavisnosti motora i pokreće `postinstall` koji gradi `node-pty`.
+
+### Pokretanje
+
+**Brzi start — jedna komanda pokreće oba procesa:**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+Pokretač startuje motor, čeka dok ne počne slušati, a zatim otvara platno na
+http://localhost:5174; Ctrl+C zaustavlja oba. Usmjerite agente na drugi repozitorij
+sa `-Project <dir>` (PowerShell) ili `-p <dir>` (shell); proslijedite `-Built` / `-b`
+da poslužite izgrađeni bundle. Ipak se prvo prijavite kod provajdera (vidi ispod).
+
+Ili pokrenite dva procesa ručno. Prvo server:
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+Zatim platno, na http://localhost:5174:
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+Ili ga pokrenite izgrađenog, što poslužuje istu aplikaciju bez vite:
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

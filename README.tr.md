@@ -1,3 +1,72 @@
+# OpenFlow
+
+**OpenFlow, çok ajanlı yapay zekâ iş akışları için görsel bir oluşturucudur.** Rol
+kartlarını bir tuvale sürükleyin, bir işlem hattını (planlayıcı → mimar → kodlayıcı)
+bağlayın, kaydedin ve gerçek paralel ajanlarla çalıştırın.
+
+OpenFlow kendi başına bir projedir. [opencode](https://github.com/anomalyco/opencode)
+üzerine inşa edilmiştir ve onun bir çatalı (fork) olarak dağıtılır; başsız motoru
+(`opencode serve`) alttaki ajanları sürer. OpenFlow'un kendi kodunun tamamı
+[`packages/flow`](packages/flow) içinde yer alır; hiçbir upstream paketi
+değiştirilmez, böylece OpenCode motoru güncel kalır ve upstream birleştirmeleri temiz
+kalır. Orijinal OpenCode README'i aşağıda yer alır.
+
+### Kurulum
+
+**Ön koşullar**
+
+- [Bun](https://bun.sh) 1.3 veya üzeri — OpenFlow'un ihtiyaç duyduğu tek çalışma
+  zamanı (motoru, derlemeyi ve tuvali çalıştırır). Kontrol için `bun --version`.
+- [Git](https://git-scm.com).
+
+**Kodu alın**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` tüm workspace'i çeker — OpenCode motoru artı OpenFlow'un
+[`packages/flow`](packages/flow) içindeki kendi kodu. İlk kurulum büyüktür; motorun
+yerel (native) bağımlılıklarını indirir ve `node-pty` derleyen bir `postinstall`
+çalıştırır.
+
+### Çalıştırma
+
+**Hızlı başlangıç — tek bir komut her iki süreci de başlatır:**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+Başlatıcı motoru başlatır, dinlemeye geçene kadar bekler, sonra tuvali
+http://localhost:5174 adresinde açar; Ctrl+C ikisini de durdurur. Ajanları başka bir
+depoya `-Project <dir>` (PowerShell) veya `-p <dir>` (shell) ile yöneltin; derlenmiş
+paketi sunmak için `-Built` / `-b` geçirin. Yine de önce bir sağlayıcıya giriş yapın
+(aşağıya bakın).
+
+Ya da iki süreci elle başlatın. Önce sunucu:
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+Ardından tuval, http://localhost:5174 adresinde:
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+Ya da derlenmiş halini çalıştırın; bu, aynı uygulamayı vite olmadan sunar:
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

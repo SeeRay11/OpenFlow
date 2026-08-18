@@ -1,3 +1,72 @@
+# OpenFlow
+
+**OpenFlow é um construtor visual de fluxos de trabalho de IA multiagente.**
+Arraste cartões de papéis para um canvas, conecte um pipeline (planejador →
+arquiteto → programador), salve-o e execute-o com agentes paralelos reais.
+
+OpenFlow é um projeto próprio. Ele é construído sobre o
+[opencode](https://github.com/anomalyco/opencode) — e distribuído como um fork dele
+—, cujo motor headless (`opencode serve`) conduz os agentes por baixo. Todo o código
+próprio do OpenFlow fica em [`packages/flow`](packages/flow); nenhum pacote upstream
+é modificado, então o motor OpenCode permanece atualizado e os merges com o upstream
+continuam limpos. O README original do OpenCode segue abaixo.
+
+### Instalação
+
+**Pré-requisitos**
+
+- [Bun](https://bun.sh) 1.3 ou mais recente — o único runtime que o OpenFlow precisa
+  (ele roda o motor, o build e o canvas). Use `bun --version` para verificar.
+- [Git](https://git-scm.com).
+
+**Obter o código**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+O `bun install` baixa todo o workspace — o motor OpenCode mais o código próprio do
+OpenFlow em [`packages/flow`](packages/flow). A primeira instalação é grande; ela
+baixa as dependências nativas do motor e roda um `postinstall` que compila
+`node-pty`.
+
+### Executar
+
+**Início rápido — um comando inicia os dois processos:**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+O launcher inicia o motor, aguarda até que ele esteja escutando e então abre o
+canvas em http://localhost:5174; Ctrl+C para os dois. Aponte os agentes para outro
+repositório com `-Project <dir>` (PowerShell) ou `-p <dir>` (shell); passe `-Built` /
+`-b` para servir o bundle compilado. Ainda assim, faça login em um provedor primeiro
+(veja abaixo).
+
+Ou inicie os dois processos manualmente. Primeiro o servidor:
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+Depois o canvas, em http://localhost:5174:
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+Ou execute-o compilado, o que serve o mesmo app sem o vite:
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

@@ -1,3 +1,72 @@
+# OpenFlow
+
+**OpenFlow হলো মাল্টি-এজেন্ট AI ওয়ার্কফ্লোর জন্য একটি ভিজ্যুয়াল বিল্ডার।** রোল কার্ডগুলো
+একটি ক্যানভাসে টেনে আনুন, একটি পাইপলাইন (প্ল্যানার → আর্কিটেক্ট → কোডার) সংযুক্ত করুন,
+সেটি সেভ করুন, এবং সত্যিকারের সমান্তরাল এজেন্ট দিয়ে চালান।
+
+OpenFlow তার নিজস্ব একটি প্রকল্প। এটি
+[opencode](https://github.com/anomalyco/opencode)-এর উপর তৈরি — এবং এর একটি ফর্ক
+হিসেবে সরবরাহ করা হয় — যার হেডলেস ইঞ্জিন (`opencode serve`) ভেতরে এজেন্টগুলো চালায়।
+OpenFlow-এর নিজস্ব সমস্ত কোড [`packages/flow`](packages/flow)-এ থাকে; কোনো আপস্ট্রিম
+প্যাকেজ পরিবর্তন করা হয় না, তাই OpenCode ইঞ্জিন সর্বদা হালনাগাদ থাকে এবং আপস্ট্রিম মার্জ
+পরিষ্কার থাকে। মূল OpenCode README নিচে দেওয়া হলো।
+
+### ইনস্টলেশন
+
+**পূর্বশর্ত**
+
+- [Bun](https://bun.sh) 1.3 বা তার নতুন — OpenFlow-এর প্রয়োজন হয় এমন একমাত্র রানটাইম
+  (এটি ইঞ্জিন, বিল্ড এবং ক্যানভাস চালায়)। `bun --version` দিয়ে যাচাই করুন।
+- [Git](https://git-scm.com)।
+
+**কোড সংগ্রহ করুন**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` পুরো ওয়ার্কস্পেস টেনে আনে — OpenCode ইঞ্জিন এবং সেই সাথে
+[`packages/flow`](packages/flow)-এ থাকা OpenFlow-এর নিজস্ব কোড। প্রথম ইনস্টল বড়; এটি
+ইঞ্জিনের নেটিভ নির্ভরতা ডাউনলোড করে এবং একটি `postinstall` চালায় যা `node-pty` বিল্ড
+করে।
+
+### চালানো
+
+**দ্রুত শুরু — একটি কমান্ডই দুটি প্রসেস চালু করে:**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+লঞ্চারটি ইঞ্জিন চালু করে, এটি লিসেন করা শুরু না করা পর্যন্ত অপেক্ষা করে, তারপর
+http://localhost:5174-এ ক্যানভাস খোলে; Ctrl+C দুটোই থামায়। `-Project <dir>`
+(PowerShell) বা `-p <dir>` (shell) দিয়ে এজেন্টগুলোকে অন্য একটি রিপোতে নির্দেশ করুন;
+বিল্ড করা বান্ডল পরিবেশন করতে `-Built` / `-b` পাস করুন। তবুও আগে একটি প্রোভাইডারে লগ ইন
+করুন (নিচে দেখুন)।
+
+অথবা দুটি প্রসেস হাতে চালু করুন। প্রথমে সার্ভার:
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+তারপর ক্যানভাস, http://localhost:5174-এ:
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+অথবা বিল্ড করা সংস্করণে চালান, যা vite ছাড়াই একই অ্যাপ পরিবেশন করে:
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

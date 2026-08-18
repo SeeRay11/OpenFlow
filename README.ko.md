@@ -1,3 +1,70 @@
+# OpenFlow
+
+**OpenFlow는 멀티 에이전트 AI 워크플로를 위한 비주얼 빌더입니다.** 역할 카드를 캔버스로
+드래그하고, 파이프라인(플래너 → 아키텍트 → 코더)을 연결하고, 저장한 다음, 실제 병렬
+에이전트로 실행하세요.
+
+OpenFlow는 독립적인 프로젝트입니다.
+[opencode](https://github.com/anomalyco/opencode) 위에 구축되었으며 그 포크로 배포됩니
+다. opencode의 헤드리스 엔진(`opencode serve`)이 그 아래에서 에이전트를 구동합니다.
+OpenFlow 자체 코드는 모두 [`packages/flow`](packages/flow)에 있습니다. 어떤 업스트림
+패키지도 수정하지 않으므로 OpenCode 엔진은 항상 최신 상태로 유지되고 업스트림 병합도 깔끔하
+게 유지됩니다. 원본 OpenCode README는 아래에 이어집니다.
+
+### 설치
+
+**사전 요구 사항**
+
+- [Bun](https://bun.sh) 1.3 이상 — OpenFlow에 필요한 유일한 런타임입니다(엔진, 빌드,
+  캔버스를 실행합니다). `bun --version`으로 확인하세요.
+- [Git](https://git-scm.com).
+
+**코드 가져오기**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install`은 전체 워크스페이스를 가져옵니다 — OpenCode 엔진과
+[`packages/flow`](packages/flow)에 있는 OpenFlow 자체 코드입니다. 첫 설치는 용량이 큽니
+다. 엔진의 네이티브 의존성을 내려받고 `node-pty`를 빌드하는 `postinstall`을 실행합니다.
+
+### 실행
+
+**빠른 시작 — 명령 하나로 두 프로세스가 모두 시작됩니다:**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+런처는 엔진을 시작하고, 수신 대기할 때까지 기다린 다음, http://localhost:5174에서 캔버스를
+엽니다. Ctrl+C로 둘 다 중지합니다. `-Project <dir>`(PowerShell) 또는 `-p <dir>`(shell)
+로 에이전트를 다른 저장소로 향하게 하세요. 빌드된 번들을 제공하려면 `-Built` / `-b`를
+전달하세요. 그래도 먼저 공급자에 로그인하세요(아래 참조).
+
+또는 두 프로세스를 수동으로 시작하세요. 먼저 서버:
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+그런 다음 캔버스, http://localhost:5174에서:
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+또는 빌드된 버전으로 실행하세요. vite 없이 동일한 앱을 제공합니다:
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

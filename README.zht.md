@@ -1,3 +1,67 @@
+# OpenFlow
+
+**OpenFlow 是一個用於多代理 AI 工作流程的視覺化建構器。** 將角色卡片拖曳到畫布上，連接一條
+管線（規劃者 → 架構師 → 編碼者），儲存它，然後用真正的並行代理執行它。
+
+OpenFlow 是一個獨立的專案。它建構於
+[opencode](https://github.com/anomalyco/opencode) 之上，並作為其分支（fork）發布；其
+無頭引擎（`opencode serve`）在底層驅動這些代理。OpenFlow 自己的全部程式碼都位於
+[`packages/flow`](packages/flow) 中；不修改任何上游套件，因此 OpenCode 引擎始終保持最新，
+上游合併也保持乾淨。原始的 OpenCode README 見下方。
+
+### 安裝
+
+**先決條件**
+
+- [Bun](https://bun.sh) 1.3 或更新版本——OpenFlow 唯一需要的執行環境（它執行引擎、建構與畫
+  布）。用 `bun --version` 檢查。
+- [Git](https://git-scm.com)。
+
+**取得程式碼**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` 會拉取整個工作區——OpenCode 引擎，加上 OpenFlow 自己在
+[`packages/flow`](packages/flow) 中的程式碼。首次安裝體積較大；它會下載引擎的原生相依套件，
+並執行一個建構 `node-pty` 的 `postinstall`。
+
+### 執行
+
+**快速開始——一條命令同時啟動兩個行程：**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+啟動器會啟動引擎，等待它開始監聽，然後在 http://localhost:5174 開啟畫布；Ctrl+C 會同時停止
+兩者。用 `-Project <dir>`（PowerShell）或 `-p <dir>`（shell）將代理指向另一個儲存庫；傳入
+`-Built` / `-b` 以提供已建構的產物。仍然請先登入一個供應商（見下文）。
+
+或者手動啟動這兩個行程。先啟動伺服器：
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+然後是畫布，在 http://localhost:5174：
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+或者執行已建構版本，它在不使用 vite 的情況下提供同一個應用程式：
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

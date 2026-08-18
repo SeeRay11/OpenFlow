@@ -1,3 +1,70 @@
+# OpenFlow
+
+**OpenFlow เป็นเครื่องมือสร้างเวิร์กโฟลว์ AI แบบหลายเอเจนต์ในเชิงภาพ** ลากการ์ดบทบาทลงบน
+ผืนผ้าใบ เชื่อมต่อไปป์ไลน์ (ผู้วางแผน → สถาปนิก → ผู้เขียนโค้ด) บันทึกไว้ แล้วรันด้วยเอเจนต์
+ที่ทำงานขนานกันจริง
+
+OpenFlow เป็นโปรเจกต์ของตัวเอง มันสร้างขึ้นบน
+[opencode](https://github.com/anomalyco/opencode) — และเผยแพร่เป็นฟอร์ก (fork) ของมัน —
+โดยเอนจินแบบไม่มีส่วนติดต่อ (`opencode serve`) เป็นตัวขับเคลื่อนเอเจนต์อยู่เบื้องหลัง โค้ด
+ของ OpenFlow เองทั้งหมดอยู่ใน [`packages/flow`](packages/flow) ไม่มีการแก้ไขแพ็กเกจ
+upstream ใด ๆ ดังนั้นเอนจิน OpenCode จึงทันสมัยอยู่เสมอ และการ merge จาก upstream ก็
+สะอาด README ต้นฉบับของ OpenCode อยู่ด้านล่างนี้
+
+### การติดตั้ง
+
+**สิ่งที่ต้องมีก่อน**
+
+- [Bun](https://bun.sh) 1.3 ขึ้นไป — รันไทม์เดียวที่ OpenFlow ต้องใช้ (มันรันเอนจิน การ
+  build และผืนผ้าใบ) ตรวจสอบด้วย `bun --version`
+- [Git](https://git-scm.com)
+
+**รับโค้ด**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` จะดึงเวิร์กสเปซทั้งหมด — เอนจิน OpenCode พร้อมกับโค้ดของ OpenFlow เองใน
+[`packages/flow`](packages/flow) การติดตั้งครั้งแรกมีขนาดใหญ่ มันจะดาวน์โหลดดีเพนเดนซี
+เนทีฟของเอนจิน และรัน `postinstall` ที่ build `node-pty`
+
+### การรัน
+
+**เริ่มอย่างรวดเร็ว — คำสั่งเดียวเริ่มทั้งสองโปรเซส:**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+ตัวเรียกใช้จะเริ่มเอนจิน รอจนกว่ามันจะเริ่มรับฟัง แล้วเปิดผืนผ้าใบที่
+http://localhost:5174 ส่วน Ctrl+C จะหยุดทั้งสอง ชี้เอเจนต์ไปยังรีโปอื่นด้วย
+`-Project <dir>` (PowerShell) หรือ `-p <dir>` (shell) ส่ง `-Built` / `-b` เพื่อเสิร์ฟ
+บันเดิลที่ build แล้ว อย่างไรก็ตาม ให้ล็อกอินผู้ให้บริการก่อน (ดูด้านล่าง)
+
+หรือเริ่มสองโปรเซสด้วยตนเอง เซิร์ฟเวอร์ก่อน:
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+จากนั้นผืนผ้าใบ ที่ http://localhost:5174:
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+หรือรันแบบ build แล้ว ซึ่งเสิร์ฟแอปเดียวกันโดยไม่ใช้ vite:
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

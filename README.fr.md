@@ -1,3 +1,73 @@
+# OpenFlow
+
+**OpenFlow est un constructeur visuel de workflows d'IA multi-agents.** Glissez
+des cartes de rôle sur un canevas, câblez un pipeline (planificateur → architecte →
+codeur), enregistrez-le et exécutez-le avec de vrais agents parallèles.
+
+OpenFlow est un projet à part entière. Il est bâti sur
+[opencode](https://github.com/anomalyco/opencode) — et distribué comme un fork de
+celui-ci — dont le moteur headless (`opencode serve`) pilote les agents en dessous.
+Tout le code propre à OpenFlow se trouve dans [`packages/flow`](packages/flow) ;
+aucun paquet upstream n'est modifié, si bien que le moteur OpenCode reste à jour et
+que les merges upstream restent propres. Le README OpenCode original suit
+ci-dessous.
+
+### Installation
+
+**Prérequis**
+
+- [Bun](https://bun.sh) 1.3 ou plus récent — le seul runtime dont OpenFlow a besoin
+  (il fait tourner le moteur, le build et le canevas). `bun --version` pour vérifier.
+- [Git](https://git-scm.com).
+
+**Récupérer le code**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` récupère tout le workspace — le moteur OpenCode plus le code propre à
+OpenFlow dans [`packages/flow`](packages/flow). La première installation est
+volumineuse ; elle télécharge les dépendances natives du moteur et lance un
+`postinstall` qui compile `node-pty`.
+
+### Lancer
+
+**Démarrage rapide — une seule commande lance les deux processus :**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+Le lanceur démarre le moteur, attend qu'il écoute, puis ouvre le canevas sur
+http://localhost:5174 ; Ctrl+C arrête les deux. Pointez les agents vers un autre
+dépôt avec `-Project <dir>` (PowerShell) ou `-p <dir>` (shell) ; passez `-Built` /
+`-b` pour servir le bundle compilé. Connectez-vous quand même d'abord à un
+fournisseur (voir ci-dessous).
+
+Ou lancez les deux processus à la main. Le serveur d'abord :
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+Puis le canevas, sur http://localhost:5174 :
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+Ou exécutez-le compilé, ce qui sert la même application sans vite :
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

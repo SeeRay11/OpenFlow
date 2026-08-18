@@ -1,3 +1,71 @@
+# OpenFlow
+
+**OpenFlow — это визуальный конструктор мультиагентных рабочих процессов ИИ.**
+Перетаскивайте карточки ролей на холст, соединяйте конвейер (планировщик → архитектор
+→ кодер), сохраняйте его и запускайте с реальными параллельными агентами.
+
+OpenFlow — самостоятельный проект. Он построен на
+[opencode](https://github.com/anomalyco/opencode) и поставляется как его форк; его
+headless-движок (`opencode serve`) управляет агентами под капотом. Весь собственный
+код OpenFlow находится в [`packages/flow`](packages/flow); ни один upstream-пакет не
+изменяется, поэтому движок OpenCode остаётся актуальным, а слияния с upstream —
+чистыми. Оригинальный README OpenCode приведён ниже.
+
+### Установка
+
+**Требования**
+
+- [Bun](https://bun.sh) 1.3 или новее — единственная среда выполнения, которая нужна
+  OpenFlow (она запускает движок, сборку и холст). Проверить: `bun --version`.
+- [Git](https://git-scm.com).
+
+**Получить код**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` подтягивает весь workspace — движок OpenCode плюс собственный код
+OpenFlow в [`packages/flow`](packages/flow). Первая установка большая; она загружает
+нативные зависимости движка и выполняет `postinstall`, который собирает `node-pty`.
+
+### Запуск
+
+**Быстрый старт — одна команда запускает оба процесса:**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+Лаунчер запускает движок, ждёт, пока он начнёт слушать, а затем открывает холст по
+адресу http://localhost:5174; Ctrl+C останавливает оба. Направьте агентов на другой
+репозиторий с помощью `-Project <dir>` (PowerShell) или `-p <dir>` (shell); передайте
+`-Built` / `-b`, чтобы обслуживать собранный бандл. Всё равно сначала войдите у
+провайдера (см. ниже).
+
+Либо запустите оба процесса вручную. Сначала сервер:
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+Затем холст, по адресу http://localhost:5174:
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+Либо запустите собранную версию, которая обслуживает то же приложение без vite:
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

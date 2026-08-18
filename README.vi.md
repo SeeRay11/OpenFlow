@@ -1,3 +1,71 @@
+# OpenFlow
+
+**OpenFlow là một trình dựng trực quan cho các quy trình AI đa tác nhân.** Kéo các
+thẻ vai trò lên canvas, nối một pipeline (người lập kế hoạch → kiến trúc sư → lập
+trình viên), lưu lại, rồi chạy nó với các tác nhân song song thực sự.
+
+OpenFlow là một dự án riêng. Nó được xây dựng trên
+[opencode](https://github.com/anomalyco/opencode) — và phát hành dưới dạng một
+nhánh fork của nó — với engine không giao diện (`opencode serve`) điều khiển các tác
+nhân bên dưới. Toàn bộ mã riêng của OpenFlow nằm trong
+[`packages/flow`](packages/flow); không gói upstream nào bị sửa đổi, nên engine
+OpenCode luôn được cập nhật và việc merge từ upstream vẫn sạch sẽ. README gốc của
+OpenCode nằm bên dưới.
+
+### Cài đặt
+
+**Điều kiện tiên quyết**
+
+- [Bun](https://bun.sh) 1.3 trở lên — runtime duy nhất mà OpenFlow cần (nó chạy
+  engine, bản build và canvas). Kiểm tra bằng `bun --version`.
+- [Git](https://git-scm.com).
+
+**Lấy mã nguồn**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` kéo về toàn bộ workspace — engine OpenCode cùng với mã riêng của
+OpenFlow trong [`packages/flow`](packages/flow). Lần cài đặt đầu tiên khá lớn; nó tải
+các phụ thuộc native của engine và chạy một `postinstall` để build `node-pty`.
+
+### Chạy
+
+**Bắt đầu nhanh — một lệnh khởi động cả hai tiến trình:**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+Trình khởi chạy sẽ khởi động engine, chờ đến khi nó lắng nghe, rồi mở canvas tại
+http://localhost:5174; Ctrl+C dừng cả hai. Trỏ các tác nhân đến một repo khác bằng
+`-Project <dir>` (PowerShell) hoặc `-p <dir>` (shell); truyền `-Built` / `-b` để phục
+vụ bản bundle đã build. Dù vậy, hãy đăng nhập một nhà cung cấp trước (xem bên dưới).
+
+Hoặc khởi động hai tiến trình thủ công. Máy chủ trước:
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+Rồi đến canvas, tại http://localhost:5174:
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+Hoặc chạy bản đã build, phục vụ cùng ứng dụng đó mà không cần vite:
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

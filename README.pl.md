@@ -1,3 +1,72 @@
+# OpenFlow
+
+**OpenFlow to wizualny kreator wieloagentowych przepływów pracy AI.** Przeciągaj
+karty ról na płótno, połącz potok (planista → architekt → koder), zapisz go i
+uruchom z prawdziwymi równoległymi agentami.
+
+OpenFlow jest osobnym projektem. Jest zbudowany na
+[opencode](https://github.com/anomalyco/opencode) — i dostarczany jako jego fork —
+którego bezgłowy silnik (`opencode serve`) napędza agentów pod spodem. Cały własny
+kod OpenFlow znajduje się w [`packages/flow`](packages/flow); żaden pakiet upstream
+nie jest modyfikowany, dzięki czemu silnik OpenCode pozostaje aktualny, a scalanie z
+upstream pozostaje czyste. Oryginalny README OpenCode znajduje się poniżej.
+
+### Instalacja
+
+**Wymagania wstępne**
+
+- [Bun](https://bun.sh) 1.3 lub nowszy — jedyne środowisko uruchomieniowe, którego
+  OpenFlow potrzebuje (uruchamia silnik, build i płótno). Sprawdź przez
+  `bun --version`.
+- [Git](https://git-scm.com).
+
+**Pobierz kod**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` pobiera cały workspace — silnik OpenCode plus własny kod OpenFlow w
+[`packages/flow`](packages/flow). Pierwsza instalacja jest duża; pobiera natywne
+zależności silnika i uruchamia `postinstall`, który buduje `node-pty`.
+
+### Uruchamianie
+
+**Szybki start — jedno polecenie uruchamia oba procesy:**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+Launcher uruchamia silnik, czeka, aż zacznie nasłuchiwać, a następnie otwiera płótno
+pod adresem http://localhost:5174; Ctrl+C zatrzymuje oba. Skieruj agentów na inne
+repozytorium za pomocą `-Project <dir>` (PowerShell) lub `-p <dir>` (shell); podaj
+`-Built` / `-b`, aby serwować zbudowany pakiet. I tak najpierw zaloguj się u
+dostawcy (patrz poniżej).
+
+Albo uruchom oba procesy ręcznie. Najpierw serwer:
+
+```bash
+bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
+```
+
+Następnie płótno, pod adresem http://localhost:5174:
+
+```bash
+bun run --cwd packages/flow dev
+```
+
+Albo uruchom wersję zbudowaną, która serwuje tę samą aplikację bez vite:
+
+```bash
+bun run --cwd packages/flow build && bun run --cwd packages/flow start
+```
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>
