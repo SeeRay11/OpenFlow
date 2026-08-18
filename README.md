@@ -4,6 +4,8 @@
 onto a canvas, wire a pipeline (planner → architect → coder), save it, and run it
 with real parallel agents.
 
+![OpenFlow pipeline](assets/openflow-pipeline.png)
+
 OpenFlow is its own project. It is built on — and ships as a fork of —
 [opencode](https://github.com/anomalyco/opencode), whose headless engine
 (`opencode serve`) drives the agents underneath. All of OpenFlow's own code lives
