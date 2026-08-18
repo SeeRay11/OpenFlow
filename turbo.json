@@ -29,7 +29,7 @@
       "dependsOn": ["^build"],
       "outputs": []
     },
-    "@opencode-ai/flow#test": {
+    "@openflow/flow#test": {
       "dependsOn": ["^build"],
       "outputs": []
     }

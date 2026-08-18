@@ -5,7 +5,7 @@
 > were corrected during the build (see [plan.md](plan.md)).
 
 > Paste everything below the line into Opus 5 (Claude Code) running in the repo
-> `C:\Users\seara\OpenSource Projects\OpenFlow`.
+> the OpenFlow repo root.
 
 ---
 

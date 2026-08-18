@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@opencode-ai/flow",
+  "name": "@openflow/flow",
   "version": "0.1.0",
   "description": "OpenFlow — visual builder for multi-agent workflows",
   "private": true,

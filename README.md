@@ -1,16 +1,51 @@
 # OpenFlow
 
-**This is a fork of [opencode](https://github.com/anomalyco/opencode) that adds a
-visual builder for multi-agent workflows.** Drag role cards onto a canvas, wire a
-pipeline (planner → architect → coder), save it, and run it with real parallel
-agents on top of a headless `opencode serve`.
+**OpenFlow is a visual builder for multi-agent AI workflows.** Drag role cards
+onto a canvas, wire a pipeline (planner → architect → coder), save it, and run it
+with real parallel agents.
 
-All of it lives in [`packages/flow`](packages/flow) — no other package is
-modified, so upstream merges stay clean. The upstream README follows below.
+OpenFlow is its own project. It is built on — and ships as a fork of —
+[opencode](https://github.com/anomalyco/opencode), whose headless engine
+(`opencode serve`) drives the agents underneath. All of OpenFlow's own code lives
+in [`packages/flow`](packages/flow); no upstream package is modified, so the
+OpenCode engine stays current and upstream merges stay clean. The original
+OpenCode README follows below.
+
+### Install
+
+**Prerequisites**
+
+- [Bun](https://bun.sh) 1.3 or newer — the only runtime OpenFlow needs (it runs
+  the engine, the build, and the canvas). `bun --version` to check.
+- [Git](https://git-scm.com).
+
+**Get the code**
+
+```bash
+git clone https://github.com/SeeRay11/OpenFlow.git
+cd OpenFlow
+bun install
+```
+
+`bun install` pulls the whole workspace — the OpenCode engine plus OpenFlow's own
+code in [`packages/flow`](packages/flow). First install is large; it downloads the
+engine's native deps and runs a `postinstall` that builds `node-pty`.
 
 ### Run it
 
-Two processes. The server first:
+**Quick start — one command starts both processes:**
+
+```bash
+./openflow.ps1   # Windows (PowerShell)
+./openflow.sh    # macOS / Linux
+```
+
+The launcher starts the engine, waits until it is listening, then opens the
+canvas on http://localhost:5174; Ctrl+C stops both. Point the agents at another
+repo with `-Project <dir>` (PowerShell) or `-p <dir>` (shell); pass `-Built` /
+`-b` to serve the built bundle. Still log a provider in first (see below).
+
+Or start the two processes by hand. The server first:
 
 ```bash
 bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096

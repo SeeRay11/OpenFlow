@@ -49,4 +49,4 @@ The maintainer will send a response indicating the next steps in handling your r
 
 ## Escalation
 
-If you do not receive an acknowledgement of your report within 6 business days, you may email the maintainer at searay112023@gmail.com.
+If you do not receive an acknowledgement of your report within 6 business days, add a follow-up comment on the same GitHub Security Advisory thread to escalate.

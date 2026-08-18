@@ -492,7 +492,7 @@
       },
     },
     "packages/flow": {
-      "name": "@opencode-ai/flow",
+      "name": "@openflow/flow",
       "version": "0.1.0",
       "dependencies": {
         "@opencode-ai/sdk": "workspace:*",
@@ -1989,8 +1989,6 @@
 
     "@opencode-ai/enterprise": ["@opencode-ai/enterprise@workspace:packages/enterprise"],
 
-    "@opencode-ai/flow": ["@opencode-ai/flow@workspace:packages/flow"],
-
     "@opencode-ai/function": ["@opencode-ai/function@workspace:packages/function"],
 
     "@opencode-ai/http-recorder": ["@opencode-ai/http-recorder@workspace:packages/http-recorder"],
@@ -2030,6 +2028,8 @@
     "@opencode-ai/ui": ["@opencode-ai/ui@workspace:packages/ui"],
 
     "@opencode-ai/web": ["@opencode-ai/web@workspace:packages/web"],
+
+    "@openflow/flow": ["@openflow/flow@workspace:packages/flow"],
 
     "@openrouter/ai-sdk-provider": ["@openrouter/ai-sdk-provider@2.9.0", "", { "peerDependencies": { "ai": "^6.0.0", "zod": "^3.25.0 || ^4.0.0" } }, "sha512-Seva+NCa0WUQnJIUE5GzHsUv1WTIeyqwz0ELl2VtS6NP+eF+77yCXGFVOMbvoCM7QMjlnhv7931e89R+8pJdcQ=="],
 
