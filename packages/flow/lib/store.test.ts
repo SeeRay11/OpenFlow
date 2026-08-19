@@ -223,6 +223,115 @@ describe("agents", () => {
   })
 })
 
+describe("skills", () => {
+  const skill = { name: "Summarize", description: "Condense text", content: "# Summarize\n\nBe brief." }
+
+  test("writes SKILL.md with frontmatter and registers the source once", async () => {
+    const result = await call("PUT", "/flow/api/skills/summarize", { body: skill })
+
+    expect(result!.body).toMatchObject({ name: "summarize", registered: true })
+    const md = await read(path.join(paths.skills, "summarize", "SKILL.md"))
+    expect(md).toContain("name: Summarize")
+    expect(md).toContain("description: Condense text")
+    expect(md.endsWith("Be brief.\n")).toBe(true)
+
+    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
+    expect(config.skills).toEqual({ paths: ["./.openflow/skills"] })
+  })
+
+  test("reads a skill back split into frontmatter and body", async () => {
+    await call("PUT", "/flow/api/skills/summarize", { body: skill })
+    const loaded = (await call("GET", "/flow/api/skills/summarize"))!.body as any
+    expect(loaded).toMatchObject({ name: "Summarize", folder: "summarize", description: "Condense text" })
+    expect(loaded.content.trim()).toBe("# Summarize\n\nBe brief.")
+  })
+
+  test("an edit round-trip keeps the frontmatter name instead of the folder slug", async () => {
+    await call("PUT", "/flow/api/skills/summarize", { body: skill })
+    const loaded = (await call("GET", "/flow/api/skills/summarize"))!.body as any
+
+    await call("PUT", `/flow/api/skills/${loaded.folder}`, { body: { ...skill, name: loaded.name } })
+
+    expect(await read(path.join(paths.skills, "summarize", "SKILL.md"))).toContain("name: Summarize")
+  })
+
+  test("registering the source is idempotent and never duplicates it", async () => {
+    await call("PUT", "/flow/api/skills/one", { body: skill })
+    const second = await call("PUT", "/flow/api/skills/two", { body: { ...skill, name: "Two" } })
+
+    expect(second!.body).toMatchObject({ registered: false })
+    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
+    expect(config.skills).toEqual({ paths: ["./.openflow/skills"] })
+  })
+
+  test("keeps an existing config and backs it up when first registering", async () => {
+    await fs.writeFile(path.join(dir, "opencode.json"), JSON.stringify({ model: "opencode/x" }))
+    const result = await call("PUT", "/flow/api/skills/summarize", { body: skill })
+
+    expect(result!.body).toMatchObject({ registered: true, backup: path.join(dir, "opencode.json") + ".bak" })
+    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
+    expect(config.model).toBe("opencode/x")
+    expect(config.skills).toEqual({ paths: ["./.openflow/skills"] })
+  })
+
+  test("repairs a bare skills array left by an older build", async () => {
+    await fs.writeFile(path.join(dir, "opencode.json"), JSON.stringify({ skills: ["./.openflow/skills", "./other"] }))
+
+    await call("PUT", "/flow/api/skills/summarize", { body: skill })
+
+    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
+    expect(config.skills).toEqual({ paths: ["./.openflow/skills", "./other"] })
+  })
+
+  test("keeps skills.urls when adding the path", async () => {
+    await fs.writeFile(path.join(dir, "opencode.json"), JSON.stringify({ skills: { urls: ["https://x/skills/"] } }))
+
+    await call("PUT", "/flow/api/skills/summarize", { body: skill })
+
+    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
+    expect(config.skills).toEqual({ urls: ["https://x/skills/"], paths: ["./.openflow/skills"] })
+  })
+
+  test("lists newest first, folder skipped when it has no SKILL.md", async () => {
+    await call("PUT", "/flow/api/skills/alpha", { body: skill })
+    await call("PUT", "/flow/api/skills/beta", { body: { ...skill, name: "Beta" } })
+    await fs.mkdir(path.join(paths.skills, "empty"), { recursive: true })
+
+    const list = (await call("GET", "/flow/api/skills"))!.body as any[]
+    expect(list.map((entry) => entry.name).sort()).toEqual(["alpha", "beta"])
+  })
+
+  test("lists nothing before anything is saved", async () => {
+    expect((await call("GET", "/flow/api/skills"))!.body).toEqual([])
+  })
+
+  test("404s for a skill that was never written", async () => {
+    expect((await call("GET", "/flow/api/skills/ghost"))!.status).toBe(404)
+  })
+
+  test("deletes the folder", async () => {
+    await call("PUT", "/flow/api/skills/gone", { body: skill })
+    await call("DELETE", "/flow/api/skills/gone")
+    expect((await call("GET", "/flow/api/skills/gone"))!.status).toBe(404)
+  })
+
+  test("keeps a traversing name inside the skills directory", async () => {
+    const result = await call("PUT", `/flow/api/skills/${encodeURIComponent("../../evil")}`, { body: skill })
+    expect((result!.body as any).path).toBe(path.join(paths.skills, "evil", "SKILL.md"))
+    await expect(read(path.join(dir, "..", "evil", "SKILL.md"))).rejects.toThrow()
+  })
+
+  test("does not register the source when the config cannot be parsed", async () => {
+    await fs.writeFile(path.join(dir, "opencode.json"), "{not json")
+    const result = await call("PUT", "/flow/api/skills/summarize", { body: skill })
+
+    expect(result!.body).toMatchObject({ registered: false, error: expect.stringContaining("not valid JSON") })
+    // the SKILL.md is still written — only the config is left untouched
+    await expect(read(path.join(paths.skills, "summarize", "SKILL.md"))).resolves.toContain("name: Summarize")
+    expect(await read(path.join(dir, "opencode.json"))).toBe("{not json")
+  })
+})
+
 describe("browseDirectory", () => {
   test("lists subdirectories, not files, and skips dotfiles", async () => {
     await fs.mkdir(path.join(dir, "sub-a"))

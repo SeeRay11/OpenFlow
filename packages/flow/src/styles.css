@@ -2043,8 +2043,25 @@ main {
   outline: none;
 }
 
+.oc-form .oc-textarea {
+  padding: 8px 10px;
+  border: 0.5px solid var(--oc-border-base);
+  border-radius: 5px;
+  background: var(--oc-layer-02);
+  color: var(--oc-text);
+  font: inherit;
+  font-weight: 440;
+  letter-spacing: inherit;
+  line-height: 1.5;
+  outline: none;
+  resize: vertical;
+  min-height: 120px;
+}
+
 .oc-form input:focus,
-.oc-form input:focus-visible {
+.oc-form input:focus-visible,
+.oc-form .oc-textarea:focus,
+.oc-form .oc-textarea:focus-visible {
   border-color: transparent;
   box-shadow: 0 0 0 1px var(--v2-border-border-focus);
 }

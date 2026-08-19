@@ -17,6 +17,10 @@ import { zenModels } from "./zen"
  *   DELETE /flow/api/pipelines/:name       -> delete pipeline
  *   POST   /flow/api/pipelines/:name/agents?merge=1
  *                                          -> write generated opencode agent defs
+ *   GET    /flow/api/skills                -> [{ name, description, updated }]
+ *   GET    /flow/api/skills/:name          -> { name, folder, description, content, path }
+ *   PUT    /flow/api/skills/:name          -> write .openflow/skills/<name>/SKILL.md
+ *   DELETE /flow/api/skills/:name          -> delete the skill folder
  *   GET    /flow/api/runs                  -> [{ id, pipeline, status, started, finished }]
  *   GET    /flow/api/runs/:id              -> run log json
  *   PUT    /flow/api/runs/:id              -> write run log json
@@ -39,6 +43,7 @@ export type FlowPaths = {
   pipelines: string
   runs: string
   generated: string
+  skills: string
 }
 
 export function flowPaths(project: string): FlowPaths {
@@ -48,6 +53,7 @@ export function flowPaths(project: string): FlowPaths {
     pipelines: path.join(root, ".openflow", "pipelines"),
     runs: path.join(root, ".openflow", "runs"),
     generated: path.join(root, ".openflow", "generated"),
+    skills: path.join(root, ".openflow", "skills"),
   }
 }
 
@@ -66,6 +72,7 @@ export function setProjectPath(paths: FlowPaths, project: string) {
   paths.pipelines = next.pipelines
   paths.runs = next.runs
   paths.generated = next.generated
+  paths.skills = next.skills
 }
 
 export type BrowseEntry = { name: string; path: string }
@@ -160,6 +167,24 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     }
     if (method === "DELETE") {
       await fs.rm(file, { force: true })
+      return ok({ name })
+    }
+  }
+
+  if (segments[0] === "skills") {
+    const name = segments[1] ? slug(decodeURIComponent(segments[1])) : undefined
+
+    if (!name && method === "GET") return ok(await listSkills(paths))
+    if (!name) return { status: 400, body: { error: "skill name required" } }
+
+    if (method === "GET") {
+      const found = await readSkill(paths, name)
+      if (!found) return { status: 404, body: { error: `skill "${name}" not found` } }
+      return ok(found)
+    }
+    if (method === "PUT") return ok(await writeSkill(paths, name, await request.json()))
+    if (method === "DELETE") {
+      await fs.rm(path.join(paths.skills, name), { recursive: true, force: true })
       return ok({ name })
     }
   }
@@ -317,6 +342,153 @@ async function writeAgents(paths: FlowPaths, name: string, body: any, merge: boo
   config.agent = { ...(config.agent ?? {}), ...block.agent }
   await fs.writeFile(target, JSON.stringify(config, null, 2) + "\n")
   return { path: target, merged: true, backup }
+}
+
+/** Where OpenFlow-authored skills are registered from, relative to the project. */
+const SKILL_SOURCE = "./.openflow/skills"
+
+/**
+ * Lists the skills OpenFlow has authored under `.openflow/skills`, reading each
+ * folder's `SKILL.md` frontmatter. A folder without a readable `SKILL.md` is
+ * skipped rather than surfaced as a broken row.
+ */
+async function listSkills(paths: FlowPaths) {
+  const entries = await fs.readdir(paths.skills, { withFileTypes: true }).catch(() => [])
+  const out = []
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const file = path.join(paths.skills, entry.name, "SKILL.md")
+    const [raw, stat] = await Promise.all([
+      fs.readFile(file, "utf8").catch(() => undefined),
+      fs.stat(file).catch(() => undefined),
+    ])
+    if (raw === undefined || !stat) continue
+    const meta = parseSkillMarkdown(raw)
+    out.push({ name: entry.name, description: meta.description, updated: stat.mtimeMs })
+  }
+  return out.sort((a, b) => b.updated - a.updated)
+}
+
+/**
+ * Reads one skill's frontmatter and body back for editing, or undefined if absent.
+ *
+ * `name` is the frontmatter name when the file carries one — that is the identity
+ * the agent sees, and it can differ from the folder slug (`Summarize` in
+ * `summarize/`). Returning the slug instead would make an edit round-trip rewrite
+ * the frontmatter to the slug and silently rename the skill. `folder` carries the
+ * slug for callers that need to address the skill over the API.
+ */
+async function readSkill(paths: FlowPaths, name: string) {
+  const file = path.join(paths.skills, name, "SKILL.md")
+  const raw = await fs.readFile(file, "utf8").catch(() => undefined)
+  if (raw === undefined) return undefined
+  const meta = parseSkillMarkdown(raw)
+  return {
+    name: meta.name ?? name,
+    folder: name,
+    description: meta.description,
+    content: meta.content,
+    path: file,
+  }
+}
+
+/**
+ * Writes `.openflow/skills/<name>/SKILL.md` and registers the folder as a skill
+ * source in the project `opencode.json` the first time — the server only scans
+ * `.opencode/skill`(`s`) on its own, so a skill kept under `.openflow` is invisible
+ * until this path is listed in the config's `skills.paths`. The frontmatter name
+ * defaults to the folder slug so the two never drift.
+ *
+ * A skill created here does not load until `opencode serve` restarts: the server
+ * reads its config and skill sources once at boot.
+ */
+async function writeSkill(paths: FlowPaths, name: string, body: any) {
+  const dir = path.join(paths.skills, name)
+  await fs.mkdir(dir, { recursive: true })
+  const file = path.join(dir, "SKILL.md")
+  const md = buildSkillMarkdown({
+    name: oneLine(body?.name) || name,
+    description: oneLine(body?.description),
+    content: typeof body?.content === "string" ? body.content : "",
+  })
+  await fs.writeFile(file, md)
+  const source = await registerSkillSource(paths)
+  return { name, path: file, ...source }
+}
+
+/**
+ * Adds `SKILL_SOURCE` to the project config's `skills.paths` once. The config
+ * schema types `skills` as `{ paths?: string[]; urls?: string[] }` (see
+ * `ConfigSkillsV1.Info`) and the loader reads `skills.paths` — writing a bare
+ * array here would fail config validation and opencode hard-fails on invalid
+ * config, which would break every card run in the project.
+ *
+ * Idempotent: a config that already lists it is left untouched
+ * (`registered: false`, no backup), so re-saving a skill does not churn the
+ * file or its `.bak`.
+ */
+async function registerSkillSource(paths: FlowPaths) {
+  const target = path.join(paths.project, "opencode.json")
+  const raw = await fs.readFile(target, "utf8").catch(() => undefined)
+  let config: any = { $schema: "https://opencode.ai/config.json" }
+  let backup: string | undefined
+  if (raw !== undefined) {
+    try {
+      config = JSON.parse(raw)
+    } catch {
+      return { registered: false, error: "existing opencode.json is not valid JSON" }
+    }
+    // A config written by an older build may hold a bare array here. Treat it as
+    // the paths list so this rewrites it into the shape the schema accepts,
+    // rather than spreading its indices into the object.
+    const legacy = Array.isArray(config.skills)
+    const block = legacy ? { paths: config.skills } : config.skills ?? {}
+    const current: string[] = Array.isArray(block.paths) ? block.paths : []
+    if (!legacy && current.includes(SKILL_SOURCE)) return { registered: false }
+    backup = await backupConfig(target, raw)
+    config.skills = { ...block, paths: current.includes(SKILL_SOURCE) ? current : [...current, SKILL_SOURCE] }
+  } else {
+    config.skills = { paths: [SKILL_SOURCE] }
+  }
+  await fs.writeFile(target, JSON.stringify(config, null, 2) + "\n")
+  return { registered: true, backup }
+}
+
+/**
+ * Serialises a skill to the `SKILL.md` shape opencode discovers: a small YAML
+ * frontmatter block (`name`, and `description` when set) followed by the
+ * markdown body. Frontmatter values are single-lined by the caller, so no YAML
+ * quoting or escaping is needed here.
+ */
+function buildSkillMarkdown(fields: { name: string; description?: string; content: string }) {
+  const lines = ["---", `name: ${fields.name}`]
+  if (fields.description) lines.push(`description: ${fields.description}`)
+  lines.push("---", "")
+  return lines.join("\n") + fields.content.replace(/\s+$/, "") + "\n"
+}
+
+/**
+ * Reads back the frontmatter this module writes. Deliberately small: it parses
+ * `key: value` lines between the first pair of `---` fences, which covers what
+ * OpenFlow authors without pulling in a YAML parser. A file with no frontmatter
+ * is treated as all body.
+ */
+function parseSkillMarkdown(raw: string) {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(raw)
+  if (!match) return { name: undefined, description: undefined, content: raw }
+  const meta: Record<string, string> = {}
+  for (const line of match[1].split(/\r?\n/)) {
+    const entry = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line)
+    if (entry) meta[entry[1]] = entry[2].trim()
+  }
+  return { name: meta.name, description: meta.description, content: match[2] }
+}
+
+/** Collapses a value to a single trimmed line, so it is safe as a YAML scalar. */
+function oneLine(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined
+  const flat = value.replace(/\s+/g, " ").trim()
+  return flat || undefined
 }
 
 /**

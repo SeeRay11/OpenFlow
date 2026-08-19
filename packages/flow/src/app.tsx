@@ -26,12 +26,14 @@ import {
   IconPlay,
   IconPlus,
   IconSave,
+  IconSliders,
   IconStop,
 } from "./ui/icons"
 import { Inspector } from "./ui/inspector"
 import { Palette } from "./ui/palette"
 import { ProjectPicker } from "./ui/project-picker"
 import { ProvidersPanel } from "./ui/providers-panel"
+import { SkillsPanel } from "./ui/skills-panel"
 import { Select, type SelectOption } from "./ui/select"
 
 // The four run settings are fixed lists, so they are built once here rather
@@ -60,6 +62,7 @@ export function App() {
   const [agents, setAgents] = createSignal<string[]>([])
   const [providers, setProviders] = createSignal<ProviderRow[]>([])
   const [showProviders, setShowProviders] = createSignal(false)
+  const [showSkills, setShowSkills] = createSignal(false)
   const [showProjectPicker, setShowProjectPicker] = createSignal(false)
   const [providerQuery, setProviderQuery] = createSignal("")
   const [pipelines, setPipelines] = createSignal<PipelineEntry[]>([])
@@ -349,6 +352,15 @@ export function App() {
           >
             <IconKey />
           </button>
+          <button
+            class="icon-btn"
+            type="button"
+            title="author skills your cards can use"
+            aria-label="skills"
+            onClick={() => setShowSkills(true)}
+          >
+            <IconSliders />
+          </button>
         </div>
       </header>
 
@@ -483,6 +495,10 @@ export function App() {
           onChanged={refreshProviders}
           onNotice={actions.notice}
         />
+      </Show>
+
+      <Show when={showSkills()}>
+        <SkillsPanel onClose={() => setShowSkills(false)} onNotice={actions.notice} />
       </Show>
 
       <Show when={showProjectPicker()}>

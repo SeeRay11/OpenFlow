@@ -14,7 +14,11 @@ export type PipelineEntry = { name: string; id?: string; nodes: number; updated:
 export type RunEntry = { id: string; pipeline?: string; status?: string; started?: number; finished?: number }
 export type BrowseEntry = { name: string; path: string }
 export type BrowseResult = { path: string | null; parent: string | null; entries: BrowseEntry[] }
-export type FlowPaths = { project: string; pipelines: string; runs: string; generated: string }
+export type FlowPaths = { project: string; pipelines: string; runs: string; generated: string; skills: string }
+export type SkillEntry = { name: string; description?: string; updated: number }
+/** `name` is the frontmatter name shown to the agent; `folder` is the slug the API addresses it by. */
+export type SkillDoc = { name: string; folder: string; description?: string; content: string; path: string }
+export type SkillSave = { name: string; path: string; registered?: boolean; backup?: string; error?: string }
 
 export const store = {
   pipelines: () => request<PipelineEntry[]>("/pipelines"),
@@ -30,6 +34,12 @@ export const store = {
       `/pipelines/${encodeURIComponent(name)}/agents${merge ? "?merge=1" : ""}`,
       { method: "POST", body: JSON.stringify({ agent }) },
     ),
+  /** Skills authored in OpenFlow, stored under `.openflow/skills` and registered in opencode.json. */
+  skills: () => request<SkillEntry[]>("/skills"),
+  skill: (name: string) => request<SkillDoc>(`/skills/${encodeURIComponent(name)}`),
+  saveSkill: (skill: { name: string; description?: string; content: string }) =>
+    request<SkillSave>(`/skills/${encodeURIComponent(skill.name)}`, { method: "PUT", body: JSON.stringify(skill) }),
+  deleteSkill: (name: string) => request<{ name: string }>(`/skills/${encodeURIComponent(name)}`, { method: "DELETE" }),
   runs: () => request<RunEntry[]>("/runs"),
   run: (id: string) => request<RunLog>(`/runs/${encodeURIComponent(id)}`),
   saveRun: (run: RunLog) =>
