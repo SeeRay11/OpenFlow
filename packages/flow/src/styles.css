@@ -1740,13 +1740,18 @@ main {
   color: var(--oc-text);
 }
 
+/* the height is fixed, so the label must never wrap and the button must never
+   be squeezed by a flex sibling — a two-line label in a 28px box spills out of
+   its own border */
 .oc-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   gap: 6px;
   height: 28px;
   padding: 0 10px;
+  white-space: nowrap;
   border: 0.5px solid var(--oc-border-base);
   border-radius: 5px;
   background: var(--v2-background-bg-button-neutral);

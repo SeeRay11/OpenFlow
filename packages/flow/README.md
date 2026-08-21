@@ -77,10 +77,29 @@ Environment overrides:
 | Variable | Default | Meaning |
 |---|---|---|
 | `OPENCODE_SERVER_URL` | `http://127.0.0.1:4096` | server the proxy forwards to |
-| `OPENFLOW_PROJECT` | repo root | project the agents work in, and where `.openflow/` is written |
+| `OPENFLOW_PROJECT` | last used, else repo root | project the agents work in, and where `.openflow/` is written |
 | `FLOW_PORT` | `5174` | port for `bun start` (dev server is fixed at 5174) |
 | `FLOW_HOST` | `127.0.0.1` | interface for `bun start` |
 | `FLOW_ALLOW_REMOTE` | unset | `1` allows a non-loopback bind, for both hosts |
+| `OPENFLOW_STATE_DIR` | `~/.openflow` | where the remembered project folder is stored |
+
+### Which folder it opens in
+
+Switching folders in the UI is remembered, so a full stop and relaunch reopens
+the folder you were last working in rather than the OpenFlow repo. Precedence at
+boot (`lib/last-project.ts`):
+
+1. **`OPENFLOW_PROJECT`** — including `openflow.ps1 -Project` / `openflow.sh
+   --project`. Naming a folder on this launch means it, and a folder picked last
+   week must not override it.
+2. **the remembered folder**, if it still exists. One that has been moved or
+   deleted is dropped, because booting into a missing path fails every
+   `/flow/api` route and reads as a broken app rather than a missing folder.
+3. **the OpenFlow repo itself.**
+
+The folder is recorded host-side in `~/.openflow/state.json` — outside any
+project, since it describes the app rather than the repo, and a user might
+commit or delete the repo.
 
 ## How it talks to opencode
 

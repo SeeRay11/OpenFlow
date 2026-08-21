@@ -2,6 +2,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { cliAuthPath, importCliKeys, readCliKeys } from "./cli-auth"
 import { allowsRemote } from "./guard"
+import { rememberProject } from "./last-project"
 import { hasNativePicker, pickFolderNative } from "./native-picker"
 import { zenModels } from "./zen"
 
@@ -37,7 +38,8 @@ import { zenModels } from "./zen"
  *                                             (drive roots on Windows when `path` is omitted)
  *   POST   /flow/api/pick-folder           -> { path } — native OS folder dialog on the host,
  *                                             `null` when cancelled (loopback hosts only)
- *   POST   /flow/api/project               -> { path } — switch the live project directory
+ *   POST   /flow/api/project               -> { path } — switch the live project directory,
+ *                                             and remember it for the next launch
  *
  * Keeping it host-neutral is the point: the dev server and the built app must
  * not drift into two different stores. `browse`/`project` read the same host
@@ -276,6 +278,9 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     const stat = await fs.stat(resolved).catch(() => undefined)
     if (!stat || !stat.isDirectory()) return { status: 400, body: { error: `not a directory: ${resolved}` } }
     setProjectPath(paths, resolved)
+    // Remembered here rather than in the UI: the browser cannot write to the
+    // host, and this is the one place every project switch passes through.
+    rememberProject(resolved)
     return ok(paths)
   }
 

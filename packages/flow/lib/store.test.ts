@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { recallProject, statePath } from "./last-project"
 import { backupConfig, browseDirectory, flowPaths, handleFlow, slug, type FlowPaths } from "./store"
 
 /**
@@ -16,9 +17,13 @@ let paths: FlowPaths
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "openflow-store-"))
   paths = flowPaths(dir)
+  // A project switch remembers the folder for the next launch; without this
+  // the suite would overwrite the developer's own `~/.openflow/state.json`.
+  process.env.OPENFLOW_STATE_DIR = path.join(dir, "state")
 })
 
 afterEach(async () => {
+  delete process.env.OPENFLOW_STATE_DIR
   await fs.rm(dir, { recursive: true, force: true })
 })
 
@@ -408,6 +413,21 @@ describe("routes: browse and project", () => {
     } finally {
       await fs.rm(next, { recursive: true, force: true })
     }
+  })
+
+  test("POST /project remembers the folder for the next launch", async () => {
+    const next = await fs.mkdtemp(path.join(os.tmpdir(), "openflow-store-next-"))
+    try {
+      await call("POST", "/flow/api/project", { body: { path: next } })
+      expect(recallProject()).toBe(path.resolve(next))
+    } finally {
+      await fs.rm(next, { recursive: true, force: true })
+    }
+  })
+
+  test("POST /project remembers nothing when it refused the switch", async () => {
+    await call("POST", "/flow/api/project", { body: { path: path.join(dir, "ghost") } })
+    expect(await fs.access(statePath()).then(() => true, () => false)).toBe(false)
   })
 
   test("POST /project rejects a path that does not exist", async () => {
