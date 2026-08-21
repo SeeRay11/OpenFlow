@@ -84,7 +84,7 @@ Environment overrides:
 
 ## How it talks to opencode
 
-Both hosts proxy `/api`, `/global` and `/event` to `opencode serve`, so the
+Both hosts proxy `/api`, `/global`, `/event` and `/mcp` to `opencode serve`, so the
 browser is same-origin with the server — no CORS and no password plumbing. The
 client is `createOpencodeClient` from `@opencode-ai/sdk/v2/client` (the same
 client `packages/app` uses).
@@ -107,6 +107,8 @@ Endpoints driven, all v2:
 | read the node's answer | `GET /api/session/{id}/message` |
 | live status | `GET /api/event` (SSE) |
 | stop | `POST /api/session/{id}/interrupt` |
+| answer a question the agent asked | `POST /api/session/{id}/question/{req}/reply` (or `/reject`) |
+| mcp status and connection | `GET /mcp`, `POST /mcp/{name}/connect`, `POST /mcp/{name}/disconnect` |
 | pickers | `GET /api/agent`, `GET /api/model` |
 | provider list + stored keys | `GET /api/integration` |
 | store a key | `POST /api/integration/{id}/connect/key` |
@@ -295,6 +297,68 @@ Every decision is recorded on the node and in the run log with the action,
 resources, reply and policy — an approval that leaves no trace is how a run
 quietly changes something nobody expected. Stopping a run rejects anything still
 pending rather than leaving the node waiting on an answer that will never come.
+
+### Questions during a run (human in the loop)
+
+A card can stop and ask you something. That is opencode's builtin `question`
+tool, enabled per node by the **question** toggle in the inspector's tool list;
+with it off the node runs headless and guesses instead. When an agent calls it,
+the engine picks up `question.v2.asked`, parks the node (`asking: <header>`) and
+shows a modal with the agent's own options — one answer per question, several
+labels when the question allows it, plus a free-text box for an answer the
+options did not offer.
+
+Unlike a permission ask there is no auto policy, because an invented answer is
+worse than none: the agent treats it as your intent. An unanswered question is
+therefore *rejected* rather than guessed, and rejection is bounded by a five
+minute timeout so a run left alone still finishes rather than holding the node
+for the full idle wait. Every exchange is recorded on the node in the run log.
+
+### Attachments
+
+The run bar takes files, and so does each card (inspector → **files**). Pasting
+an image into the task field attaches it too, which is how most screenshots get
+there. Files are read into `data:` URLs in the browser and sent inline with the
+prompt, so there is no upload endpoint, nothing written to the host, and nothing
+left behind after a run — at the cost of size, so anything over 4 MB is refused
+with a reason rather than failing later as an opaque request error.
+
+A card only receives a file whose modality its model actually accepts, read from
+`capabilities.input` on `GET /api/model`. A text-only model in the middle of a
+chain is not sent the image; it is told, in the prompt, which files were withheld
+and not to claim it saw them, and the run continues. A card with no pinned model
+is sent everything, since nothing can prove its model incapable.
+
+## MCP servers
+
+The **plug** button in the titlebar manages the project's MCP servers. Both
+kinds are covered: **local** (a command this machine runs, with environment
+variables and an optional working directory) and **remote** (an http/sse url with
+headers). They are written to the project's `opencode.json` under `mcp`, so the
+opencode CLI and TUI see exactly the same set — OpenFlow owns no parallel config.
+
+The panel shows two things at once on purpose. The rows are what the *config*
+says; the tag on each row is what the *running server* reports from `GET /mcp`.
+They disagree constantly, because `opencode serve` reads its config once at boot:
+a freshly added server reads **not loaded — restart server** until it does.
+Connect/disconnect act on the live server only — a way to retry a failed
+connection without a restart, not a way to change the config.
+
+Per-node access lives in the inspector: each card gets a checkbox per configured
+server. An MCP tool is named `<server>_<tool>` and permission actions match by
+wildcard, so the generated agent config carries one rule per server
+(`"context7_*": "allow" | "deny"`). A card that has never chosen says nothing at
+all, which is what a pipeline authored before this existed asked for — it
+inherits whatever the server offers rather than being retroactively locked down.
+
+Values in `opencode.json` are plain text. For a secret, prefer an environment
+variable the host already holds.
+
+| Store route | Purpose |
+|---|---|
+| `GET /flow/api/mcp` | servers configured in the project's opencode.json |
+| `PUT /flow/api/mcp/{name}` | add or update one (backs the config up first) |
+| `DELETE /flow/api/mcp/{name}` | drop one from the config |
 
 ## Canvas
 

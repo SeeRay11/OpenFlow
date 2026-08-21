@@ -23,7 +23,7 @@ const hostname = process.env.FLOW_HOST ?? "127.0.0.1"
 const paths = flowPaths(project)
 
 /** Paths that belong to `opencode serve` rather than to this app. */
-const PROXIED = ["/api", "/global", "/event"]
+const PROXIED = ["/api", "/global", "/event", "/mcp"]
 const MAX_BODY = 8 * 1024 * 1024
 
 if (!(await Bun.file(path.join(dist, "index.html")).exists())) {

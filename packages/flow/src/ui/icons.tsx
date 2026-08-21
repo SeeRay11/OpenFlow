@@ -198,3 +198,31 @@ export function IconFlow() {
     </Svg>
   )
 }
+
+export function IconPlug() {
+  return (
+    <Svg>
+      <path d="M6 2v3.2M10 2v3.2" />
+      <path d="M3.8 5.2h8.4v2.1a4.2 4.2 0 0 1-4.2 4.2 4.2 4.2 0 0 1-4.2-4.2z" />
+      <path d="M8 11.5V14" />
+    </Svg>
+  )
+}
+
+export function IconPaperclip() {
+  return (
+    <Svg>
+      <path d="M11.6 7.3 7 11.9a2.6 2.6 0 0 1-3.7-3.7l5.2-5.2a1.8 1.8 0 0 1 2.5 2.5l-5.1 5.1a0.9 0.9 0 0 1-1.3-1.3l4.6-4.6" />
+    </Svg>
+  )
+}
+
+export function IconQuestion() {
+  return (
+    <Svg>
+      <circle cx="8" cy="8" r="5.8" />
+      <path d="M6.3 6.3a1.8 1.8 0 0 1 3.4.7c0 1.2-1.7 1.4-1.7 2.6" />
+      <path d="M8 12.1h.01" />
+    </Svg>
+  )
+}

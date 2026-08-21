@@ -50,6 +50,8 @@ export default defineConfig({
       "/api": proxy,
       "/global": proxy,
       "/event": proxy,
+      // MCP routes are the one instance API not served under /api.
+      "/mcp": proxy,
     },
   },
   build: {

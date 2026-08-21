@@ -436,3 +436,100 @@ describe("backupConfig", () => {
     expect(await read(`${target}.prev.bak`)).toBe("merged twice")
   })
 })
+
+describe("mcp servers", () => {
+  const configPath = () => path.join(dir, "opencode.json")
+
+  test("lists nothing when the project has no config", async () => {
+    expect((await call("GET", "/mcp"))?.body).toEqual([])
+  })
+
+  test("writes a local server into the project config", async () => {
+    const response = await call("PUT", "/mcp/context7", {
+      body: { type: "local", command: ["bunx", "-y", "@upstash/context7-mcp"], environment: { KEY: "v" } },
+    })
+
+    expect(response?.status).toBe(200)
+    const config = JSON.parse(await read(configPath()))
+    expect(config.mcp.context7).toEqual({
+      type: "local",
+      command: ["bunx", "-y", "@upstash/context7-mcp"],
+      environment: { KEY: "v" },
+      enabled: true,
+    })
+  })
+
+  test("writes a remote server with headers", async () => {
+    await call("PUT", "/mcp/hosted", {
+      body: { type: "remote", url: "https://mcp.example.com/sse", headers: { Authorization: "Bearer x" } },
+    })
+
+    const config = JSON.parse(await read(configPath()))
+    expect(config.mcp.hosted).toEqual({
+      type: "remote",
+      url: "https://mcp.example.com/sse",
+      headers: { Authorization: "Bearer x" },
+      enabled: true,
+    })
+  })
+
+  test("refuses a server that could not start, rather than writing a config opencode rejects", async () => {
+    const local = await call("PUT", "/mcp/broken", { body: { type: "local", command: [] } })
+    const remote = await call("PUT", "/mcp/broken", { body: { type: "remote", url: "  " } })
+
+    expect(local?.status).toBe(400)
+    expect(remote?.status).toBe(400)
+    expect(await fs.access(configPath()).then(() => true, () => false)).toBe(false)
+  })
+
+  test("drops empty header and environment rows the form leaves behind", async () => {
+    await call("PUT", "/mcp/tidy", {
+      body: { type: "local", command: ["run"], environment: { "": "orphan", KEY: "kept" } },
+    })
+
+    const config = JSON.parse(await read(configPath()))
+    expect(config.mcp.tidy.environment).toEqual({ KEY: "kept" })
+  })
+
+  test("keeps other config and backs it up before rewriting", async () => {
+    await fs.writeFile(configPath(), JSON.stringify({ agent: { planner: {} } }, null, 2))
+
+    await call("PUT", "/mcp/one", { body: { type: "local", command: ["run"] } })
+
+    const config = JSON.parse(await read(configPath()))
+    expect(config.agent).toEqual({ planner: {} })
+    expect(JSON.parse(await read(`${configPath()}.bak`)).mcp).toBeUndefined()
+  })
+
+  test("round-trips through the list route", async () => {
+    await call("PUT", "/mcp/beta", { body: { type: "remote", url: "https://b" } })
+    await call("PUT", "/mcp/alpha", { body: { type: "local", command: ["a"], enabled: false } })
+
+    const rows = (await call("GET", "/mcp"))?.body as any[]
+    expect(rows.map((row) => row.name)).toEqual(["alpha", "beta"])
+    expect(rows[0]).toMatchObject({ type: "local", enabled: false, command: ["a"] })
+  })
+
+  test("delete removes only the named server", async () => {
+    await call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } })
+    await call("PUT", "/mcp/two", { body: { type: "local", command: ["b"] } })
+
+    const response = await call("DELETE", "/mcp/one")
+
+    expect(response?.body).toMatchObject({ name: "one", removed: true })
+    expect(Object.keys(JSON.parse(await read(configPath())).mcp)).toEqual(["two"])
+  })
+
+  test("deleting something that was never configured is not an error", async () => {
+    expect((await call("DELETE", "/mcp/ghost"))?.body).toMatchObject({ removed: false })
+  })
+
+  test("refuses to touch an opencode.json it cannot parse", async () => {
+    await fs.writeFile(configPath(), "{ not json")
+
+    const response = await call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } })
+
+    expect(response?.status).toBe(400)
+    expect(await read(configPath())).toBe("{ not json")
+  })
+})

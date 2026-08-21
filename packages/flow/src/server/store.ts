@@ -15,6 +15,17 @@ export type RunEntry = { id: string; pipeline?: string; status?: string; started
 export type BrowseEntry = { name: string; path: string }
 export type BrowseResult = { path: string | null; parent: string | null; entries: BrowseEntry[] }
 export type FlowPaths = { project: string; pipelines: string; runs: string; generated: string; skills: string }
+export type McpServer = {
+  name: string
+  type: "local" | "remote"
+  enabled: boolean
+  command?: string[]
+  cwd?: string
+  environment?: Record<string, string>
+  url?: string
+  headers?: Record<string, string>
+  timeout?: number
+}
 export type SkillEntry = { name: string; description?: string; updated: number }
 /** `name` is the frontmatter name shown to the agent; `folder` is the slug the API addresses it by. */
 export type SkillDoc = { name: string; folder: string; description?: string; content: string; path: string }
@@ -34,6 +45,15 @@ export const store = {
       `/pipelines/${encodeURIComponent(name)}/agents${merge ? "?merge=1" : ""}`,
       { method: "POST", body: JSON.stringify({ agent }) },
     ),
+  /** MCP servers configured in the project's opencode.json. */
+  mcpServers: () => request<McpServer[]>("/mcp"),
+  saveMcpServer: (server: McpServer) =>
+    request<{ name: string; path: string; backup?: string }>(`/mcp/${encodeURIComponent(server.name)}`, {
+      method: "PUT",
+      body: JSON.stringify(server),
+    }),
+  deleteMcpServer: (name: string) =>
+    request<{ name: string; removed: boolean }>(`/mcp/${encodeURIComponent(name)}`, { method: "DELETE" }),
   /** Skills authored in OpenFlow, stored under `.openflow/skills` and registered in opencode.json. */
   skills: () => request<SkillEntry[]>("/skills"),
   skill: (name: string) => request<SkillDoc>(`/skills/${encodeURIComponent(name)}`),
@@ -83,9 +103,12 @@ export const store = {
  * `{ action, resource: "*", effect: "deny" }`. `write`, `edit` and `patch` all
  * collapse onto the single `edit` action, so they are offered here as one
  * toggle — exposing them separately lets a graph ask for contradictory states.
- * `question` is special-cased by the server and produces no rule at all.
  * Unknown names are passed through verbatim and silently do nothing, so this
  * list is the only guard against a typo becoming a no-op toggle.
+ *
+ * `question` is what lets a node stop and ask a person something: the builtin
+ * tool registers under that name, so a `question: "deny"` rule strips it from
+ * the agent and a node with it off runs headless and guesses instead.
  */
 export const TOOL_ACTIONS: Record<string, string> = {
   read: "read",
@@ -97,6 +120,7 @@ export const TOOL_ACTIONS: Record<string, string> = {
   websearch: "websearch",
   todowrite: "todowrite",
   skill: "skill",
+  question: "question",
 }
 
 export const TOOLS = Object.keys(TOOL_ACTIONS)
@@ -155,11 +179,29 @@ export function agentKey(pipeline: Pipeline, node: Pipeline["nodes"][number]) {
   return `${pipeline.name}-${node.role}`.replace(/[^a-zA-Z0-9-_]/g, "-").toLowerCase()
 }
 
-export function agentBlock(pipeline: Pipeline) {
+/**
+ * Per-node MCP access, as permission rules.
+ *
+ * An MCP tool is registered as `<server>_<tool>`, and permission actions are
+ * matched by wildcard, so one `"<server>_*"` rule covers a whole server. Rules
+ * are only written for servers the project actually configures: a blanket deny
+ * would also silence servers added later, and a node that says nothing about
+ * MCP (`agent.mcp` undefined — every node authored before this existed) is
+ * left alone rather than retroactively locked down.
+ */
+export function mcpBlock(allowed: string[] | undefined, servers: string[]) {
+  const block: Record<string, "allow" | "deny"> = {}
+  if (!allowed || !servers.length) return block
+  const set = new Set(allowed)
+  for (const server of servers) block[`${server}_*`] = set.has(server) ? "allow" : "deny"
+  return block
+}
+
+export function agentBlock(pipeline: Pipeline, servers: string[] = []) {
   const block: Record<string, unknown> = {}
   for (const node of pipeline.nodes) {
     const key = agentKey(pipeline, node)
-    const permission = permissionBlock(node.agent.tools)
+    const permission = { ...permissionBlock(node.agent.tools), ...mcpBlock(node.agent.mcp, servers) }
     block[key] = {
       mode: "primary",
       description: `OpenFlow node ${node.id} (${node.role}) of pipeline ${pipeline.name}`,

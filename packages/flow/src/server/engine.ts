@@ -1,5 +1,5 @@
 import { buildPrompt } from "../graph/prompt"
-import type { FlowNode, NodeStatus, Pipeline, RunLog, RunNodeLog } from "../graph/types"
+import type { Attachment, FlowNode, NodeStatus, Pipeline, RunLog, RunNodeLog } from "../graph/types"
 import { ancestors, layer, upstream } from "../graph/validate"
 import * as api from "./client"
 import { store } from "./store"
@@ -21,11 +21,28 @@ export type EngineHooks = {
   onNotice?: (kind: "info" | "error", text: string) => void
   /** Only called under the `manual` policy. Resolve with the reply to send. */
   onPermission?: (request: PermissionRequest) => Promise<api.PermissionReply>
+  /** Resolve with one array of chosen labels per question, or undefined to reject. */
+  onQuestion?: (request: QuestionRequest) => Promise<string[][] | undefined>
+  /**
+   * Called once a question is settled, including when the engine gave up
+   * waiting. Without it a timed-out prompt stays on screen forever, still
+   * offering buttons that now answer nothing.
+   */
+  onQuestionClosed?: (requestID: string) => void
 }
 
 export type RunOptions = {
   pipe?: PipeMode
   permissions?: PermissionPolicy
+  /** Files attached to the run itself, offered to every node. */
+  attachments?: Attachment[]
+  /**
+   * How long a question may sit unanswered before the engine rejects it for
+   * the user, in milliseconds. Rejecting lets the agent carry on with its own
+   * assumption; leaving it open holds the node until `nodeTimeout` instead,
+   * which is how an unattended run quietly burns half an hour.
+   */
+  questionTimeout?: number
   /**
    * How many nodes may run at once. A layer is dispatched through a pool of
    * this size rather than all at once: eight parallel workers means eight
@@ -43,6 +60,7 @@ export type RunOptions = {
 
 export const DEFAULT_MAX_PARALLEL = 4
 export const DEFAULT_NODE_TIMEOUT = 30 * 60_000
+export const DEFAULT_QUESTION_TIMEOUT = 5 * 60_000
 
 export type Run = {
   log: RunLog
@@ -64,6 +82,9 @@ export type EngineDeps = {
     | "transcript"
     | "interrupt"
     | "replyPermission"
+    | "replyQuestion"
+    | "rejectQuestion"
+    | "accepts"
     | "models"
     | "agents"
     | "describe"
@@ -99,6 +120,14 @@ export type PermissionRequest = {
   resources: string[]
 }
 
+export type QuestionRequest = {
+  requestID: string
+  sessionID: string
+  nodeID: string
+  role: string
+  questions: api.QuestionInfo[]
+}
+
 /**
  * Executes a pipeline over `opencode serve`.
  *
@@ -120,6 +149,8 @@ export function start(
   const policy = options.permissions ?? "auto"
   const limit = Math.max(1, Math.floor(options.maxParallel ?? DEFAULT_MAX_PARALLEL))
   const nodeTimeout = Math.max(1_000, options.nodeTimeout ?? DEFAULT_NODE_TIMEOUT)
+  const questionTimeout = Math.max(100, options.questionTimeout ?? DEFAULT_QUESTION_TIMEOUT)
+  const runFiles = options.attachments ?? []
   const validation = layer(pipeline)
   if (!validation.ok) throw new Error(validation.error)
   const order = new Map(validation.layers.flatMap((ids, index) => ids.map((id) => [id, index] as const)))
@@ -128,6 +159,8 @@ export function start(
   const sessions = new Map<string, string>() // sessionID -> nodeID
   const active = new Set<string>() // sessionIDs still running
   const answered = new Set<string>() // permission requests already replied to
+  const asked = new Set<string>() // question requests already handled
+  const catalog = new Map<string, Awaited<ReturnType<typeof api.models>>[number]>()
   const nodes = new Map(pipeline.nodes.map((node) => [node.id, node] as const))
   const outputs = new Map<string, string>()
   const failed = new Set<string>()
@@ -137,6 +170,7 @@ export function start(
     pipeline: pipeline.name,
     pipelineID: pipeline.id,
     input,
+    ...(runFiles.length ? { attachments: runFiles.map((file) => file.name) } : {}),
     status: "running",
     started: Date.now(),
     nodes: pipeline.nodes.map<RunNodeLog>((node) => ({
@@ -177,6 +211,9 @@ export function start(
           return patch(id, { activity: "failed" })
         case "permission.v2.asked":
           void answer(id, sessionID, event.data as any)
+          return
+        case "question.v2.asked":
+          void inquire(id, sessionID, event.data as any)
           return
         default:
           return
@@ -226,6 +263,57 @@ export function start(
     patch(nodeID, { activity: `permission ${data.action}: ${reply}` })
   }
 
+  /**
+   * Hands one question from an agent to the UI and sends back what a person
+   * chose.
+   *
+   * Unlike a permission ask there is no "auto" answer worth inventing — a made
+   * up choice is worse than none, because the agent treats it as the user's
+   * intent. So an unanswered question is *rejected* rather than guessed, and
+   * rejection is bounded by `questionTimeout` so a run left alone still
+   * finishes instead of hanging until the node times out.
+   */
+  async function inquire(
+    nodeID: string,
+    sessionID: string,
+    data: { id: string; questions?: api.QuestionInfo[] },
+  ) {
+    const requestID = data.id
+    if (asked.has(requestID)) return
+    asked.add(requestID)
+    const questions = data.questions ?? []
+    const node = nodes.get(nodeID)
+    const headers = questions.map((question) => question.header || question.question)
+
+    let answers: string[][] | undefined
+    if (!controller.signal.aborted && hooks.onQuestion) {
+      patch(nodeID, { activity: `asking: ${headers[0] ?? "?"}` })
+      answers = await Promise.race([
+        hooks
+          .onQuestion({ requestID, sessionID, nodeID, role: node?.role ?? nodeID, questions })
+          .catch(() => undefined),
+        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), questionTimeout)),
+      ])
+    }
+
+    hooks.onQuestionClosed?.(requestID)
+
+    try {
+      if (answers) await api.replyQuestion(sessionID, requestID, answers)
+      else await api.rejectQuestion(sessionID, requestID)
+    } catch (error) {
+      hooks.onNotice?.("error", `question reply failed: ${api.describe(error)}`)
+      return
+    }
+
+    const record = entry(nodeID)
+    record.questions = [
+      ...(record.questions ?? []),
+      { requestID, headers, answers, rejected: !answers, at: Date.now() },
+    ]
+    patch(nodeID, { activity: answers ? "answered" : "question unanswered" })
+  }
+
   async function runNode(node: FlowNode) {
     const sources = upstream(pipeline, node.id)
     if (sources.some((source) => failed.has(source))) {
@@ -245,10 +333,24 @@ export function start(
         pipe === "direct"
           ? sources
           : [...ancestors(pipeline, node.id)].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0))
-      const text = buildPrompt(node, context, nodes, outputs, input)
+      // Run-level files first, then the node's own pins. A file the node's
+      // model has no modality for is withheld and named in the text instead,
+      // so one blind model in the middle of a chain does not stop the run.
+      const files = [...runFiles, ...(node.agent.attachments ?? [])]
+      const model = node.agent.model ? catalog.get(node.agent.model) : undefined
+      const sendable = files.filter((file) => !model || api.accepts(model, file.mime))
+      const skipped = files.filter((file) => !sendable.includes(file))
+      if (files.length) {
+        entry(node.id).attachments = {
+          sent: sendable.map((file) => file.name),
+          skipped: skipped.map((file) => file.name),
+        }
+      }
+
+      const text = buildPrompt(node, context, nodes, outputs, input, skipped)
       patch(node.id, { prompt: text })
 
-      await api.prompt(session.id, text)
+      await api.prompt(session.id, text, sendable)
       if (controller.signal.aborted) throw new StopError()
       await api.waitForIdle(session.id, { signal: controller.signal, timeout: nodeTimeout })
       active.delete(session.id)
@@ -275,7 +377,12 @@ export function start(
 
   const done = (async () => {
     try {
-      const unresolved = await unknownModels(pipeline, api)
+      // One catalog read serves both jobs: rejecting a model the server does
+      // not offer, and knowing which attachments each model can actually read.
+      const models = await api.models().catch(() => undefined)
+      for (const model of models ?? []) catalog.set(`${model.providerID}/${model.id}`, model)
+
+      const unresolved = models ? unknownModels(pipeline, catalog) : []
       if (unresolved.length) {
         for (const node of unresolved) {
           failed.add(node.id)
@@ -368,15 +475,8 @@ async function pool<T>(items: T[], limit: number, signal: AbortSignal, work: (it
  * Nodes pinned to a model the server does not offer. Checked before any
  * dispatch so a typo fails in a second instead of after a wait timeout.
  */
-async function unknownModels(pipeline: Pipeline, api: EngineDeps["api"]) {
-  const pinned = pipeline.nodes.filter((node) => node.agent.model)
-  if (!pinned.length) return []
-  const available = await api
-    .models()
-    .then((list) => new Set(list.map((model) => `${model.providerID}/${model.id}`)))
-    .catch(() => undefined)
-  if (!available) return []
-  return pinned.filter((node) => !available.has(node.agent.model!))
+function unknownModels(pipeline: Pipeline, catalog: Map<string, unknown>) {
+  return pipeline.nodes.filter((node) => node.agent.model && !catalog.has(node.agent.model))
 }
 
 /**
