@@ -64,6 +64,7 @@ export function App() {
   const [showProviders, setShowProviders] = createSignal(false)
   const [showSkills, setShowSkills] = createSignal(false)
   const [showProjectPicker, setShowProjectPicker] = createSignal(false)
+  const [pickingProject, setPickingProject] = createSignal(false)
   const [providerQuery, setProviderQuery] = createSignal("")
   const [pipelines, setPipelines] = createSignal<PipelineEntry[]>([])
   const [runs, setRuns] = createSignal<RunEntry[]>([])
@@ -100,6 +101,29 @@ export function App() {
   }
 
   onMount(bootstrap)
+
+  /**
+   * Asks the host for its own folder dialog first, and only falls back to the
+   * in-app browser when there is none (a remote or headless host, or a
+   * platform with no picker). The native dialog is what a user means by
+   * "change folder"; the browser exists because a page cannot produce a real
+   * OS path on its own.
+   */
+  async function pickProject() {
+    if (pickingProject()) return
+    setPickingProject(true)
+    try {
+      const { path } = await store.pickFolder(project() || undefined)
+      if (!path) return
+      const paths = await store.setProject(path)
+      api.disconnect()
+      await switchProject(paths.project)
+    } catch (error) {
+      setShowProjectPicker(true)
+    } finally {
+      setPickingProject(false)
+    }
+  }
 
   async function switchProject(next: string) {
     setShowProjectPicker(false)
@@ -565,9 +589,13 @@ export function App() {
           <button
             type="button"
             class="icon-btn statusbar-project"
-            title={`${project()} — click to switch project`}
+            title={`${project()} — click to choose a folder (right-click to browse in-app)`}
             aria-label="switch project"
-            onClick={() => setShowProjectPicker(true)}
+            onClick={() => void pickProject()}
+            onContextMenu={(event) => {
+              event.preventDefault()
+              setShowProjectPicker(true)
+            }}
           >
             <IconFolder />
             <span class="mono dim">{project()}</span>

@@ -383,6 +383,18 @@ describe("routes: browse and project", () => {
     expect(result!.status).toBe(400)
   })
 
+  test("POST /pick-folder refuses when the host is serving remotely", async () => {
+    const previous = process.env.FLOW_ALLOW_REMOTE
+    process.env.FLOW_ALLOW_REMOTE = "1"
+    try {
+      const result = await call("POST", "/flow/api/pick-folder", { body: {} })
+      expect(result!.status).toBe(403)
+    } finally {
+      if (previous === undefined) delete process.env.FLOW_ALLOW_REMOTE
+      else process.env.FLOW_ALLOW_REMOTE = previous
+    }
+  })
+
   test("POST /project switches every path in place, live", async () => {
     const next = await fs.mkdtemp(path.join(os.tmpdir(), "openflow-store-next-"))
     try {

@@ -1,6 +1,8 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { cliAuthPath, importCliKeys, readCliKeys } from "./cli-auth"
+import { allowsRemote } from "./guard"
+import { hasNativePicker, pickFolderNative } from "./native-picker"
 import { zenModels } from "./zen"
 
 /**
@@ -30,6 +32,8 @@ import { zenModels } from "./zen"
  *   GET    /flow/api/zen-models            -> { ids: [...] | null } — what zen really serves
  *   GET    /flow/api/browse?path=          -> { path, parent, entries } — subdirectories of `path`
  *                                             (drive roots on Windows when `path` is omitted)
+ *   POST   /flow/api/pick-folder           -> { path } — native OS folder dialog on the host,
+ *                                             `null` when cancelled (loopback hosts only)
  *   POST   /flow/api/project               -> { path } — switch the live project directory
  *
  * Keeping it host-neutral is the point: the dev server and the built app must
@@ -225,6 +229,23 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
       return ok(await browseDirectory(target))
     } catch (error) {
       return { status: 400, body: { error: error instanceof Error ? error.message : String(error) } }
+    }
+  }
+
+  if (segments[0] === "pick-folder" && method === "POST") {
+    // The dialog opens on the *host*, so it only makes sense when the host is
+    // the machine the user is sitting at. Served remotely it would pop a window
+    // nobody can see and hang the request, so refuse and let the caller fall
+    // back to `/browse`.
+    if (allowsRemote()) return { status: 403, body: { error: "native picker is unavailable when serving remotely" } }
+    if (!hasNativePicker()) return { status: 501, body: { error: `no native folder picker on ${process.platform}` } }
+    const body = await request.json().catch(() => ({}))
+    const start = typeof body?.path === "string" && body.path ? body.path : paths.project
+    try {
+      const picked = await pickFolderNative(start)
+      return ok({ path: picked ?? null })
+    } catch (error) {
+      return { status: 500, body: { error: error instanceof Error ? error.message : String(error) } }
     }
   }
 

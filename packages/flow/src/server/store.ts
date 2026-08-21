@@ -64,6 +64,13 @@ export const store = {
     }),
   /** Subdirectories of `target`, or drive/root listing when omitted — for a folder picker. */
   browse: (target?: string) => request<BrowseResult>(`/browse${target ? `?path=${encodeURIComponent(target)}` : ""}`),
+  /**
+   * Opens the host's own folder dialog and resolves with what was chosen, or
+   * `null` when the user cancelled. Rejects when the host has no dialog (a
+   * remote or headless host) — callers fall back to `browse`.
+   */
+  pickFolder: (start?: string) =>
+    request<{ path: string | null }>("/pick-folder", { method: "POST", body: JSON.stringify({ path: start }) }),
   /** Switches the live project directory. Takes effect immediately, no restart. */
   setProject: (path: string) => request<FlowPaths>("/project", { method: "POST", body: JSON.stringify({ path }) }),
 }

@@ -51,6 +51,20 @@ export function ProjectPicker(props: { current: string; onClose: () => void; onS
     }
   }
 
+  /** Hands off to the host's own folder dialog; the list stays as the fallback. */
+  async function openNative() {
+    setBusy(true)
+    setError(undefined)
+    try {
+      const { path } = await store.pickFolder(manual().trim() || props.current)
+      if (path) await use(path)
+    } catch (failure) {
+      setError(api.describe(failure))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   function onManualSubmit(event: Event) {
     event.preventDefault()
     const value = manual().trim()
@@ -108,6 +122,14 @@ export function ProjectPicker(props: { current: string; onClose: () => void; onS
         </div>
 
         <div class="oc-form-actions">
+          <button
+            type="button"
+            class="oc-button"
+            disabled={busy()}
+            onClick={() => void openNative()}
+          >
+            Open file explorer…
+          </button>
           <button
             type="button"
             class="oc-button oc-primary"
