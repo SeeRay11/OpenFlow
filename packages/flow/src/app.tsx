@@ -103,7 +103,30 @@ export function App() {
       setStatus(`offline — ${detail}`)
       actions.notice("error", detail.includes("opencode serve") ? detail : `cannot reach opencode serve: ${detail}`)
     }
-    await refresh()
+    const entries = await refresh()
+    await reopen(entries)
+  }
+
+  /**
+   * Reopens the pipeline that was last open in this project.
+   *
+   * Only if the store still lists it: a pipeline deleted or renamed outside
+   * OpenFlow would otherwise greet the user with a load error on every launch.
+   * Loading is silent — this is restoring where they were, not an action they
+   * just took — and it is safe at boot because the canvas is empty until it
+   * runs. A failure leaves the blank canvas rather than blocking startup.
+   */
+  async function reopen(entries: PipelineEntry[]) {
+    try {
+      // `connect()` is cached, so this rereads nothing — it just hands back the
+      // context already fetched, including the pipeline to reopen.
+      const { context } = await api.connect()
+      const last = context.pipeline
+      if (!last || !entries.some((entry) => entry.name === last)) return
+      actions.load((await store.pipeline(last)) as Pipeline)
+    } catch {
+      // The listing said it was there; if it is not, a blank canvas is fine.
+    }
   }
 
   onMount(bootstrap)
@@ -177,9 +200,11 @@ export function App() {
   }
 
   async function refresh() {
-    setPipelines(await store.pipelines().catch(() => []))
+    const entries = await store.pipelines().catch(() => [])
+    setPipelines(entries)
     setRuns(await store.runs().catch(() => []))
     setMcpServers(await store.mcpServers().catch(() => []))
+    return entries
   }
 
   const mcpNames = () => mcpServers().map((server) => server.name)

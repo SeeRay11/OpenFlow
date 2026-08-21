@@ -81,13 +81,21 @@ Environment overrides:
 | `FLOW_PORT` | `5174` | port for `bun start` (dev server is fixed at 5174) |
 | `FLOW_HOST` | `127.0.0.1` | interface for `bun start` |
 | `FLOW_ALLOW_REMOTE` | unset | `1` allows a non-loopback bind, for both hosts |
-| `OPENFLOW_STATE_DIR` | `~/.openflow` | where the remembered project folder is stored |
+| `OPENFLOW_STATE_DIR` | `~/.openflow` | where the remembered folder and pipeline are stored |
 
-### Which folder it opens in
+### Where it picks up
 
-Switching folders in the UI is remembered, so a full stop and relaunch reopens
-the folder you were last working in rather than the OpenFlow repo. Precedence at
-boot (`lib/last-project.ts`):
+A full stop and relaunch reopens the folder you were last working in **and the
+pipeline you had open in it**, rather than the OpenFlow repo and a blank canvas.
+
+The pipeline is remembered per project — a name only means anything inside the
+folder whose `.openflow/pipelines` holds it — and is recorded when you open or
+save one. It rides back on `GET /flow/api/context`, so restoring costs no extra
+round trip, and it is only reopened if the store still lists it: a pipeline
+deleted or renamed outside OpenFlow leaves a blank canvas rather than an error
+on every launch.
+
+Folder precedence at boot (`lib/last-session.ts`):
 
 1. **`OPENFLOW_PROJECT`** — including `openflow.ps1 -Project` / `openflow.sh
    --project`. Naming a folder on this launch means it, and a folder picked last
@@ -97,9 +105,9 @@ boot (`lib/last-project.ts`):
    `/flow/api` route and reads as a broken app rather than a missing folder.
 3. **the OpenFlow repo itself.**
 
-The folder is recorded host-side in `~/.openflow/state.json` — outside any
-project, since it describes the app rather than the repo, and a user might
-commit or delete the repo.
+Both are recorded host-side in `~/.openflow/state.json` — outside any project,
+since they describe the app rather than the repo, and a user might commit or
+delete the repo.
 
 ## How it talks to opencode
 

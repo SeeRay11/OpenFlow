@@ -2,7 +2,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { cliAuthPath, importCliKeys, readCliKeys } from "./cli-auth"
 import { allowsRemote } from "./guard"
-import { rememberProject } from "./last-project"
+import { recallPipeline, rememberPipeline, rememberProject } from "./last-session"
 import { hasNativePicker, pickFolderNative } from "./native-picker"
 import { zenModels } from "./zen"
 
@@ -13,7 +13,8 @@ import { zenModels } from "./zen"
  * the vite dev server ([../vite/flow-store.ts]) and the standalone server
  * ([../server.ts]) — expose this same REST surface under `/flow/api/*`:
  *
- *   GET    /flow/api/context               -> { project, pipelines, runs, generated }
+ *   GET    /flow/api/context               -> { project, pipelines, runs, generated, skills,
+ *                                             pipeline } — `pipeline` is the one to reopen
  *   GET    /flow/api/pipelines             -> [{ name, id, nodes, updated }]
  *   GET    /flow/api/pipelines/:name       -> pipeline json
  *   PUT    /flow/api/pipelines/:name       -> save pipeline json
@@ -149,7 +150,9 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     .filter(Boolean)
   const method = request.method.toUpperCase()
 
-  if (segments[0] === "context" && method === "GET") return ok(paths)
+  // `pipeline` rides along on the context the canvas already reads at boot, so
+  // reopening where the user left off costs no extra round trip.
+  if (segments[0] === "context" && method === "GET") return ok({ ...paths, pipeline: recallPipeline(paths.project) })
 
   if (segments[0] === "pipelines") {
     const name = segments[1] ? slug(decodeURIComponent(segments[1])) : undefined
@@ -163,19 +166,29 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
       return ok(await writeAgents(paths, name, await request.json(), request.search.get("merge") === "1"))
     }
 
+    // Opening and saving are the two acts that mean "this is what I am working
+    // on", so they are where the pipeline to reopen is recorded. Noting it on a
+    // GET is a side effect on a read, which earns its keep here: it keeps the
+    // memory right for any client of this store rather than only the canvas,
+    // and re-noting the same name is idempotent.
     if (method === "GET") {
       const raw = await fs.readFile(file, "utf8").catch(() => undefined)
       if (raw === undefined) return { status: 404, body: { error: `pipeline "${name}" not found` } }
+      rememberPipeline(paths.project, name)
       return ok(JSON.parse(raw))
     }
     if (method === "PUT") {
       const body = await request.json()
       await fs.mkdir(paths.pipelines, { recursive: true })
       await fs.writeFile(file, JSON.stringify(body, null, 2) + "\n")
+      rememberPipeline(paths.project, name)
       return ok({ name, path: file })
     }
     if (method === "DELETE") {
       await fs.rm(file, { force: true })
+      // Forget it only when it was the remembered one — deleting some other
+      // pipeline must not make the next launch open a blank canvas.
+      if (recallPipeline(paths.project) === name) rememberPipeline(paths.project, "")
       return ok({ name })
     }
   }

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { recallProject, statePath } from "./last-project"
+import { recallPipeline, recallProject, statePath } from "./last-session"
 import { backupConfig, browseDirectory, flowPaths, handleFlow, slug, type FlowPaths } from "./store"
 
 /**
@@ -439,6 +439,50 @@ describe("routes: browse and project", () => {
   test("POST /project requires a path", async () => {
     const result = await call("POST", "/flow/api/project", { body: {} })
     expect(result!.status).toBe(400)
+  })
+})
+
+describe("routes: the pipeline to reopen", () => {
+  test("opening one records it", async () => {
+    await call("PUT", "/flow/api/pipelines/feature-build", { body: graph })
+    await call("GET", "/flow/api/pipelines/feature-build")
+    expect(recallPipeline(dir)).toBe("feature-build")
+  })
+
+  test("saving one records it", async () => {
+    await call("PUT", "/flow/api/pipelines/feature-build", { body: graph })
+    expect(recallPipeline(dir)).toBe("feature-build")
+  })
+
+  test("context carries it, so the canvas needs no extra call", async () => {
+    await call("PUT", "/flow/api/pipelines/feature-build", { body: graph })
+    const context = (await call("GET", "/flow/api/context"))!.body as any
+    expect(context.pipeline).toBe("feature-build")
+    expect(context.project).toBe(path.resolve(dir))
+  })
+
+  test("context says nothing when none was ever opened", async () => {
+    expect(((await call("GET", "/flow/api/context"))!.body as any).pipeline).toBeUndefined()
+  })
+
+  test("deleting the remembered pipeline forgets it", async () => {
+    await call("PUT", "/flow/api/pipelines/feature-build", { body: graph })
+    await call("DELETE", "/flow/api/pipelines/feature-build")
+    expect(recallPipeline(dir)).toBeUndefined()
+  })
+
+  test("deleting a different pipeline leaves it alone", async () => {
+    // Otherwise tidying up an old graph resets the user to a blank canvas.
+    await call("PUT", "/flow/api/pipelines/feature-build", { body: graph })
+    await call("PUT", "/flow/api/pipelines/scratch", { body: graph })
+    await call("GET", "/flow/api/pipelines/feature-build")
+    await call("DELETE", "/flow/api/pipelines/scratch")
+    expect(recallPipeline(dir)).toBe("feature-build")
+  })
+
+  test("a failed open records nothing", async () => {
+    await call("GET", "/flow/api/pipelines/ghost")
+    expect(recallPipeline(dir)).toBeUndefined()
   })
 })
 

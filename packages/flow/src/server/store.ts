@@ -14,7 +14,15 @@ export type PipelineEntry = { name: string; id?: string; nodes: number; updated:
 export type RunEntry = { id: string; pipeline?: string; status?: string; started?: number; finished?: number }
 export type BrowseEntry = { name: string; path: string }
 export type BrowseResult = { path: string | null; parent: string | null; entries: BrowseEntry[] }
-export type FlowPaths = { project: string; pipelines: string; runs: string; generated: string; skills: string }
+export type FlowPaths = {
+  project: string
+  pipelines: string
+  runs: string
+  generated: string
+  skills: string
+  /** Pipeline that was open in this project last time, if any. */
+  pipeline?: string
+}
 export type McpServer = {
   name: string
   type: "local" | "remote"

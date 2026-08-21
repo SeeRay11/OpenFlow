@@ -8,6 +8,8 @@ export type FlowContext = {
   pipelines: string
   runs: string
   generated: string
+  /** Pipeline that was open in this project last time, if any. */
+  pipeline?: string
 }
 
 export type OpencodeClient = ReturnType<typeof createOpencodeClient>

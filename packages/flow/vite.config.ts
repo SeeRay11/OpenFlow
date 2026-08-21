@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url"
 import { defineConfig } from "vite"
 import solid from "vite-plugin-solid"
-import { resolveProject } from "./lib/last-project"
+import { resolveProject } from "./lib/last-session"
 import { flowStore } from "./vite/flow-store"
 
 // The opencode server OpenFlow drives. Start it with `opencode serve`.

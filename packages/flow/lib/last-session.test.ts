@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import * as mod from "./last-project"
+import * as mod from "./last-session"
 
 /**
  * The remembered folder decides where every card writes on the next launch, so
@@ -79,5 +79,34 @@ describe("resolveProject", () => {
 
   test("falls back when nothing was ever remembered", () => {
     expect(mod.resolveProject(dir, undefined)).toBe(path.resolve(dir))
+  })
+})
+
+describe("remembered pipeline", () => {
+  test("is scoped to a project, so a folder switch does not carry it", () => {
+    const other = path.join(dir, "other")
+    mod.rememberPipeline(project, "feature-build")
+    mod.rememberPipeline(other, "docs-pass")
+
+    expect(mod.recallPipeline(project)).toBe("feature-build")
+    expect(mod.recallPipeline(other)).toBe("docs-pass")
+    expect(mod.recallPipeline(path.join(dir, "never-opened"))).toBeUndefined()
+  })
+
+  test("an empty name forgets it", () => {
+    mod.rememberPipeline(project, "feature-build")
+    mod.rememberPipeline(project, "")
+    expect(mod.recallPipeline(project)).toBeUndefined()
+  })
+
+  test("does not clobber the remembered folder, or the reverse", () => {
+    // The two are written by different routes at different times, so the
+    // read-modify-write is the whole point.
+    mod.rememberProject(project)
+    mod.rememberPipeline(project, "feature-build")
+    expect(mod.recallProject()).toBe(path.resolve(project))
+
+    mod.rememberProject(dir)
+    expect(mod.recallPipeline(project)).toBe("feature-build")
   })
 })
