@@ -34,12 +34,6 @@ jobs:
     defaults:
       run:
         shell: bash
-    env:
-      # bun fails to apply the repository's patches on Windows when it has to
-      # rename into a cache directory that already holds the package
-      # ("ENOTEMPTY ... NtSetInformationFile"). A per-run cache directory keeps
-      # the patched package's destination empty.
-      BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
     steps:
       # Two files upstream are committed with symlink mode (120000) but hold a
       # whole TypeScript source file as their "target", so on Windows git tries
@@ -58,6 +52,13 @@ jobs:
 
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
+        env:
+          # bun fails to apply the repository's patches on Windows when it has
+          # to rename into a cache directory that already holds the package
+          # ("ENOTEMPTY ... NtSetInformationFile"). A per-run cache directory
+          # keeps the patched package's destination empty. Step-level: the
+          # `runner` context does not exist at job level.
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
 
       - name: Typecheck
         working-directory: packages/flow
