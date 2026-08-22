@@ -68,7 +68,12 @@ export function App() {
   const [showProviders, setShowProviders] = createSignal(false)
   const [showSkills, setShowSkills] = createSignal(false)
   const [showMcp, setShowMcp] = createSignal(false)
-  const [mcpServers, setMcpServers] = createSignal<McpServer[]>([])
+  // `undefined` means the server list has not been read (yet, or at all), which
+  // is not the same as a project with no servers: the generated `<server>_*`
+  // permission rules are derived from this list, so an empty stand-in would
+  // silently drop every deny rule from the agents written to opencode.json.
+  // Starts unknown so a run fired before the first refresh lands refuses too.
+  const [mcpServers, setMcpServers] = createSignal<McpServer[] | undefined>(undefined)
   const [showProjectPicker, setShowProjectPicker] = createSignal(false)
   const [pickingProject, setPickingProject] = createSignal(false)
   const [providerQuery, setProviderQuery] = createSignal("")
@@ -203,11 +208,11 @@ export function App() {
     const entries = await store.pipelines().catch(() => [])
     setPipelines(entries)
     setRuns(await store.runs().catch(() => []))
-    setMcpServers(await store.mcpServers().catch(() => []))
+    setMcpServers(await store.mcpServers().catch(() => undefined))
     return entries
   }
 
-  const mcpNames = () => mcpServers().map((server) => server.name)
+  const mcpNames = () => (mcpServers() ?? []).map((server) => server.name)
 
   /** Reads picked or pasted files into data URLs and attaches them to the run. */
   async function attachToRun(files: File[]) {
@@ -244,14 +249,29 @@ export function App() {
    * Folds the generated agent defs into the project's opencode.json (after a
    * .bak) and points every node at its own agent, so the per-node tool
    * allowlist actually applies at runtime — sessions can only pick tools
-   * through a named agent.
+   * through a named agent. The server skips the write (and the .bak) when the
+   * block is already identical, so this is cheap to call before every run.
+   *
+   * Refuses to write when the MCP server list is unknown: the merge replaces
+   * each agent entry wholesale, so writing a block built from an empty server
+   * list would strip the `<server>_*` deny rules already on disk and quietly
+   * widen what every node can reach. Returns the agent keys alongside the
+   * server's reply.
    */
+  async function syncAgents() {
+    if (!mcpServers())
+      throw new Error("cannot read the project's mcp servers — refusing to rewrite agents without them")
+    const result = await store.saveAgents(state.pipeline.name, agentBlock(state.pipeline, mcpNames()), true)
+    const keys = state.pipeline.nodes.map((node) => agentKey(state.pipeline, node))
+    for (const node of state.pipeline.nodes) actions.updateAgent(node.id, { name: agentKey(state.pipeline, node) })
+    setAgents([...new Set([...agents(), ...keys])])
+    return { result, keys }
+  }
+
   async function mergeAgents() {
     try {
-      const result = await store.saveAgents(state.pipeline.name, agentBlock(state.pipeline, mcpNames()), true)
-      const keys = state.pipeline.nodes.map((node) => agentKey(state.pipeline, node))
-      for (const node of state.pipeline.nodes) actions.updateAgent(node.id, { name: agentKey(state.pipeline, node) })
-      setAgents([...new Set([...agents(), ...keys])])
+      const { result, keys } = await syncAgents()
+      if (result.error) return actions.notice("error", result.error)
 
       // The server caches a project's config, so a merge is invisible to a
       // server that is already running. Check rather than claim success.
@@ -264,7 +284,12 @@ export function App() {
         )
         return
       }
-      actions.notice("info", `merged into ${result.path}${result.backup ? ` (backup ${result.backup})` : ""}`)
+      actions.notice(
+        "info",
+        result.unchanged
+          ? `agents already up to date in ${result.path}`
+          : `merged into ${result.path}${result.backup ? ` (backup ${result.backup})` : ""}`,
+      )
     } catch (error) {
       actions.notice("error", api.describe(error))
     }
@@ -273,9 +298,28 @@ export function App() {
   async function run() {
     const check = layer(state.pipeline)
     if (!check.ok) return actions.notice("error", check.error)
+    actions.clearNotice()
+
+    // Fold any pending agent edits into opencode.json before the run so a node
+    // never runs against a stale def. The server no-ops when nothing changed,
+    // so this stays silent unless it actually wrote. It cannot make a running
+    // server reload its cache, though — the engine's own unknown-agent check
+    // still surfaces the "restart the server" case below.
+    //
+    // A failed sync stops the run: the nodes would otherwise go off against
+    // whatever defs happen to be on disk, which is exactly the stale-agent case
+    // this sync exists to prevent.
+    try {
+      const { result } = await syncAgents()
+      if (result.error) return actions.notice("error", result.error)
+      if (result.merged)
+        actions.notice("info", `synced agents into ${result.path}${result.backup ? ` (backup ${result.backup})` : ""}`)
+    } catch (error) {
+      return actions.notice("error", api.describe(error))
+    }
+
     actions.resetRuntime(Object.fromEntries(state.pipeline.nodes.map((node) => [node.id, "queued" as const])))
     actions.setRunning(true)
-    actions.clearNotice()
     try {
       current = start(
         state.pipeline,

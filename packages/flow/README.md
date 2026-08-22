@@ -253,8 +253,15 @@ pipelines in version control.
 folds that block into the project's `opencode.json` (backed up first, see below)
 and points every node at its own agent — this is the only way per-node tool
 allowlists take effect at runtime, because a session can only select tools
-through a named agent. Until you merge, nodes run as the server's default agent
-with its default tools.
+through a named agent.
+
+**run merges too.** Every run folds the current agent block into `opencode.json`
+before it starts, so a node never runs against a def you edited but forgot to
+merge. The write is skipped entirely when the block on disk is already
+identical, so a repeated run neither rewrites the file nor leaves a backup, and
+says nothing. A run that cannot read the project's MCP servers refuses to write
+at all rather than emit agents missing their `<server>_*` rules, and reports the
+failure instead of starting.
 
 **Restart the server after merging.** `opencode serve` reads a project's
 `opencode.json` once and caches it — there is no reload route, and dispose does

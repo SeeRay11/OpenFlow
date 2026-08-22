@@ -49,7 +49,7 @@ export const store = {
     }),
   deletePipeline: (name: string) => request(`/pipelines/${encodeURIComponent(name)}`, { method: "DELETE" }),
   saveAgents: (name: string, agent: Record<string, unknown>, merge = false) =>
-    request<{ path: string; merged: boolean; backup?: string }>(
+    request<{ path: string; merged: boolean; backup?: string; unchanged?: boolean; error?: string }>(
       `/pipelines/${encodeURIComponent(name)}/agents${merge ? "?merge=1" : ""}`,
       { method: "POST", body: JSON.stringify({ agent }) },
     ),

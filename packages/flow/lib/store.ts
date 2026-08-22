@@ -388,18 +388,39 @@ async function writeAgents(paths: FlowPaths, name: string, body: any, merge: boo
   const target = path.join(paths.project, "opencode.json")
   const raw = await fs.readFile(target, "utf8").catch(() => undefined)
   let config: any = { $schema: "https://opencode.ai/config.json" }
-  let backup: string | undefined
   if (raw !== undefined) {
-    backup = await backupConfig(target, raw)
     try {
       config = JSON.parse(raw)
     } catch {
       return { path: file, merged: false, error: "existing opencode.json is not valid JSON" }
     }
   }
-  config.agent = { ...(config.agent ?? {}), ...block.agent }
+  // Fold the generated agents onto whatever is already there, then bail before
+  // touching disk if that leaves the block byte-for-byte identical — an
+  // auto-merge on every run must not churn opencode.json or litter a `.bak`
+  // when nothing actually changed. Key order is ignored so a re-serialised but
+  // equivalent config still counts as unchanged.
+  const nextAgent = { ...(config.agent ?? {}), ...block.agent }
+  if (stableEqual(config.agent ?? {}, nextAgent)) return { path: target, merged: false, unchanged: true }
+  const backup = raw !== undefined ? await backupConfig(target, raw) : undefined
+  config.agent = nextAgent
   await fs.writeFile(target, JSON.stringify(config, null, 2) + "\n")
   return { path: target, merged: true, backup }
+}
+
+/** Canonical JSON with object keys sorted, so two equal configs compare equal regardless of key order. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`
+  const record = value as Record<string, unknown>
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",")}}`
+}
+
+function stableEqual(a: unknown, b: unknown): boolean {
+  return stableStringify(a) === stableStringify(b)
 }
 
 export type McpServer = {

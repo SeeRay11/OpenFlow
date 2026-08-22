@@ -210,12 +210,28 @@ describe("agents", () => {
   test("a second merge does not overwrite the original backup", async () => {
     const target = path.join(dir, "opencode.json")
     await fs.writeFile(target, JSON.stringify({ agent: { mine: {} } }))
+    const changed = { agent: { "feature-build-planner": { mode: "primary", prompt: "replan" } } }
 
     await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
-    const second = await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
+    const second = await call("POST", "/flow/api/pipelines/feature-build/agents", { body: changed, search: "merge=1" })
 
     expect(second!.body).toMatchObject({ backup: `${target}.prev.bak` })
     expect(JSON.parse(await read(`${target}.bak`)).agent).toEqual({ mine: {} })
+  })
+
+  test("a merge that changes nothing does not touch the config or leave a backup", async () => {
+    const target = path.join(dir, "opencode.json")
+    await fs.writeFile(target, JSON.stringify({ agent: { mine: {} } }))
+
+    await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
+    const before = await read(target)
+    const second = await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
+
+    expect(second!.body).toMatchObject({ merged: false, unchanged: true })
+    expect(second!.body).not.toHaveProperty("backup")
+    expect(await read(target)).toBe(before)
+    // The first merge's `.bak`, not a second `.prev.bak`, is the only backup.
+    await expect(read(`${target}.prev.bak`)).rejects.toThrow()
   })
 
   test("refuses to merge into a config it cannot parse", async () => {
