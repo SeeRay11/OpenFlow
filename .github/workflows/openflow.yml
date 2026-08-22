@@ -1,0 +1,49 @@
+name: openflow
+
+# The upstream `test` and `typecheck` workflows run on Blacksmith runners
+# registered to the upstream organisation, so on this fork their jobs queue
+# until GitHub cancels them a day later and nothing is ever actually verified.
+# This workflow is fork-owned and runs on GitHub-hosted runners, scoped to
+# `packages/flow` — the only package this fork changes. It is a new file rather
+# than an edit to the upstream workflows, so merging upstream stays clean.
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Keep dev's runs so the default branch always has a completed check; stale
+  # runs on branches and PRs are worth cancelling.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/dev' }}
+
+permissions:
+  contents: read
+
+jobs:
+  flow:
+    name: flow (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: packages/flow
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Unit tests
+        run: bun test
