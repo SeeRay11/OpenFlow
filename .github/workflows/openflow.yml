@@ -35,12 +35,17 @@ jobs:
       run:
         shell: bash
     steps:
-      # The repository carries symlinks whose targets exceed the 260-character
-      # default on Windows, so checkout fails before it has written a tree.
-      # Must run before checkout, hence no working directory of its own.
-      - name: Allow long paths on Windows
+      # Two files upstream are committed with symlink mode (120000) but hold a
+      # whole TypeScript source file as their "target", so on Windows git tries
+      # to create a symlink pointing at 432 characters of code and checkout
+      # fails outright — "Filename too long", then "Result too large" once long
+      # paths are allowed. Checking them out as plain files sidesteps both;
+      # nothing here reads them. Must run before checkout.
+      - name: Make the tree checkout-able on Windows
         if: runner.os == 'Windows'
-        run: git config --system core.longpaths true
+        run: |
+          git config --system core.longpaths true
+          git config --system core.symlinks false
 
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
