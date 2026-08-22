@@ -1,0 +1,69 @@
+name: openflow
+
+# The upstream `test` and `typecheck` workflows run on Blacksmith runners
+# registered to the upstream organisation, so on this fork their jobs queue
+# until GitHub cancels them a day later and nothing is ever actually verified.
+# This workflow is fork-owned and runs on GitHub-hosted runners, scoped to
+# `packages/flow` — the only package this fork changes. It is a new file rather
+# than an edit to the upstream workflows, so merging upstream stays clean.
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Keep dev's runs so the default branch always has a completed check; stale
+  # runs on branches and PRs are worth cancelling.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/dev' }}
+
+permissions:
+  contents: read
+
+jobs:
+  flow:
+    name: flow (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Two files upstream are committed with symlink mode (120000) but hold a
+      # whole TypeScript source file as their "target", so on Windows git tries
+      # to create a symlink pointing at 432 characters of code and checkout
+      # fails outright — "Filename too long", then "Result too large" once long
+      # paths are allowed. Checking them out as plain files sidesteps both;
+      # nothing here reads them. Must run before checkout.
+      - name: Make the tree checkout-able on Windows
+        if: runner.os == 'Windows'
+        run: |
+          git config --system core.longpaths true
+          git config --system core.symlinks false
+
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+        env:
+          # bun fails to apply the repository's patches on Windows when it has
+          # to rename into a cache directory that already holds the package
+          # ("ENOTEMPTY ... NtSetInformationFile"). A per-run cache directory
+          # keeps the patched package's destination empty. Step-level: the
+          # `runner` context does not exist at job level.
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
+
+      - name: Typecheck
+        working-directory: packages/flow
+        run: bun run typecheck
+
+      - name: Unit tests
+        working-directory: packages/flow
+        run: bun test
