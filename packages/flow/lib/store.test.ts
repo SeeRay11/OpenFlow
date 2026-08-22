@@ -383,8 +383,13 @@ describe("browseDirectory", () => {
 
   test("omitted target lists roots without throwing", async () => {
     const result = await browseDirectory()
-    expect(result.path).toBeNull()
-    expect(result.parent).toBeNull()
+    // Windows has no single root, so the drive list is its own level with
+    // nothing above it. Everywhere else the root is a real directory: `/`
+    // lists like any other, and stops at itself rather than reporting no
+    // parent, so the picker always has somewhere to go back to.
+    const roots = process.platform === "win32" ? null : "/"
+    expect(result.path).toBe(roots)
+    expect(result.parent).toBe(roots)
     expect(Array.isArray(result.entries)).toBe(true)
   })
 })

@@ -34,8 +34,14 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: packages/flow
     steps:
+      # The repository carries symlinks whose targets exceed the 260-character
+      # default on Windows, so checkout fails before it has written a tree.
+      # Must run before checkout, hence no working directory of its own.
+      - name: Allow long paths on Windows
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
@@ -43,7 +49,9 @@ jobs:
         uses: ./.github/actions/setup-bun
 
       - name: Typecheck
+        working-directory: packages/flow
         run: bun run typecheck
 
       - name: Unit tests
+        working-directory: packages/flow
         run: bun test
