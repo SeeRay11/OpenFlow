@@ -4,6 +4,7 @@ import * as api from "../server/client"
 import type { ProviderRow } from "../server/providers"
 import { TOOLS } from "../server/store"
 import { actions, runtimeOf, state } from "../state"
+import { Attachments, readFiles } from "./attachments"
 import { IconTrash } from "./icons"
 import { ModelPicker } from "./model-picker"
 import { Select } from "./select"
@@ -11,7 +12,10 @@ import { Select } from "./select"
 export function Inspector(props: {
   agents: string[]
   providers: ProviderRow[]
+  /** MCP servers the project configures, by name. */
+  mcpServers: string[]
   onManageKeys?: (query?: string) => void
+  onManageMcp?: () => void
 }) {
   const node = createMemo(() => state.pipeline.nodes.find((entry) => entry.id === state.selected))
   const runtime = createMemo(() => (state.selected ? runtimeOf(state.selected) : undefined))
@@ -25,6 +29,13 @@ export function Inspector(props: {
    * and a stored key is never verified when it is saved. This is the only
    * thing that answers "does this actually work" short of a full run.
    */
+  /** Reads picked files into data URLs and pins them to the node. */
+  async function attach(id: string, files: File[]) {
+    const { attachments, errors } = await readFiles(files)
+    actions.addNodeAttachments(id, attachments)
+    for (const failure of errors) actions.notice("error", `${failure.name}: ${failure.reason}`)
+  }
+
   async function test(model: string) {
     setTesting(true)
     actions.notice("info", `testing ${model}…`)
@@ -112,6 +123,61 @@ export function Inspector(props: {
                     </label>
                   )}
                 </For>
+              </div>
+
+              <div class="field-row field-row-stack">
+                <span class="field-label">mcp servers</span>
+                <Show
+                  when={props.mcpServers.length}
+                  fallback={
+                    <div class="row">
+                      <span class="hint">none configured for this project</span>
+                      <Show when={props.onManageMcp}>
+                        <button class="btn" type="button" onClick={() => props.onManageMcp!()}>
+                          add one
+                        </button>
+                      </Show>
+                    </div>
+                  }
+                >
+                  <div class="tools">
+                    <For each={props.mcpServers}>
+                      {(server) => (
+                        <label class="tool-check">
+                          <input
+                            type="checkbox"
+                            // No list on the node means "inherit everything",
+                            // which is what a graph authored before per-node
+                            // MCP existed asked for. Ticking any box writes an
+                            // explicit list from then on.
+                            checked={selected().agent.mcp?.includes(server) ?? true}
+                            onChange={(event) =>
+                              actions.toggleMcp(
+                                selected().id,
+                                server,
+                                event.currentTarget.checked,
+                                props.mcpServers,
+                              )
+                            }
+                          />
+                          {server}
+                        </label>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+              </div>
+
+              <div class="field-row field-row-stack">
+                <span class="field-label">files</span>
+                <Attachments
+                  compact
+                  label="attach to this card"
+                  files={selected().agent.attachments ?? []}
+                  onAdd={(files) => void attach(selected().id, files)}
+                  onRemove={(id) => actions.removeNodeAttachment(selected().id, id)}
+                />
+                <span class="hint">sent with every run of this card, on top of the run's own files</span>
               </div>
 
               <div class="row">

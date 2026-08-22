@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { pipeline } from "../graph/test-support"
 import type { Pipeline } from "../graph/types"
-import { agentBlock, agentKey, permissionBlock, TOOL_ACTIONS, TOOLS, toolMap } from "./store"
+import { agentBlock, agentKey, mcpBlock, permissionBlock, TOOL_ACTIONS, TOOLS, toolMap } from "./store"
 
 function withAgents(graph: Pipeline, agents: Record<string, Partial<Pipeline["nodes"][number]["agent"]>>) {
   return {
@@ -63,8 +63,8 @@ describe("toolMap", () => {
     expect(toolMap({ task: false, nonsense: false, read: true })).toEqual({ read: true })
   })
 
-  test("drops question, which the server ignores", () => {
-    expect(toolMap({ question: false })).toEqual({})
+  test("keeps question, which gates whether a node can ask a person anything", () => {
+    expect(toolMap({ question: false })).toEqual({ question: false })
   })
 
   test("ignores non-boolean values", () => {
@@ -173,5 +173,39 @@ describe("agentBlock", () => {
     const result = agentBlock(twins) as Record<string, any>
     expect(Object.keys(result)).toEqual(["test-coder"])
     expect(result["test-coder"].description).toContain("coder2")
+  })
+})
+
+describe("mcpBlock", () => {
+  test("says nothing for a node that never chose, so an old graph keeps working", () => {
+    expect(mcpBlock(undefined, ["context7", "figma"])).toEqual({})
+  })
+
+  test("allows the chosen servers and denies the rest by wildcard", () => {
+    // MCP tools are named `<server>_<tool>` and permission actions match by
+    // wildcard, so one rule per server covers every tool it exposes.
+    expect(mcpBlock(["context7"], ["context7", "figma"])).toEqual({
+      "context7_*": "allow",
+      "figma_*": "deny",
+    })
+  })
+
+  test("an empty allowlist is a real answer: none of them", () => {
+    expect(mcpBlock([], ["context7"])).toEqual({ "context7_*": "deny" })
+  })
+
+  test("writes nothing when the project configures no servers", () => {
+    expect(mcpBlock(["ghost"], [])).toEqual({})
+  })
+})
+
+describe("agentBlock with mcp", () => {
+  test("folds the node's mcp allowlist into its permission block", () => {
+    const graph = withAgents(pipeline("a"), { a: { tools: { read: true }, mcp: ["context7"] } })
+
+    const block = agentBlock(graph, ["context7", "figma"]) as any
+    const agent = block[agentKey(graph, graph.nodes[0])]
+
+    expect(agent.permission).toEqual({ read: "allow", "context7_*": "allow", "figma_*": "deny" })
   })
 })

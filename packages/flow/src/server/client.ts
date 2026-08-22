@@ -1,10 +1,15 @@
 import { createOpencodeClient, type AgentV2Info, type ModelRef, type ModelV2Info } from "@opencode-ai/sdk/v2/client"
+import type { Attachment } from "../graph/types"
+
+export type { Attachment }
 
 export type FlowContext = {
   project: string
   pipelines: string
   runs: string
   generated: string
+  /** Pipeline that was open in this project last time, if any. */
+  pipeline?: string
 }
 
 export type OpencodeClient = ReturnType<typeof createOpencodeClient>
@@ -192,9 +197,42 @@ export async function createSession(input: { agent?: string; model?: string }) {
   return session as { id: string }
 }
 
-export async function prompt(sessionID: string, text: string) {
+/**
+ * Sends the prompt, with any attachments as `files`.
+ *
+ * The server reads the mime type straight off a `data:` URL and passes the URL
+ * through to the model as media, so a data URL is the whole transport — nothing
+ * is written to disk and no upload endpoint is involved. Attachments are only
+ * ever passed for a model that accepts that modality; see `accepts()`.
+ */
+export async function prompt(sessionID: string, text: string, files: Attachment[] = []) {
   const { client } = await connect()
-  return unwrap<any>((await client.v2.session.prompt({ sessionID, prompt: { text } })) as any)
+  const attachments = files.map((file) => ({ uri: file.url, name: file.name }))
+  return unwrap<any>(
+    (await client.v2.session.prompt({
+      sessionID,
+      prompt: { text, ...(attachments.length ? { files: attachments } : {}) },
+    })) as any,
+  )
+}
+
+/**
+ * Whether a model can take this attachment as input.
+ *
+ * `capabilities.input` is the model's input modality list ("text", "image",
+ * "pdf", …). A model without the modality is not sent the file at all — the
+ * request would either error or, worse, silently drop it — so the engine
+ * substitutes a text note naming what was withheld and the chain keeps going.
+ */
+export function accepts(model: ModelV2Info | undefined, mime: string) {
+  if (!model) return false
+  const modalities = new Set(model.capabilities?.input ?? [])
+  if (mime.startsWith("image/")) return modalities.has("image")
+  if (mime === "application/pdf") return modalities.has("pdf")
+  if (mime.startsWith("audio/")) return modalities.has("audio")
+  if (mime.startsWith("video/")) return modalities.has("video")
+  // Text-ish files ride along as text, which every model takes.
+  return true
 }
 
 /** Session IDs whose agent loop is currently executing on the server. */
@@ -259,6 +297,76 @@ export type PermissionReply = "once" | "always" | "reject"
 export async function replyPermission(sessionID: string, requestID: string, reply: PermissionReply) {
   const { client } = await connect()
   const result = (await client.v2.session.permission.reply({ sessionID, requestID, reply })) as any
+  if (result.error) throw new Error(describe(result.error))
+  return result.data
+}
+
+export type QuestionOption = { label: string; description: string }
+export type QuestionInfo = {
+  question: string
+  header: string
+  options: QuestionOption[]
+  multiple?: boolean
+  custom?: boolean
+}
+
+/**
+ * Answers a question the agent asked through its `question` tool.
+ *
+ * Answers are positional — one array of chosen labels per question, in the
+ * order they were asked — and a custom answer is just a label the options did
+ * not contain.
+ */
+export async function replyQuestion(sessionID: string, requestID: string, answers: string[][]) {
+  const { client } = await connect()
+  const result = (await client.v2.session.question.reply({
+    sessionID,
+    requestID,
+    questionV2Reply: { answers },
+  })) as any
+  if (result.error) throw new Error(describe(result.error))
+  return result.data
+}
+
+/** Declines to answer. The agent is told nobody answered and continues on its own. */
+export async function rejectQuestion(sessionID: string, requestID: string) {
+  const { client } = await connect()
+  const result = (await client.v2.session.question.reject({ sessionID, requestID })) as any
+  if (result.error) throw new Error(describe(result.error))
+  return result.data
+}
+
+export type McpStatus =
+  | { status: "connected" }
+  | { status: "disabled" }
+  | { status: "failed"; error: string }
+  | { status: "needs_auth" }
+  | { status: "needs_client_registration"; error: string }
+
+/**
+ * Live connection state of every MCP server the running server knows about.
+ *
+ * This is the server's view, not the config's: a server added to
+ * `opencode.json` after `opencode serve` booted is absent here until it
+ * restarts, which is the single most confusing thing about MCP config and the
+ * reason the panel prints both lists.
+ */
+export async function mcpStatus(): Promise<Record<string, McpStatus>> {
+  const { client } = await connect()
+  const body = unwrap<any>((await client.mcp.status({})) as any)
+  return (body?.data ?? body ?? {}) as Record<string, McpStatus>
+}
+
+export async function mcpConnect(name: string) {
+  const { client } = await connect()
+  const result = (await client.mcp.connect({ name })) as any
+  if (result.error) throw new Error(describe(result.error))
+  return result.data
+}
+
+export async function mcpDisconnect(name: string) {
+  const { client } = await connect()
+  const result = (await client.mcp.disconnect({ name })) as any
   if (result.error) throw new Error(describe(result.error))
   return result.data
 }

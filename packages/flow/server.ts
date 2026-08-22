@@ -1,6 +1,7 @@
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { remoteBindRefusal } from "./lib/guard"
+import { resolveProject } from "./lib/last-session"
 import { flowPaths, handleFlow } from "./lib/store"
 
 /**
@@ -16,14 +17,16 @@ const root = path.dirname(fileURLToPath(import.meta.url))
 const dist = path.join(root, "dist")
 
 const upstream = process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096"
-const project = process.env.OPENFLOW_PROJECT ?? path.resolve(root, "../../")
+// OPENFLOW_PROJECT wins, then the folder last switched to in the UI, then
+// this repo. See `lib/last-session.ts`.
+const project = resolveProject(path.resolve(root, "../../"))
 const port = Number(process.env.FLOW_PORT ?? 5174)
 const hostname = process.env.FLOW_HOST ?? "127.0.0.1"
 
 const paths = flowPaths(project)
 
 /** Paths that belong to `opencode serve` rather than to this app. */
-const PROXIED = ["/api", "/global", "/event"]
+const PROXIED = ["/api", "/global", "/event", "/mcp"]
 const MAX_BODY = 8 * 1024 * 1024
 
 if (!(await Bun.file(path.join(dist, "index.html")).exists())) {

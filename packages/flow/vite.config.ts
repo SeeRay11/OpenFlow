@@ -1,14 +1,16 @@
 import { fileURLToPath } from "node:url"
 import { defineConfig } from "vite"
 import solid from "vite-plugin-solid"
+import { resolveProject } from "./lib/last-session"
 import { flowStore } from "./vite/flow-store"
 
 // The opencode server OpenFlow drives. Start it with `opencode serve`.
 const server = process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096"
 
 // The project OpenFlow orchestrates: where `.openflow/` lives and where agent
-// sessions run. Defaults to the repo root two levels up from packages/flow.
-const project = process.env.OPENFLOW_PROJECT ?? fileURLToPath(new URL("../../", import.meta.url))
+// sessions run. OPENFLOW_PROJECT wins, then the folder last switched to in the
+// UI, then the repo root two levels up from packages/flow.
+const project = resolveProject(fileURLToPath(new URL("../../", import.meta.url)))
 
 const proxy = {
   target: server,
@@ -50,6 +52,8 @@ export default defineConfig({
       "/api": proxy,
       "/global": proxy,
       "/event": proxy,
+      // MCP routes are the one instance API not served under /api.
+      "/mcp": proxy,
     },
   },
   build: {

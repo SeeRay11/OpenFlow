@@ -2,6 +2,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { cliAuthPath, importCliKeys, readCliKeys } from "./cli-auth"
 import { allowsRemote } from "./guard"
+import { recallPipeline, rememberPipeline, rememberProject } from "./last-session"
 import { hasNativePicker, pickFolderNative } from "./native-picker"
 import { zenModels } from "./zen"
 
@@ -12,13 +13,17 @@ import { zenModels } from "./zen"
  * the vite dev server ([../vite/flow-store.ts]) and the standalone server
  * ([../server.ts]) — expose this same REST surface under `/flow/api/*`:
  *
- *   GET    /flow/api/context               -> { project, pipelines, runs, generated }
+ *   GET    /flow/api/context               -> { project, pipelines, runs, generated, skills,
+ *                                             pipeline } — `pipeline` is the one to reopen
  *   GET    /flow/api/pipelines             -> [{ name, id, nodes, updated }]
  *   GET    /flow/api/pipelines/:name       -> pipeline json
  *   PUT    /flow/api/pipelines/:name       -> save pipeline json
  *   DELETE /flow/api/pipelines/:name       -> delete pipeline
  *   POST   /flow/api/pipelines/:name/agents?merge=1
  *                                          -> write generated opencode agent defs
+ *   GET    /flow/api/mcp                   -> [{ name, type, enabled, command?, url?, ... }]
+ *   PUT    /flow/api/mcp/:name             -> upsert an mcp server in opencode.json
+ *   DELETE /flow/api/mcp/:name             -> drop it from opencode.json
  *   GET    /flow/api/skills                -> [{ name, description, updated }]
  *   GET    /flow/api/skills/:name          -> { name, folder, description, content, path }
  *   PUT    /flow/api/skills/:name          -> write .openflow/skills/<name>/SKILL.md
@@ -34,7 +39,8 @@ import { zenModels } from "./zen"
  *                                             (drive roots on Windows when `path` is omitted)
  *   POST   /flow/api/pick-folder           -> { path } — native OS folder dialog on the host,
  *                                             `null` when cancelled (loopback hosts only)
- *   POST   /flow/api/project               -> { path } — switch the live project directory
+ *   POST   /flow/api/project               -> { path } — switch the live project directory,
+ *                                             and remember it for the next launch
  *
  * Keeping it host-neutral is the point: the dev server and the built app must
  * not drift into two different stores. `browse`/`project` read the same host
@@ -144,7 +150,9 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     .filter(Boolean)
   const method = request.method.toUpperCase()
 
-  if (segments[0] === "context" && method === "GET") return ok(paths)
+  // `pipeline` rides along on the context the canvas already reads at boot, so
+  // reopening where the user left off costs no extra round trip.
+  if (segments[0] === "context" && method === "GET") return ok({ ...paths, pipeline: recallPipeline(paths.project) })
 
   if (segments[0] === "pipelines") {
     const name = segments[1] ? slug(decodeURIComponent(segments[1])) : undefined
@@ -158,20 +166,46 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
       return ok(await writeAgents(paths, name, await request.json(), request.search.get("merge") === "1"))
     }
 
+    // Opening and saving are the two acts that mean "this is what I am working
+    // on", so they are where the pipeline to reopen is recorded. Noting it on a
+    // GET is a side effect on a read, which earns its keep here: it keeps the
+    // memory right for any client of this store rather than only the canvas,
+    // and re-noting the same name is idempotent.
     if (method === "GET") {
       const raw = await fs.readFile(file, "utf8").catch(() => undefined)
       if (raw === undefined) return { status: 404, body: { error: `pipeline "${name}" not found` } }
+      rememberPipeline(paths.project, name)
       return ok(JSON.parse(raw))
     }
     if (method === "PUT") {
       const body = await request.json()
       await fs.mkdir(paths.pipelines, { recursive: true })
       await fs.writeFile(file, JSON.stringify(body, null, 2) + "\n")
+      rememberPipeline(paths.project, name)
       return ok({ name, path: file })
     }
     if (method === "DELETE") {
       await fs.rm(file, { force: true })
+      // Forget it only when it was the remembered one — deleting some other
+      // pipeline must not make the next launch open a blank canvas.
+      if (recallPipeline(paths.project) === name) rememberPipeline(paths.project, "")
       return ok({ name })
+    }
+  }
+
+  if (segments[0] === "mcp") {
+    const name = segments[1] ? mcpName(decodeURIComponent(segments[1])) : undefined
+
+    if (!name && method === "GET") return ok(await listMcpServers(paths))
+    if (!name) return { status: 400, body: { error: "mcp server name required" } }
+
+    if (method === "PUT" || method === "DELETE") {
+      try {
+        if (method === "DELETE") return ok(await deleteMcpServer(paths, name))
+        return ok(await writeMcpServer(paths, name, await request.json()))
+      } catch (error) {
+        return { status: 400, body: { error: error instanceof Error ? error.message : String(error) } }
+      }
     }
   }
 
@@ -257,6 +291,9 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     const stat = await fs.stat(resolved).catch(() => undefined)
     if (!stat || !stat.isDirectory()) return { status: 400, body: { error: `not a directory: ${resolved}` } }
     setProjectPath(paths, resolved)
+    // Remembered here rather than in the UI: the browser cannot write to the
+    // host, and this is the one place every project switch passes through.
+    rememberProject(resolved)
     return ok(paths)
   }
 
@@ -351,18 +388,199 @@ async function writeAgents(paths: FlowPaths, name: string, body: any, merge: boo
   const target = path.join(paths.project, "opencode.json")
   const raw = await fs.readFile(target, "utf8").catch(() => undefined)
   let config: any = { $schema: "https://opencode.ai/config.json" }
-  let backup: string | undefined
   if (raw !== undefined) {
-    backup = await backupConfig(target, raw)
     try {
       config = JSON.parse(raw)
     } catch {
       return { path: file, merged: false, error: "existing opencode.json is not valid JSON" }
     }
   }
-  config.agent = { ...(config.agent ?? {}), ...block.agent }
+  // Fold the generated agents onto whatever is already there, then bail before
+  // touching disk if that leaves the block byte-for-byte identical — an
+  // auto-merge on every run must not churn opencode.json or litter a `.bak`
+  // when nothing actually changed. Key order is ignored so a re-serialised but
+  // equivalent config still counts as unchanged.
+  const nextAgent = { ...(config.agent ?? {}), ...block.agent }
+  if (stableEqual(config.agent ?? {}, nextAgent)) return { path: target, merged: false, unchanged: true }
+  const backup = raw !== undefined ? await backupConfig(target, raw) : undefined
+  config.agent = nextAgent
   await fs.writeFile(target, JSON.stringify(config, null, 2) + "\n")
   return { path: target, merged: true, backup }
+}
+
+/** Canonical JSON with object keys sorted, so two equal configs compare equal regardless of key order. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`
+  const record = value as Record<string, unknown>
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",")}}`
+}
+
+function stableEqual(a: unknown, b: unknown): boolean {
+  return stableStringify(a) === stableStringify(b)
+}
+
+export type McpServer = {
+  name: string
+  type: "local" | "remote"
+  enabled: boolean
+  /** local only */
+  command?: string[]
+  cwd?: string
+  environment?: Record<string, string>
+  /** remote only */
+  url?: string
+  headers?: Record<string, string>
+  timeout?: number
+}
+
+/**
+ * MCP server names become part of a tool name (`<server>_<tool>`), so anything
+ * the sanitiser would rewrite is rejected here instead of silently producing a
+ * server nobody can address from a per-node allowlist.
+ */
+export function mcpName(value: string) {
+  return value.trim().replace(/[^a-zA-Z0-9-_]/g, "-")
+}
+
+/**
+ * The `mcp` block of the project's opencode.json, as rows.
+ *
+ * This is the *configured* set, not the live one — connection state comes from
+ * the server's own `GET /mcp`, and a server can be configured here while the
+ * running `opencode serve` has never heard of it (it reads config once at
+ * boot). The panel shows both, side by side, for exactly that reason.
+ */
+async function listMcpServers(paths: FlowPaths): Promise<McpServer[]> {
+  const config = await readProjectConfig(paths)
+  if ("error" in config) return []
+  const block = config.value.mcp
+  if (!block || typeof block !== "object") return []
+  return Object.entries(block as Record<string, any>)
+    .map(([name, entry]) => normalizeMcp(name, entry))
+    .filter((entry): entry is McpServer => Boolean(entry))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+function normalizeMcp(name: string, entry: any): McpServer | undefined {
+  if (!entry || typeof entry !== "object") return undefined
+  const enabled = entry.enabled !== false
+  if (entry.type === "remote") {
+    return {
+      name,
+      type: "remote",
+      enabled,
+      url: typeof entry.url === "string" ? entry.url : "",
+      headers: isStringRecord(entry.headers) ? entry.headers : undefined,
+      timeout: typeof entry.timeout === "number" ? entry.timeout : undefined,
+    }
+  }
+  return {
+    name,
+    type: "local",
+    enabled,
+    command: Array.isArray(entry.command) ? entry.command.map(String) : [],
+    cwd: typeof entry.cwd === "string" ? entry.cwd : undefined,
+    environment: isStringRecord(entry.environment) ? entry.environment : undefined,
+    timeout: typeof entry.timeout === "number" ? entry.timeout : undefined,
+  }
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return Boolean(value) && typeof value === "object" && Object.values(value as object).every((v) => typeof v === "string")
+}
+
+/**
+ * Writes one server into the project config's `mcp` block, after a backup.
+ *
+ * Validation is not politeness: opencode hard-fails on a config it cannot
+ * parse, and a config it refuses takes every card in the project down with it,
+ * not just this server. A local server with no command and a remote one with
+ * no url are the two ways to produce that, so both are refused here.
+ */
+async function writeMcpServer(paths: FlowPaths, name: string, body: any) {
+  const entry = buildMcpEntry(body)
+  const target = path.join(paths.project, "opencode.json")
+  const config = await readProjectConfig(paths)
+  if ("error" in config) throw new Error(config.error)
+  const backup = config.raw === undefined ? undefined : await backupConfig(target, config.raw)
+  const next = config.value
+  next.mcp = { ...(next.mcp ?? {}), [name]: entry }
+  if (!next.$schema) next.$schema = "https://opencode.ai/config.json"
+  await fs.writeFile(target, JSON.stringify(next, null, 2) + "\n")
+  return { name, path: target, backup }
+}
+
+function buildMcpEntry(body: any) {
+  const enabled = body?.enabled !== false
+  const timeout = typeof body?.timeout === "number" && body.timeout > 0 ? body.timeout : undefined
+  if (body?.type === "remote") {
+    const url = typeof body.url === "string" ? body.url.trim() : ""
+    if (!url) throw new Error("a remote mcp server needs a url")
+    const headers = pickStrings(body.headers)
+    return {
+      type: "remote" as const,
+      url,
+      ...(headers ? { headers } : {}),
+      ...(timeout ? { timeout } : {}),
+      enabled,
+    }
+  }
+  const command = Array.isArray(body?.command) ? body.command.map(String).filter((part: string) => part.length) : []
+  if (!command.length) throw new Error("a local mcp server needs a command")
+  const environment = pickStrings(body?.environment)
+  const cwd = typeof body?.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : undefined
+  return {
+    type: "local" as const,
+    command,
+    ...(cwd ? { cwd } : {}),
+    ...(environment ? { environment } : {}),
+    ...(timeout ? { timeout } : {}),
+    enabled,
+  }
+}
+
+/** Drops empty keys and non-string values, so `{"": ""}` rows from the UI never reach the config. */
+function pickStrings(value: unknown) {
+  if (!value || typeof value !== "object") return undefined
+  const out: Record<string, string> = {}
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (!key.trim() || typeof entry !== "string") continue
+    out[key.trim()] = entry
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+async function deleteMcpServer(paths: FlowPaths, name: string) {
+  const target = path.join(paths.project, "opencode.json")
+  const config = await readProjectConfig(paths)
+  if ("error" in config) throw new Error(config.error)
+  if (config.raw === undefined || !config.value.mcp || !(name in config.value.mcp)) return { name, removed: false }
+  const backup = await backupConfig(target, config.raw)
+  delete config.value.mcp[name]
+  await fs.writeFile(target, JSON.stringify(config.value, null, 2) + "\n")
+  return { name, removed: true, path: target, backup }
+}
+
+/**
+ * Reads the project's opencode.json. A missing file is not an error — it is a
+ * project that has never been configured — but an unparseable one is, because
+ * writing over it would destroy hand-written config.
+ */
+async function readProjectConfig(
+  paths: FlowPaths,
+): Promise<{ value: any; raw: string | undefined } | { error: string }> {
+  const target = path.join(paths.project, "opencode.json")
+  const raw = await fs.readFile(target, "utf8").catch(() => undefined)
+  if (raw === undefined) return { value: { $schema: "https://opencode.ai/config.json" }, raw: undefined }
+  try {
+    return { value: JSON.parse(raw), raw }
+  } catch {
+    return { error: "existing opencode.json is not valid JSON" }
+  }
 }
 
 /** Where OpenFlow-authored skills are registered from, relative to the project. */

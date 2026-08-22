@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test"
 import { pipeline } from "../graph/test-support"
-import type { Pipeline, RunLog } from "../graph/types"
-import type { BusEvent, PermissionReply } from "./client"
+import type { Attachment, Pipeline, RunLog } from "../graph/types"
+import type { BusEvent, PermissionReply, QuestionInfo } from "./client"
 import {
   DEFAULT_NODE_TIMEOUT,
   start,
   type EngineDeps,
   type EngineHooks,
   type PermissionRequest,
+  type QuestionRequest,
   type RunOptions,
 } from "./engine"
 
@@ -34,7 +35,10 @@ type HarnessOptions = {
   models?: string[]
   /** Agent ids the server knows about. */
   agents?: string[]
+  /** Subset of `models` that accepts image input. */
+  vision?: string[]
   onPermission?: (request: PermissionRequest) => Promise<PermissionReply>
+  onQuestion?: (request: QuestionRequest) => Promise<string[][] | undefined>
 }
 
 function deferred() {
@@ -57,6 +61,10 @@ function harness(options: HarnessOptions = {}) {
   const prompts = new Map<string, string>()
   const interrupted: string[] = []
   const replies: { sessionID: string; requestID: string; reply: PermissionReply }[] = []
+  const sent = new Map<string, Attachment[]>()
+  const questionReplies: { sessionID: string; requestID: string; answers: string[][] }[] = []
+  const questionRejects: { sessionID: string; requestID: string }[] = []
+  const closed: string[] = []
   const waits: { node: string; timeout?: number }[] = []
   const notices: { kind: string; text: string }[] = []
   const saved: RunLog[] = []
@@ -78,12 +86,25 @@ function harness(options: HarnessOptions = {}) {
     async createSession() {
       return { id: `s${++created}` }
     },
-    async prompt(sessionID: string, text: string) {
+    async prompt(sessionID: string, text: string, files: Attachment[] = []) {
       const node = nodeOf.get(sessionID)!
       dispatched.push(node)
       prompts.set(node, text)
+      sent.set(node, files)
       inflight++
       peak = Math.max(peak, inflight)
+      return {}
+    },
+    accepts(model, mime) {
+      if (!model) return false
+      return !mime.startsWith("image/") || (model.capabilities?.input ?? []).includes("image")
+    },
+    async replyQuestion(sessionID: string, requestID: string, answers: string[][]) {
+      questionReplies.push({ sessionID, requestID, answers })
+      return {}
+    },
+    async rejectQuestion(sessionID: string, requestID: string) {
+      questionRejects.push({ sessionID, requestID })
       return {}
     },
     async waitForIdle(sessionID: string, waitOptions: { signal?: AbortSignal; timeout?: number } = {}) {
@@ -119,7 +140,11 @@ function harness(options: HarnessOptions = {}) {
     async models() {
       return (options.models ?? []).map((value) => {
         const index = value.indexOf("/")
-        return { providerID: value.slice(0, index), id: value.slice(index + 1) }
+        return {
+          providerID: value.slice(0, index),
+          id: value.slice(index + 1),
+          capabilities: { input: options.vision?.includes(value) ? ["text", "image"] : ["text"] },
+        }
       }) as any
     },
     async agents() {
@@ -141,6 +166,8 @@ function harness(options: HarnessOptions = {}) {
       notices.push({ kind, text })
     },
     onPermission: options.onPermission,
+    onQuestion: options.onQuestion,
+    onQuestionClosed: (requestID) => closed.push(requestID),
   }
 
   const deps: EngineDeps = {
@@ -173,6 +200,13 @@ function harness(options: HarnessOptions = {}) {
     ask(nodeID: string, request: { id: string; action: string; resources?: string[] }) {
       deliver({ type: "permission.v2.asked", data: { sessionID: sessionOf.get(nodeID), ...request } })
     },
+    question(nodeID: string, request: { id: string; questions: QuestionInfo[] }) {
+      deliver({ type: "question.v2.asked", data: { sessionID: sessionOf.get(nodeID), ...request } })
+    },
+    sent,
+    questionReplies,
+    questionRejects,
+    closed,
     run(graph: Pipeline, input = "do the thing", runOptions: RunOptions = {}) {
       return start(graph, input, hooks, runOptions, deps)
     },
@@ -575,5 +609,136 @@ describe("run log", () => {
 
     expect(log.status).toBe("done")
     expect(h.notices.some((notice) => notice.text.includes("disk full"))).toBe(true)
+  })
+})
+
+describe("questions", () => {
+  const ask = { question: "Which database?", header: "db", options: [{ label: "postgres", description: "" }] }
+
+  test("hands the question to the UI and replies with what was chosen", async () => {
+    const h = harness({
+      behavior: { a: { hold: true } },
+      onQuestion: async () => [["postgres"]],
+    })
+    const run = h.run(pipeline("a"))
+    await flush()
+
+    h.question("a", { id: "que-1", questions: [ask] })
+    await flush()
+
+    expect(h.questionReplies).toEqual([
+      { sessionID: h.sessionOf.get("a")!, requestID: "que-1", answers: [["postgres"]] },
+    ])
+    expect(h.questionRejects).toEqual([])
+
+    h.release("a")
+    const log = await run.done
+    expect(log.nodes[0].questions![0]).toMatchObject({ requestID: "que-1", headers: ["db"], answers: [["postgres"]] })
+  })
+
+  test("rejects rather than inventing an answer when nobody is listening", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+
+    h.question("a", { id: "que-1", questions: [ask] })
+    await flush()
+
+    expect(h.questionRejects).toEqual([{ sessionID: h.sessionOf.get("a")!, requestID: "que-1" }])
+    expect(h.questionReplies).toEqual([])
+
+    h.release("a")
+    const log = await run.done
+    expect(log.nodes[0].questions![0]).toMatchObject({ rejected: true })
+  })
+
+  test("gives up on an unanswered question so the run cannot hang on it", async () => {
+    const h = harness({
+      behavior: { a: { hold: true } },
+      // Never resolves: a person who walked away.
+      onQuestion: () => new Promise<string[][]>(() => {}),
+    })
+    const run = h.run(pipeline("a"), "do the thing", { questionTimeout: 100 })
+    await flush()
+
+    h.question("a", { id: "que-1", questions: [ask] })
+    await new Promise((resolve) => setTimeout(resolve, 160))
+
+    expect(h.questionRejects).toEqual([{ sessionID: h.sessionOf.get("a")!, requestID: "que-1" }])
+    // The dialog must come down too, or it keeps offering buttons that answer
+    // a request the server has already been told to drop.
+    expect(h.closed).toEqual(["que-1"])
+
+    h.release("a")
+    await run.done
+  })
+
+  test("answers a repeated question only once", async () => {
+    const h = harness({ behavior: { a: { hold: true } }, onQuestion: async () => [["postgres"]] })
+    const run = h.run(pipeline("a"))
+    await flush()
+
+    h.question("a", { id: "que-1", questions: [ask] })
+    h.question("a", { id: "que-1", questions: [ask] })
+    await flush()
+
+    expect(h.questionReplies).toHaveLength(1)
+    h.release("a")
+    await run.done
+  })
+})
+
+describe("attachments", () => {
+  const png = { id: "f1", name: "shot.png", mime: "image/png", url: "data:image/png;base64,AA", size: 2 }
+  const note = { id: "f2", name: "notes.md", mime: "text/markdown", url: "data:text/markdown;base64,AA", size: 2 }
+
+  test("sends run files to a model that reads them", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.model = "opencode/sees"
+    const h = harness({ models: ["opencode/sees"], vision: ["opencode/sees"] })
+
+    const log = await h.run(graph, "look", { attachments: [png] }).done
+
+    expect(h.sent.get("a")).toEqual([png])
+    expect(log.nodes[0].attachments).toEqual({ sent: ["shot.png"], skipped: [] })
+    expect(log.attachments).toEqual(["shot.png"])
+  })
+
+  test("withholds an image from a blind model and names it in the prompt instead", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.model = "opencode/blind"
+    const h = harness({ models: ["opencode/blind"] })
+
+    const log = await h.run(graph, "look", { attachments: [png, note] }).done
+
+    // The text file still rides along — only the modality it lacks is dropped.
+    expect(h.sent.get("a")).toEqual([note])
+    expect(log.nodes[0].attachments).toEqual({ sent: ["notes.md"], skipped: ["shot.png"] })
+    expect(h.prompts.get("a")).toContain("shot.png")
+    expect(log.nodes[0].status).toBe("done")
+  })
+
+  test("one blind node does not stop the nodes behind it", async () => {
+    const graph = pipeline("a->b")
+    graph.nodes[0].agent.model = "opencode/blind"
+    graph.nodes[1].agent.model = "opencode/sees"
+    const h = harness({ models: ["opencode/blind", "opencode/sees"], vision: ["opencode/sees"] })
+
+    const log = await h.run(graph, "look", { attachments: [png] }).done
+
+    expect(h.sent.get("a")).toEqual([])
+    expect(h.sent.get("b")).toEqual([png])
+    expect(statuses(log)).toEqual({ a: "done", b: "done" })
+  })
+
+  test("a card's own files are sent on top of the run's", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.model = "opencode/sees"
+    graph.nodes[0].agent.attachments = [note]
+    const h = harness({ models: ["opencode/sees"], vision: ["opencode/sees"] })
+
+    await h.run(graph, "look", { attachments: [png] }).done
+
+    expect(h.sent.get("a")).toEqual([png, note])
   })
 })

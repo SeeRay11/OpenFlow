@@ -12,7 +12,7 @@ import {
   type Run,
 } from "./server/engine"
 import { providerRows, type ProviderRow } from "./server/providers"
-import { agentBlock, agentKey, store, type PipelineEntry, type RunEntry } from "./server/store"
+import { agentBlock, agentKey, store, type McpServer, type PipelineEntry, type RunEntry } from "./server/store"
 import { actions, state } from "./state"
 import {
   IconAlert,
@@ -24,12 +24,16 @@ import {
   IconKey,
   IconLayers,
   IconPlay,
+  IconPlug,
   IconPlus,
   IconSave,
   IconSliders,
   IconStop,
 } from "./ui/icons"
+import { Attachments, filesFrom, readFiles } from "./ui/attachments"
 import { Inspector } from "./ui/inspector"
+import { McpPanel } from "./ui/mcp-panel"
+import { QuestionDialog } from "./ui/question-dialog"
 import { Palette } from "./ui/palette"
 import { ProjectPicker } from "./ui/project-picker"
 import { ProvidersPanel } from "./ui/providers-panel"
@@ -63,6 +67,13 @@ export function App() {
   const [providers, setProviders] = createSignal<ProviderRow[]>([])
   const [showProviders, setShowProviders] = createSignal(false)
   const [showSkills, setShowSkills] = createSignal(false)
+  const [showMcp, setShowMcp] = createSignal(false)
+  // `undefined` means the server list has not been read (yet, or at all), which
+  // is not the same as a project with no servers: the generated `<server>_*`
+  // permission rules are derived from this list, so an empty stand-in would
+  // silently drop every deny rule from the agents written to opencode.json.
+  // Starts unknown so a run fired before the first refresh lands refuses too.
+  const [mcpServers, setMcpServers] = createSignal<McpServer[] | undefined>(undefined)
   const [showProjectPicker, setShowProjectPicker] = createSignal(false)
   const [pickingProject, setPickingProject] = createSignal(false)
   const [providerQuery, setProviderQuery] = createSignal("")
@@ -97,7 +108,30 @@ export function App() {
       setStatus(`offline — ${detail}`)
       actions.notice("error", detail.includes("opencode serve") ? detail : `cannot reach opencode serve: ${detail}`)
     }
-    await refresh()
+    const entries = await refresh()
+    await reopen(entries)
+  }
+
+  /**
+   * Reopens the pipeline that was last open in this project.
+   *
+   * Only if the store still lists it: a pipeline deleted or renamed outside
+   * OpenFlow would otherwise greet the user with a load error on every launch.
+   * Loading is silent — this is restoring where they were, not an action they
+   * just took — and it is safe at boot because the canvas is empty until it
+   * runs. A failure leaves the blank canvas rather than blocking startup.
+   */
+  async function reopen(entries: PipelineEntry[]) {
+    try {
+      // `connect()` is cached, so this rereads nothing — it just hands back the
+      // context already fetched, including the pipeline to reopen.
+      const { context } = await api.connect()
+      const last = context.pipeline
+      if (!last || !entries.some((entry) => entry.name === last)) return
+      actions.load((await store.pipeline(last)) as Pipeline)
+    } catch {
+      // The listing said it was there; if it is not, a blank canvas is fine.
+    }
   }
 
   onMount(bootstrap)
@@ -171,8 +205,20 @@ export function App() {
   }
 
   async function refresh() {
-    setPipelines(await store.pipelines().catch(() => []))
+    const entries = await store.pipelines().catch(() => [])
+    setPipelines(entries)
     setRuns(await store.runs().catch(() => []))
+    setMcpServers(await store.mcpServers().catch(() => undefined))
+    return entries
+  }
+
+  const mcpNames = () => (mcpServers() ?? []).map((server) => server.name)
+
+  /** Reads picked or pasted files into data URLs and attaches them to the run. */
+  async function attachToRun(files: File[]) {
+    const { attachments, errors } = await readFiles(files)
+    actions.addAttachments(attachments)
+    for (const failure of errors) actions.notice("error", `${failure.name}: ${failure.reason}`)
   }
 
   async function save() {
@@ -180,7 +226,7 @@ export function App() {
     if (!check.ok) return actions.notice("error", check.error)
     try {
       const saved = await store.savePipeline(state.pipeline)
-      const generated = await store.saveAgents(state.pipeline.name, agentBlock(state.pipeline))
+      const generated = await store.saveAgents(state.pipeline.name, agentBlock(state.pipeline, mcpNames()))
       actions.notice("info", `saved ${saved.path} · agents ${generated.path}`)
       await refresh()
     } catch (error) {
@@ -203,14 +249,29 @@ export function App() {
    * Folds the generated agent defs into the project's opencode.json (after a
    * .bak) and points every node at its own agent, so the per-node tool
    * allowlist actually applies at runtime — sessions can only pick tools
-   * through a named agent.
+   * through a named agent. The server skips the write (and the .bak) when the
+   * block is already identical, so this is cheap to call before every run.
+   *
+   * Refuses to write when the MCP server list is unknown: the merge replaces
+   * each agent entry wholesale, so writing a block built from an empty server
+   * list would strip the `<server>_*` deny rules already on disk and quietly
+   * widen what every node can reach. Returns the agent keys alongside the
+   * server's reply.
    */
+  async function syncAgents() {
+    if (!mcpServers())
+      throw new Error("cannot read the project's mcp servers — refusing to rewrite agents without them")
+    const result = await store.saveAgents(state.pipeline.name, agentBlock(state.pipeline, mcpNames()), true)
+    const keys = state.pipeline.nodes.map((node) => agentKey(state.pipeline, node))
+    for (const node of state.pipeline.nodes) actions.updateAgent(node.id, { name: agentKey(state.pipeline, node) })
+    setAgents([...new Set([...agents(), ...keys])])
+    return { result, keys }
+  }
+
   async function mergeAgents() {
     try {
-      const result = await store.saveAgents(state.pipeline.name, agentBlock(state.pipeline), true)
-      const keys = state.pipeline.nodes.map((node) => agentKey(state.pipeline, node))
-      for (const node of state.pipeline.nodes) actions.updateAgent(node.id, { name: agentKey(state.pipeline, node) })
-      setAgents([...new Set([...agents(), ...keys])])
+      const { result, keys } = await syncAgents()
+      if (result.error) return actions.notice("error", result.error)
 
       // The server caches a project's config, so a merge is invisible to a
       // server that is already running. Check rather than claim success.
@@ -223,7 +284,12 @@ export function App() {
         )
         return
       }
-      actions.notice("info", `merged into ${result.path}${result.backup ? ` (backup ${result.backup})` : ""}`)
+      actions.notice(
+        "info",
+        result.unchanged
+          ? `agents already up to date in ${result.path}`
+          : `merged into ${result.path}${result.backup ? ` (backup ${result.backup})` : ""}`,
+      )
     } catch (error) {
       actions.notice("error", api.describe(error))
     }
@@ -232,9 +298,28 @@ export function App() {
   async function run() {
     const check = layer(state.pipeline)
     if (!check.ok) return actions.notice("error", check.error)
+    actions.clearNotice()
+
+    // Fold any pending agent edits into opencode.json before the run so a node
+    // never runs against a stale def. The server no-ops when nothing changed,
+    // so this stays silent unless it actually wrote. It cannot make a running
+    // server reload its cache, though — the engine's own unknown-agent check
+    // still surfaces the "restart the server" case below.
+    //
+    // A failed sync stops the run: the nodes would otherwise go off against
+    // whatever defs happen to be on disk, which is exactly the stale-agent case
+    // this sync exists to prevent.
+    try {
+      const { result } = await syncAgents()
+      if (result.error) return actions.notice("error", result.error)
+      if (result.merged)
+        actions.notice("info", `synced agents into ${result.path}${result.backup ? ` (backup ${result.backup})` : ""}`)
+    } catch (error) {
+      return actions.notice("error", api.describe(error))
+    }
+
     actions.resetRuntime(Object.fromEntries(state.pipeline.nodes.map((node) => [node.id, "queued" as const])))
     actions.setRunning(true)
-    actions.clearNotice()
     try {
       current = start(
         state.pipeline,
@@ -251,8 +336,24 @@ export function App() {
               action: request.action,
               resources: request.resources,
             }),
+          onQuestion: (request) =>
+            actions.askQuestion({
+              requestID: request.requestID,
+              nodeID: request.nodeID,
+              role: request.role,
+              questions: request.questions,
+            }),
+          // The engine settles a question on its own once it times out, so the
+          // dialog has to come down even though nobody touched it.
+          onQuestionClosed: (requestID) => actions.answerQuestion(requestID, undefined),
         },
-        { pipe: pipe(), permissions: policy(), maxParallel: parallel(), nodeTimeout: nodeTimeout() },
+        {
+          pipe: pipe(),
+          permissions: policy(),
+          maxParallel: parallel(),
+          nodeTimeout: nodeTimeout(),
+          attachments: [...state.attachments],
+        },
       )
       const log = await current.done
       const failure = log.nodes.find((node) => node.status === "error")
@@ -265,6 +366,7 @@ export function App() {
     } finally {
       actions.setRunning(false)
       actions.rejectPermissions()
+      actions.rejectQuestions()
       current = undefined
       await refresh()
     }
@@ -272,6 +374,7 @@ export function App() {
 
   async function stop() {
     actions.rejectPermissions()
+    actions.rejectQuestions()
     await current?.stop()
     actions.notice("info", "stopping run…")
   }
@@ -385,18 +488,40 @@ export function App() {
           >
             <IconSliders />
           </button>
+          <button
+            class="icon-btn"
+            type="button"
+            title="add and configure mcp servers for this project"
+            aria-label="mcp servers"
+            onClick={() => setShowMcp(true)}
+          >
+            <IconPlug />
+          </button>
         </div>
       </header>
 
       <div class="runbar">
         <input
           class="runbar-task"
-          placeholder="task for this run — Enter to start"
-          title="task for this run — Enter to start"
+          placeholder="task for this run — Enter to start, paste an image to attach it"
+          title="task for this run — Enter to start, paste an image to attach it"
           aria-label="task for this run — Enter to start"
           value={state.input}
           onInput={(event) => actions.setInput(event.currentTarget.value)}
           onKeyDown={onTaskKey}
+          // Pasting a screenshot is how most people attach one, so the task
+          // field takes files as well as text.
+          onPaste={(event) => {
+            const files = filesFrom(event)
+            if (!files.length) return
+            event.preventDefault()
+            void attachToRun(files)
+          }}
+        />
+        <Attachments
+          files={state.attachments}
+          onAdd={(files) => void attachToRun(files)}
+          onRemove={actions.removeAttachment}
         />
         <div class="runbar-settings">
           <Select
@@ -508,7 +633,13 @@ export function App() {
       <main>
         <Palette />
         <Canvas />
-        <Inspector agents={agents()} providers={providers()} onManageKeys={openProviders} />
+        <Inspector
+          agents={agents()}
+          providers={providers()}
+          mcpServers={mcpNames()}
+          onManageKeys={openProviders}
+          onManageMcp={() => setShowMcp(true)}
+        />
       </main>
 
       <Show when={showProviders()}>
@@ -523,6 +654,24 @@ export function App() {
 
       <Show when={showSkills()}>
         <SkillsPanel onClose={() => setShowSkills(false)} onNotice={actions.notice} />
+      </Show>
+
+      <Show when={showMcp()}>
+        <McpPanel onClose={() => setShowMcp(false)} onNotice={actions.notice} onChanged={refresh} />
+      </Show>
+
+      {/*
+        One question at a time: the dialog blocks, and stacking two of them
+        would hide which card is waiting on which.
+      */}
+      {/*
+        Read the signal directly rather than through the render-prop accessor:
+        answering unmounts this Show from inside the child's own handler, and
+        the accessor goes stale mid-handler ("Attempting to access a stale
+        value from <Show>").
+      */}
+      <Show when={state.questions[0]?.requestID} keyed>
+        <QuestionDialog request={state.questions[0]!} onAnswer={actions.answerQuestion} />
       </Show>
 
       <Show when={showProjectPicker()}>

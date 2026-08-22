@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { recallPipeline, recallProject, statePath } from "./last-session"
 import { backupConfig, browseDirectory, flowPaths, handleFlow, slug, type FlowPaths } from "./store"
 
 /**
@@ -16,9 +17,13 @@ let paths: FlowPaths
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "openflow-store-"))
   paths = flowPaths(dir)
+  // A project switch remembers the folder for the next launch; without this
+  // the suite would overwrite the developer's own `~/.openflow/state.json`.
+  process.env.OPENFLOW_STATE_DIR = path.join(dir, "state")
 })
 
 afterEach(async () => {
+  delete process.env.OPENFLOW_STATE_DIR
   await fs.rm(dir, { recursive: true, force: true })
 })
 
@@ -205,12 +210,28 @@ describe("agents", () => {
   test("a second merge does not overwrite the original backup", async () => {
     const target = path.join(dir, "opencode.json")
     await fs.writeFile(target, JSON.stringify({ agent: { mine: {} } }))
+    const changed = { agent: { "feature-build-planner": { mode: "primary", prompt: "replan" } } }
 
     await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
-    const second = await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
+    const second = await call("POST", "/flow/api/pipelines/feature-build/agents", { body: changed, search: "merge=1" })
 
     expect(second!.body).toMatchObject({ backup: `${target}.prev.bak` })
     expect(JSON.parse(await read(`${target}.bak`)).agent).toEqual({ mine: {} })
+  })
+
+  test("a merge that changes nothing does not touch the config or leave a backup", async () => {
+    const target = path.join(dir, "opencode.json")
+    await fs.writeFile(target, JSON.stringify({ agent: { mine: {} } }))
+
+    await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
+    const before = await read(target)
+    const second = await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
+
+    expect(second!.body).toMatchObject({ merged: false, unchanged: true })
+    expect(second!.body).not.toHaveProperty("backup")
+    expect(await read(target)).toBe(before)
+    // The first merge's `.bak`, not a second `.prev.bak`, is the only backup.
+    await expect(read(`${target}.prev.bak`)).rejects.toThrow()
   })
 
   test("refuses to merge into a config it cannot parse", async () => {
@@ -410,6 +431,21 @@ describe("routes: browse and project", () => {
     }
   })
 
+  test("POST /project remembers the folder for the next launch", async () => {
+    const next = await fs.mkdtemp(path.join(os.tmpdir(), "openflow-store-next-"))
+    try {
+      await call("POST", "/flow/api/project", { body: { path: next } })
+      expect(recallProject()).toBe(path.resolve(next))
+    } finally {
+      await fs.rm(next, { recursive: true, force: true })
+    }
+  })
+
+  test("POST /project remembers nothing when it refused the switch", async () => {
+    await call("POST", "/flow/api/project", { body: { path: path.join(dir, "ghost") } })
+    expect(await fs.access(statePath()).then(() => true, () => false)).toBe(false)
+  })
+
   test("POST /project rejects a path that does not exist", async () => {
     const result = await call("POST", "/flow/api/project", { body: { path: path.join(dir, "ghost") } })
     expect(result!.status).toBe(400)
@@ -419,6 +455,50 @@ describe("routes: browse and project", () => {
   test("POST /project requires a path", async () => {
     const result = await call("POST", "/flow/api/project", { body: {} })
     expect(result!.status).toBe(400)
+  })
+})
+
+describe("routes: the pipeline to reopen", () => {
+  test("opening one records it", async () => {
+    await call("PUT", "/flow/api/pipelines/feature-build", { body: graph })
+    await call("GET", "/flow/api/pipelines/feature-build")
+    expect(recallPipeline(dir)).toBe("feature-build")
+  })
+
+  test("saving one records it", async () => {
+    await call("PUT", "/flow/api/pipelines/feature-build", { body: graph })
+    expect(recallPipeline(dir)).toBe("feature-build")
+  })
+
+  test("context carries it, so the canvas needs no extra call", async () => {
+    await call("PUT", "/flow/api/pipelines/feature-build", { body: graph })
+    const context = (await call("GET", "/flow/api/context"))!.body as any
+    expect(context.pipeline).toBe("feature-build")
+    expect(context.project).toBe(path.resolve(dir))
+  })
+
+  test("context says nothing when none was ever opened", async () => {
+    expect(((await call("GET", "/flow/api/context"))!.body as any).pipeline).toBeUndefined()
+  })
+
+  test("deleting the remembered pipeline forgets it", async () => {
+    await call("PUT", "/flow/api/pipelines/feature-build", { body: graph })
+    await call("DELETE", "/flow/api/pipelines/feature-build")
+    expect(recallPipeline(dir)).toBeUndefined()
+  })
+
+  test("deleting a different pipeline leaves it alone", async () => {
+    // Otherwise tidying up an old graph resets the user to a blank canvas.
+    await call("PUT", "/flow/api/pipelines/feature-build", { body: graph })
+    await call("PUT", "/flow/api/pipelines/scratch", { body: graph })
+    await call("GET", "/flow/api/pipelines/feature-build")
+    await call("DELETE", "/flow/api/pipelines/scratch")
+    expect(recallPipeline(dir)).toBe("feature-build")
+  })
+
+  test("a failed open records nothing", async () => {
+    await call("GET", "/flow/api/pipelines/ghost")
+    expect(recallPipeline(dir)).toBeUndefined()
   })
 })
 
@@ -434,5 +514,102 @@ describe("backupConfig", () => {
 
     expect(await read(`${target}.bak`)).toBe("original")
     expect(await read(`${target}.prev.bak`)).toBe("merged twice")
+  })
+})
+
+describe("mcp servers", () => {
+  const configPath = () => path.join(dir, "opencode.json")
+
+  test("lists nothing when the project has no config", async () => {
+    expect((await call("GET", "/mcp"))?.body).toEqual([])
+  })
+
+  test("writes a local server into the project config", async () => {
+    const response = await call("PUT", "/mcp/context7", {
+      body: { type: "local", command: ["bunx", "-y", "@upstash/context7-mcp"], environment: { KEY: "v" } },
+    })
+
+    expect(response?.status).toBe(200)
+    const config = JSON.parse(await read(configPath()))
+    expect(config.mcp.context7).toEqual({
+      type: "local",
+      command: ["bunx", "-y", "@upstash/context7-mcp"],
+      environment: { KEY: "v" },
+      enabled: true,
+    })
+  })
+
+  test("writes a remote server with headers", async () => {
+    await call("PUT", "/mcp/hosted", {
+      body: { type: "remote", url: "https://mcp.example.com/sse", headers: { Authorization: "Bearer x" } },
+    })
+
+    const config = JSON.parse(await read(configPath()))
+    expect(config.mcp.hosted).toEqual({
+      type: "remote",
+      url: "https://mcp.example.com/sse",
+      headers: { Authorization: "Bearer x" },
+      enabled: true,
+    })
+  })
+
+  test("refuses a server that could not start, rather than writing a config opencode rejects", async () => {
+    const local = await call("PUT", "/mcp/broken", { body: { type: "local", command: [] } })
+    const remote = await call("PUT", "/mcp/broken", { body: { type: "remote", url: "  " } })
+
+    expect(local?.status).toBe(400)
+    expect(remote?.status).toBe(400)
+    expect(await fs.access(configPath()).then(() => true, () => false)).toBe(false)
+  })
+
+  test("drops empty header and environment rows the form leaves behind", async () => {
+    await call("PUT", "/mcp/tidy", {
+      body: { type: "local", command: ["run"], environment: { "": "orphan", KEY: "kept" } },
+    })
+
+    const config = JSON.parse(await read(configPath()))
+    expect(config.mcp.tidy.environment).toEqual({ KEY: "kept" })
+  })
+
+  test("keeps other config and backs it up before rewriting", async () => {
+    await fs.writeFile(configPath(), JSON.stringify({ agent: { planner: {} } }, null, 2))
+
+    await call("PUT", "/mcp/one", { body: { type: "local", command: ["run"] } })
+
+    const config = JSON.parse(await read(configPath()))
+    expect(config.agent).toEqual({ planner: {} })
+    expect(JSON.parse(await read(`${configPath()}.bak`)).mcp).toBeUndefined()
+  })
+
+  test("round-trips through the list route", async () => {
+    await call("PUT", "/mcp/beta", { body: { type: "remote", url: "https://b" } })
+    await call("PUT", "/mcp/alpha", { body: { type: "local", command: ["a"], enabled: false } })
+
+    const rows = (await call("GET", "/mcp"))?.body as any[]
+    expect(rows.map((row) => row.name)).toEqual(["alpha", "beta"])
+    expect(rows[0]).toMatchObject({ type: "local", enabled: false, command: ["a"] })
+  })
+
+  test("delete removes only the named server", async () => {
+    await call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } })
+    await call("PUT", "/mcp/two", { body: { type: "local", command: ["b"] } })
+
+    const response = await call("DELETE", "/mcp/one")
+
+    expect(response?.body).toMatchObject({ name: "one", removed: true })
+    expect(Object.keys(JSON.parse(await read(configPath())).mcp)).toEqual(["two"])
+  })
+
+  test("deleting something that was never configured is not an error", async () => {
+    expect((await call("DELETE", "/mcp/ghost"))?.body).toMatchObject({ removed: false })
+  })
+
+  test("refuses to touch an opencode.json it cannot parse", async () => {
+    await fs.writeFile(configPath(), "{ not json")
+
+    const response = await call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } })
+
+    expect(response?.status).toBe(400)
+    expect(await read(configPath())).toBe("{ not json")
   })
 })

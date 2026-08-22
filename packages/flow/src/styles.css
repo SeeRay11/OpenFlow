@@ -1740,13 +1740,18 @@ main {
   color: var(--oc-text);
 }
 
+/* the height is fixed, so the label must never wrap and the button must never
+   be squeezed by a flex sibling — a two-line label in a 28px box spills out of
+   its own border */
 .oc-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   gap: 6px;
   height: 28px;
   padding: 0 10px;
+  white-space: nowrap;
   border: 0.5px solid var(--oc-border-base);
   border-radius: 5px;
   background: var(--v2-background-bg-button-neutral);
@@ -2080,4 +2085,189 @@ main {
   margin: -8px 0 0;
   color: var(--oc-danger);
   font-size: 12px;
+}
+
+/* ---------------------------------------------------------------- mcp panel */
+
+/* a configured server and its live-connection action sit on one line; the row
+   itself is the click target for editing, the button is not */
+.oc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.oc-row .oc-item {
+  flex: 1;
+  min-width: 0;
+}
+
+/* status is colour-coded because "connected" and "failed" are the two answers a
+   user is actually scanning for */
+.oc-tag[data-mcp="connected"] {
+  border-color: var(--v2-state-fg-success, var(--oc-border-base));
+  color: var(--v2-state-fg-success, var(--oc-text-muted));
+}
+
+.oc-tag[data-mcp="failed"],
+.oc-tag[data-mcp="needs_auth"],
+.oc-tag[data-mcp="needs_client_registration"] {
+  border-color: var(--oc-danger);
+  color: var(--oc-danger);
+}
+
+.oc-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.oc-choice label,
+.oc-form label.oc-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-weight: 440;
+}
+
+.oc-pairs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.oc-pairs-title {
+  font-weight: 530;
+}
+
+.oc-pair {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.oc-pair input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------- attachments */
+
+.attachments {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.attachments-compact {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+/* the real input is never shown — the button in front of it is the control */
+.attachments-input {
+  display: none;
+}
+
+.attachment-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.attachments-compact .attachment-list {
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+
+.attachment {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  height: 24px;
+  padding: 0 2px 0 4px;
+  border: 0.5px solid var(--oc-border-base);
+  border-radius: 4px;
+  background: var(--oc-layer-02);
+  color: var(--oc-text-muted);
+  font-size: 12px;
+}
+
+.attachment-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  object-fit: cover;
+}
+
+.attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- questions */
+
+.oc-dialog-question {
+  max-width: 520px;
+}
+
+.question {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.question-text {
+  margin: 0;
+  font-weight: 530;
+}
+
+.question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.question-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 0.5px solid var(--oc-border-base);
+  border-radius: 5px;
+  background: var(--oc-layer-02);
+  color: var(--oc-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.question-option:hover {
+  background: var(--oc-hover);
+}
+
+/* the chosen option keeps its border colour rather than filling, so a
+   multi-select with three picks does not read as one solid block */
+.question-option[data-chosen="yes"] {
+  border-color: var(--v2-border-border-focus);
+  box-shadow: inset 0 0 0 1px var(--v2-border-border-focus);
+}
+
+.question-option-hint {
+  color: var(--oc-text-muted);
+  font-size: 12px;
+}
+
+/* an inspector row whose control is wider than a single line */
+.field-row-stack {
+  gap: 8px;
 }
