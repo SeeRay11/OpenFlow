@@ -1,4 +1,4 @@
-import type { Pipeline, RunLog } from "../graph/types"
+import type { Pipeline, RunLog, Spend } from "../graph/types"
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/flow/api${path}`, {
@@ -11,7 +11,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export type PipelineEntry = { name: string; id?: string; nodes: number; updated: number }
-export type RunEntry = { id: string; pipeline?: string; status?: string; started?: number; finished?: number }
+export type RunEntry = {
+  id: string
+  pipeline?: string
+  status?: string
+  started?: number
+  finished?: number
+  /** Missing on runs recorded before usage was tracked — unknown, not free. */
+  usage?: Spend
+}
 export type BrowseEntry = { name: string; path: string }
 export type BrowseResult = { path: string | null; parent: string | null; entries: BrowseEntry[] }
 export type FlowPaths = {
@@ -39,6 +47,19 @@ export type SkillEntry = { name: string; description?: string; updated: number }
 export type SkillDoc = { name: string; folder: string; description?: string; content: string; path: string }
 export type SkillSave = { name: string; path: string; registered?: boolean; backup?: string; error?: string }
 
+/** The `opencode serve` this host proxies, and whether it can be restarted here. */
+export type ServeStatus = {
+  managed: boolean
+  running: boolean
+  url: string
+  command: string
+  pid?: number
+  startedAt?: number
+  error?: string
+  /** Why this host cannot restart it, when it cannot. */
+  reason?: string
+}
+
 export const store = {
   pipelines: () => request<PipelineEntry[]>("/pipelines"),
   pipeline: (name: string) => request<Pipeline>(`/pipelines/${encodeURIComponent(name)}`),
@@ -56,10 +77,13 @@ export const store = {
   /** MCP servers configured in the project's opencode.json. */
   mcpServers: () => request<McpServer[]>("/mcp"),
   saveMcpServer: (server: McpServer) =>
-    request<{ name: string; path: string; backup?: string }>(`/mcp/${encodeURIComponent(server.name)}`, {
-      method: "PUT",
-      body: JSON.stringify(server),
-    }),
+    request<{ name: string; path: string; backup?: string; unchanged?: boolean }>(
+      `/mcp/${encodeURIComponent(server.name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(server),
+      },
+    ),
   deleteMcpServer: (name: string) =>
     request<{ name: string; removed: boolean }>(`/mcp/${encodeURIComponent(name)}`, { method: "DELETE" }),
   /** Skills authored in OpenFlow, stored under `.openflow/skills` and registered in opencode.json. */
@@ -99,6 +123,20 @@ export const store = {
    */
   pickFolder: (start?: string) =>
     request<{ path: string | null }>("/pick-folder", { method: "POST", body: JSON.stringify({ path: start }) }),
+  /** State of the engine this host proxies. */
+  serverStatus: () => request<ServeStatus>("/server"),
+  /**
+   * Restarts `opencode serve`, which is the only way a merged agent, a new
+   * skill or an MCP change becomes visible — the server reads those once at
+   * boot. Rejects with the status attached when this host does not own the
+   * process, so the caller can show the command instead.
+   */
+  restartServer: async () => {
+    const response = await fetch("/flow/api/server/restart", { method: "POST" })
+    const body = (await response.json().catch(() => undefined)) as (ServeStatus & { error?: string }) | undefined
+    if (response.ok) return body as ServeStatus
+    throw Object.assign(new Error(body?.error ?? `restart failed (${response.status})`), { status: response.status, info: body })
+  },
   /** Switches the live project directory. Takes effect immediately, no restart. */
   setProject: (path: string) => request<FlowPaths>("/project", { method: "POST", body: JSON.stringify({ path }) }),
 }

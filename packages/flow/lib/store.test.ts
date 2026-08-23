@@ -3,6 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { recallPipeline, recallProject, statePath } from "./last-session"
+import type { ServeStatus, Supervisor } from "./opencode-process"
 import { backupConfig, browseDirectory, flowPaths, handleFlow, slug, type FlowPaths } from "./store"
 
 /**
@@ -29,13 +30,35 @@ afterEach(async () => {
 
 const read = (file: string) => fs.readFile(file, "utf8")
 
-function call(method: string, route: string, options: { body?: unknown; search?: string } = {}) {
+function call(
+  method: string,
+  route: string,
+  options: { body?: unknown; search?: string; serve?: Supervisor } = {},
+) {
   return handleFlow(paths, {
     method,
     path: route,
     search: new URLSearchParams(options.search ?? ""),
     json: async () => options.body ?? {},
+    serve: options.serve,
   })
+}
+
+/** Stand-in for the engine's process handle. */
+function supervisor(status: Partial<ServeStatus>, onRestart?: () => Promise<ServeStatus>): Supervisor {
+  const full = (): ServeStatus => ({
+    managed: false,
+    running: true,
+    url: "http://127.0.0.1:4096",
+    command: "opencode serve --port 4096",
+    ...status,
+  })
+  return {
+    status: async () => full(),
+    ensure: async () => full(),
+    restart: onRestart ?? (async () => full()),
+    stop: async () => {},
+  }
 }
 
 const graph = { id: "p1", name: "feature-build", nodes: [{ id: "n1" }], edges: [] }
@@ -172,6 +195,18 @@ describe("runs", () => {
     expect(list[0]).toMatchObject({ pipeline: "feature-build", status: "done" })
   })
 
+  test("carries usage into the listing, and leaves older runs without it", async () => {
+    const usage = { cost: 0.25, tokens: { input: 1, output: 2, reasoning: 0, cacheRead: 0, cacheWrite: 0 }, steps: 1, models: [], unpriced: [] }
+    await call("PUT", "/flow/api/runs/run-1", { body: { ...log, usage } })
+    await call("PUT", "/flow/api/runs/run-2", { body: { ...log, id: "run-2", started: 30 } })
+
+    const list = (await call("GET", "/flow/api/runs"))!.body as any[]
+    // A run recorded before cost tracking has no usage at all — the spend view
+    // counts it as unknown rather than as a free run.
+    expect(list.find((entry) => entry.id === "run-2").usage).toBeUndefined()
+    expect(list.find((entry) => entry.id === "run-1").usage.cost).toBe(0.25)
+  })
+
   test("404s for a run that does not exist", async () => {
     expect((await call("GET", "/flow/api/runs/ghost"))!.status).toBe(404)
   })
@@ -232,6 +267,50 @@ describe("agents", () => {
     expect(await read(target)).toBe(before)
     // The first merge's `.bak`, not a second `.prev.bak`, is the only backup.
     await expect(read(`${target}.prev.bak`)).rejects.toThrow()
+  })
+
+  test("a merge drops the agents this pipeline no longer generates, and nothing else", async () => {
+    const marked = (id: string, role: string, pipeline = "feature-build") => ({
+      description: `OpenFlow node ${id} (${role}) of pipeline ${pipeline}`,
+    })
+    await fs.writeFile(
+      path.join(dir, "opencode.json"),
+      JSON.stringify({
+        agent: {
+          "feature-build-planner": marked("n1", "planner"),
+          // Renamed away: generated for this pipeline, no longer in the block.
+          "feature-build-scout": marked("n0", "scout"),
+          // Another pipeline's, and a hand-written one that merely looks generated.
+          "release-notes-writer": marked("n9", "writer", "release-notes"),
+          "feature-build-mine": {},
+        },
+      }),
+    )
+
+    await call("POST", "/flow/api/pipelines/feature-build/agents", {
+      body: { agent: { "feature-build-planner": marked("n1", "planner") } },
+      search: "merge=1",
+    })
+
+    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
+    expect(Object.keys(config.agent).sort()).toEqual([
+      "feature-build-mine",
+      "feature-build-planner",
+      "release-notes-writer",
+    ])
+  })
+
+  test("an unchanged merge with no config to merge into names the generated file", async () => {
+    const result = await call("POST", "/flow/api/pipelines/feature-build/agents", {
+      body: { agent: {} },
+      search: "merge=1",
+    })
+
+    expect(result!.body).toMatchObject({
+      path: path.join(paths.generated, "feature-build.opencode.json"),
+      unchanged: true,
+    })
+    await expect(read(path.join(dir, "opencode.json"))).rejects.toThrow()
   })
 
   test("refuses to merge into a config it cannot parse", async () => {
@@ -544,6 +623,21 @@ describe("mcp servers", () => {
     })
   })
 
+  test("saving a server the config already describes writes nothing", async () => {
+    const body = { type: "local", command: ["bunx", "-y", "@upstash/context7-mcp"] }
+
+    await call("PUT", "/mcp/context7", { body })
+    const before = await read(configPath())
+    const second = await call("PUT", "/mcp/context7", { body })
+
+    expect(second?.body).toMatchObject({ unchanged: true })
+    expect(second?.body).not.toHaveProperty("backup")
+    expect(await read(configPath())).toBe(before)
+    // The project had no config before the first write, so there was nothing to
+    // copy aside; a re-save must not invent a backup of OpenFlow's own output.
+    await expect(read(`${configPath()}.bak`)).rejects.toThrow()
+  })
+
   test("writes a remote server with headers", async () => {
     await call("PUT", "/mcp/hosted", {
       body: { type: "remote", url: "https://mcp.example.com/sse", headers: { Authorization: "Bearer x" } },
@@ -616,5 +710,59 @@ describe("mcp servers", () => {
 
     expect(response?.status).toBe(400)
     expect(await read(configPath())).toBe("{ not json")
+  })
+})
+
+describe("server control", () => {
+  test("reports the engine this host proxies", async () => {
+    const response = await call("GET", "/flow/api/server", { serve: supervisor({ managed: true, pid: 42 }) })
+    expect(response!.status).toBe(200)
+    expect(response!.body).toMatchObject({ managed: true, running: true, pid: 42 })
+  })
+
+  test("restarts it when this host owns the process", async () => {
+    let restarted = 0
+    const serve = supervisor({ managed: true }, async () => {
+      restarted += 1
+      return { managed: true, running: true, url: "http://127.0.0.1:4096", command: "x", pid: 7 }
+    })
+    const response = await call("POST", "/flow/api/server/restart", { serve })
+    expect(restarted).toBe(1)
+    expect(response!.status).toBe(200)
+    expect(response!.body).toMatchObject({ running: true, pid: 7 })
+  })
+
+  test("refuses with the command when the host does not own it", async () => {
+    const serve = supervisor({ managed: false, reason: "it was started outside OpenFlow" })
+    const response = await call("POST", "/flow/api/server/restart", { serve })
+    // 409, not 500: nothing is broken — this host simply cannot reach that
+    // process, and the body carries what to type instead.
+    expect(response!.status).toBe(409)
+    expect(response!.body).toMatchObject({ managed: false, command: "opencode serve --port 4096" })
+    expect((response!.body as any).error).toContain("outside OpenFlow")
+  })
+
+  test("surfaces a failed restart rather than claiming success", async () => {
+    const serve = supervisor({ managed: true }, async () => {
+      throw new Error("port still held")
+    })
+    const response = await call("POST", "/flow/api/server/restart", { serve })
+    expect(response!.status).toBe(502)
+    expect((response!.body as any).error).toBe("port still held")
+  })
+
+  test("a host that tracks no engine says so", async () => {
+    const response = await call("GET", "/flow/api/server")
+    expect(response!.status).toBe(501)
+  })
+
+  test("is refused when the store is served remotely", async () => {
+    process.env.FLOW_ALLOW_REMOTE = "1"
+    try {
+      const response = await call("POST", "/flow/api/server/restart", { serve: supervisor({ managed: true }) })
+      expect(response!.status).toBe(403)
+    } finally {
+      delete process.env.FLOW_ALLOW_REMOTE
+    }
   })
 })

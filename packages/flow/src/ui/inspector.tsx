@@ -8,6 +8,7 @@ import { Attachments, readFiles } from "./attachments"
 import { IconTrash } from "./icons"
 import { ModelPicker } from "./model-picker"
 import { Select } from "./select"
+import { costLabel, formatCost, formatTokens } from "../server/usage"
 
 export function Inspector(props: {
   agents: string[]
@@ -195,6 +196,45 @@ export function Inspector(props: {
               <div class="panel-section">
                 <h2 class="panel-title">session</h2>
                 <div class="hint mono">{runtime()!.sessionID}</div>
+              </div>
+            </Show>
+
+            {/*
+              Per-card spend, from the tokens the provider reported for this
+              card's session. A model with no published price shows its tokens
+              and says so instead of showing a zero.
+            */}
+            <Show when={runtime()?.usage?.steps}>
+              <div class="panel-section">
+                <h2 class="panel-title">cost</h2>
+                <div class="row">
+                  <span class="spend-total-value">{costLabel(runtime()!.usage!)}</span>
+                  <span class="hint">
+                    {formatTokens(
+                      runtime()!.usage!.tokens.input +
+                        runtime()!.usage!.tokens.output +
+                        runtime()!.usage!.tokens.reasoning +
+                        runtime()!.usage!.tokens.cacheRead +
+                        runtime()!.usage!.tokens.cacheWrite,
+                    )}{" "}
+                    tokens · {runtime()!.usage!.steps} steps
+                  </span>
+                </div>
+                <For each={runtime()!.usage!.models}>
+                  {(model) => (
+                    <div class="spend-row">
+                      <span class="spend-name mono dim">{model.model}</span>
+                      <span class="spend-cost" classList={{ dim: !model.priced }}>
+                        {model.priced ? formatCost(model.cost ?? 0) : "no published price"}
+                      </span>
+                    </div>
+                  )}
+                </For>
+                <span class="hint">
+                  input {runtime()!.usage!.tokens.input} · output {runtime()!.usage!.tokens.output} · reasoning{" "}
+                  {runtime()!.usage!.tokens.reasoning} · cache read {runtime()!.usage!.tokens.cacheRead} · cache write{" "}
+                  {runtime()!.usage!.tokens.cacheWrite}
+                </span>
               </div>
             </Show>
 

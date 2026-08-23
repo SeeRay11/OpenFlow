@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { pipeline } from "../graph/test-support"
-import type { Attachment, Pipeline, RunLog } from "../graph/types"
+import type { Attachment, NodeEvent, Pipeline, RunLog, StepUsage } from "../graph/types"
 import type { BusEvent, PermissionReply, QuestionInfo } from "./client"
 import {
   DEFAULT_NODE_TIMEOUT,
@@ -37,6 +37,10 @@ type HarnessOptions = {
   agents?: string[]
   /** Subset of `models` that accepts image input. */
   vision?: string[]
+  /** Price rows per "providerID/id", as the catalog would report them. */
+  prices?: Record<string, Array<{ input: number; output: number; cache: { read: number; write: number } }>>
+  /** What `sessionSteps` reports per node. Omitted = the engine keeps bus data. */
+  steps?: Record<string, StepUsage[]>
   onPermission?: (request: PermissionRequest) => Promise<PermissionReply>
   onQuestion?: (request: QuestionRequest) => Promise<string[][] | undefined>
 }
@@ -144,6 +148,7 @@ function harness(options: HarnessOptions = {}) {
           providerID: value.slice(0, index),
           id: value.slice(index + 1),
           capabilities: { input: options.vision?.includes(value) ? ["text", "image"] : ["text"] },
+          cost: options.prices?.[value] ?? [],
         }
       }) as any
     },
@@ -153,9 +158,21 @@ function harness(options: HarnessOptions = {}) {
     describe(error: unknown) {
       return error instanceof Error ? error.message : String(error)
     },
+    ...(options.steps
+      ? {
+          async sessionSteps(sessionID: string) {
+            return options.steps![nodeOf.get(sessionID)!] ?? []
+          },
+        }
+      : {}),
   }
 
+  const activity: { node: string; event: NodeEvent }[] = []
+
   const hooks: EngineHooks = {
+    onNodeEvent(id, event) {
+      activity.push({ node: id, event })
+    },
     onNode(id, patch) {
       if (patch.sessionID) {
         nodeOf.set(patch.sessionID, id)
@@ -188,6 +205,7 @@ function harness(options: HarnessOptions = {}) {
     waits,
     notices,
     saved,
+    activity,
     sessionOf,
     peak: () => peak,
     release(id: string) {
@@ -196,6 +214,37 @@ function harness(options: HarnessOptions = {}) {
     /** Pushes an event onto the bus the engine subscribed to. */
     emit(event: BusEvent) {
       deliver(event)
+    },
+    /** Replays what a provider step looks like on the bus: started, then ended. */
+    spend(
+      nodeID: string,
+      input: { messageID: string; model: string; tokens: Partial<StepUsage["tokens"]>; skipStart?: boolean },
+    ) {
+      const sessionID = sessionOf.get(nodeID)
+      const [providerID, ...rest] = input.model.split("/")
+      if (!input.skipStart)
+        deliver({
+          type: "session.next.step.started",
+          data: {
+            sessionID,
+            assistantMessageID: input.messageID,
+            model: { providerID, id: rest.join("/") },
+          },
+        })
+      deliver({
+        type: "session.next.step.ended",
+        data: {
+          sessionID,
+          assistantMessageID: input.messageID,
+          finish: "stop",
+          tokens: {
+            input: input.tokens.input ?? 0,
+            output: input.tokens.output ?? 0,
+            reasoning: input.tokens.reasoning ?? 0,
+            cache: { read: input.tokens.cacheRead ?? 0, write: input.tokens.cacheWrite ?? 0 },
+          },
+        },
+      })
     },
     ask(nodeID: string, request: { id: string; action: string; resources?: string[] }) {
       deliver({ type: "permission.v2.asked", data: { sessionID: sessionOf.get(nodeID), ...request } })
@@ -480,6 +529,68 @@ describe("stop", () => {
   })
 })
 
+describe("activity", () => {
+  test("streams a node's tool calls to the UI and saves them on the run log", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+    const sessionID = h.sessionOf.get("a")!
+
+    h.emit({ type: "session.next.tool.input.started", data: { sessionID, callID: "c1", name: "grep" } })
+    h.emit({
+      type: "session.next.tool.called",
+      data: { sessionID, callID: "c1", tool: "grep", input: { pattern: "handler" } },
+    })
+    h.emit({
+      type: "session.next.tool.success",
+      data: { sessionID, callID: "c1", content: [{ type: "text", text: "2 matches" }] },
+    })
+    await flush()
+
+    expect(h.activity.map((entry) => entry.node)).toEqual(["a", "a", "a"])
+    expect(h.activity.at(-1)!.event).toMatchObject({ id: "tool:c1", status: "done", body: "2 matches" })
+
+    h.release("a")
+    const log = await run.done
+    // One row, not three: the call is upserted as it progresses.
+    expect(log.nodes[0].events).toHaveLength(1)
+    expect(log.nodes[0].events![0]).toMatchObject({ id: "tool:c1", title: "grep pattern=handler" })
+  })
+
+  test("a subagent's work is attributed to the node that spawned it", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+    const sessionID = h.sessionOf.get("a")!
+
+    h.emit({ type: "session.next.tool.input.started", data: { sessionID, callID: "t1", name: "task" } })
+    h.emit({ type: "session.created", data: { sessionID: "child", info: { parentID: sessionID } } })
+    h.emit({ type: "session.next.text.delta", data: { sessionID: "child", textID: "x1", delta: "looking" } })
+    await flush()
+
+    expect(h.activity.at(-1)!.node).toBe("a")
+    expect(h.activity.at(-1)!.event).toMatchObject({ depth: 1, parentCallID: "t1", body: "looking" })
+
+    h.release("a")
+    await run.done
+  })
+
+  test("records the permission decision on the stream as well as the log", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+
+    h.ask("a", { id: "req-1", action: "read", resources: [".env"] })
+    await flush()
+
+    const note = h.activity.find((entry) => entry.event.id === "note:permission:req-1")
+    expect(note?.event).toMatchObject({ kind: "note", title: "permission read: once", body: ".env" })
+
+    h.release("a")
+    await run.done
+  })
+})
+
 describe("permissions", () => {
   test("auto policy approves the single call and records the decision", async () => {
     const h = harness({ behavior: { a: { hold: true } } })
@@ -740,5 +851,173 @@ describe("attachments", () => {
     await h.run(graph, "look", { attachments: [png] }).done
 
     expect(h.sent.get("a")).toEqual([png, note])
+  })
+})
+
+describe("usage", () => {
+  const priced = { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] }
+
+  test("prices what the provider reported, per node and per run", async () => {
+    const graph = pipeline("a->b")
+    for (const node of graph.nodes) node.agent.model = "openai/gpt-x"
+    const h = harness({ models: ["openai/gpt-x"], prices: priced, behavior: { a: { hold: true } } })
+
+    const run = h.run(graph)
+    await flush()
+    h.spend("a", { messageID: "m1", model: "openai/gpt-x", tokens: { input: 1_000, output: 200 } })
+    h.release("a")
+    await flush()
+    h.spend("b", { messageID: "m2", model: "openai/gpt-x", tokens: { input: 500, cacheRead: 10_000 } })
+    const log = await run.done
+
+    // a: 1000*2 + 200*10 = 4000 -> $0.004    b: 500*2 + 10000*0.5 = 6000 -> $0.006
+    expect(log.nodes[0].usage?.cost).toBeCloseTo(0.004, 12)
+    expect(log.nodes[1].usage?.cost).toBeCloseTo(0.006, 12)
+    expect(log.usage?.cost).toBeCloseTo(0.01, 12)
+    expect(log.usage?.steps).toBe(2)
+    expect(log.usage?.unpriced).toEqual([])
+  })
+
+  test("a step reported twice on the bus is charged once", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.model = "openai/gpt-x"
+    const h = harness({ models: ["openai/gpt-x"], prices: priced, behavior: { a: { hold: true } } })
+
+    const run = h.run(graph)
+    await flush()
+    h.spend("a", { messageID: "m1", model: "openai/gpt-x", tokens: { input: 1_000 } })
+    h.spend("a", { messageID: "m1", model: "openai/gpt-x", tokens: { input: 1_000 } })
+    h.release("a")
+    const log = await run.done
+
+    expect(log.usage?.steps).toBe(1)
+    expect(log.usage?.cost).toBeCloseTo(0.002, 12)
+  })
+
+  test("the server's own record replaces what the bus saw", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.model = "openai/gpt-x"
+    const h = harness({
+      models: ["openai/gpt-x"],
+      prices: priced,
+      behavior: { a: { hold: true } },
+      // The bus missed a step; the message history has both.
+      steps: {
+        a: [
+          { messageID: "m1", model: "openai/gpt-x", tokens: { input: 1_000, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 } },
+          { messageID: "m2", model: "openai/gpt-x", tokens: { input: 3_000, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 } },
+        ],
+      },
+    })
+
+    const run = h.run(graph)
+    await flush()
+    h.spend("a", { messageID: "m1", model: "openai/gpt-x", tokens: { input: 1_000 } })
+    h.release("a")
+    const log = await run.done
+
+    expect(log.usage?.steps).toBe(2)
+    expect(log.usage?.cost).toBeCloseTo(0.008, 12)
+    expect(log.nodes[0].steps).toHaveLength(2)
+  })
+
+  test("a model with no published price is reported unpriced, never as free", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.model = "mystery/x"
+    const h = harness({ models: ["mystery/x"], behavior: { a: { hold: true } } })
+
+    const run = h.run(graph)
+    await flush()
+    h.spend("a", { messageID: "m1", model: "mystery/x", tokens: { input: 9_000, output: 100 } })
+    h.release("a")
+    const log = await run.done
+
+    expect(log.usage?.unpriced).toEqual(["mystery/x"])
+    expect(log.usage?.models[0].cost).toBeUndefined()
+    expect(log.usage?.tokens.input).toBe(9_000)
+  })
+
+  test("tokens spent by a failed node are still counted", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.model = "openai/gpt-x"
+    const h = harness({ models: ["openai/gpt-x"], prices: priced, behavior: { a: { hold: true, error: "boom" } } })
+
+    const run = h.run(graph)
+    await flush()
+    h.spend("a", { messageID: "m1", model: "openai/gpt-x", tokens: { input: 1_000 } })
+    h.release("a")
+    const log = await run.done
+
+    expect(log.nodes[0].status).toBe("error")
+    expect(log.usage?.cost).toBeCloseTo(0.002, 12)
+  })
+
+  test("a step the bus never announced is attributed to the node's own model", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.model = "openai/gpt-x"
+    const h = harness({ models: ["openai/gpt-x"], prices: priced, behavior: { a: { hold: true } } })
+
+    const run = h.run(graph)
+    await flush()
+    h.spend("a", { messageID: "m1", model: "openai/gpt-x", tokens: { input: 1_000 }, skipStart: true })
+    h.release("a")
+    const log = await run.done
+
+    expect(log.usage?.models[0].model).toBe("openai/gpt-x")
+    expect(log.usage?.cost).toBeCloseTo(0.002, 12)
+  })
+})
+
+describe("stale engine", () => {
+  test("names the exact command for this host, and flags the run", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.name = "untitled-mcp-server-adder"
+    const h = harness({ agents: ["some-other-agent"] })
+    let stale = 0
+    h.hooks.onEngineStale = () => {
+      stale += 1
+    }
+    h.deps.serveStatus = async () => ({
+      managed: false,
+      running: true,
+      url: "http://127.0.0.1:4096",
+      command: "bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096",
+      reason: "it was started outside OpenFlow",
+    })
+
+    const log = await h.run(graph).done
+
+    expect(log.status).toBe("error")
+    expect(stale).toBe(1)
+    // The command, and where to run it — not a bare binary name that may not
+    // be on PATH or may be a different version than this checkout.
+    expect(log.nodes[0].error).toContain("bun run --cwd packages/opencode")
+    expect(log.nodes[0].error).toContain("Ctrl+C")
+  })
+
+  test("points at the button when this host owns the engine", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.name = "missing-agent"
+    const h = harness({ agents: [] })
+    h.deps.serveStatus = async () => ({
+      managed: true,
+      running: true,
+      url: "http://127.0.0.1:4096",
+      command: "bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096",
+    })
+
+    const log = await h.run(graph).done
+
+    expect(log.nodes[0].error).toContain("restart button")
+  })
+
+  test("still says something useful when the host cannot report the engine", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.name = "missing-agent"
+    const h = harness({ agents: [] })
+
+    const log = await h.run(graph).done
+
+    expect(log.nodes[0].error).toContain("opencode serve")
   })
 })

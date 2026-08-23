@@ -12,13 +12,22 @@ const server = process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096"
 // UI, then the repo root two levels up from packages/flow.
 const project = resolveProject(fileURLToPath(new URL("../../", import.meta.url)))
 
+/**
+ * How long a proxied request may hang before the dev server gives up.
+ *
+ * Restarting `opencode serve` is the case this exists for: a pooled keep-alive
+ * connection to the process that just died never answers and never errors, so
+ * without a bound the canvas waits forever on a request that can only fail.
+ * SSE keeps its own config below — a stream is *meant* to stay open.
+ */
+const PROXY_TIMEOUT = Number(process.env.FLOW_PROXY_TIMEOUT ?? 30_000)
+
 const proxy = {
   target: server,
   changeOrigin: true,
   ws: false,
-  // SSE streams must not be buffered or timed out by the dev proxy.
-  timeout: 0,
-  proxyTimeout: 0,
+  timeout: PROXY_TIMEOUT,
+  proxyTimeout: PROXY_TIMEOUT,
   /**
    * Say why the upstream call failed instead of letting http-proxy answer a
    * bare 500 with an empty body.
@@ -51,7 +60,8 @@ export default defineConfig({
     proxy: {
       "/api": proxy,
       "/global": proxy,
-      "/event": proxy,
+      // SSE streams must not be buffered or timed out.
+      "/event": { ...proxy, timeout: 0, proxyTimeout: 0 },
       // MCP routes are the one instance API not served under /api.
       "/mcp": proxy,
     },

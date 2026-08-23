@@ -126,7 +126,9 @@ export function McpPanel(props: {
       const backup = result.backup ? ` (backup ${result.backup})` : ""
       props.onNotice(
         "info",
-        `saved mcp server ${name}${renamed} to ${result.path}${backup}. Restart \`opencode serve\` to load it.`,
+        result.unchanged && !renamed
+          ? `mcp server ${name} is already saved in ${result.path} as it stands`
+          : `saved mcp server ${name}${renamed} to ${result.path}${backup}. Restart \`opencode serve\` to load it.`,
       )
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure))

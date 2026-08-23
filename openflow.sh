@@ -14,6 +14,8 @@
 #   ./openflow.sh -p ~/code/my-app      # point the agents at another repo
 #   ./openflow.sh -b                    # serve the built bundle (no vite)
 #   ./openflow.sh -s 4097               # use a non-default engine port
+#   ./openflow.sh -m                    # let the canvas own the engine, so its
+#                                       # "restart engine" button works
 #
 # Before the first run: log in a provider (`opencode auth login`, a provider env
 # var, or OPENCODE_AUTH_CONTENT). Flow inherits the server's credentials; an empty
@@ -24,13 +26,18 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project=""
 server_port=4096
 built=0
+manage=0
 startup_timeout=90
 
-while getopts "p:s:bh" opt; do
+while getopts "p:s:bmh" opt; do
   case "$opt" in
     p) project="$OPTARG" ;;
     s) server_port="$OPTARG" ;;
     b) built=1 ;;
+    # Hand the engine to the canvas: it spawns it, waits for it, and can then
+    # restart it from the UI. The server has no shutdown route, so only the
+    # process that started it can do that.
+    m) manage=1 ;;
     h) sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "Unknown flag. Use -h for help." >&2; exit 1 ;;
   esac
@@ -63,6 +70,21 @@ cleanup() {
   [ -n "$server_pid" ] && kill -- -"$server_pid" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
+
+if [ "$manage" -eq 1 ]; then
+  export FLOW_MANAGE_SERVER=1
+  echo "Engine will be started and owned by the canvas (-m)."
+  echo "Starting canvas — open http://localhost:5174"
+  echo "Press Ctrl+C to stop both."
+  echo
+  if [ "$built" -eq 1 ]; then
+    bun run --cwd "$repo/packages/flow" build
+    bun run --cwd "$repo/packages/flow" start
+  else
+    bun run --cwd "$repo/packages/flow" dev
+  fi
+  exit 0
+fi
 
 echo "Starting engine (opencode serve)..."
 # setsid gives the engine its own process group so cleanup can take the tree.

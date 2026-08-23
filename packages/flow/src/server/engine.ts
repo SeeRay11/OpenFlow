@@ -1,8 +1,20 @@
 import { buildPrompt } from "../graph/prompt"
-import type { Attachment, FlowNode, NodeStatus, Pipeline, RunLog, RunNodeLog } from "../graph/types"
+import type {
+  Attachment,
+  FlowNode,
+  NodeEvent,
+  NodeStatus,
+  Pipeline,
+  RunLog,
+  RunNodeLog,
+  Spend,
+  StepUsage,
+} from "../graph/types"
 import { ancestors, layer, upstream } from "../graph/validate"
+import { applyEvent, createActivity, persistable } from "./activity"
 import * as api from "./client"
-import { store } from "./store"
+import { store, type ServeStatus } from "./store"
+import { mergeSpend, summarize, type PricedModel } from "./usage"
 
 export type NodePatch = {
   status?: NodeStatus
@@ -13,16 +25,29 @@ export type NodePatch = {
   activity?: string
   started?: number
   finished?: number
+  /** Priced usage for this node so far. Replaced, never added to. */
+  usage?: Spend
 }
 
 export type EngineHooks = {
   onNode: (id: string, patch: NodePatch) => void
+  /**
+   * One row of a node's thought process — streamed text, a tool call, a
+   * subagent's work. Called on every change to a row, keyed by `event.id`, so
+   * the receiver upserts rather than appends.
+   */
+  onNodeEvent?: (id: string, event: NodeEvent) => void
   onRun?: (run: RunLog) => void
   onNotice?: (kind: "info" | "error", text: string) => void
   /** Only called under the `manual` policy. Resolve with the reply to send. */
   onPermission?: (request: PermissionRequest) => Promise<api.PermissionReply>
   /** Resolve with one array of chosen labels per question, or undefined to reject. */
   onQuestion?: (request: QuestionRequest) => Promise<string[][] | undefined>
+  /**
+   * Called when a run failed because the engine is running older config than
+   * what is on disk — the UI opens its restart affordance.
+   */
+  onEngineStale?: () => void
   /**
    * Called once a question is settled, including when the engine gave up
    * waiting. Without it a timed-out prompt stays on screen forever, still
@@ -88,11 +113,27 @@ export type EngineDeps = {
     | "models"
     | "agents"
     | "describe"
-  >
+  > & {
+    /**
+     * Authoritative per-step usage for a finished session. Optional so a test
+     * double can leave it out — the engine then keeps whatever the event bus
+     * reported, which is the same data one round-trip earlier.
+     */
+    sessionSteps?: typeof api.sessionSteps
+  }
   saveRun: (log: RunLog) => Promise<unknown>
+  /**
+   * The engine process this host proxies, used to print the exact restart
+   * command in the one error that can only be fixed by restarting it.
+   */
+  serveStatus?: () => Promise<ServeStatus>
 }
 
-const live: EngineDeps = { api, saveRun: (log) => store.saveRun(log) }
+const live: EngineDeps = {
+  api,
+  saveRun: (log) => store.saveRun(log),
+  serveStatus: () => store.serverStatus(),
+}
 
 /**
  * How much upstream context a node receives.
@@ -164,6 +205,24 @@ export function start(
   const nodes = new Map(pipeline.nodes.map((node) => [node.id, node] as const))
   const outputs = new Map<string, string>()
   const failed = new Set<string>()
+  /**
+   * Usage, keyed by node and then by assistant message so a replayed or
+   * duplicated event cannot double-charge. The bus fills this live; the
+   * message history overwrites it per node once the session settles.
+   */
+  const usage = new Map<string, Map<string, StepUsage>>()
+  /** Which model a step is running on — only `step.started` carries it. */
+  const stepModel = new Map<string, string>()
+  /** The live activity stream per node, kept in full until the run is saved. */
+  const events = new Map<string, NodeEvent[]>()
+
+  const activity = createActivity({
+    owner: (sessionID) => sessions.get(sessionID),
+    emit: (nodeID, event) => {
+      events.set(nodeID, applyEvent(events.get(nodeID) ?? [], event))
+      hooks.onNodeEvent?.(nodeID, event)
+    },
+  })
 
   const log: RunLog = {
     id: `run-${new Date().toISOString().replace(/[:.]/g, "-")}`,
@@ -183,6 +242,40 @@ export function start(
   }
   const entry = (id: string) => log.nodes.find((node) => node.id === id)!
 
+  /**
+   * Re-prices one node from its recorded steps, and the run from its nodes.
+   *
+   * Pricing needs the catalog, which is read once at the top of the run; until
+   * it arrives every model prices as unpriced, and this runs again on every
+   * step, so the numbers correct themselves rather than sticking.
+   */
+  function reprice(id: string) {
+    const steps = [...(usage.get(id)?.values() ?? [])]
+    const spend = summarize(steps, catalog as unknown as Map<string, PricedModel>)
+    const record = entry(id)
+    record.steps = steps
+    patch(id, { usage: spend })
+    log.usage = mergeSpend(log.nodes.map((node) => node.usage))
+  }
+
+  /**
+   * Replaces a node's live usage with what the server persisted.
+   *
+   * The bus is best-effort — it reconnects, and events published while it was
+   * down are gone — so a run that only trusted it could under-report. The
+   * message history is the record the server itself keeps, so it wins.
+   */
+  async function reconcile(id: string, sessionID: string) {
+    if (!api.sessionSteps) return
+    const steps = await api.sessionSteps(sessionID).catch(() => undefined)
+    if (!steps) {
+      hooks.onNotice?.("error", `could not read usage for ${entry(id).role} — showing what the event stream saw`)
+      return
+    }
+    usage.set(id, new Map(steps.map((step) => [step.messageID, step])))
+    reprice(id)
+  }
+
   function patch(id: string, next: NodePatch) {
     Object.assign(entry(id), next)
     hooks.onNode(id, next)
@@ -192,13 +285,40 @@ export function start(
   // Live status from the event bus. Best-effort: execution never depends on it.
   const bus = api
     .subscribe((event) => {
+      // Activity sees every event, including those from subagent sessions this
+      // run never created — it is the thing that knows they belong to a node.
+      activity.consume(event)
       const sessionID = event.data?.sessionID
       if (!sessionID) return
       const id = sessions.get(sessionID)
       if (!id) return
       switch (event.type) {
-        case "session.next.step.started":
+        case "session.next.step.started": {
+          const messageID = event.data?.assistantMessageID
+          const model = event.data?.model
+          if (messageID && model) stepModel.set(messageID, `${model.providerID}/${model.id}`)
           return patch(id, { status: "running", activity: "thinking" })
+        }
+        case "session.next.step.ended": {
+          const messageID = event.data?.assistantMessageID
+          const tokens = event.data?.tokens
+          if (!messageID || !tokens) return
+          const steps = usage.get(id) ?? new Map<string, StepUsage>()
+          steps.set(messageID, {
+            messageID,
+            model: stepModel.get(messageID) ?? nodes.get(id)?.agent.model ?? "unknown",
+            tokens: {
+              input: tokens.input ?? 0,
+              output: tokens.output ?? 0,
+              reasoning: tokens.reasoning ?? 0,
+              cacheRead: tokens.cache?.read ?? 0,
+              cacheWrite: tokens.cache?.write ?? 0,
+            },
+          })
+          usage.set(id, steps)
+          reprice(id)
+          return
+        }
         case "session.next.tool.called":
           return patch(id, { activity: `tool: ${event.data?.tool ?? event.data?.name ?? "?"}` })
         case "session.next.tool.success":
@@ -260,6 +380,13 @@ export function start(
     const decision = { requestID, action: data.action, resources, reply, policy, at: Date.now() }
     const record = entry(nodeID)
     record.permissions = [...(record.permissions ?? []), decision]
+    activity.note(
+      nodeID,
+      `permission:${requestID}`,
+      `permission ${data.action}: ${reply}`,
+      resources.join("\n") || undefined,
+      reply === "reject" ? "error" : "done",
+    )
     patch(nodeID, { activity: `permission ${data.action}: ${reply}` })
   }
 
@@ -311,6 +438,13 @@ export function start(
       ...(record.questions ?? []),
       { requestID, headers, answers, rejected: !answers, at: Date.now() },
     ]
+    activity.note(
+      nodeID,
+      `question:${requestID}`,
+      answers ? `answered: ${headers.join(", ")}` : `unanswered: ${headers.join(", ")}`,
+      answers?.map((choices, index) => `${headers[index] ?? index}: ${choices.join(", ")}`).join("\n"),
+      answers ? "done" : "error",
+    )
     patch(nodeID, { activity: answers ? "answered" : "question unanswered" })
   }
 
@@ -323,8 +457,10 @@ export function start(
     }
 
     patch(node.id, { status: "running", started: Date.now(), activity: "starting session" })
+    let sessionID: string | undefined
     try {
       const session = await api.createSession({ agent: node.agent.name, model: node.agent.model })
+      sessionID = session.id
       sessions.set(session.id, node.id)
       active.add(session.id)
       patch(node.id, { sessionID: session.id, activity: "queued" })
@@ -366,12 +502,18 @@ export function start(
         patch(node.id, { status: "stopped", activity: undefined, finished: Date.now() })
         return
       }
+      const reason = api.describe(error)
+      activity.note(node.id, `failed:${node.id}`, "node failed", reason, "error")
       patch(node.id, {
         status: "error",
-        error: api.describe(error),
+        error: reason,
         activity: undefined,
         finished: Date.now(),
       })
+    } finally {
+      // Tokens are spent whether the node finished, failed or was stopped, so
+      // the bill is read back in every case rather than only on success.
+      if (sessionID) await reconcile(node.id, sessionID)
     }
   }
 
@@ -395,15 +537,30 @@ export function start(
 
       const missing = await unknownAgents(pipeline, api)
       if (missing.length) {
+        // The fix is always the same — restart the engine — so the message
+        // carries the command for *this* host rather than the generic name of
+        // a binary that may not be on PATH, or may be a different version than
+        // the one this checkout runs.
+        const serve = await deps.serveStatus?.().catch(() => undefined)
+        const how = serve
+          ? serve.managed
+            ? `use the restart button in the titlebar, or run: ${serve.command}`
+            : `stop \`opencode serve\` where it is running (Ctrl+C in that window), then run this from the OpenFlow repo root:
+${serve.command}`
+          : "restart `opencode serve` where it is running"
         for (const node of missing) {
           failed.add(node.id)
           patch(node.id, {
             status: "error",
-            error: `the server does not know an agent named "${node.agent.name}" — it loads a project's opencode.json once, so restart \`opencode serve\` after merging agents`,
+            error: `the server does not know an agent named "${node.agent.name}" — it loads a project's opencode.json once at boot, so a merged agent stays invisible until it restarts. ${how}`,
             finished: Date.now(),
           })
         }
-        hooks.onNotice?.("error", `unknown agent on ${missing.map((node) => node.role).join(", ")} — restart the server`)
+        hooks.onNotice?.(
+          "error",
+          `unknown agent on ${missing.map((node) => node.role).join(", ")} — the engine needs a restart to see it`,
+        )
+        hooks.onEngineStale?.()
         log.status = "error"
         return log
       }
@@ -423,8 +580,14 @@ export function start(
     } finally {
       for (const node of log.nodes) {
         if (node.status === "queued" || node.status === "running") node.status = "stopped"
+        // The full stream stays in memory for the open page; the log keeps the
+        // tail, with bodies clipped, so reopening a run replays what happened
+        // without turning the run file into a transcript store.
+        const stream = events.get(node.id)
+        if (stream?.length) node.events = persistable(stream)
       }
       log.finished = Date.now()
+      log.usage = mergeSpend(log.nodes.map((node) => node.usage))
       controller.abort()
       void bus
       hooks.onRun?.(log)
