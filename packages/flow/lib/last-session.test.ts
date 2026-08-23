@@ -42,6 +42,26 @@ describe("remember and recall", () => {
     expect(mod.recallProject()).toBeUndefined()
   })
 
+  test("moves a state file it cannot parse aside instead of writing over it", async () => {
+    // `read` feeds `write`, so answering `{}` for a damaged file meant the very
+    // next remember persisted that `{}` — one bad byte and every project's
+    // remembered pipeline was gone, with nothing left to look at.
+    mod.rememberProject(project)
+    await fs.writeFile(mod.statePath(), "{ not json")
+
+    mod.rememberPipeline(project, "feature-build")
+
+    expect(await fs.readFile(`${mod.statePath()}.corrupt`, "utf8")).toBe("{ not json")
+    expect(mod.recallPipeline(project)).toBe("feature-build")
+  })
+
+  test("writes through a temp file and leaves nothing behind", async () => {
+    // A truncated state.json reads exactly like "nothing was ever remembered",
+    // so the new state lands beside the old one and is renamed over it.
+    mod.rememberProject(project)
+    expect(await fs.readdir(path.dirname(mod.statePath()))).toEqual(["state.json"])
+  })
+
   test("keeps only the newest folder", async () => {
     const other = path.join(dir, "other")
     await fs.mkdir(other)

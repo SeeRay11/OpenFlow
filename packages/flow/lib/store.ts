@@ -188,8 +188,19 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     }
     if (method === "PUT") {
       const body = await request.json()
+      // Every new pipeline is born called "untitled" and the templates ship
+      // fixed names, so without this the second one saved silently destroys the
+      // first. A save that reclaims its own file — same id — is the ordinary
+      // case and goes through; a *different* pipeline landing on the same slug
+      // is refused, and only an explicit `?overwrite=1` gets past it.
+      const claimed = await claimant(file)
+      if (claimed && typeof body?.id === "string" && claimed !== body.id && request.search.get("overwrite") !== "1")
+        return {
+          status: 409,
+          body: { error: pipelineConflict(name), name, id: claimed },
+        }
       await fs.mkdir(paths.pipelines, { recursive: true })
-      await fs.writeFile(file, JSON.stringify(body, null, 2) + "\n")
+      await writeAtomic(file, JSON.stringify(body, null, 2) + "\n")
       rememberPipeline(paths.project, name)
       return ok({ name, path: file })
     }
@@ -355,7 +366,8 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     if (method === "PUT") {
       const body = await request.json()
       await fs.mkdir(paths.runs, { recursive: true })
-      await fs.writeFile(file, JSON.stringify(body, null, 2) + "\n")
+      await writeAtomic(file, JSON.stringify(body, null, 2) + "\n")
+      await updateRunsIndex(paths, id, body)
       return ok({ id, path: file })
     }
   }
@@ -388,29 +400,75 @@ async function listPipelines(paths: FlowPaths) {
   return out.sort((a, b) => b.updated - a.updated)
 }
 
+/**
+ * Where the run listing is cached. A leading dot is a name `slug` can never
+ * produce, so no run can ever be written to this file.
+ */
+const RUNS_INDEX = ".index.json"
+
+/**
+ * The run listing, from a summary index rather than every run log.
+ *
+ * `refresh()` calls this at boot, after every run, and after every save, and
+ * the old shape read and parsed *every* file in `.openflow/runs` each time —
+ * a few hundred runs and boot stalls on megabytes of JSON nobody asked for.
+ * The index is maintained on write and rebuilt whenever it stops describing
+ * exactly the files on disk, which costs one `readdir` to check. Nothing is
+ * ever deleted: a stale index is rebuilt, never trusted over the logs.
+ */
 async function listRuns(paths: FlowPaths) {
-  const entries = await fs.readdir(paths.runs).catch(() => [] as string[])
-  const out = []
-  for (const entry of entries) {
-    if (!entry.endsWith(".json")) continue
-    const raw = await fs.readFile(path.join(paths.runs, entry), "utf8").catch(() => "{}")
-    let parsed: any = {}
-    try {
-      parsed = JSON.parse(raw)
-    } catch {}
-    out.push({
-      id: entry.slice(0, -5),
-      pipeline: parsed.pipeline,
-      status: parsed.status,
-      started: parsed.started,
-      finished: parsed.finished,
-      // Carried in the listing so the spend view can total every run without
-      // reading each log back. Absent on runs written before usage existed —
-      // those count as unknown, not as zero.
-      usage: parsed.usage,
-    })
+  const entries = (await fs.readdir(paths.runs).catch(() => [] as string[])).filter(
+    (entry) => entry.endsWith(".json") && entry !== RUNS_INDEX,
+  )
+  const ids = entries.map((entry) => entry.slice(0, -5))
+  const index = await readRunsIndex(paths)
+  if (index && index.length === ids.length && index.every((entry) => ids.includes(entry.id))) return sortRuns(index)
+
+  const rebuilt = await Promise.all(
+    entries.map(async (entry) => {
+      const raw = await fs.readFile(path.join(paths.runs, entry), "utf8").catch(() => "")
+      return runSummary(entry.slice(0, -5), jsonOrUndefined(raw) ?? {})
+    }),
+  )
+  // Best-effort: an index that cannot be written costs the next listing a
+  // rebuild, and nothing else.
+  await writeAtomic(path.join(paths.runs, RUNS_INDEX), JSON.stringify(rebuilt) + "\n").catch(() => {})
+  return sortRuns(rebuilt)
+}
+
+function runSummary(id: string, parsed: any) {
+  return {
+    id,
+    pipeline: parsed.pipeline,
+    status: parsed.status,
+    started: parsed.started,
+    finished: parsed.finished,
+    // Carried in the listing so the spend view can total every run without
+    // reading each log back. Absent on runs written before usage existed —
+    // those count as unknown, not as zero.
+    usage: parsed.usage,
   }
-  return out.sort((a, b) => (b.started ?? 0) - (a.started ?? 0))
+}
+
+function sortRuns(rows: ReturnType<typeof runSummary>[]) {
+  return [...rows].sort((a, b) => (b.started ?? 0) - (a.started ?? 0))
+}
+
+async function readRunsIndex(paths: FlowPaths) {
+  const raw = await fs.readFile(path.join(paths.runs, RUNS_INDEX), "utf8").catch(() => undefined)
+  const parsed = raw === undefined ? undefined : jsonOrUndefined(raw)
+  if (!Array.isArray(parsed)) return undefined
+  return parsed.filter((entry) => entry && typeof entry.id === "string") as ReturnType<typeof runSummary>[]
+}
+
+/** Folds one run into the index, so the listing stays cheap without a rebuild. */
+async function updateRunsIndex(paths: FlowPaths, id: string, body: any) {
+  const file = path.join(paths.runs, RUNS_INDEX)
+  return serialize(file, async () => {
+    const current = (await readRunsIndex(paths)) ?? []
+    const next = [...current.filter((entry) => entry.id !== id), runSummary(id, body)]
+    await writeAtomic(file, JSON.stringify(next) + "\n").catch(() => {})
+  })
 }
 
 /**
@@ -423,44 +481,62 @@ async function writeAgents(paths: FlowPaths, name: string, body: any, merge: boo
   const block = { $schema: "https://opencode.ai/config.json", agent: body?.agent ?? {} }
   await fs.mkdir(paths.generated, { recursive: true })
   const file = path.join(paths.generated, `${name}.opencode.json`)
-  await fs.writeFile(file, JSON.stringify(block, null, 2) + "\n")
+  await writeAtomic(file, JSON.stringify(block, null, 2) + "\n")
   if (!merge) return { path: file, merged: false }
 
   const target = path.join(paths.project, "opencode.json")
-  const raw = await fs.readFile(target, "utf8").catch(() => undefined)
-  let config: any = { $schema: "https://opencode.ai/config.json" }
-  if (raw !== undefined) {
-    try {
-      config = JSON.parse(raw)
-    } catch {
-      return { path: file, merged: false, error: "existing opencode.json is not valid JSON" }
-    }
-  }
-  // Fold the generated agents onto whatever is already there, dropping the ones
-  // this pipeline generated last time that it no longer generates — a renamed
-  // or deleted node would otherwise leave its agent behind forever, and a run
-  // merges on every start, so the leftovers accumulate. Only entries this
-  // pipeline is known to have written are dropped: they are recognised by the
-  // description writeAgents itself stamps on them, so a hand-written agent is
-  // never touched, whatever it is called.
-  const current: Record<string, unknown> = config.agent ?? {}
-  const kept = Object.fromEntries(
-    Object.entries(current).filter(([key, value]) => key in block.agent || !generatedFor(value, name)),
-  )
-  const nextAgent = { ...kept, ...block.agent }
+  const pipeline = rawPipelineName(body, name)
+  return serialize(target, async () => {
+    const config = await readProjectConfig(paths)
+    if ("error" in config) return { path: file, merged: false, error: config.error }
+    // Fold the generated agents onto whatever is already there, dropping the ones
+    // this pipeline generated last time that it no longer generates — a renamed
+    // or deleted node would otherwise leave its agent behind forever, and a run
+    // merges on every start, so the leftovers accumulate. Only entries this
+    // pipeline is known to have written are dropped: they are recognised by the
+    // description writeAgents itself stamps on them, so a hand-written agent is
+    // never touched, whatever it is called.
+    const current: Record<string, unknown> = config.value.agent ?? {}
+    const kept = Object.fromEntries(
+      Object.entries(current).filter(([key, value]) => key in block.agent || !generatedFor(value, pipeline)),
+    )
+    const nextAgent = { ...kept, ...block.agent }
 
-  // Bail before touching disk when that leaves the block identical — an
-  // auto-merge on every run must not churn opencode.json or litter a `.bak`
-  // when nothing actually changed. Key order is ignored so a re-serialised but
-  // equivalent config still counts as unchanged. When there is no config at all
-  // and nothing to write into one, the generated file is the only path there is
-  // to report.
-  if (stableEqual(current, nextAgent))
-    return { path: raw === undefined ? file : target, merged: false, unchanged: true }
-  const backup = raw !== undefined ? await backupConfig(target, raw) : undefined
-  config.agent = nextAgent
-  await fs.writeFile(target, JSON.stringify(config, null, 2) + "\n")
-  return { path: target, merged: true, backup }
+    // Bail before touching disk when that leaves the block identical — an
+    // auto-merge on every run must not churn opencode.json or litter a `.bak`
+    // when nothing actually changed. Key order is ignored so a re-serialised but
+    // equivalent config still counts as unchanged. When there is no config at all
+    // and nothing to write into one, the generated file is the only path there is
+    // to report.
+    if (stableEqual(current, nextAgent))
+      return { path: config.raw === undefined ? file : target, merged: false, unchanged: true }
+    if (config.comments) return { path: file, merged: false, error: CONFIG_HAS_COMMENTS }
+    const backup = config.raw === undefined ? undefined : await backupConfig(target, config.raw)
+    config.value.agent = nextAgent
+    await writeAtomic(target, JSON.stringify(config.value, null, 2) + "\n")
+    return { path: target, merged: true, backup }
+  })
+}
+
+/**
+ * The pipeline's name as the user typed it.
+ *
+ * `agentBlock` stamps that raw name into every generated description, so it is
+ * what `generatedFor` has to match on — but the route only ever carries the
+ * slug (`my-flow` for `My Flow`), and matching on the slug quietly recognises
+ * nothing. The agents of renamed or deleted nodes then survive forever and
+ * every rename adds another generation. A caller that sends `pipeline` in the
+ * body answers it directly; otherwise it is read back off the descriptions in
+ * the block itself, which carry it verbatim.
+ */
+function rawPipelineName(body: any, slugged: string) {
+  if (typeof body?.pipeline === "string" && body.pipeline.trim()) return body.pipeline.trim()
+  for (const entry of Object.values<any>(body?.agent ?? {})) {
+    const description = entry?.description
+    const match = typeof description === "string" ? / of pipeline (.+)$/.exec(description) : undefined
+    if (match) return match[1]
+  }
+  return slugged
 }
 
 /**
@@ -574,18 +650,21 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 async function writeMcpServer(paths: FlowPaths, name: string, body: any) {
   const entry = buildMcpEntry(body)
   const target = path.join(paths.project, "opencode.json")
-  const config = await readProjectConfig(paths)
-  if ("error" in config) throw new Error(config.error)
-  // Saving a server the config already describes writes nothing, for the same
-  // reason an unchanged agent merge does: a pointless rewrite would push the
-  // pre-OpenFlow `.bak` one slot further out of reach.
-  if (stableEqual(config.value.mcp?.[name], entry)) return { name, path: target, unchanged: true }
-  const backup = config.raw === undefined ? undefined : await backupConfig(target, config.raw)
-  const next = config.value
-  next.mcp = { ...(next.mcp ?? {}), [name]: entry }
-  if (!next.$schema) next.$schema = "https://opencode.ai/config.json"
-  await fs.writeFile(target, JSON.stringify(next, null, 2) + "\n")
-  return { name, path: target, backup }
+  return serialize(target, async () => {
+    const config = await readProjectConfig(paths)
+    if ("error" in config) throw new Error(config.error)
+    // Saving a server the config already describes writes nothing, for the same
+    // reason an unchanged agent merge does: a pointless rewrite would push the
+    // pre-OpenFlow `.bak` one slot further out of reach.
+    if (stableEqual(config.value.mcp?.[name], entry)) return { name, path: target, unchanged: true }
+    if (config.comments) throw new Error(CONFIG_HAS_COMMENTS)
+    const backup = config.raw === undefined ? undefined : await backupConfig(target, config.raw)
+    const next = config.value
+    next.mcp = { ...(next.mcp ?? {}), [name]: entry }
+    if (!next.$schema) next.$schema = "https://opencode.ai/config.json"
+    await writeAtomic(target, JSON.stringify(next, null, 2) + "\n")
+    return { name, path: target, backup }
+  })
 }
 
 function buildMcpEntry(body: any) {
@@ -630,30 +709,96 @@ function pickStrings(value: unknown) {
 
 async function deleteMcpServer(paths: FlowPaths, name: string) {
   const target = path.join(paths.project, "opencode.json")
-  const config = await readProjectConfig(paths)
-  if ("error" in config) throw new Error(config.error)
-  if (config.raw === undefined || !config.value.mcp || !(name in config.value.mcp)) return { name, removed: false }
-  const backup = await backupConfig(target, config.raw)
-  delete config.value.mcp[name]
-  await fs.writeFile(target, JSON.stringify(config.value, null, 2) + "\n")
-  return { name, removed: true, path: target, backup }
+  return serialize(target, async () => {
+    const config = await readProjectConfig(paths)
+    if ("error" in config) throw new Error(config.error)
+    if (config.raw === undefined || !config.value.mcp || !(name in config.value.mcp)) return { name, removed: false }
+    if (config.comments) throw new Error(CONFIG_HAS_COMMENTS)
+    const backup = await backupConfig(target, config.raw)
+    delete config.value.mcp[name]
+    await writeAtomic(target, JSON.stringify(config.value, null, 2) + "\n")
+    return { name, removed: true, path: target, backup }
+  })
 }
 
 /**
  * Reads the project's opencode.json. A missing file is not an error — it is a
  * project that has never been configured — but an unparseable one is, because
  * writing over it would destroy hand-written config.
+ *
+ * `comments` says the source carried them. Reading is unaffected; writing is
+ * not, because this module re-serialises the parsed value and would drop every
+ * comment on the way back out.
  */
 async function readProjectConfig(
   paths: FlowPaths,
-): Promise<{ value: any; raw: string | undefined } | { error: string }> {
-  const target = path.join(paths.project, "opencode.json")
-  const raw = await fs.readFile(target, "utf8").catch(() => undefined)
-  if (raw === undefined) return { value: { $schema: "https://opencode.ai/config.json" }, raw: undefined }
+): Promise<{ value: any; raw: string | undefined; comments: boolean } | { error: string }> {
+  const raw = await fs.readFile(path.join(paths.project, "opencode.json"), "utf8").catch(() => undefined)
+  if (raw === undefined)
+    return { value: { $schema: "https://opencode.ai/config.json" }, raw: undefined, comments: false }
+  const stripped = stripJsonc(raw)
+  const value = jsonOrUndefined(stripped.text)
+  if (value === undefined) return { error: "existing opencode.json is not valid JSON" }
+  return { value, raw, comments: stripped.comments }
+}
+
+const CONFIG_HAS_COMMENTS =
+  "existing opencode.json has comments, and saving would strip them — remove the comments, or make this change in opencode.json by hand"
+
+/**
+ * Reads opencode's config dialect rather than strict JSON.
+ *
+ * `packages/core/src/config.ts` parses `opencode.json` with `jsonc-parser` and
+ * `allowTrailingComma`, so comments and a trailing comma are a perfectly valid
+ * config there. Rejecting them as "not valid JSON" fails every config write for
+ * a user whose config opencode itself is happy with: the agent merge fails, the
+ * MCP panel shows nothing, and a skill gets written but never registered.
+ * `jsonc-parser` is not reachable from this package, so the two extensions are
+ * stripped here instead, string-aware so a comma or a `//` inside a value is
+ * left alone.
+ */
+function stripJsonc(raw: string) {
+  let out = ""
+  let comments = false
+  let index = 0
+  while (index < raw.length) {
+    const char = raw[index]
+    if (char === '"') {
+      const start = index
+      index++
+      while (index < raw.length && raw[index] !== '"') index += raw[index] === "\\" ? 2 : 1
+      index++
+      out += raw.slice(start, index)
+      continue
+    }
+    if (char === "/" && raw[index + 1] === "/") {
+      comments = true
+      const end = raw.indexOf("\n", index)
+      index = end === -1 ? raw.length : end
+      continue
+    }
+    if (char === "/" && raw[index + 1] === "*") {
+      comments = true
+      const end = raw.indexOf("*/", index + 2)
+      index = end === -1 ? raw.length : end + 2
+      continue
+    }
+    // Strings are consumed whole above, so reaching a closer here means `out`
+    // ends at a structural position and a comma sitting there is the trailing
+    // one opencode allows and `JSON.parse` does not.
+    if (char === "}" || char === "]") out = out.replace(/,\s*$/, "")
+    out += char
+    index++
+  }
+  return { text: out, comments }
+}
+
+/** Parse guard: `undefined` rather than a throw, for the callers that treat unparseable as a state. */
+function jsonOrUndefined(text: string): any {
   try {
-    return { value: JSON.parse(raw), raw }
+    return JSON.parse(text)
   } catch {
-    return { error: "existing opencode.json is not valid JSON" }
+    return undefined
   }
 }
 
@@ -716,16 +861,22 @@ async function readSkill(paths: FlowPaths, name: string) {
  * reads its config and skill sources once at boot.
  */
 async function writeSkill(paths: FlowPaths, name: string, body: any) {
+  // Registration first, on purpose: it is the step that can fail, and a
+  // `SKILL.md` written next to an unregistered source is a skill the agent can
+  // never see. Its failure rides back out on the response either way, rather
+  // than being skipped because an earlier line already reported success.
+  const source = await registerSkillSource(paths)
   const dir = path.join(paths.skills, name)
   await fs.mkdir(dir, { recursive: true })
   const file = path.join(dir, "SKILL.md")
-  const md = buildSkillMarkdown({
-    name: oneLine(body?.name) || name,
-    description: oneLine(body?.description),
-    content: typeof body?.content === "string" ? body.content : "",
-  })
-  await fs.writeFile(file, md)
-  const source = await registerSkillSource(paths)
+  await writeAtomic(
+    file,
+    buildSkillMarkdown({
+      name: oneLine(body?.name) || name,
+      description: oneLine(body?.description),
+      content: typeof body?.content === "string" ? body.content : "",
+    }),
+  )
   return { name, path: file, ...source }
 }
 
@@ -742,29 +893,27 @@ async function writeSkill(paths: FlowPaths, name: string, body: any) {
  */
 async function registerSkillSource(paths: FlowPaths) {
   const target = path.join(paths.project, "opencode.json")
-  const raw = await fs.readFile(target, "utf8").catch(() => undefined)
-  let config: any = { $schema: "https://opencode.ai/config.json" }
-  let backup: string | undefined
-  if (raw !== undefined) {
-    try {
-      config = JSON.parse(raw)
-    } catch {
-      return { registered: false, error: "existing opencode.json is not valid JSON" }
+  return serialize(target, async () => {
+    const config = await readProjectConfig(paths)
+    if ("error" in config) return { registered: false, error: config.error }
+    if (config.raw === undefined) {
+      config.value.skills = { paths: [SKILL_SOURCE] }
+      await writeAtomic(target, JSON.stringify(config.value, null, 2) + "\n")
+      return { registered: true, backup: undefined }
     }
     // A config written by an older build may hold a bare array here. Treat it as
     // the paths list so this rewrites it into the shape the schema accepts,
     // rather than spreading its indices into the object.
-    const legacy = Array.isArray(config.skills)
-    const block = legacy ? { paths: config.skills } : config.skills ?? {}
+    const legacy = Array.isArray(config.value.skills)
+    const block = legacy ? { paths: config.value.skills } : config.value.skills ?? {}
     const current: string[] = Array.isArray(block.paths) ? block.paths : []
     if (!legacy && current.includes(SKILL_SOURCE)) return { registered: false }
-    backup = await backupConfig(target, raw)
-    config.skills = { ...block, paths: current.includes(SKILL_SOURCE) ? current : [...current, SKILL_SOURCE] }
-  } else {
-    config.skills = { paths: [SKILL_SOURCE] }
-  }
-  await fs.writeFile(target, JSON.stringify(config, null, 2) + "\n")
-  return { registered: true, backup }
+    if (config.comments) return { registered: false, error: CONFIG_HAS_COMMENTS }
+    const backup = await backupConfig(target, config.raw)
+    config.value.skills = { ...block, paths: current.includes(SKILL_SOURCE) ? current : [...current, SKILL_SOURCE] }
+    await writeAtomic(target, JSON.stringify(config.value, null, 2) + "\n")
+    return { registered: true, backup }
+  })
 }
 
 /**
@@ -822,21 +971,105 @@ export async function backupConfig(target: string, raw: string) {
     .then(() => true)
     .catch(() => false)
   const file = exists ? `${target}.prev.bak` : original
-  await fs.writeFile(file, raw)
+  await writeAtomic(file, raw)
   return file
 }
 
 /**
  * Reduces a name to something that cannot leave its directory: separators and
- * anything else a path could hide in are dropped, and leading dots go with
- * them, so `../../etc/passwd` lands as `etcpasswd.json` inside `.openflow`.
+ * anything else a path could hide in are dropped, and leading and trailing dots
+ * go with them, so `../../etc/passwd` lands as `etcpasswd.json` inside
+ * `.openflow`.
+ *
+ * Unicode letters and numbers survive. Restricting this to ASCII collapsed
+ * every fully non-Latin name — Japanese, Chinese, Russian, Arabic — onto
+ * `untitled`, which means the second such pipeline a user saves erases the
+ * first; `café` also lost its accent and landed as `caf`.
+ *
+ * Lowercasing is deliberate and load-bearing: a filesystem that is
+ * case-insensitive (NTFS, APFS by default) already treats `Alpha.json` and
+ * `alpha.json` as one file, so leaving case in only hid the collision — the
+ * listing kept showing `Alpha` while its content had become `alpha`'s. Folding
+ * case here makes the two names collide *visibly*, where the save route can
+ * refuse them.
  */
 export function slug(value: string) {
   return (
     value
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\-_ .]/gu, "")
       .trim()
-      .replace(/[^a-zA-Z0-9-_ .]/g, "")
       .replace(/\s+/g, "-")
-      .replace(/^\.+/, "") || "untitled"
+      .replace(/^\.+|\.+$/g, "") || "untitled"
   )
+}
+
+/** The id stored in the pipeline file already holding this slug, when there is one. */
+async function claimant(file: string) {
+  const raw = await fs.readFile(file, "utf8").catch(() => undefined)
+  const id = raw === undefined ? undefined : jsonOrUndefined(raw)?.id
+  return typeof id === "string" ? id : undefined
+}
+
+/** The message a UI shows verbatim when a save would land on somebody else's file. */
+function pipelineConflict(name: string) {
+  return `a different pipeline is already saved as "${name}" — rename this one, or save again to replace it`
+}
+
+/**
+ * Writes `data` by landing it on a temp file beside the target and renaming it
+ * into place.
+ *
+ * A rename within one directory is atomic on NTFS and on POSIX, so a crash, a
+ * power loss, or a full disk leaves either the whole old file or the whole new
+ * one — never the truncated middle a plain `writeFile` can leave behind. That
+ * matters most for `opencode.json`, which an agent merge rewrites on *every*
+ * run and which opencode hard-fails on when it cannot be parsed: one bad write
+ * bricks every card in the project. Beside the target rather than in the OS
+ * temp directory, because a cross-volume rename is a copy and is not atomic.
+ */
+async function writeAtomic(file: string, data: string) {
+  const temp = `${file}.${process.pid.toString(36)}${Date.now().toString(36)}.tmp`
+  await fs.writeFile(temp, data)
+  // Windows hands back EPERM or EBUSY when a virus scanner or indexer holds the
+  // target open for a moment, so the rename is retried before it is fatal.
+  for (let attempt = 0; ; attempt++) {
+    const failure = await fs.rename(temp, file).then(
+      () => undefined,
+      (reason) => reason,
+    )
+    if (!failure) return
+    if (attempt === 2) {
+      await fs.rm(temp, { force: true }).catch(() => {})
+      throw failure
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+}
+
+/**
+ * Runs `work` only after every earlier call for the same `key` has finished.
+ *
+ * Four routes read-modify-write `opencode.json` — an agent merge (which runs on
+ * every click of Run), an MCP upsert, an MCP delete, and a skill registration —
+ * and running any two of them interleaved means both read the same pre-state
+ * and the second write silently discards the first. Each of them re-reads the
+ * file *inside* its turn here rather than before it, which is what makes the
+ * serialisation worth anything.
+ *
+ * In-process only. Two hosts on one project still race, but `writeAtomic` keeps
+ * each of their writes whole, so the loser is a lost edit rather than a broken
+ * config.
+ */
+const chains = new Map<string, Promise<unknown>>()
+
+function serialize<T>(key: string, work: () => Promise<T>): Promise<T> {
+  // `work` runs on both settlements: a caller whose turn threw must not wedge
+  // the queue for everyone behind it.
+  const next = (chains.get(key) ?? Promise.resolve()).then(work, work)
+  chains.set(
+    key,
+    next.catch(() => undefined),
+  )
+  return next
 }

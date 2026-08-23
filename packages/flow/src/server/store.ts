@@ -242,7 +242,11 @@ export function permissionBlock(tools: Record<string, boolean> | undefined) {
  * translated form instead gets both fields ignored.
  */
 export function agentKey(pipeline: Pipeline, node: Pipeline["nodes"][number]) {
-  return `${pipeline.name}-${node.role}`.replace(/[^a-zA-Z0-9-_]/g, "-").toLowerCase()
+  // The node id is part of the key because a role is not unique: two `coder`
+  // nodes would otherwise collapse onto one agent, and the last one written
+  // would decide both nodes' permissions — silently handing the restricted one
+  // whatever the permissive one asked for.
+  return `${pipeline.name}-${node.role}-${node.id}`.replace(/[^a-zA-Z0-9-_]/g, "-").toLowerCase()
 }
 
 /**

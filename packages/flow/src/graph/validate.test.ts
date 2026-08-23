@@ -152,6 +152,26 @@ describe("preflight", () => {
     expect(result.warnings.map((problem) => [problem.kind, problem.nodeId])).toEqual([["isolated", "lonely"]])
   })
 
+  test("two nodes generating the same agent id block", () => {
+    // The key carries the node id, so this only happens if two nodes are given
+    // the same id — but a collision silently merges their permission blocks,
+    // which is worth refusing rather than running.
+    const graph = withModel(pipeline("a", "b"), "opencode/x")
+    graph.nodes[1].id = graph.nodes[0].id
+    graph.nodes[1].role = graph.nodes[0].role
+
+    const result = preflight(graph, unlocked("opencode/x"))
+
+    expect(result.blocking.map((problem) => problem.kind)).toEqual(["duplicate-agent"])
+    expect(result.blocking[0].message).toContain("test-a-a")
+  })
+
+  test("two nodes sharing only a role are fine", () => {
+    const graph = withModel(pipeline("a->b"), "opencode/x")
+    graph.nodes[1].role = graph.nodes[0].role
+    expect(preflight(graph, unlocked("opencode/x")).blocking).toEqual([])
+  })
+
   test("a lone single node is not treated as isolated", () => {
     const graph = withModel(pipeline("a"), "opencode/x")
     expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])

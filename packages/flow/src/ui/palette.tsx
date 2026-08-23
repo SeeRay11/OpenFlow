@@ -101,7 +101,19 @@ export function Palette() {
                         aria-label={`delete ${role.label}`}
                         onClick={(event) => {
                           event.stopPropagation()
-                          removeCustomRole(role.id)
+                          // The trash sits one icon away from edit, and the role's
+                          // prompt is hand-written — same guard the skills panel uses.
+                          if (
+                            !window.confirm(
+                              `Delete the role "${role.label}"? Its prompt, tools and color are gone for good.`,
+                            )
+                          )
+                            return
+                          if (!removeCustomRole(role.id))
+                            actions.notice(
+                              "error",
+                              `deleted "${role.label}" for this session only — the browser refused to store the change`,
+                            )
                         }}
                       >
                         <IconTrash />

@@ -11,30 +11,42 @@ function withAgents(graph: Pipeline, agents: Record<string, Partial<Pipeline["no
 }
 
 describe("agentKey", () => {
-  test("joins the pipeline name and the role", () => {
+  test("joins the pipeline name, the role and the node id", () => {
     const graph = pipeline("planner")
-    expect(agentKey(graph, graph.nodes[0])).toBe("test-planner")
+    graph.nodes[0].id = "n1"
+    expect(agentKey(graph, graph.nodes[0])).toBe("test-planner-n1")
   })
 
   test("lowercases", () => {
     const graph = { ...pipeline("planner"), name: "Feature-Build" }
-    expect(agentKey(graph, graph.nodes[0])).toBe("feature-build-planner")
+    graph.nodes[0].id = "N1"
+    expect(agentKey(graph, graph.nodes[0])).toBe("feature-build-planner-n1")
   })
 
   test("replaces characters an agent id cannot carry", () => {
     const graph = { ...pipeline("code review!"), name: "my pipeline" }
-    expect(agentKey(graph, graph.nodes[0])).toBe("my-pipeline-code-review-")
+    graph.nodes[0].id = "n1"
+    expect(agentKey(graph, graph.nodes[0])).toBe("my-pipeline-code-review--n1")
   })
 
   test("keeps hyphens and underscores", () => {
     const graph = { ...pipeline("worker_a"), name: "diamond-2" }
-    expect(agentKey(graph, graph.nodes[0])).toBe("diamond-2-worker_a")
+    graph.nodes[0].id = "n_1"
+    expect(agentKey(graph, graph.nodes[0])).toBe("diamond-2-worker_a-n_1")
   })
 
   test("gives every node in a graph its own key", () => {
     const graph = pipeline("a->b", "b->c")
     const keys = graph.nodes.map((node) => agentKey(graph, node))
     expect(new Set(keys).size).toBe(3)
+  })
+
+  test("keeps two nodes with the same role apart", () => {
+    // The whole point of carrying the node id: without it both nodes land on
+    // one agent and the permissive one's tools win for both.
+    const twins = pipeline("coder", "coder2")
+    twins.nodes[1].role = "coder"
+    expect(agentKey(twins, twins.nodes[0])).not.toBe(agentKey(twins, twins.nodes[1]))
   })
 })
 
@@ -118,61 +130,68 @@ describe("agentBlock", () => {
   const block = agentBlock(graph) as Record<string, any>
 
   test("emits one agent per node, keyed by agentKey", () => {
-    expect(Object.keys(block).sort()).toEqual(["test-coder", "test-planner"])
+    expect(Object.keys(block).sort()).toEqual(["test-coder-coder", "test-planner-planner"])
   })
 
   test("uses the config's input vocabulary, not the reported form", () => {
     // The server translates prompt -> system and permission -> permissions on
     // load; emitting the translated names instead gets both fields ignored.
-    expect(block["test-planner"].prompt).toBe("You are the planner.")
-    expect(block["test-planner"].permission).toEqual({ read: "allow", edit: "deny" })
-    expect(block["test-planner"]).not.toHaveProperty("system")
-    expect(block["test-planner"]).not.toHaveProperty("permissions")
+    expect(block["test-planner-planner"].prompt).toBe("You are the planner.")
+    expect(block["test-planner-planner"].permission).toEqual({ read: "allow", edit: "deny" })
+    expect(block["test-planner-planner"]).not.toHaveProperty("system")
+    expect(block["test-planner-planner"]).not.toHaveProperty("permissions")
   })
 
   test("writes permission, not the deprecated tools field", () => {
-    expect(block["test-planner"]).not.toHaveProperty("tools")
+    expect(block["test-planner-planner"]).not.toHaveProperty("tools")
   })
 
   test("runs nodes as primary agents", () => {
-    expect(block["test-planner"].mode).toBe("primary")
+    expect(block["test-planner-planner"].mode).toBe("primary")
   })
 
   test("carries the model when the node pins one", () => {
-    expect(block["test-planner"].model).toBe("opencode/some-model")
+    expect(block["test-planner-planner"].model).toBe("opencode/some-model")
   })
 
   test("omits the model when the node has none", () => {
-    expect(block["test-coder"]).not.toHaveProperty("model")
+    expect(block["test-coder-coder"]).not.toHaveProperty("model")
   })
 
   test("normalises tool aliases on the way out", () => {
-    expect(block["test-coder"].permission).toEqual({ edit: "allow", bash: "allow" })
+    expect(block["test-coder-coder"].permission).toEqual({ edit: "allow", bash: "allow" })
   })
 
   test("describes which node and pipeline an agent came from", () => {
-    expect(block["test-planner"].description).toContain("planner")
-    expect(block["test-planner"].description).toContain("test")
+    expect(block["test-planner-planner"].description).toContain("planner")
+    expect(block["test-planner-planner"].description).toContain("test")
   })
 
   test("omits an empty prompt and an empty permission map", () => {
     const bare = agentBlock(pipeline("solo")) as Record<string, any>
-    expect(bare["test-solo"]).not.toHaveProperty("prompt")
-    expect(bare["test-solo"]).not.toHaveProperty("permission")
+    expect(bare["test-solo-solo"]).not.toHaveProperty("prompt")
+    expect(bare["test-solo-solo"]).not.toHaveProperty("permission")
   })
 
   test("is empty for a pipeline with no nodes", () => {
     expect(agentBlock({ id: "x", name: "empty", nodes: [], edges: [] })).toEqual({})
   })
 
-  test("collides deliberately when two nodes share a role", () => {
-    // Same role means the same agent id; the later node wins. Worth knowing
-    // before someone builds a graph with two nodes both called "coder".
-    const twins = pipeline("coder", "coder2")
+  test("keeps two nodes with the same role on separate agents", () => {
+    // These used to collapse onto one agent, so the second node's tools decided
+    // the first node's permissions: a node restricted to read/grep inherited
+    // edit and bash, and quietly ran with write access to the real project.
+    const twins = withAgents(pipeline("coder", "coder2"), {
+      coder: { tools: { read: true, grep: true } },
+      coder2: { tools: { edit: true, bash: true } },
+    })
     twins.nodes[1].role = "coder"
+
     const result = agentBlock(twins) as Record<string, any>
-    expect(Object.keys(result)).toEqual(["test-coder"])
-    expect(result["test-coder"].description).toContain("coder2")
+
+    expect(Object.keys(result).sort()).toEqual(["test-coder-coder", "test-coder-coder2"])
+    expect(result["test-coder-coder"].permission).toEqual({ read: "allow", grep: "allow" })
+    expect(result["test-coder-coder2"].permission).toEqual({ edit: "allow", bash: "allow" })
   })
 })
 

@@ -80,6 +80,30 @@ describe("slug", () => {
     expect(slug("...")).toBe("untitled")
     expect(slug("   ")).toBe("untitled")
   })
+
+  test("folds case, so two names cannot claim one file while looking distinct", () => {
+    // NTFS and APFS already treat `Alpha.json` and `alpha.json` as one file, so
+    // keeping case only hid the collision: the listing went on showing `Alpha`
+    // while the contents had become `alpha`'s.
+    expect(slug("Alpha")).toBe("alpha")
+    expect(slug("Alpha")).toBe(slug("alpha"))
+    expect(slug("My Flow")).toBe(slug("My-Flow"))
+  })
+
+  test("keeps a name that is not written in Latin", () => {
+    // Stripping non-ASCII collapsed every one of these onto "untitled", so the
+    // second pipeline a Japanese or Russian user saved erased the first.
+    expect(slug("設計")).toBe("設計")
+    expect(slug("Релиз")).toBe("релиз")
+    expect(slug("café")).toBe("café")
+    expect(slug("設計")).not.toBe(slug("計画"))
+  })
+
+  test("still drops everything a path could hide in", () => {
+    expect(slug('a<b>c:d"e|f?g*h')).toBe("abcdefgh")
+    expect(slug("Release ✅")).toBe("release")
+    expect(slug("trailing.")).toBe("trailing")
+  })
 })
 
 describe("routing", () => {
@@ -178,6 +202,69 @@ describe("pipelines", () => {
   })
 })
 
+describe("pipelines: a save must not destroy another one", () => {
+  // Every new pipeline is born called "untitled" and the templates ship fixed
+  // names, so build A, save, "new pipeline", build B, save used to leave one
+  // file holding B and no trace that A ever existed.
+  test("refuses when a different pipeline already claims the name", async () => {
+    await call("PUT", "/flow/api/pipelines/untitled", { body: { ...graph, id: "a" } })
+    const second = await call("PUT", "/flow/api/pipelines/untitled", { body: { ...graph, id: "b" } })
+
+    expect(second!.status).toBe(409)
+    expect((second!.body as any).error).toContain('already saved as "untitled"')
+    expect(((await call("GET", "/flow/api/pipelines/untitled"))!.body as any).id).toBe("a")
+  })
+
+  test("re-saving the same pipeline is the ordinary case and goes through", async () => {
+    await call("PUT", "/flow/api/pipelines/untitled", { body: { ...graph, id: "a", nodes: [] } })
+    const again = await call("PUT", "/flow/api/pipelines/untitled", { body: { ...graph, id: "a" } })
+
+    expect(again!.status).toBe(200)
+    expect(((await call("GET", "/flow/api/pipelines/untitled"))!.body as any).nodes).toHaveLength(1)
+  })
+
+  test("overwrite=1 is the only way past it", async () => {
+    await call("PUT", "/flow/api/pipelines/untitled", { body: { ...graph, id: "a" } })
+    const forced = await call("PUT", "/flow/api/pipelines/untitled", {
+      body: { ...graph, id: "b" },
+      search: "overwrite=1",
+    })
+
+    expect(forced!.status).toBe(200)
+    expect(((await call("GET", "/flow/api/pipelines/untitled"))!.body as any).id).toBe("b")
+  })
+
+  test("names that differ only in case or spacing are caught by the same guard", async () => {
+    await call("PUT", `/flow/api/pipelines/${encodeURIComponent("My Flow")}`, { body: { ...graph, id: "a" } })
+    const clash = await call("PUT", `/flow/api/pipelines/${encodeURIComponent("MY-FLOW")}`, {
+      body: { ...graph, id: "b" },
+    })
+
+    expect(clash!.status).toBe(409)
+    expect(await fs.readdir(paths.pipelines)).toEqual(["my-flow.json"])
+  })
+})
+
+describe("atomic writes", () => {
+  test("a save that cannot land destroys nothing and leaves no half-written file", async () => {
+    // A directory sitting where the pipeline file goes: the rename can never
+    // succeed, which is the closest a test gets to a crash mid-write.
+    const blocked = path.join(paths.pipelines, "blocked.json")
+    await fs.mkdir(blocked, { recursive: true })
+    await fs.writeFile(path.join(blocked, "keep"), "x")
+
+    await expect(call("PUT", "/flow/api/pipelines/blocked", { body: graph })).rejects.toThrow()
+
+    expect(await read(path.join(blocked, "keep"))).toBe("x")
+    expect((await fs.readdir(paths.pipelines)).filter((entry) => entry.endsWith(".tmp"))).toEqual([])
+  })
+
+  test("an ordinary save leaves nothing beside the file it wrote", async () => {
+    await call("PUT", "/flow/api/pipelines/feature-build", { body: graph })
+    expect(await fs.readdir(paths.pipelines)).toEqual(["feature-build.json"])
+  })
+})
+
 describe("runs", () => {
   const log = { id: "run-1", pipeline: "feature-build", status: "done", started: 10, finished: 20 }
 
@@ -209,6 +296,45 @@ describe("runs", () => {
 
   test("404s for a run that does not exist", async () => {
     expect((await call("GET", "/flow/api/runs/ghost"))!.status).toBe(404)
+  })
+
+  // `refresh()` lists runs at boot, after every run, and after every save. The
+  // old shape read and parsed every log each time, so a few hundred runs made
+  // boot stall on megabytes of JSON. These pin the index that replaced it.
+  test("the listing does not report its own index as a run", async () => {
+    await call("PUT", "/flow/api/runs/run-1", { body: log })
+    const list = (await call("GET", "/flow/api/runs"))!.body as any[]
+    expect(list.map((entry) => entry.id)).toEqual(["run-1"])
+  })
+
+  test("lists from the index rather than reading every log back", async () => {
+    await call("PUT", "/flow/api/runs/run-1", { body: log })
+    await call("GET", "/flow/api/runs")
+    // Damaging the log proves the listing never opened it.
+    await fs.writeFile(path.join(paths.runs, "run-1.json"), "{ truncated")
+
+    const list = (await call("GET", "/flow/api/runs"))!.body as any[]
+    expect(list[0]).toMatchObject({ id: "run-1", pipeline: "feature-build", status: "done" })
+  })
+
+  test("rebuilds when a log appears that the index has never heard of", async () => {
+    await call("PUT", "/flow/api/runs/run-1", { body: log })
+    await call("GET", "/flow/api/runs")
+    await fs.writeFile(path.join(paths.runs, "run-2.json"), JSON.stringify({ ...log, id: "run-2", started: 30 }))
+
+    const list = (await call("GET", "/flow/api/runs"))!.body as any[]
+    expect(list.map((entry) => entry.id)).toEqual(["run-2", "run-1"])
+    expect(list[0]).toMatchObject({ pipeline: "feature-build" })
+  })
+
+  test("rebuilds when a log is deleted out from under the index", async () => {
+    await call("PUT", "/flow/api/runs/run-1", { body: log })
+    await call("PUT", "/flow/api/runs/run-2", { body: { ...log, id: "run-2", started: 30 } })
+    await call("GET", "/flow/api/runs")
+    await fs.rm(path.join(paths.runs, "run-2.json"))
+
+    const list = (await call("GET", "/flow/api/runs"))!.body as any[]
+    expect(list.map((entry) => entry.id)).toEqual(["run-1"])
   })
 })
 
@@ -320,6 +446,150 @@ describe("agents", () => {
 
     expect(result!.body).toMatchObject({ merged: false, error: expect.stringContaining("not valid JSON") })
     expect(await read(path.join(dir, "opencode.json"))).toBe("{not json")
+  })
+
+  test("cleans up after a pipeline whose name needed slugging", async () => {
+    // The route carries the slug (`my-flow`); the descriptions carry the raw
+    // name (`My Flow`). Matching the slug against them recognised nothing, so
+    // no stale agent was ever dropped and every rename added a generation.
+    const marked = (id: string, role: string) => ({
+      description: `OpenFlow node ${id} (${role}) of pipeline My Flow`,
+    })
+    await fs.writeFile(
+      path.join(dir, "opencode.json"),
+      JSON.stringify({ agent: { "my-flow-planner": marked("n1", "planner"), "my-flow-scout": marked("n0", "scout") } }),
+    )
+
+    await call("POST", `/flow/api/pipelines/${encodeURIComponent("My Flow")}/agents`, {
+      body: { agent: { "my-flow-planner": marked("n1", "planner") } },
+      search: "merge=1",
+    })
+
+    expect(Object.keys(JSON.parse(await read(path.join(dir, "opencode.json"))).agent)).toEqual(["my-flow-planner"])
+  })
+
+  test("takes the raw name from the body when a caller sends one", async () => {
+    // The block here carries no description to read the raw name back off, so
+    // only `pipeline` in the body can supply it.
+    await fs.writeFile(
+      path.join(dir, "opencode.json"),
+      JSON.stringify({ agent: { "my-flow-scout": { description: "OpenFlow node n0 (scout) of pipeline My Flow" } } }),
+    )
+
+    await call("POST", "/flow/api/pipelines/my-flow/agents", {
+      body: { pipeline: "My Flow", agent: { "my-flow-planner": { mode: "primary" } } },
+      search: "merge=1",
+    })
+
+    expect(Object.keys(JSON.parse(await read(path.join(dir, "opencode.json"))).agent)).toEqual(["my-flow-planner"])
+  })
+})
+
+describe("opencode's own config dialect", () => {
+  const configPath = () => path.join(dir, "opencode.json")
+
+  // opencode parses opencode.json with jsonc-parser and allowTrailingComma, so
+  // a commented config is a *valid* one. Reading it as strict JSON failed every
+  // config write: the agent merge, the MCP panel, and skill registration.
+  test("reads a config with comments and a trailing comma", async () => {
+    await fs.writeFile(
+      configPath(),
+      `{
+  // the search server
+  "mcp": {
+    /* local */
+    "context7": { "type": "local", "command": ["a"] },
+  },
+}
+`,
+    )
+
+    const rows = (await call("GET", "/mcp"))?.body as any[]
+    expect(rows.map((row) => row.name)).toEqual(["context7"])
+    expect(rows[0]).toMatchObject({ type: "local", command: ["a"] })
+  })
+
+  test("refuses to rewrite a commented config, and says so rather than crying invalid JSON", async () => {
+    const source = `{\n  // keep me\n  "model": "opencode/x"\n}\n`
+    await fs.writeFile(configPath(), source)
+
+    const response = await call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } })
+
+    // Re-serialising would silently delete the comment, so the write is
+    // refused — but the reason has to name the real problem.
+    expect(response?.status).toBe(400)
+    expect((response?.body as any).error).toContain("has comments")
+    expect(await read(configPath())).toBe(source)
+  })
+
+  test("a trailing comma alone is no reason to refuse a write", async () => {
+    await fs.writeFile(configPath(), `{\n  "model": "opencode/x",\n}\n`)
+
+    const response = await call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } })
+
+    expect(response?.status).toBe(200)
+    const config = JSON.parse(await read(configPath()))
+    expect(config.model).toBe("opencode/x")
+    expect(config.mcp.one).toMatchObject({ type: "local" })
+  })
+
+  test("a comma or a comment marker inside a value is left alone", async () => {
+    const model = 'a, } b // c /* d */ "'
+    await fs.writeFile(configPath(), JSON.stringify({ model, mcp: {} }))
+
+    await call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } })
+
+    expect(JSON.parse(await read(configPath())).model).toBe(model)
+  })
+
+  test("a skill lands unregistered rather than silently, when the config will not take the source", async () => {
+    // registerSkillSource runs before the SKILL.md write for this reason: a
+    // skill registered nowhere is one the agent can never see.
+    await fs.writeFile(configPath(), `{\n  // keep me\n}\n`)
+
+    const result = await call("PUT", "/flow/api/skills/summarize", { body: { name: "Summarize", content: "x" } })
+
+    expect(result!.body).toMatchObject({ registered: false, error: expect.stringContaining("has comments") })
+    await expect(read(path.join(paths.skills, "summarize", "SKILL.md"))).resolves.toContain("name: Summarize")
+  })
+})
+
+describe("concurrent config writes", () => {
+  // Clicking Run (which merges agents) while an MCP server or a skill is being
+  // saved meant both read the same pre-state and the later write discarded the
+  // earlier one. Two tabs, or the vite host beside `bun start`, make it routine.
+  test("an mcp save and a skill registration both land", async () => {
+    await Promise.all([
+      call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } }),
+      call("PUT", "/flow/api/skills/summarize", { body: { name: "Summarize", content: "x" } }),
+    ])
+
+    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
+    expect(config.mcp.one).toMatchObject({ type: "local" })
+    expect(config.skills).toEqual({ paths: ["./.openflow/skills"] })
+  })
+
+  test("an agent merge and an mcp save do not discard each other", async () => {
+    await Promise.all([
+      call("POST", "/flow/api/pipelines/feature-build/agents", {
+        body: { agent: { "feature-build-planner": { mode: "primary" } } },
+        search: "merge=1",
+      }),
+      call("PUT", "/mcp/two", { body: { type: "local", command: ["b"] } }),
+    ])
+
+    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
+    expect(config.agent).toHaveProperty("feature-build-planner")
+    expect(config.mcp.two).toMatchObject({ type: "local" })
+  })
+
+  test("two mcp saves at once both survive", async () => {
+    await Promise.all([
+      call("PUT", "/mcp/alpha", { body: { type: "local", command: ["a"] } }),
+      call("PUT", "/mcp/beta", { body: { type: "remote", url: "https://b" } }),
+    ])
+
+    expect(Object.keys(JSON.parse(await read(path.join(dir, "opencode.json"))).mcp).sort()).toEqual(["alpha", "beta"])
   })
 })
 

@@ -73,12 +73,30 @@ export function recallPipeline(project: string): string | undefined {
 
 type State = { project?: string; pipelines?: Record<string, string> }
 
+/**
+ * The state file, or `{}` when there is none.
+ *
+ * A file that will not parse is moved aside rather than read as empty. `read`
+ * feeds `write`, so returning `{}` for a damaged file made the very next
+ * remember persist that `{}` over it — one unparseable byte and every project's
+ * remembered pipeline was gone. `.corrupt` keeps it where a user can look at
+ * it.
+ */
 function read(): State {
+  const file = statePath()
+  if (!fs.existsSync(file)) return {}
+  const parsed = parseState(file)
+  if (parsed) return parsed
+  quietly(() => fs.renameSync(file, `${file}.corrupt`))
+  return {}
+}
+
+function parseState(file: string): State | undefined {
   try {
-    const parsed = JSON.parse(fs.readFileSync(statePath(), "utf8"))
-    return parsed && typeof parsed === "object" ? (parsed as State) : {}
+    const value = JSON.parse(fs.readFileSync(file, "utf8"))
+    return value && typeof value === "object" ? (value as State) : undefined
   } catch {
-    return {}
+    return undefined
   }
 }
 
@@ -87,17 +105,32 @@ function read(): State {
  * other way round) — the two are written by different routes at different
  * times.
  *
+ * The new state lands on a temp file beside the real one and is renamed over
+ * it, which is atomic within a directory on NTFS and on POSIX: a crash mid-save
+ * then leaves the previous state rather than a truncated file, which `read`
+ * cannot tell from "nothing was ever remembered".
+ *
  * Deliberately best-effort: a read-only home directory is a reason to lose the
  * convenience, never a reason to fail the thing the user actually asked for.
  */
 function write(update: (state: State) => State) {
+  const file = statePath()
+  const temp = `${file}.${process.pid.toString(36)}.tmp`
   try {
     fs.mkdirSync(stateDir(), { recursive: true })
-    fs.writeFileSync(statePath(), JSON.stringify(update(read()), null, 2) + "\n")
+    fs.writeFileSync(temp, JSON.stringify(update(read()), null, 2) + "\n")
+    fs.renameSync(temp, file)
     return true
   } catch {
+    quietly(() => fs.rmSync(temp, { force: true }))
     return false
   }
+}
+
+function quietly(work: () => void) {
+  try {
+    work()
+  } catch {}
 }
 
 /**

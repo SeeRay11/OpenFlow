@@ -698,6 +698,8 @@ describe("permissions", () => {
 
 describe("run log", () => {
   test("is saved once, with timings and the run status", async () => {
+    // A run this short finishes well inside the checkpoint interval, so the
+    // pending checkpoint is cancelled and the final write is the only one.
     const h = harness()
     const log = await h.run(pipeline("a->b"), "ship it").done
 
@@ -720,6 +722,82 @@ describe("run log", () => {
 
     expect(log.status).toBe("done")
     expect(h.notices.some((notice) => notice.text.includes("disk full"))).toBe(true)
+  })
+
+  test("checkpoints what has finished while the run is still going", async () => {
+    // The failure this covers: a long run, the tab closed at minute 25, and
+    // nothing on disk because the only write happened after the last node.
+    const h = harness({ behavior: { b: { hold: true } } })
+    const run = h.run(pipeline("a->b"), "ship it", { checkpointEvery: 1 })
+    await flush()
+    await flush()
+
+    expect(h.saved.length).toBeGreaterThan(0)
+    const partial = h.saved.at(-1)!
+    expect(partial.id).toBe(run.log.id)
+    expect(partial.status).toBe("running")
+    expect(partial.input).toBe("ship it")
+    expect(partial.nodes.find((node) => node.id === "a")!.status).toBe("done")
+    expect(partial.nodes.find((node) => node.id === "a")!.output).toBe("a output")
+    expect(partial.nodes.find((node) => node.id === "b")!.status).toBe("running")
+
+    h.release("b")
+    await run.done
+  })
+
+  test("carries the activity tail into a checkpoint", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"), "do the thing", { checkpointEvery: 1 })
+    await flush()
+    const sessionID = h.sessionOf.get("a")!
+
+    h.emit({ type: "session.next.tool.input.started", data: { sessionID, callID: "c1", name: "grep" } })
+    h.emit({ type: "session.next.tool.called", data: { sessionID, callID: "c1", tool: "grep" } })
+    await flush()
+    await flush()
+
+    expect(h.saved.at(-1)!.nodes[0].events?.some((event) => event.title.includes("grep"))).toBe(true)
+
+    h.release("a")
+    await run.done
+  })
+
+  test("the final write wins over a pending checkpoint", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"), "do the thing", { checkpointEvery: 1 })
+    await flush()
+    await flush()
+
+    h.release("a")
+    const log = await run.done
+
+    const last = h.saved.at(-1)!
+    expect(last.status).toBe("done")
+    expect(last.finished).toBe(log.finished)
+    expect(last.nodes[0].output).toBe("a output")
+  })
+
+  test("never has two log writes in flight at once", async () => {
+    // Checkpoints and the final write share one file; overlapping them would
+    // let a stale snapshot land last.
+    const h = harness({ behavior: { b: { hold: true } } })
+    let writing = 0
+    let overlapped = false
+    h.deps.saveRun = async () => {
+      writing += 1
+      overlapped = overlapped || writing > 1
+      await new Promise((resolve) => setTimeout(resolve, 3))
+      writing -= 1
+      return {}
+    }
+
+    const run = h.run(pipeline("a->b"), "ship it", { checkpointEvery: 1 })
+    await flush()
+    await flush()
+    h.release("b")
+    await run.done
+
+    expect(overlapped).toBe(false)
   })
 })
 

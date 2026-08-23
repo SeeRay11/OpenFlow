@@ -1,3 +1,4 @@
+import { agentKey } from "../server/store"
 import type { Pipeline } from "./types"
 
 export type Validation = { ok: true; layers: string[][] } | { ok: false; error: string }
@@ -104,6 +105,23 @@ export function preflight(pipeline: Pipeline, ctx: { unlockedModels: Set<string>
         kind: "unrestricted-write",
         message: `Node '${node.role}' can edit files or run commands but has no agent — it may write real files as the default build agent`,
       })
+  }
+
+  // Two nodes generating the same agent id collapse into one merged agent, and
+  // the last one written decides both nodes' tool permissions — a node the user
+  // restricted would run with the other's edit/bash access. The key is unique
+  // per node today; this refuses the run rather than trusting that to hold.
+  const owners = new Map<string, string>()
+  for (const node of pipeline.nodes) {
+    const key = agentKey(pipeline, node)
+    const owner = owners.get(key)
+    if (owner)
+      blocking.push({
+        nodeId: node.id,
+        kind: "duplicate-agent",
+        message: `Nodes '${owner}' and '${node.role}' both generate the agent id '${key}' — one would overwrite the other's tool permissions`,
+      })
+    owners.set(key, node.role)
   }
 
   if (pipeline.nodes.length > 1) {

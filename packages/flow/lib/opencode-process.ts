@@ -33,6 +33,13 @@ export type ServeStatus = {
   url: string
   /** Printable form of the command, for the unmanaged fallback in the UI. */
   command: string
+  /**
+   * Directory the command has to run from — the from-source command is relative
+   * (`--cwd packages/opencode`), so the UI prints `cd <cwd>` above it rather than
+   * guessing a checkout name. Optional only because stand-in statuses in tests
+   * predate it; both supervisors always set it.
+   */
+  cwd?: string
   pid?: number
   startedAt?: number
   /** Why the last start or restart failed, if it did. */
@@ -121,6 +128,7 @@ export function unmanaged(spec: ServeCommand, reason: string): Supervisor {
     running: await healthy(spec.url),
     url: spec.url,
     command: printable(spec.command),
+    cwd: spec.cwd,
     reason,
   })
   return {
@@ -154,6 +162,7 @@ export function createSupervisor(spec: ServeCommand, log: (line: string) => void
       running: await healthy(spec.url),
       url: spec.url,
       command: printable(spec.command),
+      cwd: spec.cwd,
       pid: child?.pid,
       startedAt,
       error: lastError,
