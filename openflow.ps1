@@ -13,6 +13,8 @@
 #   ./openflow.ps1 -Project C:\code\my-app  # point the agents at another repo
 #   ./openflow.ps1 -Built                   # serve the built bundle (no vite)
 #   ./openflow.ps1 -ServerPort 4097         # use a non-default engine port
+#   ./openflow.ps1 -Manage                  # let the canvas own the engine, so its
+#                                           # "restart engine" button works
 #
 # Before the first run: log in a provider (`opencode auth login`, a provider env
 # var, or OPENCODE_AUTH_CONTENT). Flow inherits the server's credentials; an empty
@@ -31,7 +33,13 @@ param(
     [switch]$Built,
 
     # Seconds to wait for the engine to start listening before giving up.
-    [int]$StartupTimeout = 90
+    [int]$StartupTimeout = 90,
+
+    # Hand the engine to the canvas instead of starting it here. The canvas then
+    # holds the process handle, which is what its "restart engine" button needs —
+    # the server has no shutdown route, so only its parent can restart it.
+    # Without this the button still works, but only to show the command.
+    [switch]$Manage
 )
 
 $ErrorActionPreference = "Stop"
@@ -60,6 +68,11 @@ Write-Host ""
 
 $server = $null
 
+if ($Manage) {
+    $env:FLOW_MANAGE_SERVER = "1"
+    Write-Host "  engine   : started and owned by the canvas (-Manage)" -ForegroundColor DarkGray
+}
+
 # Kill a process and its children (bun spawns a tree; a bare Stop-Process on the
 # parent leaves the real server orphaned holding the port).
 function Stop-Tree($proc) {
@@ -69,6 +82,21 @@ function Stop-Tree($proc) {
 }
 
 try {
+    if ($Manage) {
+        # The canvas spawns the engine itself and waits for it before serving,
+        # so there is nothing to start or poll here.
+        Write-Host "Starting canvas — open http://localhost:5174" -ForegroundColor Green
+        Write-Host "Press Ctrl+C to stop both." -ForegroundColor DarkGray
+        Write-Host ""
+        if ($Built) {
+            bun run --cwd (Join-Path $repo "packages/flow") build
+            bun run --cwd (Join-Path $repo "packages/flow") start
+        } else {
+            bun run --cwd (Join-Path $repo "packages/flow") dev
+        }
+        exit 0
+    }
+
     Write-Host "Starting engine (opencode serve)..." -ForegroundColor DarkGray
     $server = Start-Process -PassThru -NoNewWindow -WorkingDirectory $repo bun `
         -ArgumentList @(

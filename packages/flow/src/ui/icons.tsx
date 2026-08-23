@@ -217,6 +217,25 @@ export function IconPaperclip() {
   )
 }
 
+export function IconRestart() {
+  return (
+    <Svg>
+      <path d="M13.25 8a5.25 5.25 0 1 1-1.6-3.78" />
+      <path d="M13.4 2.4v3.1h-3.1" />
+    </Svg>
+  )
+}
+
+export function IconCoin() {
+  return (
+    <Svg>
+      <circle cx="8" cy="8" r="5.75" />
+      <path d="M9.75 6.1A2.4 2.4 0 0 0 8 5.4c-1 0-1.75.5-1.75 1.3S7 8 8 8s1.75.5 1.75 1.3-.75 1.3-1.75 1.3a2.4 2.4 0 0 1-1.75-.7" />
+      <path d="M8 4.3v1.1M8 10.6v1.1" />
+    </Svg>
+  )
+}
+
 export function IconQuestion() {
   return (
     <Svg>

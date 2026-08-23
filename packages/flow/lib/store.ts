@@ -4,6 +4,7 @@ import { cliAuthPath, importCliKeys, readCliKeys } from "./cli-auth"
 import { allowsRemote } from "./guard"
 import { recallPipeline, rememberPipeline, rememberProject } from "./last-session"
 import { hasNativePicker, pickFolderNative } from "./native-picker"
+import type { Supervisor } from "./opencode-process"
 import { zenModels } from "./zen"
 
 /**
@@ -41,6 +42,9 @@ import { zenModels } from "./zen"
  *                                             `null` when cancelled (loopback hosts only)
  *   POST   /flow/api/project               -> { path } — switch the live project directory,
  *                                             and remember it for the next launch
+ *   GET    /flow/api/server                -> { managed, running, url, command, pid, ... } — the
+ *                                             `opencode serve` this host proxies
+ *   POST   /flow/api/server/restart        -> restarts it, when this host owns it (loopback only)
  *
  * Keeping it host-neutral is the point: the dev server and the built app must
  * not drift into two different stores. `browse`/`project` read the same host
@@ -138,6 +142,11 @@ export type FlowRequest = {
   json: () => Promise<any>
   /** Base URL of the `opencode serve` this host proxies, for the key import. */
   upstream?: string
+  /**
+   * The engine's process, when this host spawned it. Absent or unmanaged means
+   * the restart route reports the command instead of running it.
+   */
+  serve?: Supervisor
 }
 
 export type FlowResponse = { status: number; body: unknown }
@@ -266,6 +275,34 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     }
   }
 
+  if (segments[0] === "server") {
+    if (!request.serve) return { status: 501, body: { error: "this host does not track `opencode serve`" } }
+    if (segments.length === 1 && method === "GET") return ok(await request.serve.status())
+    if (segments[1] === "restart" && method === "POST") {
+      // Restarting spawns a process on the host. Served remotely that is a
+      // remote process-control hole, so it is refused for the same reason the
+      // native folder picker is — see `lib/guard.ts`.
+      if (allowsRemote()) return { status: 403, body: { error: "restarting the engine is unavailable when serving remotely" } }
+      const before = await request.serve.status()
+      if (!before.managed) {
+        // The C fallback: say who owns it and what to type, rather than
+        // pretending a click can reach a process this host never spawned.
+        return {
+          status: 409,
+          body: { error: before.reason ?? "this host does not own `opencode serve`", ...before },
+        }
+      }
+      try {
+        return ok(await request.serve.restart())
+      } catch (error) {
+        return {
+          status: 502,
+          body: { error: error instanceof Error ? error.message : String(error), ...(await request.serve.status()) },
+        }
+      }
+    }
+  }
+
   if (segments[0] === "pick-folder" && method === "POST") {
     // The dialog opens on the *host*, so it only makes sense when the host is
     // the machine the user is sitting at. Served remotely it would pop a window
@@ -367,6 +404,10 @@ async function listRuns(paths: FlowPaths) {
       status: parsed.status,
       started: parsed.started,
       finished: parsed.finished,
+      // Carried in the listing so the spend view can total every run without
+      // reading each log back. Absent on runs written before usage existed —
+      // those count as unknown, not as zero.
+      usage: parsed.usage,
     })
   }
   return out.sort((a, b) => (b.started ?? 0) - (a.started ?? 0))
@@ -395,17 +436,46 @@ async function writeAgents(paths: FlowPaths, name: string, body: any, merge: boo
       return { path: file, merged: false, error: "existing opencode.json is not valid JSON" }
     }
   }
-  // Fold the generated agents onto whatever is already there, then bail before
-  // touching disk if that leaves the block byte-for-byte identical — an
+  // Fold the generated agents onto whatever is already there, dropping the ones
+  // this pipeline generated last time that it no longer generates — a renamed
+  // or deleted node would otherwise leave its agent behind forever, and a run
+  // merges on every start, so the leftovers accumulate. Only entries this
+  // pipeline is known to have written are dropped: they are recognised by the
+  // description writeAgents itself stamps on them, so a hand-written agent is
+  // never touched, whatever it is called.
+  const current: Record<string, unknown> = config.agent ?? {}
+  const kept = Object.fromEntries(
+    Object.entries(current).filter(([key, value]) => key in block.agent || !generatedFor(value, name)),
+  )
+  const nextAgent = { ...kept, ...block.agent }
+
+  // Bail before touching disk when that leaves the block identical — an
   // auto-merge on every run must not churn opencode.json or litter a `.bak`
   // when nothing actually changed. Key order is ignored so a re-serialised but
-  // equivalent config still counts as unchanged.
-  const nextAgent = { ...(config.agent ?? {}), ...block.agent }
-  if (stableEqual(config.agent ?? {}, nextAgent)) return { path: target, merged: false, unchanged: true }
+  // equivalent config still counts as unchanged. When there is no config at all
+  // and nothing to write into one, the generated file is the only path there is
+  // to report.
+  if (stableEqual(current, nextAgent))
+    return { path: raw === undefined ? file : target, merged: false, unchanged: true }
   const backup = raw !== undefined ? await backupConfig(target, raw) : undefined
   config.agent = nextAgent
   await fs.writeFile(target, JSON.stringify(config, null, 2) + "\n")
   return { path: target, merged: true, backup }
+}
+
+/**
+ * Whether an existing agent entry is one OpenFlow generated for this pipeline.
+ *
+ * The marker is the description `agentBlock` writes — `OpenFlow node <id>
+ * (<role>) of pipeline <name>` — rather than the agent's key, because keys are
+ * derived from the pipeline and role and a hand-written agent is free to
+ * collide with that shape. An entry that does not carry the marker is somebody
+ * else's and is left alone.
+ */
+function generatedFor(entry: unknown, pipeline: string): boolean {
+  if (!entry || typeof entry !== "object") return false
+  const description = (entry as { description?: unknown }).description
+  return typeof description === "string" && description.endsWith(` of pipeline ${pipeline}`)
 }
 
 /** Canonical JSON with object keys sorted, so two equal configs compare equal regardless of key order. */
@@ -506,6 +576,10 @@ async function writeMcpServer(paths: FlowPaths, name: string, body: any) {
   const target = path.join(paths.project, "opencode.json")
   const config = await readProjectConfig(paths)
   if ("error" in config) throw new Error(config.error)
+  // Saving a server the config already describes writes nothing, for the same
+  // reason an unchanged agent merge does: a pointless rewrite would push the
+  // pre-OpenFlow `.bak` one slot further out of reach.
+  if (stableEqual(config.value.mcp?.[name], entry)) return { name, path: target, unchanged: true }
   const backup = config.raw === undefined ? undefined : await backupConfig(target, config.raw)
   const next = config.value
   next.mcp = { ...(next.mcp ?? {}), [name]: entry }

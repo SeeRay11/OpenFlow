@@ -11,6 +11,23 @@ export function NodeCard(props: {
 }) {
   const runtime = () => runtimeOf(props.node.id)
   const selected = () => state.selected === props.node.id
+  /** A card is worth expanding once it has a session — live or finished. */
+  const hasActivity = () => !!runtime().events?.length || !!runtime().sessionID
+  const expanded = () => state.expanded === props.node.id
+
+  /**
+   * Opens the activity drawer.
+   *
+   * Bound to `click` rather than `pointerdown` so it cannot fire at the start
+   * of a header drag, and ignored for the header and the ports, which own their
+   * own gestures.
+   */
+  function onClick(event: MouseEvent) {
+    const target = event.target as HTMLElement | null
+    if (target?.closest(".node-header, .port")) return
+    if (!hasActivity()) return
+    actions.expand(expanded() ? undefined : props.node.id)
+  }
 
   // The card is focusable so a keyboard can reach it, but selection is bound to
   // Enter rather than to focus. Pressing on the header focuses the card as a
@@ -19,7 +36,7 @@ export function NodeCard(props: {
   return (
     <div
       class="node"
-      classList={{ selected: selected(), [`status-${runtime().status}`]: true }}
+      classList={{ selected: selected(), expanded: expanded(), [`status-${runtime().status}`]: true }}
       style={{
         left: `${props.node.position.x}px`,
         top: `${props.node.position.y}px`,
@@ -31,10 +48,12 @@ export function NodeCard(props: {
         event.stopPropagation()
         actions.select(props.node.id)
       }}
+      onClick={onClick}
       onKeyDown={(event) => {
         if (event.key !== "Enter") return
         event.preventDefault()
         actions.select(props.node.id)
+        if (hasActivity()) actions.expand(expanded() ? undefined : props.node.id)
       }}
     >
       <div class="node-header" onPointerDown={(event) => props.onDragStart(event, props.node.id)}>
@@ -59,6 +78,27 @@ export function NodeCard(props: {
             `.node-output` instead of a separate `.clamp` modifier. */}
         <Show when={!runtime().error && runtime().output}>
           <div class="node-output">{runtime().output}</div>
+        </Show>
+
+        {/* The card itself is the affordance, but a card that can be opened
+            should say so — and the count is the only place the size of what is
+            hidden shows up. `stopPropagation` keeps the card's own click from
+            toggling the drawer a second time. */}
+        <Show when={hasActivity()}>
+          <button
+            class="node-activity"
+            type="button"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation()
+              actions.expand(expanded() ? undefined : props.node.id)
+            }}
+          >
+            {expanded() ? "hide activity" : "show activity"}
+            <Show when={runtime().events?.length}>
+              <span class="dim">{runtime().events!.length}</span>
+            </Show>
+          </button>
         </Show>
       </div>
 

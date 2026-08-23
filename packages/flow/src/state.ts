@@ -1,6 +1,16 @@
 import { createStore, produce, reconcile } from "solid-js/store"
 import { ROLES, role } from "./graph/roles"
-import type { Attachment, FlowNode, NodeStatus, Pipeline, RunLog, RunNodeLog } from "./graph/types"
+import type {
+  Attachment,
+  FlowNode,
+  NodeEvent,
+  NodeStatus,
+  Pipeline,
+  RunLog,
+  RunNodeLog,
+  Spend,
+} from "./graph/types"
+import { applyEvent } from "./server/activity"
 import type { QuestionInfo } from "./server/client"
 import { emptyPipeline } from "./graph/types"
 import { wouldCycle } from "./graph/validate"
@@ -14,6 +24,10 @@ export type NodeRuntime = {
   activity?: string
   started?: number
   finished?: number
+  /** Priced token usage for this node's session. */
+  usage?: Spend
+  /** What the card has done, in order — see `NodeEvent`. */
+  events?: NodeEvent[]
 }
 
 export type PendingPermission = {
@@ -34,6 +48,8 @@ export type PendingQuestion = {
 export type FlowState = {
   pipeline: Pipeline
   selected?: string
+  /** Node whose activity drawer is open. Independent of selection. */
+  expanded?: string
   runtime: Record<string, NodeRuntime>
   run?: RunLog
   running: boolean
@@ -99,6 +115,7 @@ export const actions = {
         draft.pipeline.edges = draft.pipeline.edges.filter((edge) => edge.source !== id && edge.target !== id)
         delete draft.runtime[id]
         if (draft.selected === id) draft.selected = undefined
+        if (draft.expanded === id) draft.expanded = undefined
       }),
     )
   },
@@ -124,6 +141,11 @@ export const actions = {
 
   select(id?: string) {
     setState("selected", id)
+  },
+
+  /** Opens (or closes, with no id) the activity drawer for one card. */
+  expand(id?: string) {
+    setState("expanded", id)
   },
 
   connect(source: string, target: string) {
@@ -156,6 +178,7 @@ export const actions = {
         draft.runtime = {}
         draft.run = undefined
         draft.selected = undefined
+        draft.expanded = undefined
       }),
     )
   },
@@ -180,6 +203,19 @@ export const actions = {
     setState(
       produce((draft) => {
         draft.runtime[id] = { ...(draft.runtime[id] ?? { status: "idle" }), ...patch }
+      }),
+    )
+  },
+
+  /**
+   * Upserts one activity row. Rows arrive many times as they stream, keyed by
+   * `event.id`, so this replaces in place rather than appending.
+   */
+  pushEvent(id: string, event: NodeEvent) {
+    setState(
+      produce((draft) => {
+        const runtime = (draft.runtime[id] ??= { status: "idle" })
+        runtime.events = applyEvent(runtime.events ?? [], event)
       }),
     )
   },

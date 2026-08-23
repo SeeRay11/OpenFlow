@@ -1,5 +1,5 @@
 import { createOpencodeClient, type AgentV2Info, type ModelRef, type ModelV2Info } from "@opencode-ai/sdk/v2/client"
-import type { Attachment } from "../graph/types"
+import type { Attachment, StepUsage } from "../graph/types"
 
 export type { Attachment }
 
@@ -391,6 +391,56 @@ export async function transcript(sessionID: string): Promise<Transcript> {
     .join("\n")
     .trim()
   return { text, error: assistant.error ? describe(assistant.error) : undefined }
+}
+
+/**
+ * Every settled assistant step in a session, with the tokens the provider
+ * reported for it.
+ *
+ * This is the authoritative usage record: the event bus can drop events (it is
+ * subscribed best-effort and reconnects), while the message history is what the
+ * server persisted. The whole history is paged through — a session that
+ * compacted or ran fifty tool steps has far more than one page of messages, and
+ * a short read would silently under-report the bill.
+ *
+ * Steps with no `tokens` are skipped rather than counted as zero: a step that
+ * failed before the provider returned usage may still have been billed, and
+ * inventing a zero for it would state a total we cannot prove.
+ */
+export async function sessionSteps(sessionID: string): Promise<StepUsage[]> {
+  const { client } = await connect()
+  const steps: StepUsage[] = []
+  const seen = new Set<string>()
+  let cursor: string | undefined
+  for (let page = 0; page < 100; page += 1) {
+    const body = unwrap<any>(
+      (await client.v2.session.messages({
+        sessionID,
+        limit: 200,
+        ...(cursor ? { cursor } : { order: "asc" }),
+      })) as any,
+    )
+    const messages: any[] = body.data ?? []
+    for (const message of messages) {
+      if (message.type !== "assistant" || !message.tokens) continue
+      if (seen.has(message.id)) continue
+      seen.add(message.id)
+      steps.push({
+        messageID: message.id,
+        model: formatModel(message.model),
+        tokens: {
+          input: message.tokens.input ?? 0,
+          output: message.tokens.output ?? 0,
+          reasoning: message.tokens.reasoning ?? 0,
+          cacheRead: message.tokens.cache?.read ?? 0,
+          cacheWrite: message.tokens.cache?.write ?? 0,
+        },
+      })
+    }
+    cursor = messages.length === 200 ? body.cursor?.next : undefined
+    if (!cursor) break
+  }
+  return steps
 }
 
 export type BusEvent = { type: string; data?: Record<string, any> }

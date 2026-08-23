@@ -12,11 +12,20 @@ import {
   type Run,
 } from "./server/engine"
 import { providerRows, type ProviderRow } from "./server/providers"
-import { agentBlock, agentKey, store, type McpServer, type PipelineEntry, type RunEntry } from "./server/store"
+import {
+  agentBlock,
+  agentKey,
+  store,
+  type McpServer,
+  type PipelineEntry,
+  type RunEntry,
+  type ServeStatus,
+} from "./server/store"
 import { actions, state } from "./state"
 import {
   IconAlert,
   IconClose,
+  IconCoin,
   IconFlow,
   IconFolder,
   IconHistory,
@@ -26,10 +35,12 @@ import {
   IconPlay,
   IconPlug,
   IconPlus,
+  IconRestart,
   IconSave,
   IconSliders,
   IconStop,
 } from "./ui/icons"
+import { ActivityDrawer } from "./ui/activity-drawer"
 import { Attachments, filesFrom, readFiles } from "./ui/attachments"
 import { Inspector } from "./ui/inspector"
 import { McpPanel } from "./ui/mcp-panel"
@@ -38,6 +49,9 @@ import { Palette } from "./ui/palette"
 import { ProjectPicker } from "./ui/project-picker"
 import { ProvidersPanel } from "./ui/providers-panel"
 import { SkillsPanel } from "./ui/skills-panel"
+import { SpendPanel } from "./ui/spend-panel"
+import { EngineDialog } from "./ui/engine-dialog"
+import { costLabel } from "./server/usage"
 import { Select, type SelectOption } from "./ui/select"
 
 // The four run settings are fixed lists, so they are built once here rather
@@ -68,6 +82,12 @@ export function App() {
   const [showProviders, setShowProviders] = createSignal(false)
   const [showSkills, setShowSkills] = createSignal(false)
   const [showMcp, setShowMcp] = createSignal(false)
+  const [showSpend, setShowSpend] = createSignal(false)
+  const [engine, setEngine] = createSignal<ServeStatus>()
+  const [restarting, setRestarting] = createSignal(false)
+  /** Set when the engine needs restarting — drives the restart/command dialog. */
+  const [engineHelp, setEngineHelp] = createSignal<ServeStatus>()
+  const [engineWhy, setEngineWhy] = createSignal<string>()
   // `undefined` means the server list has not been read (yet, or at all), which
   // is not the same as a project with no servers: the generated `<server>_*`
   // permission rules are derived from this list, so an empty stand-in would
@@ -108,8 +128,58 @@ export function App() {
       setStatus(`offline — ${detail}`)
       actions.notice("error", detail.includes("opencode serve") ? detail : `cannot reach opencode serve: ${detail}`)
     }
+    setEngine(await store.serverStatus().catch(() => undefined))
     const entries = await refresh()
     await reopen(entries)
+  }
+
+  /**
+   * Restarts `opencode serve` and re-reads everything that only loads at its
+   * boot: agents, models, and the MCP status the panels show. This is the one
+   * action that makes a merged agent, a new skill or an MCP entry actually
+   * live, which until now meant leaving the app for a terminal.
+   *
+   * A host that did not spawn the engine cannot restart it, and says so with
+   * the command rather than failing silently.
+   */
+  /** Opens the restart dialog with whatever this host knows about the engine. */
+  async function showEngineHelp(why?: string) {
+    const status = (await store.serverStatus().catch(() => undefined)) ?? engine()
+    if (!status) return actions.notice("error", "cannot tell how `opencode serve` was started on this host")
+    setEngine(status)
+    setEngineWhy(why)
+    setEngineHelp(status)
+  }
+
+  async function restartEngine() {
+    if (restarting()) return
+    setRestarting(true)
+    setStatus("restarting engine…")
+    actions.notice("info", "restarting opencode serve…")
+    try {
+      const next = await store.restartServer()
+      setEngine(next)
+      setEngineHelp(undefined)
+      setEngineWhy(undefined)
+      // Every cached handle points at the old process; drop them and reconnect.
+      api.disconnect()
+      await bootstrap()
+      actions.notice("info", "engine restarted — agents, skills and mcp servers reloaded")
+    } catch (error) {
+      const info = (error as { info?: ServeStatus }).info
+      if (info && !info.managed) {
+        setEngine(info)
+        setEngineWhy(undefined)
+        setEngineHelp(info)
+        actions.clearNotice()
+      } else {
+        actions.notice("error", api.describe(error))
+        setEngine(await store.serverStatus().catch(() => undefined))
+        setStatus(`offline — ${api.describe(error)}`)
+      }
+    } finally {
+      setRestarting(false)
+    }
   }
 
   /**
@@ -326,6 +396,7 @@ export function App() {
         state.input,
         {
           onNode: (id, patch) => actions.patchRuntime(id, patch),
+          onNodeEvent: (id, event) => actions.pushEvent(id, event),
           onRun: (log) => actions.setRun(clone(log)),
           onNotice: actions.notice,
           onPermission: (request) =>
@@ -346,6 +417,9 @@ export function App() {
           // The engine settles a question on its own once it times out, so the
           // dialog has to come down even though nobody touched it.
           onQuestionClosed: (requestID) => actions.answerQuestion(requestID, undefined),
+          // A run stopped by stale config has exactly one fix, so hand it over
+          // rather than leaving the user to find the command themselves.
+          onEngineStale: () => void showEngineHelp("The engine is running older config than what is on disk — an agent this pipeline needs was merged after it booted."),
         },
         {
           pipe: pipe(),
@@ -391,6 +465,10 @@ export function App() {
           error: node.error,
           prompt: node.prompt,
           sessionID: node.sessionID,
+          usage: node.usage,
+          started: node.started,
+          finished: node.finished,
+          events: node.events,
         })
       }
       actions.notice("info", `loaded run ${id}`)
@@ -487,6 +565,20 @@ export function App() {
             onClick={() => setShowSkills(true)}
           >
             <IconSliders />
+          </button>
+          <button
+            class="icon-btn"
+            type="button"
+            disabled={restarting()}
+            title={
+              engine()?.managed
+                ? "restart opencode serve — reloads agents, skills and mcp servers"
+                : "how to restart opencode serve (this host did not start it)"
+            }
+            aria-label="restart engine"
+            onClick={restartEngine}
+          >
+            <IconRestart />
           </button>
           <button
             class="icon-btn"
@@ -642,6 +734,11 @@ export function App() {
         />
       </main>
 
+      {/* Below the graph, above the status bar: the expanded card. */}
+      <Show when={state.expanded}>
+        <ActivityDrawer />
+      </Show>
+
       <Show when={showProviders()}>
         <ProvidersPanel
           rows={providers()}
@@ -676,6 +773,22 @@ export function App() {
 
       <Show when={showProjectPicker()}>
         <ProjectPicker current={project()} onClose={() => setShowProjectPicker(false)} onSwitched={switchProject} />
+      </Show>
+
+      <Show when={engineHelp()}>
+        {(status) => (
+          <EngineDialog
+            status={status()}
+            because={engineWhy()}
+            restarting={restarting()}
+            onRestart={status().managed ? () => void restartEngine() : undefined}
+            onClose={() => setEngineHelp(undefined)}
+          />
+        )}
+      </Show>
+
+      <Show when={showSpend()}>
+        <SpendPanel onClose={() => setShowSpend(false)} />
       </Show>
 
       <footer class="statusbar">
@@ -718,6 +831,21 @@ export function App() {
           </Show>
         </div>
         <div class="statusbar-right">
+          {/*
+            Always visible, run or no run: the point of the readout is that
+            nobody has to go looking for what the agents have cost. It shows the
+            live run's list-price total, and `≥` whenever some model in it has
+            no published price — see `server/usage.ts`.
+          */}
+          <button
+            class="icon-btn statusbar-spend"
+            type="button"
+            title="what this run has cost, and every run before it"
+            onClick={() => setShowSpend(true)}
+          >
+            <IconCoin />
+            <span class="mono">{state.run?.usage?.steps ? costLabel(state.run.usage) : "—"}</span>
+          </button>
           <Select
             label="Runs"
             leading={<IconHistory />}

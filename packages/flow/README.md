@@ -270,6 +270,25 @@ restarts, so the order is: merge agents, restart `opencode serve`, reload the
 page, run. Both the merge button and the run pre-flight check for this and say
 so rather than letting a node run under an agent that does not exist.
 
+### The restart button
+
+The titlebar has a restart control for exactly that. The server has no shutdown
+route, so only the process that started it can restart it — which means the
+button does one of two things:
+
+- **the canvas started the engine** (`./openflow.sh -m`, `./openflow.ps1 -Manage`,
+  or `FLOW_MANAGE_SERVER=1` on either host): one click stops it, starts it again,
+  waits for `/api/health`, and re-reads agents, models and MCP status. About five
+  seconds.
+- **something else started it** — a terminal, a launcher without that flag: the
+  button says so and hands over the exact command to run, rather than pretending
+  a click can reach a process OpenFlow has no handle on.
+
+`FLOW_MANAGE_SERVER=1` is opt-in and never adopts a running engine: if the port
+already answers, the host leaves it alone and reports the command instead. The
+command it would run comes from `OPENCODE_SERVE_COMMAND` when set, otherwise the
+source checkout, otherwise `opencode serve --port <port>` on PATH.
+
 ### Backups of your opencode.json
 
 A merge rewrites the project's `opencode.json`, so it copies the file aside
