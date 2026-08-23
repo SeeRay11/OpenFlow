@@ -41,8 +41,8 @@ bun openflow.ts
 它会启动引擎，等到引擎有响应后，在 http://localhost:5174 打开画布；Ctrl+C 会同时停止二者。上
 一次运行残留占用的端口会先被释放，而已经在提供服务的端口会被复用，而不是再启动一次。
 
-有两个 shim 包装同一个文件，供更习惯自己平台启动方式的人使用。它们自身不含任何逻辑——只是把命
-令行参数翻译成 `openflow.ts` 本来就会读取的环境变量。
+有两个轻量脚本包装同一个文件，供更习惯自己平台启动方式的人使用。它们自身不含任何逻辑——只是把
+命令行参数翻译成 `openflow.ts` 本来就会读取的环境变量。
 
 ```powershell
 .\openflow.ps1
@@ -52,10 +52,10 @@ bun openflow.ts
 ./openflow.sh
 ```
 
-**在 Windows 上，shim 可能拒绝启动：** PowerShell 默认不运行未签名的本地脚本，因此
+**在 Windows 上，该脚本可能拒绝启动：** PowerShell 默认不运行未签名的本地脚本，因此
 `.\openflow.ps1` 可能会以 *"openflow.ps1 cannot be loaded because running scripts is
 disabled on this system"* 失败。以 ZIP 下载而非克隆得到的仓库还会被标记为来自互联网，从而以
-第二种方式被拦截。`bun openflow.ts` 不受这两者的限制，是绕过它们最短的路径。若仍想使用 shim，
+第二种方式被拦截。`bun openflow.ts` 不受这两者的限制，是绕过它们最短的路径。若仍想使用该脚本，
 请为你自己的账户允许本地脚本，并在文件来自 ZIP 时解除其阻止：
 
 ```powershell

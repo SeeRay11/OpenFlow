@@ -163,6 +163,12 @@ export type RunNodeLog = {
   error?: string
   started?: number
   finished?: number
+  /**
+   * Carried over from an earlier run rather than produced by this one, so it
+   * cost nothing here. Set when a re-run reuses the output of a node that had
+   * already finished — without it the only clue is the absence of a sessionID.
+   */
+  reused?: boolean
   /** What this node's session reported using, priced. */
   usage?: Spend
   /** Per-step usage behind `usage`, kept so a run log can be re-priced later. */

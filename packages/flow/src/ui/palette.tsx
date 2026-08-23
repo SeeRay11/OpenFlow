@@ -11,7 +11,10 @@ export function Palette() {
 
   /** Loads a template, replacing the graph — guarded when there is work to lose. */
   function loadTemplate(template: Template) {
-    if (state.pipeline.nodes.length && !window.confirm("Replace the current pipeline?")) return
+    // Gated on unsaved work, not on node count: a graph that is already saved
+    // costs nothing to replace, and prompting for it trains the reflex that
+    // dismisses the prompt that does matter.
+    if (state.dirty && state.pipeline.nodes.length && !window.confirm("Replace the current pipeline?")) return
     actions.load(template.build())
   }
 

@@ -46,8 +46,8 @@ http://localhost:5174; Ctrl+C li ferma entrambi. Una porta lasciata occupata da
 un'esecuzione morta viene prima liberata, e una porta che sta già servendo viene
 riutilizzata invece di essere avviata due volte.
 
-Due shim avvolgono lo stesso file per chi preferisce il launcher della propria
-piattaforma. Non contengono logica propria: traducono i flag nelle variabili
+Due script leggeri avvolgono lo stesso file per chi preferisce il launcher della
+propria piattaforma. Non contengono logica propria: traducono i flag nelle variabili
 d'ambiente che `openflow.ts` già legge.
 
 ```powershell
@@ -58,13 +58,13 @@ d'ambiente che `openflow.ts` già legge.
 ./openflow.sh
 ```
 
-**Su Windows lo shim può rifiutarsi di partire:** per impostazione predefinita
+**Su Windows lo script può rifiutarsi di partire:** per impostazione predefinita
 PowerShell non esegue script locali non firmati, quindi `.\openflow.ps1` può fallire
 con *"openflow.ps1 cannot be loaded because running scripts is disabled on this
 system"*. Un repository scaricato come ZIP anziché clonato viene inoltre marcato
 come proveniente da internet, il che lo blocca una seconda volta. `bun openflow.ts`
 non è soggetto a nessuno dei due ed è la via più breve per aggirarli entrambi. Per
-usare comunque lo shim, consenti gli script locali per il tuo account e sblocca il
+usare comunque lo script, consenti gli script locali per il tuo account e sblocca il
 file se proviene da uno ZIP:
 
 ```powershell

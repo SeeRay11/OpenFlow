@@ -1122,3 +1122,118 @@ describe("stale engine", () => {
     expect(log.nodes[0].error).toContain("opencode serve")
   })
 })
+
+describe("resume", () => {
+  test("a seeded node is satisfied without a session", async () => {
+    const h = harness()
+
+    const log = await h.run(pipeline("a->b"), "do the thing", { resume: { a: "a from last time" } }).done
+
+    expect(h.dispatched).toEqual(["b"])
+    expect(log.status).toBe("done")
+    expect(statuses(log)).toEqual({ a: "done", b: "done" })
+    expect(log.nodes[0].output).toBe("a from last time")
+    // No session was created for it, and no prompt was built.
+    expect(log.nodes[0].sessionID).toBeUndefined()
+    expect(log.nodes[0].prompt).toBeUndefined()
+  })
+
+  test("marks a reused node as reused on the run log", async () => {
+    const h = harness()
+
+    const log = await h.run(pipeline("a"), "do the thing", { resume: { a: "a from last time" } }).done
+
+    expect(log.nodes[0].events?.map((event) => event.title)).toContain("reused from a previous run")
+    expect(h.activity.map((row) => `${row.node}:${row.event.title}`)).toContain("a:reused from a previous run")
+  })
+
+  test("downstream reads a seeded output exactly as a fresh one", async () => {
+    const h = harness()
+
+    await h.run(pipeline("a->b", "b->c"), "do the thing", { resume: { a: "a from last time" } }).done
+
+    expect(h.prompts.get("b")).toContain("a from last time")
+    // `ancestors` walks the same outputs map, so c sees it too, in order.
+    const prompt = h.prompts.get("c")!
+    expect(prompt).toContain("a from last time")
+    expect(prompt.indexOf("a from last time")).toBeLessThan(prompt.indexOf("b output"))
+  })
+
+  test("direct piping sees a seeded output too", async () => {
+    const h = harness()
+
+    await h
+      .run(pipeline("a->b", "b->c"), "do the thing", { pipe: "direct", resume: { a: "a from last time" } })
+      .done
+
+    expect(h.prompts.get("b")).toContain("a from last time")
+    expect(h.prompts.get("c")).not.toContain("a from last time")
+  })
+
+  test("re-runs only the tail a previous run failed on", async () => {
+    const h = harness()
+
+    const log = await h.run(pipeline("a->b", "b->c", "c->d", "d->e"), "do the thing", {
+      resume: { a: "a from last time", b: "b from last time", c: "c from last time" },
+    }).done
+
+    expect(h.dispatched).toEqual(["d", "e"])
+    expect(log.status).toBe("done")
+    expect(h.prompts.get("d")).toContain("c from last time")
+  })
+
+  test("a node left out of the seed runs again even though it has an output", async () => {
+    const h = harness()
+
+    await h.run(pipeline("a->b"), "do the thing", { resume: { b: "b from last time" } }).done
+
+    // Seeding is per node and the caller decides: b was reused, a was not.
+    expect(h.dispatched).toEqual(["a"])
+  })
+
+  test("a reused node costs nothing this run", async () => {
+    const graph = pipeline("a->b")
+    for (const node of graph.nodes) node.agent.model = "openai/gpt-x"
+    const h = harness({
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+      behavior: { b: { hold: true } },
+    })
+
+    const run = h.run(graph, "do the thing", { resume: { a: "a from last time" } })
+    await flush()
+    h.spend("b", { messageID: "m1", model: "openai/gpt-x", tokens: { input: 1_000, output: 200 } })
+    h.release("b")
+    const log = await run.done
+
+    expect(log.nodes[0].usage).toBeUndefined()
+    expect(log.nodes[0].steps).toBeUndefined()
+    expect(log.usage?.steps).toBe(1)
+    expect(log.usage?.cost).toBeCloseTo(0.004, 12)
+  })
+
+  test("a reused node's model no longer being offered does not fail the run", async () => {
+    const graph = pipeline("a->b")
+    graph.nodes[0].agent.model = "opencode/retired-model"
+    graph.nodes[1].agent.model = "opencode/real-model"
+    const h = harness({ models: ["opencode/real-model"] })
+
+    const log = await h.run(graph, "do the thing", { catalogRetry: 0, resume: { a: "a from last time" } }).done
+
+    expect(log.status).toBe("done")
+    expect(h.dispatched).toEqual(["b"])
+  })
+})
+
+describe("reused nodes are legible in the run log", () => {
+  test("a carried-over node is flagged, not merely missing a sessionID", async () => {
+    const h = harness()
+    const log = await h.run(pipeline("a->b"), "do the thing", { resume: { a: "an answer from last time" } }).done
+
+    const carried = log.nodes.find((node) => node.id === "a")!
+    expect(carried.reused).toBe(true)
+    expect(carried.output).toBe("an answer from last time")
+    // The node this run actually executed must not be mistaken for a reused one.
+    expect(log.nodes.find((node) => node.id === "b")!.reused).toBeUndefined()
+  })
+})

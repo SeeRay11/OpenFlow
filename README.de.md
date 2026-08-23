@@ -47,9 +47,9 @@ http://localhost:5174; Ctrl+C stoppt beide. Ein Port, den ein abgebrochener Lauf
 belegt zurückgelassen hat, wird zuerst freigegeben, und ein Port, auf dem bereits
 etwas läuft, wird wiederverwendet statt ein zweites Mal gestartet.
 
-Zwei Shims umschließen dieselbe Datei für alle, die den Launcher ihrer Plattform
-bevorzugen. Sie enthalten keine eigene Logik — sie übersetzen Flags nur in die
-Umgebungsvariablen, die `openflow.ts` ohnehin liest.
+Zwei schlanke Startskripte umschließen dieselbe Datei für alle, die den Launcher
+ihrer Plattform bevorzugen. Sie enthalten keine eigene Logik — sie übersetzen Flags
+nur in die Umgebungsvariablen, die `openflow.ts` ohnehin liest.
 
 ```powershell
 .\openflow.ps1
@@ -59,13 +59,13 @@ Umgebungsvariablen, die `openflow.ts` ohnehin liest.
 ./openflow.sh
 ```
 
-**Unter Windows kann der Shim den Start verweigern:** PowerShell führt unsignierte
+**Unter Windows kann das Skript den Start verweigern:** PowerShell führt unsignierte
 lokale Skripte standardmäßig nicht aus, sodass `.\openflow.ps1` mit *"openflow.ps1
 cannot be loaded because running scripts is disabled on this system"* fehlschlagen
 kann. Ein als ZIP heruntergeladenes statt geklontes Repo ist zusätzlich als aus dem
 Internet stammend markiert, was es ein zweites Mal blockiert. `bun openflow.ts`
 unterliegt keinem von beidem und ist der kürzeste Weg an beidem vorbei. Um
-stattdessen den Shim zu verwenden, erlaube lokale Skripte für dein eigenes Konto und
+stattdessen das Startskript zu verwenden, erlaube lokale Skripte für dein eigenes Konto und
 hebe die Blockierung der Datei auf, falls sie aus einem ZIP stammt:
 
 ```powershell

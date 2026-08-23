@@ -45,7 +45,7 @@ http://localhost:5174; Ctrl+C stopper begge. En port som en død kjøring lot li
 opptatt, frigjøres først, og en port som allerede betjener, gjenbrukes i stedet for
 å startes to ganger.
 
-To shims pakker inn den samme filen for dem som foretrekker plattformens egen
+To tynne skript pakker inn den samme filen for dem som foretrekker plattformens egen
 starter. De har ingen logikk selv — de oversetter bare flagg til miljøvariablene
 `openflow.ts` allerede leser.
 
@@ -57,12 +57,12 @@ starter. De har ingen logikk selv — de oversetter bare flagg til miljøvariabl
 ./openflow.sh
 ```
 
-**På Windows kan shimmet nekte å starte:** PowerShell kjører som standard ikke
+**På Windows kan skriptet nekte å starte:** PowerShell kjører som standard ikke
 usignerte lokale skript, så `.\openflow.ps1` kan feile med *"openflow.ps1 cannot be
 loaded because running scripts is disabled on this system"*. Et repo som er lastet
 ned som ZIP i stedet for klonet, blir dessuten merket som kommet fra internett, noe
 som blokkerer det på nok en måte. `bun openflow.ts` rammes av ingen av delene og er
-den korteste veien forbi begge. Vil du likevel bruke shimmet, så tillat lokale
+den korteste veien forbi begge. Vil du likevel bruke skriptet, så tillat lokale
 skript for din egen konto, og opphev blokkeringen av filen hvis den kom fra en ZIP:
 
 ```powershell

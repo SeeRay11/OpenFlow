@@ -46,7 +46,7 @@ adresem http://localhost:5174; Ctrl+C zatrzymuje oba. Port pozostawiony zajęty 
 martwe uruchomienie jest najpierw zwalniany, a port, który już obsługuje ruch, jest
 ponownie wykorzystywany zamiast uruchamiany po raz drugi.
 
-Dwie nakładki (shimy) opakowują ten sam plik dla osób, które wolą launcher własnej
+Dwa lekkie skrypty opakowują ten sam plik dla osób, które wolą launcher własnej
 platformy. Nie zawierają własnej logiki — tłumaczą jedynie flagi na zmienne
 środowiskowe, które `openflow.ts` i tak odczytuje.
 
@@ -58,13 +58,13 @@ platformy. Nie zawierają własnej logiki — tłumaczą jedynie flagi na zmienn
 ./openflow.sh
 ```
 
-**W systemie Windows shim może odmówić uruchomienia:** PowerShell domyślnie nie
+**W systemie Windows ten skrypt może odmówić uruchomienia:** PowerShell domyślnie nie
 uruchamia niepodpisanych skryptów lokalnych, więc `.\openflow.ps1` może zakończyć
 się błędem *"openflow.ps1 cannot be loaded because running scripts is disabled on
 this system"*. Repozytorium pobrane jako ZIP zamiast sklonowane jest dodatkowo
 oznaczone jako pochodzące z internetu, co blokuje je po raz drugi. `bun openflow.ts`
 nie podlega żadnemu z tych ograniczeń i jest najkrótszą drogą, by ominąć oba. Aby
-mimo to użyć shima, zezwól na skrypty lokalne dla własnego konta i odblokuj plik,
+mimo to użyć tego skryptu, zezwól na skrypty lokalne dla własnego konta i odblokuj plik,
 jeśli pochodzi z archiwum ZIP:
 
 ```powershell
