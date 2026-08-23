@@ -41,8 +41,8 @@ bun openflow.ts
 它會啟動引擎，等到引擎有回應後，在 http://localhost:5174 開啟畫布；Ctrl+C 會同時停止兩者。上
 一次執行殘留佔用的連接埠會先被釋放，而已經在提供服務的連接埠會被重複使用，而不是再啟動一次。
 
-有兩個 shim 包裝同一個檔案，供更習慣自己平台啟動方式的人使用。它們自身不含任何邏輯——只是把命
-令列參數轉換成 `openflow.ts` 本來就會讀取的環境變數。
+有兩個輕量指令碼包裝同一個檔案，供更習慣自己平台啟動方式的人使用。它們自身不含任何邏輯——只是
+把命令列參數轉換成 `openflow.ts` 本來就會讀取的環境變數。
 
 ```powershell
 .\openflow.ps1
@@ -52,11 +52,11 @@ bun openflow.ts
 ./openflow.sh
 ```
 
-**在 Windows 上，shim 可能拒絕啟動：** PowerShell 預設不執行未簽署的本機指令碼，因此
+**在 Windows 上，該指令碼可能拒絕啟動：** PowerShell 預設不執行未簽署的本機指令碼，因此
 `.\openflow.ps1` 可能會以 *"openflow.ps1 cannot be loaded because running scripts is
 disabled on this system"* 失敗。以 ZIP 下載而非複製（clone）取得的儲存庫還會被標記為來自網
 際網路，因而以第二種方式被阻擋。`bun openflow.ts` 不受這兩者的限制，是繞過它們最短的路徑。若
-仍想使用 shim，請為你自己的帳戶允許本機指令碼，並在檔案來自 ZIP 時解除其封鎖：
+仍想使用該指令碼，請為你自己的帳戶允許本機指令碼，並在檔案來自 ZIP 時解除其封鎖：
 
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned

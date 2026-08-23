@@ -47,9 +47,9 @@ http://localhost:5174; Ctrl+C dừng cả hai. Cổng bị một lần chạy đ
 được giải phóng trước, còn cổng đang phục vụ sẵn thì được dùng lại thay vì khởi động
 lần thứ hai.
 
-Hai shim bọc chính tệp đó, dành cho những ai quen dùng trình khởi chạy của nền tảng
-mình. Bản thân chúng không chứa logic nào — chúng chỉ chuyển các cờ thành những biến
-môi trường mà `openflow.ts` vốn đã đọc.
+Hai script mỏng bọc chính tệp đó, dành cho những ai quen dùng trình khởi chạy của
+nền tảng mình. Bản thân chúng không chứa logic nào — chúng chỉ chuyển các cờ thành
+những biến môi trường mà `openflow.ts` vốn đã đọc.
 
 ```powershell
 .\openflow.ps1
@@ -59,12 +59,12 @@ môi trường mà `openflow.ts` vốn đã đọc.
 ./openflow.sh
 ```
 
-**Trên Windows, shim có thể từ chối khởi động:** mặc định PowerShell không chạy các
+**Trên Windows, script này có thể từ chối khởi động:** mặc định PowerShell không chạy các
 script cục bộ chưa ký, nên `.\openflow.ps1` có thể thất bại với *"openflow.ps1 cannot
 be loaded because running scripts is disabled on this system"*. Một repo được tải về
 dưới dạng ZIP thay vì clone còn bị đánh dấu là đến từ internet, chặn nó thêm một
 đường nữa. `bun openflow.ts` không chịu ràng buộc nào trong hai điều đó và là cách
-ngắn nhất để vượt qua cả hai. Nếu vẫn muốn dùng shim, hãy cho phép script cục bộ với
+ngắn nhất để vượt qua cả hai. Nếu vẫn muốn dùng script này, hãy cho phép script cục bộ với
 tài khoản của bạn, và bỏ chặn tệp nếu nó đến từ một tệp ZIP:
 
 ```powershell

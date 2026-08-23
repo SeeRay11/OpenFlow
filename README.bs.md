@@ -45,9 +45,9 @@ http://localhost:5174; Ctrl+C zaustavlja oba. Port koji je mrtvo pokretanje
 ostavilo zauzetim prvo se oslobađa, a port koji već poslužuje ponovo se koristi
 umjesto da se pokrene drugi put.
 
-Dva shim-a omotavaju istu tu datoteku za one koji radije koriste pokretač svoje
-platforme. Nemaju vlastitu logiku — samo prevode zastavice u varijable okruženja
-koje `openflow.ts` ionako čita.
+Dvije tanke skripte omotavaju istu tu datoteku za one koji radije koriste pokretač
+svoje platforme. Nemaju vlastitu logiku — samo prevode zastavice u varijable
+okruženja koje `openflow.ts` ionako čita.
 
 ```powershell
 .\openflow.ps1
@@ -57,12 +57,12 @@ koje `openflow.ts` ionako čita.
 ./openflow.sh
 ```
 
-**Na Windowsu shim može odbiti da se pokrene:** PowerShell podrazumijevano ne
+**Na Windowsu ta skripta može odbiti da se pokrene:** PowerShell podrazumijevano ne
 pokreće nepotpisane lokalne skripte, pa `.\openflow.ps1` može pasti uz *"openflow.ps1
 cannot be loaded because running scripts is disabled on this system"*. Repozitorij
 preuzet kao ZIP umjesto kloniran dodatno je označen kao da dolazi s interneta, što ga
 blokira i na drugi način. `bun openflow.ts` ne podliježe nijednom od toga i najkraći
-je put pored oba. Ako ipak želite koristiti shim, dozvolite lokalne skripte za
+je put pored oba. Ako ipak želite koristiti tu skriptu, dozvolite lokalne skripte za
 vlastiti nalog i deblokirajte datoteku ako je došla iz ZIP-a:
 
 ```powershell

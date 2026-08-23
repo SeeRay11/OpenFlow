@@ -46,9 +46,9 @@ adresinde açar; Ctrl+C ikisini de durdurur. Ölü bir çalıştırmanın bağl�
 bir port önce serbest bırakılır, halihazırda hizmet veren bir port ise ikinci kez
 başlatılmak yerine yeniden kullanılır.
 
-İki shim, kendi platformunun başlatıcısını tercih edenler için aynı dosyayı sarar.
-Kendilerine ait bir mantıkları yoktur — yalnızca bayrakları `openflow.ts`'nin zaten
-okuduğu ortam değişkenlerine çevirirler.
+İki ince betik, kendi platformunun başlatıcısını tercih edenler için aynı dosyayı
+sarar. Kendilerine ait bir mantıkları yoktur — yalnızca bayrakları `openflow.ts`'nin
+zaten okuduğu ortam değişkenlerine çevirirler.
 
 ```powershell
 .\openflow.ps1
@@ -58,13 +58,13 @@ okuduğu ortam değişkenlerine çevirirler.
 ./openflow.sh
 ```
 
-**Windows'ta shim başlamayı reddedebilir:** PowerShell varsayılan olarak imzasız
+**Windows'ta bu betik başlamayı reddedebilir:** PowerShell varsayılan olarak imzasız
 yerel betikleri çalıştırmaz, bu yüzden `.\openflow.ps1` *"openflow.ps1 cannot be
 loaded because running scripts is disabled on this system"* hatasıyla
 başarısız olabilir. Klonlanmak yerine ZIP olarak indirilen bir depo ayrıca
 internetten geldiği şeklinde işaretlenir ve bu da onu ikinci bir yoldan engeller.
 `bun openflow.ts` bunların hiçbirine tabi değildir ve ikisini de aşmanın en kısa
-yoludur. Yine de shim'i kullanmak isterseniz kendi hesabınız için yerel betiklere
+yoludur. Yine de bu betiği kullanmak isterseniz kendi hesabınız için yerel betiklere
 izin verin ve dosya bir ZIP'ten geldiyse engelini kaldırın:
 
 ```powershell
