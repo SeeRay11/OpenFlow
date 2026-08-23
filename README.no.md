@@ -29,21 +29,57 @@ bun install
 
 `bun install` henter hele arbeidsområdet — OpenCode-motoren pluss OpenFlows egen kode
 i [`packages/flow`](packages/flow). Den første installasjonen er stor; den laster ned
-motorens native avhengigheter og kjører et `postinstall` som bygger `node-pty`.
+motorens native avhengigheter. Et `postinstall`-steg merker `node-pty` sine
+ferdigbygde hjelpebinærfiler som kjørbare, og returnerer umiddelbart på Windows.
 
 ### Kjør det
 
-**Hurtigstart — én kommando starter begge prosessene:**
+Én kommando starter begge prosessene, på samme måte på alle plattformer:
 
 ```bash
-./openflow.ps1   # Windows (PowerShell)
-./openflow.sh    # macOS / Linux
+bun openflow.ts
 ```
 
-Starteren starter motoren, venter til den lytter, og åpner så lerretet på
-http://localhost:5174; Ctrl+C stopper begge. Pek agentene mot et annet repo med
-`-Project <dir>` (PowerShell) eller `-p <dir>` (shell); bruk `-Built` / `-b` for å
-servere den bygde bunten. Logg likevel inn hos en leverandør først (se nedenfor).
+Den starter motoren, venter til den svarer, og åpner så lerretet på
+http://localhost:5174; Ctrl+C stopper begge. En port som en død kjøring lot ligge
+opptatt, frigjøres først, og en port som allerede betjener, gjenbrukes i stedet for
+å startes to ganger.
+
+To shims pakker inn den samme filen for dem som foretrekker plattformens egen
+starter. De har ingen logikk selv — de oversetter bare flagg til miljøvariablene
+`openflow.ts` allerede leser.
+
+```powershell
+.\openflow.ps1
+```
+
+```bash
+./openflow.sh
+```
+
+**På Windows kan shimmet nekte å starte:** PowerShell kjører som standard ikke
+usignerte lokale skript, så `.\openflow.ps1` kan feile med *"openflow.ps1 cannot be
+loaded because running scripts is disabled on this system"*. Et repo som er lastet
+ned som ZIP i stedet for klonet, blir dessuten merket som kommet fra internett, noe
+som blokkerer det på nok en måte. `bun openflow.ts` rammes av ingen av delene og er
+den korteste veien forbi begge. Vil du likevel bruke shimmet, så tillat lokale
+skript for din egen konto, og opphev blokkeringen av filen hvis den kom fra en ZIP:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+Unblock-File .\openflow.ps1
+```
+
+Flagg er valgfrie, og de tre flatene ender i den samme planen:
+
+| PowerShell | shell | miljø | hva det gjør |
+|---|---|---|---|
+| `-Project <dir>` | `-p`, `--project <dir>` | `OPENFLOW_PROJECT` | repoet agentene leser og skriver — **de redigerer ekte filer** |
+| `-ServerPort <n>` | `-s`, `--server-port <n>` | `OPENCODE_SERVER_URL` | motorport, standard 4096 |
+| `-Built` | `-b`, `--built` | `OPENFLOW_BUILT=1` | bygg og server den statiske bunten i stedet for å kjøre vite |
+| `-Manage` | `-m`, `--manage` | `FLOW_MANAGE_SERVER=1` | la lerretet eie motoren, noe som får omstart-knappen dens til å virke |
+| `-Help` | `-h`, `--help` | — | skriv ut flagglisten |
+| — | — | `OPENFLOW_DRY_RUN=1` | skriv ut den utledede planen og start ingenting |
 
 Eller start de to prosessene for hånd. Serveren først:
 

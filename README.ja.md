@@ -29,22 +29,55 @@ bun install
 
 `bun install` はワークスペース全体を取得します — OpenCode エンジンに加えて、
 [`packages/flow`](packages/flow) にある OpenFlow 独自のコードです。初回インストールは大き
-く、エンジンのネイティブ依存関係をダウンロードし、`node-pty` をビルドする `postinstall` を
-実行します。
+く、エンジンのネイティブ依存関係をダウンロードします。`postinstall` のステップは `node-pty`
+のビルド済みヘルパーバイナリに実行権限を付けるだけで、Windows では何もせずすぐに終了します。
 
 ### 実行する
 
-**クイックスタート — 1 つのコマンドで両方のプロセスが起動します：**
+1 つのコマンドで両方のプロセスが起動します。どのプラットフォームでも同じです：
 
 ```bash
-./openflow.ps1   # Windows (PowerShell)
-./openflow.sh    # macOS / Linux
+bun openflow.ts
 ```
 
-ランチャーはエンジンを起動し、リッスンし始めるまで待ってから、http://localhost:5174 でキャン
-バスを開きます。Ctrl+C で両方を停止します。`-Project <dir>`（PowerShell）または
-`-p <dir>`（shell）でエージェントを別のリポジトリに向けられます。`-Built` / `-b` を渡すとビ
-ルド済みバンドルを提供します。それでも、まずプロバイダーにログインしてください（下記参照）。
+エンジンを起動し、応答するまで待ってから、http://localhost:5174 でキャンバスを開きます。
+Ctrl+C で両方を停止します。終了し損ねた実行が掴んだままのポートは先に解放され、すでに応答して
+いるポートは二重に起動せずそのまま再利用します。
+
+同じファイルをラップするシムが 2 つあり、各プラットフォームのランチャーを好む人向けです。シム
+自体にロジックはなく、フラグを `openflow.ts` がすでに読んでいる環境変数へ変換するだけです。
+
+```powershell
+.\openflow.ps1
+```
+
+```bash
+./openflow.sh
+```
+
+**Windows ではシムが起動を拒否することがあります。** PowerShell は既定で署名のないローカル
+スクリプトを実行しないため、`.\openflow.ps1` は *"openflow.ps1 cannot be loaded because
+running scripts is disabled on this system"* で失敗することがあります。クローンではなく
+ZIP でダウンロードしたリポジトリは、さらにインターネット由来として印が付き、二重にブロックされ
+ます。`bun openflow.ts` はそのどちらの対象にもならず、両方を回避する最短の方法です。それでも
+シムを使いたい場合は、自分のアカウントについてローカルスクリプトを許可し、ZIP から取得したファ
+イルであればブロックを解除してください：
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+Unblock-File .\openflow.ps1
+```
+
+フラグは任意で、3 つの入口はいずれも同じ結果になります：
+
+| PowerShell | shell | 環境変数 | 何をするか |
+|---|---|---|---|
+| `-Project <dir>` | `-p`, `--project <dir>` | `OPENFLOW_PROJECT` | エージェントが読み書きするリポジトリ — **実際のファイルを編集します** |
+| `-ServerPort <n>` | `-s`, `--server-port <n>` | `OPENCODE_SERVER_URL` | エンジンのポート、既定は 4096 |
+| `-Built` | `-b`, `--built` | `OPENFLOW_BUILT=1` | vite を実行する代わりに静的バンドルをビルドして提供する |
+| `-Manage` | `-m`, `--manage` | `FLOW_MANAGE_SERVER=1` | キャンバスにエンジンを所有させ、その再起動ボタンを機能させる |
+| `-Help` | `-h`, `--help` | — | フラグ一覧を表示する |
+| — | — | `OPENFLOW_DRY_RUN=1` | 決定した内容を表示し、何も起動しない |
 
 または、2 つのプロセスを手動で起動します。まずサーバー：
 

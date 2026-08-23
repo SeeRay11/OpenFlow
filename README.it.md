@@ -30,23 +30,58 @@ bun install
 
 `bun install` scarica l'intero workspace — il motore OpenCode più il codice proprio
 di OpenFlow in [`packages/flow`](packages/flow). La prima installazione è grande;
-scarica le dipendenze native del motore ed esegue un `postinstall` che compila
-`node-pty`.
+scarica le dipendenze native del motore. Un passo `postinstall` rende eseguibili i
+binari di supporto precompilati di `node-pty` e su Windows termina subito.
 
 ### Eseguire
 
-**Avvio rapido — un solo comando avvia entrambi i processi:**
+Un solo comando avvia entrambi i processi, allo stesso modo su ogni piattaforma:
 
 ```bash
-./openflow.ps1   # Windows (PowerShell)
-./openflow.sh    # macOS / Linux
+bun openflow.ts
 ```
 
-Il launcher avvia il motore, attende che sia in ascolto, poi apre il canvas su
-http://localhost:5174; Ctrl+C li ferma entrambi. Punta gli agenti a un altro
-repository con `-Project <dir>` (PowerShell) o `-p <dir>` (shell); passa `-Built` /
-`-b` per servire il bundle compilato. Accedi comunque prima a un provider (vedi
-sotto).
+Avvia il motore, attende finché non risponde, poi apre il canvas su
+http://localhost:5174; Ctrl+C li ferma entrambi. Una porta lasciata occupata da
+un'esecuzione morta viene prima liberata, e una porta che sta già servendo viene
+riutilizzata invece di essere avviata due volte.
+
+Due shim avvolgono lo stesso file per chi preferisce il launcher della propria
+piattaforma. Non contengono logica propria: traducono i flag nelle variabili
+d'ambiente che `openflow.ts` già legge.
+
+```powershell
+.\openflow.ps1
+```
+
+```bash
+./openflow.sh
+```
+
+**Su Windows lo shim può rifiutarsi di partire:** per impostazione predefinita
+PowerShell non esegue script locali non firmati, quindi `.\openflow.ps1` può fallire
+con *"openflow.ps1 cannot be loaded because running scripts is disabled on this
+system"*. Un repository scaricato come ZIP anziché clonato viene inoltre marcato
+come proveniente da internet, il che lo blocca una seconda volta. `bun openflow.ts`
+non è soggetto a nessuno dei due ed è la via più breve per aggirarli entrambi. Per
+usare comunque lo shim, consenti gli script locali per il tuo account e sblocca il
+file se proviene da uno ZIP:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+Unblock-File .\openflow.ps1
+```
+
+I flag sono opzionali, e le tre superfici portano allo stesso piano:
+
+| PowerShell | shell | ambiente | che cosa fa |
+|---|---|---|---|
+| `-Project <dir>` | `-p`, `--project <dir>` | `OPENFLOW_PROJECT` | il repository che gli agenti leggono e scrivono — **modificano file reali** |
+| `-ServerPort <n>` | `-s`, `--server-port <n>` | `OPENCODE_SERVER_URL` | porta del motore, 4096 per impostazione predefinita |
+| `-Built` | `-b`, `--built` | `OPENFLOW_BUILT=1` | compilare e servire il bundle statico invece di eseguire vite |
+| `-Manage` | `-m`, `--manage` | `FLOW_MANAGE_SERVER=1` | lasciare che sia il canvas a possedere il motore, il che fa funzionare il suo pulsante di riavvio |
+| `-Help` | `-h`, `--help` | — | stampare l'elenco dei flag |
+| — | — | `OPENFLOW_DRY_RUN=1` | stampare il piano risolto senza avviare nulla |
 
 Oppure avvia i due processi a mano. Prima il server:
 

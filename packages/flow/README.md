@@ -28,11 +28,51 @@ bun install
 
 `bun install` pulls the whole workspace — the OpenCode engine plus this package.
 First install is large; it downloads the engine's native deps and runs a
-`postinstall` that builds `node-pty`.
+`postinstall` (`packages/core/script/fix-node-pty.ts`) that marks the prebuilt
+`node-pty` `spawn-helper` binaries executable. It builds nothing, and it returns
+immediately on Windows.
 
 ## Run it
 
-Two processes. Start the server first:
+OpenFlow is two processes — `opencode serve` and the canvas — and the launcher
+at the repo root starts both, waits for the engine's `/api/health`, and opens the
+browser:
+
+```bash
+bun openflow.ts
+```
+
+`openflow.ps1` and `openflow.sh` are shims over that same file: they hold no
+launcher logic, they only translate their platform's flags into the environment
+variables `openflow.ts` reads (`lib/launch.ts` resolves the plan for all three).
+
+```powershell
+.\openflow.ps1 -Project C:\code\my-app
+```
+
+```bash
+./openflow.sh -p ~/code/my-app
+```
+
+On Windows, PowerShell refuses unsigned local scripts by default, so the shim can
+fail with *"openflow.ps1 cannot be loaded because running scripts is disabled on
+this system"*; `bun openflow.ts` is not a script PowerShell has to be talked into
+running. `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` and
+`Unblock-File .\openflow.ps1` are the fix if you want the shim.
+
+| PowerShell | shell | environment | what it does |
+|---|---|---|---|
+| `-Project <dir>` | `-p`, `--project <dir>` | `OPENFLOW_PROJECT` | repo the agents read and write |
+| `-ServerPort <n>` | `-s`, `--server-port <n>` | `OPENCODE_SERVER_URL` | engine port, default 4096 |
+| `-Built` | `-b`, `--built` | `OPENFLOW_BUILT=1` | build and serve `dist/` instead of running vite |
+| `-Manage` | `-m`, `--manage` | `FLOW_MANAGE_SERVER=1` | canvas owns the engine, enabling its restart button |
+| `-Help` | `-h`, `--help` | — | print the flag list |
+| — | — | `OPENFLOW_DRY_RUN=1` | print the resolved plan and start nothing |
+
+A port left bound by a dead run is freed before starting; a port that is already
+serving is reused rather than started twice.
+
+By hand it is the same two commands. The server first:
 
 ```bash
 bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
@@ -44,8 +84,9 @@ Then the canvas:
 bun run --cwd packages/flow dev
 ```
 
-Open http://localhost:5174. The header shows `connected` once the UI can reach
-the server.
+Open http://localhost:5174 — the dev server binds the `localhost` name, so
+`127.0.0.1:5174` refuses the connection. The header shows `connected` once the UI
+can reach the server.
 
 ### Built, without vite
 
@@ -76,12 +117,19 @@ Environment overrides:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OPENCODE_SERVER_URL` | `http://127.0.0.1:4096` | server the proxy forwards to |
+| `OPENCODE_SERVER_URL` | `http://127.0.0.1:4096` | server the proxy forwards to, and the port the launcher starts |
 | `OPENFLOW_PROJECT` | last used, else repo root | project the agents work in, and where `.openflow/` is written |
 | `FLOW_PORT` | `5174` | port for `bun start` (dev server is fixed at 5174) |
 | `FLOW_HOST` | `127.0.0.1` | interface for `bun start` |
-| `FLOW_ALLOW_REMOTE` | unset | `1` allows a non-loopback bind, for both hosts |
+| `FLOW_ALLOW_REMOTE` | unset | exactly `1` allows a non-loopback bind, for both hosts — `true` and `yes` do not count |
+| `FLOW_PROXY_TIMEOUT` | `30000` | ms before a proxied `/api` call gives up, on both hosts |
 | `OPENFLOW_STATE_DIR` | `~/.openflow` | where the remembered folder and pipeline are stored |
+| `FLOW_MANAGE_SERVER` | unset | `1` lets the canvas host spawn and own `opencode serve` (see [the restart button](#the-restart-button)) |
+| `OPENCODE_SERVE_COMMAND` | unset | the command that host runs for the engine, when the default is wrong |
+| `OPENFLOW_BUILT` | unset | launcher only: build the bundle and serve it through `server.ts` instead of vite |
+| `OPENFLOW_DRY_RUN` | unset | launcher only: print the resolved plan and start nothing |
+| `OPENCODE_AUTH_CONTENT` | unset | stands in for the CLI's `auth.json` when reading importable keys |
+| `XDG_DATA_HOME` | `~/.local/share` | root of the path that `auth.json` is read from — `$XDG_DATA_HOME/opencode/auth.json`, on every platform |
 
 ### Where it picks up
 
@@ -128,12 +176,14 @@ Endpoints driven, all v2:
 
 | Call | Endpoint |
 |---|---|
+| is the engine up | `GET /api/health` |
 | create a node's session | `POST /api/session` |
 | send the node prompt | `POST /api/session/{id}/prompt` |
 | detect completion | `GET /api/session/active` |
 | read the node's answer | `GET /api/session/{id}/message` |
 | live status | `GET /api/event` (SSE) |
 | stop | `POST /api/session/{id}/interrupt` |
+| answer a permission request | `POST /api/session/{id}/permission/{requestID}/reply` |
 | answer a question the agent asked | `POST /api/session/{id}/question/{req}/reply` (or `/reject`) |
 | mcp status and connection | `GET /mcp`, `POST /mcp/{name}/connect`, `POST /mcp/{name}/disconnect` |
 | pickers | `GET /api/agent`, `GET /api/model` |
@@ -143,10 +193,22 @@ Endpoints driven, all v2:
 
 ## API keys and models
 
-A fresh install has **no models** — only providers. The **api keys** button
-opens opencode's own two-step connect dialog: search the ~184 providers
-models.dev knows, pick one, paste its key. Keys go to the integration store the
-model catalog reads, so a saved key takes effect immediately — no
+A fresh install can already run something. `opencode serve` serves the `opencode`
+(zen) provider's free tier to a browser that has never seen a key
+(`core/src/plugin/provider/opencode.ts`), and OpenFlow lets a node use those
+models with no credential connected — the ids ending in `-free`, and only the
+ones this build can actually route (`isFreeModel` in `src/server/providers.ts`).
+The tier is a shared quota, so a `-free` model answering `429`, or `400`, is that
+model being busy or broken rather than the install being wrong; the per-node
+**test** button is how you find out which ones are answering right now. Zen's
+*paid* models sit on the same row and stay locked, because dispatching one would
+bill an account nobody connected.
+
+Everything else needs a key, and the **api keys** button in the titlebar is where
+it goes: opencode's own two-step connect dialog — search the providers
+models.dev knows, pick one, paste its key (`src/ui/providers-panel.tsx`). Keys go
+to the integration store the model catalog reads (`POST
+/api/integration/{id}/connect/key`), so a saved key takes effect immediately — no
 `opencode serve` restart, unlike an agent merge. Only then do that provider's
 models appear in the model menu, which is opencode's `dialog-select-model`
 menu: 284px, search at the top, one heading per provider, `↑`/`↓`, `Enter`,
@@ -154,11 +216,11 @@ menu: 284px, search at the top, one heading per provider, `↑`/`↓`, `Enter`,
 
 A provider counts as connected when a key is stored here **or** one of its
 environment variables is really set on the host — `GET /flow/api/env` answers
-which of the names asked about are set, never their values. That distinction is
-what keeps the free zen models out of a fresh install: `opencode serve` serves
-them to a browser that has never seen a key
-(`core/src/plugin/provider/opencode.ts`), so a model list alone cannot tell a
-provider the user connected from one they did not.
+which of the names asked about are set, never their values. That is a whole-row
+question, and it stays strict: it answers "which providers did the user connect",
+which is not the same question as "which models can run". The free zen tier is an
+exception granted per model, not per provider, so zen still reads as unconnected
+while its free models remain selectable.
 
 The catalog also lies about what exists. Its `opencode` models come from
 models.dev, and on 2026-08-13 it listed 90 while zen served 61 — the other 29
@@ -173,16 +235,16 @@ never reaches OpenFlow.
 Three things have to line up before a model runs, and the UI distinguishes them
 because they fail in completely different ways:
 
-1. **A credential.** No stored key and no environment variable means the
-   provider is locked and contributes no models at all — including zen, whose
-   free models the server otherwise hands out to a browser with no key.
+1. **A credential**, or the free-tier exemption. No stored key and no
+   environment variable means the provider is locked and contributes no models
+   at all — except zen's runnable `-free` ids, which are unlocked per model.
 2. **A runner for the provider's API.** `core/src/session/runner/model.ts`
    routes exactly three shapes: `@ai-sdk/openai`, `@ai-sdk/anthropic`, and
    `@ai-sdk/openai-compatible` with a base URL. Anything else — `@ai-sdk/groq`,
    `@openrouter/ai-sdk-provider`, `@ai-sdk/google` — fails at dispatch with
    `UnsupportedApiError` no matter how valid the key is. Those models are
-   listed as **no runner** and their providers sink to the bottom. On this
-   build that is 349 of openrouter's models and all 15 of groq's.
+   listed as **no runner** and their providers sink to the bottom; most of
+   openrouter's catalog and all of groq's land there.
 3. **A key that is actually accepted, for a model the account may use.**
    Nothing verifies a key when it is stored, and the catalog advertises models
    an account has no entitlement for. The **test** button beside a node's model
@@ -219,6 +281,10 @@ awaited before the next starts.
 4. Live status from the event bus maps `session.next.*` events onto node badges.
 5. Capture each node's final assistant text; write `.openflow/runs/<id>.json`.
 
+The run log is checkpointed as the run progresses rather than written once at the
+end, so closing the tab halfway through leaves a log of the nodes that finished
+instead of nothing at all.
+
 Failure policy: a node error stops its downstream branch (`skipped`), siblings
 finish, the run ends `error`. Stop interrupts in-flight sessions and dispatches
 nothing further.
@@ -249,11 +315,22 @@ Under `OPENFLOW_PROJECT`:
 `.openflow/runs/` is disposable — worth adding to `.gitignore` if you keep
 pipelines in version control.
 
-**save** writes the pipeline and the generated agent block. **merge agents**
-folds that block into the project's `opencode.json` (backed up first, see below)
-and points every node at its own agent — this is the only way per-node tool
-allowlists take effect at runtime, because a session can only select tools
-through a named agent.
+**save** writes the pipeline and the generated agent block. Saving under a name a
+*different* pipeline already holds is refused rather than silently overwriting —
+every new pipeline is born `untitled`, so that used to be a reliable way to
+destroy the last one. The refusal offers both ways out: rename this one, or save
+again to replace the other.
+
+**merge agents** folds the generated block into the project's `opencode.json`
+(backed up first, see below) and points every node at its own agent — this is the
+only way per-node tool allowlists take effect at runtime, because a session can
+only select tools through a named agent.
+
+An agent's key is `<pipeline>-<role>-<node id>` (`agentKey` in
+`src/server/store.ts`), so two nodes of the same role no longer collapse onto one
+agent whose permissions the last-written node decided. **A pipeline saved before
+that change needs one "merge agents" re-run** to pick up the new keys; without it
+the pre-flight check reports agents that do not exist on the server.
 
 **run merges too.** Every run folds the current agent block into `opencode.json`
 before it starts, so a node never runs against a def you edited but forgot to
@@ -302,6 +379,14 @@ first:
 Two files because one is not enough: `.bak` alone, rewritten on every merge,
 would hold an already-merged copy after the second merge and the original would
 be gone — quietly, since `opencode.json` is usually gitignored.
+
+**A commented `opencode.json` is read, never written.** opencode parses its
+config with `jsonc-parser` and `allowTrailingComma`, so `//` comments and a
+trailing comma are perfectly valid there — but OpenFlow writes the file back as
+plain JSON, which would strip every comment. So any write into a config that
+carries them (merging agents, adding an MCP server, registering a skill) stops
+and says so, and leaves the file exactly as it was. Remove the comments, or make
+that change in `opencode.json` by hand.
 
 ### Agent config shape
 
@@ -422,7 +507,8 @@ last published 2022, three versions, built for Solid 1.5.
 - drag a role from the palette onto the canvas, or click it to drop one in
 - drag a node header to move it, wheel to zoom, drag empty canvas to pan
 - drag the right port onto a left port to connect; cycles are refused
-- click an edge to delete it; `Delete` removes the selected node
+- click an edge to delete it; `Delete` removes the selected node, and `Ctrl`/`Cmd`
+  `+Z` puts it back
 - click a node to edit role, model, agent, prompt and tools, and to read its
   sent prompt and output
 - the model field is opencode's model menu — searchable, grouped by provider,

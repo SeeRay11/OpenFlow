@@ -31,21 +31,56 @@ bun install
 
 `bun install` pulls the whole workspace — the OpenCode engine plus OpenFlow's own
 code in [`packages/flow`](packages/flow). First install is large; it downloads the
-engine's native deps and runs a `postinstall` that builds `node-pty`.
+engine's native deps and runs a `postinstall` that marks the engine's prebuilt
+`node-pty` helpers executable — a no-op on Windows.
 
 ### Run it
 
-**Quick start — one command starts both processes:**
+One command starts both processes, the same way on every platform:
 
 ```bash
-./openflow.ps1   # Windows (PowerShell)
-./openflow.sh    # macOS / Linux
+bun openflow.ts
 ```
 
-The launcher starts the engine, waits until it is listening, then opens the
-canvas on http://localhost:5174; Ctrl+C stops both. Point the agents at another
-repo with `-Project <dir>` (PowerShell) or `-p <dir>` (shell); pass `-Built` /
-`-b` to serve the built bundle. Still log a provider in first (see below).
+It starts the engine, waits until it answers, then opens the canvas on
+http://localhost:5174; Ctrl+C stops both. A port a dead run left bound is freed
+first, and a port that is already serving is reused rather than started twice.
+
+Two shims wrap that same file for people who prefer their platform's own
+launcher. They hold no logic of their own — they translate flags into the
+environment variables `openflow.ts` already reads.
+
+```powershell
+.\openflow.ps1
+```
+
+```bash
+./openflow.sh
+```
+
+**On Windows the shim may refuse to start:** PowerShell does not run unsigned
+local scripts by default, so `.\openflow.ps1` can fail with *"openflow.ps1 cannot
+be loaded because running scripts is disabled on this system"*. A repo downloaded
+as a ZIP rather than cloned is also marked as coming from the internet, which
+blocks it a second way. `bun openflow.ts` is subject to neither and is the
+shortest way past both. To use the shim instead, allow local scripts for your own
+account, and unblock the file if it came from a ZIP:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+Unblock-File .\openflow.ps1
+```
+
+Flags are optional, and the three surfaces resolve to the same plan:
+
+| PowerShell | shell | environment | what it does |
+|---|---|---|---|
+| `-Project <dir>` | `-p`, `--project <dir>` | `OPENFLOW_PROJECT` | the repo the agents read and write — **they edit real files** |
+| `-ServerPort <n>` | `-s`, `--server-port <n>` | `OPENCODE_SERVER_URL` | engine port, default 4096 |
+| `-Built` | `-b`, `--built` | `OPENFLOW_BUILT=1` | build and serve the static bundle instead of running vite |
+| `-Manage` | `-m`, `--manage` | `FLOW_MANAGE_SERVER=1` | let the canvas own the engine, which makes its restart button work |
+| `-Help` | `-h`, `--help` | — | print the flag list |
+| — | — | `OPENFLOW_DRY_RUN=1` | print the resolved plan and start nothing |
 
 Or start the two processes by hand. The server first:
 
@@ -67,19 +102,32 @@ bun run --cwd packages/flow build && bun run --cwd packages/flow start
 
 ### Before the first run
 
-- **Log a provider in first.** The server owns the credentials and Flow inherits
-  them; there is no key-entry UI. Use opencode's own `providers login`, provider
-  env vars, or `OPENCODE_AUTH_CONTENT`. The model dropdown filling up is the
-  signal that auth worked.
+- **You can run something immediately, with no key.** opencode's `opencode`
+  (zen) provider serves a free tier — the models whose ids end in `-free` — and
+  OpenFlow lets a node use them with no credential connected. It is a shared
+  quota, so a `429` or a model that answers `400` is the tier being busy, not a
+  broken install; pick another `-free` model, or use the **test** button beside a
+  node's model to check one before a whole run.
+- **For anything else, click "api keys" in the titlebar.** It opens a two-step
+  connect dialog — pick a provider, paste its key — and the key takes effect
+  immediately, with no server restart. That panel also offers to import keys the
+  opencode CLI already holds: `opencode providers login` writes them to
+  `auth.json`, which this server never reads for its model catalog, so importing
+  them is what makes them count. A paid model needs this; a fresh install with no
+  key cannot spend money.
 - **Set `OPENFLOW_PROJECT`** to the repo the agents should work in. It defaults
   to this one, and these agents write real files.
 - **Restart `opencode serve` after "merge agents".** The server reads a project's
   `opencode.json` once and caches it, so freshly merged agents stay invisible
   until it restarts. Flow's pre-flight check refuses the run rather than letting
-  a node execute as an agent that does not exist.
+  a node execute as an agent that does not exist. Start with `-Manage` / `-m` /
+  `FLOW_MANAGE_SERVER=1` and the titlebar's restart button does it in one click.
 - **Permissions default to `auto`,** which approves each request for that one
   call. Switch the toolbar to `ask me` if you want to see them. Every decision is
   written to the run log either way.
+- **Upgrading?** A generated agent is now keyed per node rather than per role, so
+  a pipeline saved before this change needs one "merge agents" re-run before it
+  will run again. Once only.
 
 Details — endpoints, engine, data model, generated agent config — are in
 [`packages/flow/README.md`](packages/flow/README.md).

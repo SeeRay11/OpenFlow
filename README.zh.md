@@ -26,21 +26,53 @@ bun install
 ```
 
 `bun install` 会拉取整个工作区——OpenCode 引擎，加上 OpenFlow 自己在
-[`packages/flow`](packages/flow) 中的代码。首次安装体积较大；它会下载引擎的原生依赖，并运
-行一个构建 `node-pty` 的 `postinstall`。
+[`packages/flow`](packages/flow) 中的代码。首次安装体积较大；它会下载引擎的原生依赖。
+`postinstall` 这一步只是把 `node-pty` 预编译好的辅助二进制文件标记为可执行，在 Windows 上会
+立即返回、什么也不做。
 
 ### 运行
 
-**快速开始——一条命令同时启动两个进程：**
+一条命令即可同时启动两个进程，在所有平台上用法相同：
 
 ```bash
-./openflow.ps1   # Windows (PowerShell)
-./openflow.sh    # macOS / Linux
+bun openflow.ts
 ```
 
-启动器会启动引擎，等待它开始监听，然后在 http://localhost:5174 打开画布；Ctrl+C 会同时停止
-二者。用 `-Project <dir>`（PowerShell）或 `-p <dir>`（shell）将智能体指向另一个仓库；传入
-`-Built` / `-b` 以提供已构建的产物。仍然请先登录一个提供商（见下文）。
+它会启动引擎，等到引擎有响应后，在 http://localhost:5174 打开画布；Ctrl+C 会同时停止二者。上
+一次运行残留占用的端口会先被释放，而已经在提供服务的端口会被复用，而不是再启动一次。
+
+有两个 shim 包装同一个文件，供更习惯自己平台启动方式的人使用。它们自身不含任何逻辑——只是把命
+令行参数翻译成 `openflow.ts` 本来就会读取的环境变量。
+
+```powershell
+.\openflow.ps1
+```
+
+```bash
+./openflow.sh
+```
+
+**在 Windows 上，shim 可能拒绝启动：** PowerShell 默认不运行未签名的本地脚本，因此
+`.\openflow.ps1` 可能会以 *"openflow.ps1 cannot be loaded because running scripts is
+disabled on this system"* 失败。以 ZIP 下载而非克隆得到的仓库还会被标记为来自互联网，从而以
+第二种方式被拦截。`bun openflow.ts` 不受这两者的限制，是绕过它们最短的路径。若仍想使用 shim，
+请为你自己的账户允许本地脚本，并在文件来自 ZIP 时解除其阻止：
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+Unblock-File .\openflow.ps1
+```
+
+参数都是可选的，三种入口最终得到同一套配置：
+
+| PowerShell | shell | 环境变量 | 作用 |
+|---|---|---|---|
+| `-Project <dir>` | `-p`, `--project <dir>` | `OPENFLOW_PROJECT` | 智能体读写的仓库——**它们会修改真实文件** |
+| `-ServerPort <n>` | `-s`, `--server-port <n>` | `OPENCODE_SERVER_URL` | 引擎端口，默认 4096 |
+| `-Built` | `-b`, `--built` | `OPENFLOW_BUILT=1` | 构建并提供静态产物，而不是运行 vite |
+| `-Manage` | `-m`, `--manage` | `FLOW_MANAGE_SERVER=1` | 让画布掌管引擎，从而使其重启按钮可用 |
+| `-Help` | `-h`, `--help` | — | 打印参数列表 |
+| — | — | `OPENFLOW_DRY_RUN=1` | 打印解析出的方案，不启动任何进程 |
 
 或者手动启动这两个进程。先启动服务器：
 
