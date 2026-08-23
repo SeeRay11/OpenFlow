@@ -19,6 +19,7 @@ const KEY = "openflow.walkthroughDone.v1"
  * live counts and the stored `dismissed` flag in.
  */
 export function walkthroughState(input: {
+  engineReachable: boolean
   unlockedProviders: number
   nodes: number
   edges: number
@@ -27,6 +28,9 @@ export function walkthroughState(input: {
   return {
     visible: input.nodes === 0 && !input.dismissed,
     steps: {
+      // First, because nothing else in this list can succeed without it: with
+      // the engine down there are no providers to connect and no models to run.
+      engine: input.engineReachable,
       provider: input.unlockedProviders > 0,
       node: input.nodes > 0,
       // A single node needs no edge to be "connected"; a bigger graph does.
@@ -52,6 +56,7 @@ export function Walkthrough(props: {
   const [dismissed, setDismissed] = createSignal(readDismissed())
   const view = () =>
     walkthroughState({
+      engineReachable: state.engineReachable,
       unlockedProviders: props.unlockedProviders,
       nodes: state.pipeline.nodes.length,
       edges: state.pipeline.edges.length,
@@ -79,6 +84,27 @@ export function Walkthrough(props: {
           </div>
 
           <ol class="walkthrough-steps">
+            <li class="walkthrough-step" data-done={view().steps.engine ? true : undefined}>
+              <span class="walkthrough-mark">
+                <Show when={view().steps.engine}>
+                  <IconCheck />
+                </Show>
+              </span>
+              <div class="walkthrough-body">
+                <span class="walkthrough-label">Start the engine</span>
+                <Show
+                  when={view().steps.engine}
+                  fallback={
+                    <span class="hint">
+                      `opencode serve` is not answering — run `bun openflow.ts` from the repo root, then reload
+                    </span>
+                  }
+                >
+                  <span class="hint">`opencode serve` is answering — every card runs a session on it</span>
+                </Show>
+              </div>
+            </li>
+
             <li class="walkthrough-step" data-done={view().steps.provider ? true : undefined}>
               <span class="walkthrough-mark">
                 <Show when={view().steps.provider}>

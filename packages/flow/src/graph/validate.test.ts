@@ -176,6 +176,31 @@ describe("preflight", () => {
     const graph = withModel(pipeline("a"), "opencode/x")
     expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
   })
+
+  test("an unreachable engine blames the engine once and suppresses every locked model", () => {
+    // The exact false alarm: with the engine down nothing can read the catalog,
+    // so all three nodes look like they picked a model nobody can run.
+    const graph = withModel(pipeline("a->b", "b->c"), "anthropic/claude-sonnet-4")
+    const result = preflight(graph, { unlockedModels: new Set<string>(), engineReachable: false })
+
+    expect(result.blocking.map((problem) => problem.kind)).toEqual(["engine-unreachable"])
+    expect(result.blocking[0].message).toContain("opencode serve")
+    expect(result.blocking[0].nodeId).toBeUndefined()
+  })
+
+  test("an unreachable engine still reports problems that are not about models", () => {
+    const graph = withModel(pipeline("a->b", "b->a"), "opencode/x")
+    const kinds = preflight(graph, { unlockedModels: new Set<string>(), engineReachable: false }).blocking.map(
+      (problem) => problem.kind,
+    )
+    expect(kinds).toEqual(["engine-unreachable", "structure"])
+  })
+
+  test("a reachable engine still blocks a model no connected provider can run", () => {
+    const graph = withModel(pipeline("a"), "groq/llama")
+    const result = preflight(graph, { unlockedModels: new Set(["opencode/x"]), engineReachable: true })
+    expect(result.blocking.map((problem) => problem.kind)).toEqual(["locked-model"])
+  })
 })
 
 describe("wouldCycle", () => {

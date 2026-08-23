@@ -1,13 +1,18 @@
 import { describe, expect, test } from "bun:test"
 import { walkthroughState } from "./walkthrough"
 
-const base = { unlockedProviders: 0, nodes: 0, edges: 0, dismissed: false }
+const base = { engineReachable: true, unlockedProviders: 0, nodes: 0, edges: 0, dismissed: false }
 
 describe("walkthroughState", () => {
   test("a fresh empty canvas is visible with nothing done", () => {
-    const result = walkthroughState(base)
+    const result = walkthroughState({ ...base, engineReachable: false })
     expect(result.visible).toBe(true)
-    expect(result.steps).toEqual({ provider: false, node: false, connect: false })
+    expect(result.steps).toEqual({ engine: false, provider: false, node: false, connect: false })
+  })
+
+  test("the engine step ticks once the server answers", () => {
+    expect(walkthroughState(base).steps.engine).toBe(true)
+    expect(walkthroughState({ ...base, engineReachable: false }).steps.engine).toBe(false)
   })
 
   test("an unlocked provider ticks step one", () => {

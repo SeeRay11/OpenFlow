@@ -60,6 +60,17 @@ export type FlowState = {
   notice?: { kind: "info" | "error"; text: string }
   permissions: PendingPermission[]
   questions: PendingQuestion[]
+  /** Graph edits made since the last load or save — what a replace would destroy. */
+  dirty: boolean
+  /**
+   * Whether `opencode serve` answered the last time anything asked it.
+   *
+   * The single source of truth for engine reachability. With the engine down
+   * every provider read comes back empty, and every surface that reads a model
+   * list would otherwise conclude "no provider is connected" — confidently and
+   * wrongly. Optimistic until the first probe lands, which is milliseconds.
+   */
+  engineReachable: boolean
 }
 
 const [state, setState] = createStore<FlowState>({
@@ -70,6 +81,8 @@ const [state, setState] = createStore<FlowState>({
   attachments: [],
   permissions: [],
   questions: [],
+  dirty: false,
+  engineReachable: true,
 })
 
 export { state }
@@ -87,6 +100,26 @@ function nodeID() {
   return `n${Date.now().toString(36)}${counter.toString(36)}`
 }
 
+/**
+ * Bounded snapshot stack behind Ctrl/Cmd+Z.
+ *
+ * Only graph-shaping edits push. Deleting a card takes its hand-written prompt,
+ * model, tool allowlist, MCP allowlist and attachments with it and there is no
+ * other way back — a confirm on every keypress would be the wrong fix. Field
+ * edits deliberately do not push: they would flood the stack a keystroke at a
+ * time and bury the delete this exists to reverse.
+ *
+ * Kept out of the store because nothing renders it, and cloned through JSON
+ * because a pipeline is exactly what the store persists as JSON.
+ */
+const history: Pipeline[] = []
+const HISTORY_LIMIT = 20
+
+function snapshot() {
+  history.push(JSON.parse(JSON.stringify(state.pipeline)) as Pipeline)
+  if (history.length > HISTORY_LIMIT) history.shift()
+}
+
 export const actions = {
   notice(kind: "info" | "error", text: string) {
     setState("notice", { kind, text })
@@ -97,6 +130,8 @@ export const actions = {
   },
 
   addNode(roleID: string, position: { x: number; y: number }) {
+    snapshot()
+    setState("dirty", true)
     const preset = role(roleID) ?? ROLES[ROLES.length - 1]
     // A preset with no model of its own inherits the default model preference,
     // but only when that model is actually runnable now (see `nodeModel`).
@@ -113,6 +148,8 @@ export const actions = {
   },
 
   removeNode(id: string) {
+    snapshot()
+    setState("dirty", true)
     setState(
       produce((draft) => {
         draft.pipeline.nodes = draft.pipeline.nodes.filter((node) => node.id !== id)
@@ -124,19 +161,25 @@ export const actions = {
     )
   },
 
+  // No snapshot: a drag fires this on every pointermove, so it would fill the
+  // undo stack with one entry per frame.
   moveNode(id: string, position: { x: number; y: number }) {
+    setState("dirty", true)
     setState("pipeline", "nodes", (node) => node.id === id, "position", position)
   },
 
   updateNode(id: string, patch: Partial<FlowNode>) {
+    setState("dirty", true)
     setState("pipeline", "nodes", (node) => node.id === id, patch)
   },
 
   updateAgent(id: string, patch: Partial<FlowNode["agent"]>) {
+    setState("dirty", true)
     setState("pipeline", "nodes", (node) => node.id === id, "agent", patch)
   },
 
   toggleTool(id: string, tool: string, enabled: boolean) {
+    setState("dirty", true)
     setState("pipeline", "nodes", (node) => node.id === id, "agent", "tools", (tools) => ({
       ...(tools ?? {}),
       [tool]: enabled,
@@ -160,6 +203,8 @@ export const actions = {
       actions.notice("error", "that connection would create a cycle")
       return false
     }
+    snapshot()
+    setState("dirty", true)
     setState("pipeline", "edges", (edges) => [
       ...edges,
       { id: `e${Date.now().toString(36)}${edges.length}`, source, target },
@@ -168,14 +213,38 @@ export const actions = {
   },
 
   disconnect(id: string) {
+    snapshot()
+    setState("dirty", true)
     setState("pipeline", "edges", (edges) => edges.filter((edge) => edge.id !== id))
   },
 
   rename(name: string) {
+    setState("dirty", true)
     setState("pipeline", "name", name)
   },
 
+  /**
+   * Restores the last snapshot. Selection and the drawer are dropped rather
+   * than guessed: whatever they pointed at may be the node coming back.
+   */
+  undo() {
+    const previous = history.pop()
+    if (!previous) return false
+    setState(
+      produce((draft) => {
+        draft.pipeline = previous
+        draft.dirty = true
+        draft.selected = undefined
+        draft.expanded = undefined
+      }),
+    )
+    return true
+  },
+
   load(pipeline: Pipeline) {
+    // Snapshots of the graph being replaced would undo into a different
+    // pipeline, so loading starts a fresh history.
+    history.length = 0
     setState(
       produce((draft) => {
         draft.pipeline = pipeline
@@ -183,12 +252,27 @@ export const actions = {
         draft.run = undefined
         draft.selected = undefined
         draft.expanded = undefined
+        draft.dirty = false
       }),
     )
   },
 
   reset() {
     actions.load(emptyPipeline("untitled"))
+  },
+
+  /** Called once a save lands, so the next replace or reload stops asking. */
+  markSaved() {
+    setState("dirty", false)
+  },
+
+  /** For work that arrives already unsaved — an import has no file here yet. */
+  markDirty() {
+    setState("dirty", true)
+  },
+
+  setEngineReachable(reachable: boolean) {
+    setState("engineReachable", reachable)
   },
 
   setInput(input: string) {
@@ -255,6 +339,7 @@ export const actions = {
   /** Files pinned to one node, sent with that node's prompt on every run. */
   addNodeAttachments(id: string, files: Attachment[]) {
     if (!files.length) return
+    setState("dirty", true)
     setState("pipeline", "nodes", (node) => node.id === id, "agent", "attachments", (current) => [
       ...(current ?? []),
       ...files,
@@ -262,6 +347,7 @@ export const actions = {
   },
 
   removeNodeAttachment(id: string, attachmentID: string) {
+    setState("dirty", true)
     setState("pipeline", "nodes", (node) => node.id === id, "agent", "attachments", (current) =>
       (current ?? []).filter((file) => file.id !== attachmentID),
     )
@@ -272,6 +358,7 @@ export const actions = {
    * moves the node from "inherits everything" to an explicit allowlist.
    */
   toggleMcp(id: string, server: string, enabled: boolean, all: string[]) {
+    setState("dirty", true)
     setState("pipeline", "nodes", (node) => node.id === id, "agent", "mcp", (current) => {
       const base = current ?? all
       const next = new Set(base)

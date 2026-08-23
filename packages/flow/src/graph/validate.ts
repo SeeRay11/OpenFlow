@@ -68,10 +68,27 @@ export type Preflight = { blocking: Problem[]; warnings: Problem[] }
  * `unlockedModels` is the `providerID/modelID` set the user can actually run
  * right now (a keyed, runnable model). A model set but absent from it is the
  * "keyed provider that still 401s" case, so it blocks rather than warns.
+ *
+ * `engineReachable: false` means the model catalog could not be read at all, so
+ * `unlockedModels` is empty for a reason that has nothing to do with any node.
+ * Only an explicit `false` counts — an unstated engine is assumed up.
  */
-export function preflight(pipeline: Pipeline, ctx: { unlockedModels: Set<string> }): Preflight {
+export function preflight(
+  pipeline: Pipeline,
+  ctx: { unlockedModels: Set<string>; engineReachable?: boolean },
+): Preflight {
   const blocking: Problem[] = []
   const warnings: Problem[] = []
+  const offline = ctx.engineReachable === false
+
+  // With the engine down every model looks locked, so one true problem replaces
+  // a wall of confident, specific, wrong per-node diagnoses.
+  if (offline)
+    blocking.push({
+      kind: "engine-unreachable",
+      message:
+        "OpenFlow cannot reach `opencode serve`, so no model can run and no provider can be read — start the engine with `bun openflow.ts`, then try again",
+    })
 
   // One structural problem is enough to stop the run, and `layer` already
   // reports the first it finds (no nodes, a cycle, an unknown or self edge).
@@ -88,7 +105,7 @@ export function preflight(pipeline: Pipeline, ctx: { unlockedModels: Set<string>
           kind: "no-model",
           message: `Node '${node.role}' has no model — pick one or set a default`,
         })
-    } else if (!ctx.unlockedModels.has(model)) {
+    } else if (!offline && !ctx.unlockedModels.has(model)) {
       blocking.push({
         nodeId: node.id,
         kind: "locked-model",

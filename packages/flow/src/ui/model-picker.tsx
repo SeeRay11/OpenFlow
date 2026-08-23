@@ -9,6 +9,7 @@ import {
   type ProviderRow,
 } from "../server/providers"
 import { defaultModel, setDefaultModel } from "../graph/default-model"
+import { state } from "../state"
 import { IconChevron, IconClose, IconSearch, IconSliders } from "./icons"
 
 /**
@@ -199,7 +200,9 @@ export function ModelPicker(props: {
                     onClick={() => choose(model.value)}
                   >
                     <span class="oc-item-label">{model.name}</span>
-                    <span class="oc-tag">free</span>
+                    <span class="oc-tag" title="free — no key needed, shared quota">
+                      free
+                    </span>
                   </button>
                 )}
               </For>
@@ -210,9 +213,25 @@ export function ModelPicker(props: {
               when={matches().length}
               fallback={
                 <>
+                  {/*
+                    An empty list has two very different causes and only one is
+                    the user's to fix. With the engine down the catalog could
+                    not be read at all, so "no provider connected yet" would be
+                    a wrong answer pointing at the wrong dialog.
+                  */}
                   <div class="oc-menu-empty">
-                    <Show when={unlocked().length} fallback={<>No provider connected yet.</>}>
-                      No models match “{query()}”.
+                    <Show
+                      when={state.engineReachable}
+                      fallback={
+                        <>
+                          No models — `opencode serve` is not answering. Restart the engine from the toolbar, then
+                          reopen this menu.
+                        </>
+                      }
+                    >
+                      <Show when={unlocked().length} fallback={<>No provider connected yet.</>}>
+                        No models match “{query()}”.
+                      </Show>
                     </Show>
                   </div>
                   <For each={lockedMatches()}>
@@ -247,6 +266,18 @@ export function ModelPicker(props: {
                           onClick={() => choose(model.value)}
                         >
                           <span class="oc-item-label">{model.name}</span>
+                          {/*
+                            Same tag the pinned section carries, so a free model
+                            found by searching is not mistaken for a billed one.
+                            The quota is shared and real — `mimo-v2.5-free`
+                            answers 429 — so saying so here pre-explains that
+                            failure instead of letting it read as a bug.
+                          */}
+                          <Show when={model.free}>
+                            <span class="oc-tag" title="free — no key needed, shared quota">
+                              free
+                            </span>
+                          </Show>
                           <Show when={!model.runnable}>
                             <span class="oc-tag">no runner</span>
                           </Show>

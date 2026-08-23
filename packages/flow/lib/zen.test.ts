@@ -28,6 +28,17 @@ describe("parseZenModels", () => {
     expect(parseZenModels({ data: [{ id: "gpt-5" }, {}, { id: 7 }, { id: "" }, null] })).toEqual(["gpt-5"])
   })
 
+  test("keeps zen's paid ids alongside the free ones", () => {
+    // The list answers "does zen still serve this", nothing more. Both halves
+    // have to survive: the free ids so a keyless install can run something, the
+    // paid ids so a stored zen key still reaches what it paid for. Deciding
+    // which is which is `isFreeModel`'s job, not the list's.
+    expect(parseZenModels({ data: [{ id: "claude-opus-5" }, { id: "nemotron-3.5-lightning-free" }] })).toEqual([
+      "claude-opus-5",
+      "nemotron-3.5-lightning-free",
+    ])
+  })
+
   test("anything that is not a list reads as no answer at all", () => {
     expect(parseZenModels({})).toEqual([])
     expect(parseZenModels({ data: "nope" })).toEqual([])

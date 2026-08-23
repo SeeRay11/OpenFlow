@@ -95,12 +95,21 @@ export function Canvas() {
   }
 
   const onKey = (event: KeyboardEvent) => {
-    if (event.key !== "Delete" && event.key !== "Backspace") return
     // Matched by ancestor rather than by tag name: the native `<select>`s are
     // gone, so a menu that is open (or a dialog on top) is a button, and a
     // tag-name test would let Backspace delete the selected node underneath it.
+    // The same guard keeps Ctrl+Z inside a field as the browser's own undo.
     const target = event.target as HTMLElement | null
     if (target?.closest("input, textarea, select, [contenteditable], .oc-picker, .oc-backdrop")) return
+    // Deleting a card takes its prompt, model and allowlists with it, so the
+    // way back is undo rather than a confirm on every keypress. Shift is left
+    // alone so a redo binding can be added without stealing it.
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && (event.key === "z" || event.key === "Z")) {
+      event.preventDefault()
+      actions.undo()
+      return
+    }
+    if (event.key !== "Delete" && event.key !== "Backspace") return
     if (state.selected) actions.removeNode(state.selected)
   }
   window.addEventListener("keydown", onKey)

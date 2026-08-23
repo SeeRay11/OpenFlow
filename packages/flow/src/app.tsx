@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onMount } from "solid-js"
+import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
 import { Canvas } from "./canvas/canvas"
 import type { Pipeline, RunLog } from "./graph/types"
 import { layer, preflight, type Preflight } from "./graph/validate"
@@ -12,7 +12,7 @@ import {
   type PipeMode,
   type Run,
 } from "./server/engine"
-import { providerRows, suggestedFreeDefault, unlockedRows, type ProviderRow } from "./server/providers"
+import { availableModels, providerRows, suggestedFreeDefault, unlockedRows, type ProviderRow } from "./server/providers"
 import { defaultModel, setAvailableModels, setDefaultModel } from "./graph/default-model"
 import {
   agentBlock,
@@ -80,6 +80,27 @@ const TIMEOUT_OPTIONS: SelectOption[] = [5, 15, 30, 60].map((minutes) => ({
   label: `${minutes}m`,
 }))
 
+/** How often the statusbar re-checks the engine while nothing else is talking to it. */
+const HEALTH_INTERVAL = 15_000
+
+/**
+ * Whether a failure is the engine's rather than the request's.
+ *
+ * Every `/api/*` call dies the same way when `opencode serve` is down, and the
+ * symptom surfaces as whatever the caller was doing — a provider read, a save,
+ * a run. Matching the message is what turns any of those back into one honest
+ * "the engine is gone" state instead of a confident wrong diagnosis.
+ */
+function namesEngine(text: string) {
+  return (
+    text.includes("opencode serve") ||
+    text.includes("Failed to fetch") ||
+    text.includes("NetworkError") ||
+    text.includes("HTTP 502") ||
+    text.includes("flow store unavailable")
+  )
+}
+
 export function App() {
   const [status, setStatus] = createSignal("connecting…")
   const [agents, setAgents] = createSignal<string[]>([])
@@ -112,14 +133,43 @@ export function App() {
   const [issues, setIssues] = createSignal<Preflight>()
   let current: Run | undefined
 
-  /** The `providerID/modelID` set a node could actually run right now. */
-  const unlockedModels = () =>
-    new Set(
-      unlockedRows(providers())
-        .flatMap((row) => row.models)
-        .filter((model) => model.runnable)
-        .map((model) => model.value),
-    )
+  /**
+   * The `providerID/modelID` set a node could actually run right now.
+   *
+   * Not "the models of a connected provider": zen's free tier needs no key, so
+   * a fresh install with no credential at all still has runnable models, and
+   * gating on `unlockedRows` here would block a first-timer's run outright.
+   */
+  const unlockedModels = () => new Set(availableModels(providers()).map((model) => model.value))
+
+  /**
+   * Every error this file reports goes through here rather than through
+   * `actions.notice` directly, so a failure that names the engine re-probes it.
+   * Without that the statusbar keeps asserting "connected" against a dead
+   * server for as long as the tab stays open.
+   */
+  function notice(kind: "info" | "error", text: string) {
+    actions.notice(kind, text)
+    if (kind === "error" && namesEngine(text)) void probe()
+  }
+
+  /**
+   * One health round trip. The only thing that may put the statusbar back to
+   * "connected", and the only thing that clears `engineReachable`.
+   */
+  async function probe() {
+    if (restarting()) return false
+    try {
+      await api.health()
+      actions.setEngineReachable(true)
+      setStatus("connected")
+      return true
+    } catch (error) {
+      actions.setEngineReachable(false)
+      setStatus(`offline — ${api.describe(error)}`)
+      return false
+    }
+  }
 
   /**
    * Connects (or reconnects, after a project switch) and reloads everything
@@ -132,6 +182,7 @@ export function App() {
       const { context } = await api.connect()
       setProject(context.project)
       await api.health()
+      actions.setEngineReachable(true)
       setStatus("connected")
       const agentList = await api.agents()
       setAgents(agentList.filter((agent) => !agent.hidden).map((agent) => agent.id))
@@ -140,6 +191,7 @@ export function App() {
       // The dev proxy already names the server when it is the thing that is
       // down, so the prefix is only added when the message lacks it.
       const detail = api.describe(error)
+      actions.setEngineReachable(false)
       setStatus(`offline — ${detail}`)
       actions.notice("error", detail.includes("opencode serve") ? detail : `cannot reach opencode serve: ${detail}`)
     }
@@ -190,6 +242,7 @@ export function App() {
       } else {
         actions.notice("error", api.describe(error))
         setEngine(await store.serverStatus().catch(() => undefined))
+        actions.setEngineReachable(false)
         setStatus(`offline — ${api.describe(error)}`)
       }
     } finally {
@@ -220,6 +273,45 @@ export function App() {
   }
 
   onMount(bootstrap)
+
+  onMount(() => {
+    // A heartbeat, not a poll of anything expensive: one `/api/health` while
+    // the tab is visible and no run is already talking to the server. Without
+    // it the statusbar only ever learns the truth at boot.
+    const timer = setInterval(() => {
+      if (document.hidden || state.running || restarting()) return
+      void probe()
+    }, HEALTH_INTERVAL)
+    // Coming back to a tab that sat hidden for an hour should not wait out the
+    // interval before admitting the engine died meanwhile.
+    const onVisibility = () => {
+      if (!document.hidden) void probe()
+    }
+    // The one destructive path the app cannot guard with a dialog of its own.
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!state.dirty || !state.pipeline.nodes.length) return
+      // Browsers show their own wording; `preventDefault` is what asks at all.
+      event.preventDefault()
+      event.returnValue = ""
+    }
+    document.addEventListener("visibilitychange", onVisibility)
+    window.addEventListener("beforeunload", onBeforeUnload)
+    onCleanup(() => {
+      clearInterval(timer)
+      document.removeEventListener("visibilitychange", onVisibility)
+      window.removeEventListener("beforeunload", onBeforeUnload)
+    })
+  })
+
+  /**
+   * Asked by every path that replaces the graph — new, open, import. `dirty` is
+   * what keeps it quiet: a pipeline just loaded or just saved has nothing to
+   * lose, so it is replaced without a prompt.
+   */
+  function confirmReplace() {
+    if (!state.dirty || !state.pipeline.nodes.length) return true
+    return window.confirm("Replace the current pipeline?")
+  }
 
   /**
    * Asks the host for its own folder dialog first, and only falls back to the
@@ -309,16 +401,40 @@ export function App() {
     for (const failure of errors) actions.notice("error", `${failure.name}: ${failure.reason}`)
   }
 
-  async function save() {
+  /**
+   * Saves the graph, and stops when the name already belongs to a different
+   * pipeline.
+   *
+   * The store answers that case with a 409 rather than destroying the file
+   * ([lib/store.ts]) — every pipeline is born "untitled", so the second one
+   * saved used to silently overwrite the first. The route is called directly
+   * because only the status distinguishes a conflict from an ordinary failure,
+   * and the shared client throws the body message with the status dropped.
+   */
+  async function save(overwrite = false) {
     const check = layer(state.pipeline)
-    if (!check.ok) return actions.notice("error", check.error)
+    if (!check.ok) return notice("error", check.error)
     try {
-      const saved = await store.savePipeline(state.pipeline)
+      const response = await fetch(
+        `/flow/api/pipelines/${encodeURIComponent(state.pipeline.name)}${overwrite ? "?overwrite=1" : ""}`,
+        { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(state.pipeline) },
+      )
+      const body = await response.json().catch(() => undefined)
+      if (response.status === 409) {
+        const conflict = body?.error ?? `a different pipeline is already saved as "${state.pipeline.name}"`
+        // Never overwrite on the user's behalf: replacing somebody's saved work
+        // is the whole thing this guard exists to prevent.
+        if (window.confirm(`${conflict}\n\nOK replaces the saved pipeline. Cancel keeps it so you can rename this one.`))
+          return save(true)
+        return notice("error", `${conflict} — rename this pipeline in the title bar, then save again`)
+      }
+      if (!response.ok) return notice("error", body?.error ?? `could not save the pipeline (HTTP ${response.status})`)
       const generated = await store.saveAgents(state.pipeline.name, agentBlock(state.pipeline, mcpNames()))
-      actions.notice("info", `saved ${saved.path} · agents ${generated.path}`)
+      actions.markSaved()
+      actions.notice("info", `saved ${body.path} · agents ${generated.path}`)
       await refresh()
     } catch (error) {
-      actions.notice("error", api.describe(error))
+      notice("error", api.describe(error))
     }
   }
 
@@ -343,19 +459,23 @@ export function App() {
   async function importPipeline(file: File) {
     const parsed = parseJson(await file.text())
     if (!isPipeline(parsed)) return actions.notice("error", "Not a valid OpenFlow pipeline")
-    if (state.pipeline.nodes.length && !window.confirm("Replace the current pipeline?")) return
+    if (!confirmReplace()) return
     actions.load(parsed)
+    // Loading clears `dirty`, but an imported graph is not on disk here yet —
+    // closing the tab would still lose it.
+    actions.markDirty()
     actions.notice("info", `imported ${parsed.name}`)
   }
 
   async function load(name: string) {
     if (!name) return
+    if (!confirmReplace()) return
     try {
       const pipeline = (await store.pipeline(name)) as Pipeline
       actions.load(pipeline)
       actions.notice("info", `loaded ${name}`)
     } catch (error) {
-      actions.notice("error", api.describe(error))
+      notice("error", api.describe(error))
     }
   }
 
@@ -413,9 +533,22 @@ export function App() {
     // One place tells the user everything that is wrong before a session is
     // ever created. Blocking problems abort; warnings are shown but let the run
     // proceed. The list survives on screen so each problem can select its node.
-    const pre = preflight(state.pipeline, { unlockedModels: unlockedModels() })
+    // The engine is re-probed first: an unreachable one empties `unlockedModels`,
+    // and preflight has to know that so it blames the engine rather than every
+    // node's model.
+    await probe()
+    const pre = preflight(state.pipeline, {
+      unlockedModels: unlockedModels(),
+      engineReachable: state.engineReachable,
+    })
     setIssues(pre.blocking.length || pre.warnings.length ? pre : undefined)
-    if (pre.blocking.length) return
+    if (pre.blocking.length) {
+      // A dead engine has exactly one fix and it is not on this screen, so the
+      // same dialog the stale-agent path opens is offered here too.
+      if (pre.blocking.some((problem) => problem.kind === "engine-unreachable"))
+        void showEngineHelp("`opencode serve` is not answering, so no card can start a session.")
+      return
+    }
     actions.clearNotice()
 
     // Fold any pending agent edits into opencode.json before the run so a node
@@ -429,11 +562,11 @@ export function App() {
     // this sync exists to prevent.
     try {
       const { result } = await syncAgents()
-      if (result.error) return actions.notice("error", result.error)
+      if (result.error) return notice("error", result.error)
       if (result.merged)
         actions.notice("info", `synced agents into ${result.path}${result.backup ? ` (backup ${result.backup})` : ""}`)
     } catch (error) {
-      return actions.notice("error", api.describe(error))
+      return notice("error", api.describe(error))
     }
 
     actions.resetRuntime(Object.fromEntries(state.pipeline.nodes.map((node) => [node.id, "queued" as const])))
@@ -446,7 +579,7 @@ export function App() {
           onNode: (id, patch) => actions.patchRuntime(id, patch),
           onNodeEvent: (id, event) => actions.pushEvent(id, event),
           onRun: (log) => actions.setRun(clone(log)),
-          onNotice: actions.notice,
+          onNotice: notice,
           onPermission: (request) =>
             actions.askPermission({
               requestID: request.requestID,
@@ -479,12 +612,16 @@ export function App() {
       )
       const log = await current.done
       const failure = log.nodes.find((node) => node.status === "error")
-      actions.notice(
+      notice(
         log.status === "error" ? "error" : "info",
         failure ? `run ${log.id} error — ${failure.role}: ${failure.error}` : `run ${log.id} ${log.status}`,
       )
+      // The engine died mid-run. The per-node text already says so, but the fix
+      // lives in the restart dialog, so open it the way the stale-agent case does.
+      if (failure?.error && namesEngine(failure.error))
+        void showEngineHelp("The run stopped because `opencode serve` stopped answering.")
     } catch (error) {
-      actions.notice("error", api.describe(error))
+      notice("error", api.describe(error))
     } finally {
       actions.setRunning(false)
       actions.rejectPermissions()
@@ -558,7 +695,7 @@ export function App() {
             type="button"
             title="new pipeline"
             aria-label="new pipeline"
-            onClick={() => actions.reset()}
+            onClick={() => confirmReplace() && actions.reset()}
           >
             <IconPlus />
           </button>
@@ -567,7 +704,7 @@ export function App() {
             type="button"
             title="save the pipeline and its generated agent defs"
             aria-label="save pipeline"
-            onClick={save}
+            onClick={() => void save()}
           >
             <IconSave />
           </button>
@@ -742,14 +879,14 @@ export function App() {
       </div>
 
       <Show when={state.notice}>
-        {(notice) => (
-          <div class="notice" data-kind={notice().kind} onClick={actions.clearNotice}>
+        {(banner) => (
+          <div class="notice" data-kind={banner().kind} onClick={actions.clearNotice}>
             <span class="notice-icon">
-              <Show when={notice().kind === "error"} fallback={<IconInfo />}>
+              <Show when={banner().kind === "error"} fallback={<IconInfo />}>
                 <IconAlert />
               </Show>
             </span>
-            <span class="notice-text">{notice().text}</span>
+            <span class="notice-text">{banner().text}</span>
             <button
               class="icon-btn notice-close"
               type="button"
@@ -873,16 +1010,16 @@ export function App() {
           initialQuery={providerQuery()}
           onClose={() => setShowProviders(false)}
           onChanged={refreshProviders}
-          onNotice={actions.notice}
+          onNotice={notice}
         />
       </Show>
 
       <Show when={showSkills()}>
-        <SkillsPanel onClose={() => setShowSkills(false)} onNotice={actions.notice} />
+        <SkillsPanel onClose={() => setShowSkills(false)} onNotice={notice} />
       </Show>
 
       <Show when={showMcp()}>
-        <McpPanel onClose={() => setShowMcp(false)} onNotice={actions.notice} onChanged={refresh} />
+        <McpPanel onClose={() => setShowMcp(false)} onNotice={notice} onChanged={refresh} />
       </Show>
 
       {/*
