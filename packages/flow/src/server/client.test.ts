@@ -39,7 +39,7 @@ suite("describe", () => {
       // vite.config.ts, 502
       {
         message:
-          "cannot reach opencode serve at http://127.0.0.1:4096 — start it with `opencode serve --port 4096`",
+          "cannot reach opencode serve at http://127.0.0.1:4096 — start it with `bun openflow.ts` from the repo root",
       },
       // the shape server.ts used to emit, in case a host ever drifts back
       { error: "cannot reach opencode serve at http://127.0.0.1:4096: fetch failed" },

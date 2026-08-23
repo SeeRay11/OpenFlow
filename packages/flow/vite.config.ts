@@ -52,7 +52,11 @@ const proxy = {
     instance.on("error", (error: NodeJS.ErrnoException, _request: any, socket: any) => {
       const reason =
         error.code === "ECONNREFUSED" || error.code === "ECONNRESET"
-          ? `cannot reach opencode serve at ${server} — start it with \`opencode serve --port ${new URL(server).port || 80}\``
+          ? // `opencode serve` as a bare command only resolves when the packaged
+            // binary is on PATH, which it is not in a checkout — and this proxy
+            // only ever runs from one. `bun openflow.ts` is what every other
+            // surface tells the user, and it works here.
+            `cannot reach opencode serve at ${server} — start it with \`bun openflow.ts\` from the repo root`
           : `opencode serve request failed: ${error.message}`
       // On an upgrade/socket error there is no ServerResponse to write to.
       if (!socket || typeof socket.writeHead !== "function") return socket?.destroy?.()
