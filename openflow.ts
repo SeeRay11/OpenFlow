@@ -9,9 +9,14 @@
  *   bun openflow.ts
  *   OPENFLOW_PROJECT=/path/to/app bun openflow.ts   # agents edit that repo
  *   OPENCODE_SERVER_URL=http://127.0.0.1:4097 bun openflow.ts
+ *   OPENFLOW_BUILT=1 bun openflow.ts                # build, then serve dist/
+ *   FLOW_MANAGE_SERVER=1 bun openflow.ts            # canvas owns the engine
+ *   OPENFLOW_DRY_RUN=1 bun openflow.ts              # print the plan, start nothing
  *
- * argv/URL resolution lives in `packages/flow/lib/launch.ts` (unit-tested);
- * this file only spawns, streams, waits, and tears down.
+ * `openflow.ps1` and `openflow.sh` are shims that set exactly these variables,
+ * so all three surfaces run this file. argv/URL resolution lives in
+ * `packages/flow/lib/launch.ts` (unit-tested); this file only spawns, streams,
+ * waits, and tears down.
  */
 import { launchPlan } from "./packages/flow/lib/launch"
 import { healthy } from "./packages/flow/lib/opencode-process"
@@ -143,8 +148,23 @@ async function main() {
     probe: (url) => (url.includes("5174") ? reachable(url) : healthy(url)),
   })
 
-  if (plan.engine.skip) console.log(`engine already running on ${plan.engineUrl} — reusing it`)
-  else {
+  if (process.env.OPENFLOW_DRY_RUN) {
+    console.log("OpenFlow — dry run, nothing started")
+    console.log(`  project    : ${process.env.OPENFLOW_PROJECT ?? `${repo} (this repo)`}`)
+    console.log(`  engine     : ${plan.engineUrl}`)
+    console.log(`  canvas     : ${plan.canvasUrl}`)
+    console.log(`  mode       : ${plan.built ? "built bundle (no vite)" : "vite dev server"}`)
+    console.log(
+      `  engine cmd : ${plan.managed ? "started by the canvas (FLOW_MANAGE_SERVER)" : plan.engine.argv.join(" ")}`,
+    )
+    if (plan.canvas.prebuild) console.log(`  build cmd  : ${plan.canvas.prebuild.join(" ")}`)
+    console.log(`  canvas cmd : ${plan.canvas.argv.join(" ")}`)
+    return
+  }
+
+  if (plan.managed) console.log(`engine ${plan.engineUrl} will be started and owned by the canvas`)
+  if (!plan.managed && plan.engine.skip) console.log(`engine already running on ${plan.engineUrl} — reusing it`)
+  if (!plan.engine.skip) {
     freePort(new URL(plan.engineUrl).port || "4096")
     console.log(`starting engine: ${plan.engine.argv.join(" ")}`)
     spawnChild(plan.engine.argv, "engine")
@@ -163,11 +183,29 @@ async function main() {
     console.error(`engine did not answer ${plan.engineUrl} within ${ENGINE_TIMEOUT / 1000}s`)
     return teardown(1)
   }
-  console.log(`engine ready on ${plan.engineUrl}`)
+  if (!plan.managed) console.log(`engine ready on ${plan.engineUrl}`)
 
   if (plan.canvas.skip) console.log(`canvas already serving ${plan.canvasUrl} — reusing it`)
-  else {
+  if (!plan.canvas.skip) {
     freePort(new URL(plan.canvasUrl).port || "5174")
+    if (plan.canvas.prebuild) {
+      console.log(`building canvas: ${plan.canvas.prebuild.join(" ")}`)
+      // The static host serves whatever `dist/` already holds, so a failed
+      // build would quietly come up on the *previous* bundle. Stop instead.
+      // Registered as a child so Ctrl+C mid-build kills the build too.
+      const build = Bun.spawn(plan.canvas.prebuild, {
+        cwd: repo,
+        env: process.env,
+        stdout: "inherit",
+        stderr: "inherit",
+      })
+      children.push(build)
+      const code = await build.exited
+      if (code) {
+        console.error(`canvas build failed (${code}) — not starting the static server`)
+        return teardown(code)
+      }
+    }
     console.log(`starting canvas: ${plan.canvas.argv.join(" ")}`)
     spawnChild(plan.canvas.argv, "canvas")
   }
