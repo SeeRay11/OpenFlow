@@ -41,6 +41,38 @@ async function pipe(stream: ReadableStream<Uint8Array> | number | undefined, pre
 }
 
 /**
+ * Frees a port left bound by a dead or orphaned previous run — the case a
+ * health/reachability probe can't see: the socket is held but nothing
+ * answers HTTP yet (or ever again), so `skip` comes back false and the child
+ * we spawn next fails to bind. Only called right before spawning a child
+ * whose probe already said "not up", so a genuinely live sibling session
+ * (probe says healthy) is never touched.
+ */
+function freePort(port: string) {
+  if (process.platform === "win32") {
+    const { stdout } = Bun.spawnSync(["netstat", "-ano"], { stdout: "pipe" })
+    const pids = new Set(
+      stdout
+        .toString()
+        .split(/\r?\n/)
+        .filter((line) => line.includes(`:${port}`) && line.includes("LISTENING"))
+        .map((line) => line.trim().split(/\s+/).pop())
+        .filter((pid): pid is string => !!pid && pid !== "0"),
+    )
+    for (const pid of pids) Bun.spawnSync(["taskkill", "/pid", pid, "/T", "/F"], { stdout: "ignore", stderr: "ignore" })
+    return
+  }
+  const { stdout } = Bun.spawnSync(["lsof", "-ti", `tcp:${port}`], { stdout: "pipe" })
+  for (const pid of stdout.toString().split(/\r?\n/).filter(Boolean)) {
+    try {
+      process.kill(Number(pid), "SIGKILL")
+    } catch {
+      // already gone
+    }
+  }
+}
+
+/**
  * Kills a child and everything it spawned. `bun run …` execs a grandchild that
  * actually holds the port, so on Windows the whole tree has to go (`taskkill
  * /T`); on POSIX a group signal reaches the tree.
@@ -113,6 +145,7 @@ async function main() {
 
   if (plan.engine.skip) console.log(`engine already running on ${plan.engineUrl} — reusing it`)
   else {
+    freePort(new URL(plan.engineUrl).port || "4096")
     console.log(`starting engine: ${plan.engine.argv.join(" ")}`)
     spawnChild(plan.engine.argv, "engine")
   }
@@ -134,6 +167,7 @@ async function main() {
 
   if (plan.canvas.skip) console.log(`canvas already serving ${plan.canvasUrl} — reusing it`)
   else {
+    freePort(new URL(plan.canvasUrl).port || "5174")
     console.log(`starting canvas: ${plan.canvas.argv.join(" ")}`)
     spawnChild(plan.canvas.argv, "canvas")
   }
