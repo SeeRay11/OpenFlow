@@ -25,6 +25,8 @@ export type NodePatch = {
   activity?: string
   started?: number
   finished?: number
+  /** Carried over from an earlier run rather than produced by this one. */
+  reused?: boolean
   /** Priced usage for this node so far. Replaced, never added to. */
   usage?: Spend
 }
@@ -527,7 +529,7 @@ export function start(
       outputs.set(node.id, seeded)
       const at = Date.now()
       activity.note(node.id, `reused:${node.id}`, "reused from a previous run", undefined, "done")
-      patch(node.id, { status: "done", output: seeded, activity: undefined, started: at, finished: at })
+      patch(node.id, { status: "done", output: seeded, activity: undefined, started: at, finished: at, reused: true })
       return
     }
 

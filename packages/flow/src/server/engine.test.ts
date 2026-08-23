@@ -1224,3 +1224,16 @@ describe("resume", () => {
     expect(h.dispatched).toEqual(["b"])
   })
 })
+
+describe("reused nodes are legible in the run log", () => {
+  test("a carried-over node is flagged, not merely missing a sessionID", async () => {
+    const h = harness()
+    const log = await h.run(pipeline("a->b"), "do the thing", { resume: { a: "an answer from last time" } }).done
+
+    const carried = log.nodes.find((node) => node.id === "a")!
+    expect(carried.reused).toBe(true)
+    expect(carried.output).toBe("an answer from last time")
+    // The node this run actually executed must not be mistaken for a reused one.
+    expect(log.nodes.find((node) => node.id === "b")!.reused).toBeUndefined()
+  })
+})
