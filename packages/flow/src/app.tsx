@@ -618,7 +618,14 @@ export function App() {
       )
       // The engine died mid-run. The per-node text already says so, but the fix
       // lives in the restart dialog, so open it the way the stale-agent case does.
-      if (failure?.error && namesEngine(failure.error))
+      //
+      // Confirm it is actually gone before saying so. `namesEngine` matches any
+      // message mentioning the server, and the stale-agent failure names it too
+      // while the engine is answering perfectly well — without this probe that
+      // case opens the dialog claiming the engine "stopped answering", which is
+      // the wrong fix on screen. `onEngineStale` already opens it with the right
+      // words, so staying quiet here loses nothing.
+      if (failure?.error && namesEngine(failure.error) && !(await probe()))
         void showEngineHelp("The run stopped because `opencode serve` stopped answering.")
     } catch (error) {
       notice("error", api.describe(error))

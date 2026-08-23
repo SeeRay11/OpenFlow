@@ -87,12 +87,20 @@ export type RunOptions = {
    * killed at minute 25 still leaves what it had on disk.
    */
   checkpointEvery?: number
+  /**
+   * How long to wait before re-reading a model catalog that did not contain a
+   * model some node names, in milliseconds. `0` disables the re-read, which is
+   * what a test wants when the unknown model is unknown on purpose.
+   */
+  catalogRetry?: number
 }
 
 export const DEFAULT_MAX_PARALLEL = 4
 export const DEFAULT_NODE_TIMEOUT = 30 * 60_000
 export const DEFAULT_QUESTION_TIMEOUT = 5 * 60_000
 export const DEFAULT_CHECKPOINT_EVERY = 2_000
+/** How long to wait before re-reading a model catalog that looked incomplete. */
+export const DEFAULT_CATALOG_RETRY = 1_500
 
 export type Run = {
   log: RunLog
@@ -199,6 +207,7 @@ export function start(
   const nodeTimeout = Math.max(1_000, options.nodeTimeout ?? DEFAULT_NODE_TIMEOUT)
   const questionTimeout = Math.max(100, options.questionTimeout ?? DEFAULT_QUESTION_TIMEOUT)
   const checkpointEvery = Math.max(1, options.checkpointEvery ?? DEFAULT_CHECKPOINT_EVERY)
+  const catalogRetry = Math.max(0, options.catalogRetry ?? DEFAULT_CATALOG_RETRY)
   const runFiles = options.attachments ?? []
   const validation = layer(pipeline)
   if (!validation.ok) throw new Error(validation.error)
@@ -571,6 +580,18 @@ export function start(
       // not offer, and knowing which attachments each model can actually read.
       const models = await api.models().catch(() => undefined)
       for (const model of models ?? []) catalog.set(`${model.providerID}/${model.id}`, model)
+
+      // A restarted engine answers `/api/health` before its model catalog has
+      // finished filling, so a run started in that window sees a partial list
+      // and every node reads as naming a model that does not exist — which
+      // sends the user to change a model that was right all along. One re-read
+      // separates "still loading" from "genuinely not offered"; a complete
+      // catalog resolves on the first pass and never reaches this.
+      if (models && unknownModels(pipeline, catalog).length && catalogRetry > 0) {
+        await new Promise((resolve) => setTimeout(resolve, catalogRetry))
+        for (const model of (await api.models().catch(() => [])) ?? [])
+          catalog.set(`${model.providerID}/${model.id}`, model)
+      }
 
       const unresolved = models ? unknownModels(pipeline, catalog) : []
       if (unresolved.length) {

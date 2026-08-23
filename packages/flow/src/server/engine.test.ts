@@ -33,6 +33,11 @@ type HarnessOptions = {
   behavior?: Record<string, Behavior>
   /** "providerID/id" strings the server admits. Empty = no model check runs. */
   models?: string[]
+  /**
+   * What the second catalog read returns, when set — a restarted engine answers
+   * `/api/health` before its catalog has filled, so the first read can be short.
+   */
+  modelsRefilled?: string[]
   /** Agent ids the server knows about. */
   agents?: string[]
   /** Subset of `models` that accepts image input. */
@@ -73,6 +78,7 @@ function harness(options: HarnessOptions = {}) {
   const notices: { kind: string; text: string }[] = []
   const saved: RunLog[] = []
   let deliver: (event: BusEvent) => void = () => {}
+  let catalogReads = 0
   let created = 0
   let inflight = 0
   let peak = 0
@@ -142,7 +148,8 @@ function harness(options: HarnessOptions = {}) {
       return {}
     },
     async models() {
-      return (options.models ?? []).map((value) => {
+      const list = catalogReads++ && options.modelsRefilled ? options.modelsRefilled : (options.models ?? [])
+      return list.map((value) => {
         const index = value.indexOf("/")
         return {
           providerID: value.slice(0, index),
@@ -278,11 +285,27 @@ describe("validation", () => {
     graph.nodes[0].agent.model = "opencode/ghost-model"
     const h = harness({ models: ["opencode/real-model"] })
 
-    const log = await h.run(graph).done
+    // This model is missing on purpose, so skip the re-read that exists for a
+    // catalog still filling after a restart — there is nothing to wait for.
+    const log = await h.run(graph, "do the thing", { catalogRetry: 0 }).done
 
     expect(h.dispatched).toEqual([])
     expect(log.status).toBe("error")
     expect(log.nodes[0].error).toContain("unknown model")
+  })
+
+  test("re-reads a catalog that was still filling instead of calling the model unknown", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.model = "opencode/real-model"
+    // A restarted engine answers /api/health before its catalog is complete, so
+    // the first read is short and the model looks like it does not exist.
+    const h = harness({ models: [], modelsRefilled: ["opencode/real-model"] })
+
+    const log = await h.run(graph, "do the thing", { catalogRetry: 1 }).done
+
+    expect(log.nodes[0].error).toBeUndefined()
+    expect(log.status).toBe("done")
+    expect(h.dispatched).toEqual(["a"])
   })
 
   test("accepts a model the server does offer", async () => {
