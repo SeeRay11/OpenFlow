@@ -30,23 +30,59 @@ bun install
 
 `bun install` zieht den gesamten Workspace — die OpenCode-Engine plus OpenFlows
 eigenen Code in [`packages/flow`](packages/flow). Die erste Installation ist groß;
-sie lädt die nativen Abhängigkeiten der Engine und führt ein `postinstall` aus, das
-`node-pty` baut.
+sie lädt die nativen Abhängigkeiten der Engine herunter. Ein `postinstall`-Schritt
+markiert die vorgebauten `node-pty`-Hilfsprogramme als ausführbar und kehrt unter
+Windows sofort zurück.
 
 ### Ausführen
 
-**Schnellstart — ein Befehl startet beide Prozesse:**
+Ein Befehl startet beide Prozesse, auf jeder Plattform gleich:
 
 ```bash
-./openflow.ps1   # Windows (PowerShell)
-./openflow.sh    # macOS / Linux
+bun openflow.ts
 ```
 
-Der Launcher startet die Engine, wartet, bis sie lauscht, und öffnet dann die
-Canvas unter http://localhost:5174; Ctrl+C stoppt beide. Richte die Agenten mit
-`-Project <dir>` (PowerShell) oder `-p <dir>` (Shell) auf ein anderes Repo; mit
-`-Built` / `-b` wird das gebaute Bundle serviert. Melde dich vorher trotzdem bei
-einem Provider an (siehe unten).
+Er startet die Engine, wartet, bis sie antwortet, und öffnet dann die Canvas unter
+http://localhost:5174; Ctrl+C stoppt beide. Ein Port, den ein abgebrochener Lauf
+belegt zurückgelassen hat, wird zuerst freigegeben, und ein Port, auf dem bereits
+etwas läuft, wird wiederverwendet statt ein zweites Mal gestartet.
+
+Zwei Shims umschließen dieselbe Datei für alle, die den Launcher ihrer Plattform
+bevorzugen. Sie enthalten keine eigene Logik — sie übersetzen Flags nur in die
+Umgebungsvariablen, die `openflow.ts` ohnehin liest.
+
+```powershell
+.\openflow.ps1
+```
+
+```bash
+./openflow.sh
+```
+
+**Unter Windows kann der Shim den Start verweigern:** PowerShell führt unsignierte
+lokale Skripte standardmäßig nicht aus, sodass `.\openflow.ps1` mit *"openflow.ps1
+cannot be loaded because running scripts is disabled on this system"* fehlschlagen
+kann. Ein als ZIP heruntergeladenes statt geklontes Repo ist zusätzlich als aus dem
+Internet stammend markiert, was es ein zweites Mal blockiert. `bun openflow.ts`
+unterliegt keinem von beidem und ist der kürzeste Weg an beidem vorbei. Um
+stattdessen den Shim zu verwenden, erlaube lokale Skripte für dein eigenes Konto und
+hebe die Blockierung der Datei auf, falls sie aus einem ZIP stammt:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+Unblock-File .\openflow.ps1
+```
+
+Flags sind optional, und alle drei Oberflächen führen zum selben Plan:
+
+| PowerShell | Shell | Umgebung | was es tut |
+|---|---|---|---|
+| `-Project <dir>` | `-p`, `--project <dir>` | `OPENFLOW_PROJECT` | das Repo, das die Agenten lesen und schreiben — **sie bearbeiten echte Dateien** |
+| `-ServerPort <n>` | `-s`, `--server-port <n>` | `OPENCODE_SERVER_URL` | Engine-Port, Standard 4096 |
+| `-Built` | `-b`, `--built` | `OPENFLOW_BUILT=1` | das statische Bundle bauen und ausliefern, statt vite zu starten |
+| `-Manage` | `-m`, `--manage` | `FLOW_MANAGE_SERVER=1` | die Canvas die Engine besitzen lassen, wodurch ihr Neustart-Button funktioniert |
+| `-Help` | `-h`, `--help` | — | die Flag-Liste ausgeben |
+| — | — | `OPENFLOW_DRY_RUN=1` | den ermittelten Plan ausgeben und nichts starten |
 
 Oder starte die beiden Prozesse von Hand. Zuerst der Server:
 

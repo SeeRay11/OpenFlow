@@ -5,6 +5,8 @@ import { remoteBindRefusal } from "./lib/guard"
 import { serveCommand, supervisorFor } from "./lib/opencode-process"
 import { resolveProject } from "./lib/last-session"
 import { flowPaths, handleFlow } from "./lib/store"
+// Shared with the vite dev host so both explain a held port the same way.
+import { portInUse } from "./vite/port-in-use"
 
 /**
  * Serves a built OpenFlow (`bun run build`) without vite.
@@ -73,37 +75,7 @@ if (refusal) {
   process.exit(1)
 }
 
-const server = Bun.serve({
-  port,
-  hostname,
-  idleTimeout: 0, // SSE streams outlive any request timeout
-  async fetch(request) {
-    const url = new URL(request.url)
-
-    if (PROXIED.some((prefix) => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`))) {
-      return proxy(request, url)
-    }
-
-    if (url.pathname === "/flow/api" || url.pathname.startsWith("/flow/api/")) {
-      try {
-        const result = await handleFlow(paths, {
-          method: request.method,
-          path: url.pathname,
-          search: url.searchParams,
-          json: () => body(request),
-          upstream,
-          serve: engine,
-        })
-        if (result) return Response.json(result.body, { status: result.status })
-        return Response.json({ error: "not found" }, { status: 404 })
-      } catch (error) {
-        return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 })
-      }
-    }
-
-    return statics(url)
-  },
-})
+const server = listen()
 
 // Bring the engine up before announcing the canvas, so the first page load
 // never talks to a server that is not there yet. Unmanaged hosts no-op here.
@@ -122,6 +94,55 @@ if (boot?.managed) {
 console.log(`openflow    http://${hostname}:${server.port}`)
 console.log(`opencode    ${upstream}`)
 console.log(`project     ${paths.project}`)
+
+/**
+ * Binds the canvas port, or says what is holding it.
+ *
+ * `Bun.serve` throws on a taken port, and an unhandled throw here is a raw
+ * stack in a terminal the user may not even be looking at — no page ever
+ * loads, so nothing else can carry the explanation. The port is deliberately
+ * not slid to a free one: the READMEs document this URL.
+ */
+function listen() {
+  try {
+    return Bun.serve({
+      port,
+      hostname,
+      idleTimeout: 0, // SSE streams outlive any request timeout
+      async fetch(request) {
+        const url = new URL(request.url)
+
+        if (PROXIED.some((prefix) => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`))) {
+          return proxy(request, url)
+        }
+
+        if (url.pathname === "/flow/api" || url.pathname.startsWith("/flow/api/")) {
+          try {
+            const result = await handleFlow(paths, {
+              method: request.method,
+              path: url.pathname,
+              search: url.searchParams,
+              json: () => body(request),
+              upstream,
+              serve: engine,
+            })
+            if (result) return Response.json(result.body, { status: result.status })
+            return Response.json({ error: "not found" }, { status: 404 })
+          } catch (error) {
+            return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 })
+          }
+        }
+
+        return statics(url)
+      },
+    })
+  } catch (error) {
+    // Bun reports the code on some builds and only the sentence on others.
+    if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE" && !/in use/i.test(String(error))) throw error
+    console.error(portInUse(port, `http://${hostname}:${port}`))
+    return process.exit(1)
+  }
+}
 
 /** Forwards a request to `opencode serve`, streaming the response back untouched. */
 async function proxy(request: Request, url: URL) {
@@ -158,16 +179,20 @@ async function proxy(request: Request, url: URL) {
       }).catch(() => undefined)
       if (answer) return relay(answer)
     }
+    // `message`, not `error`: this body is read by the SDK client in the
+    // browser, whose `describe()` renders `message` as a sentence and anything
+    // else as raw JSON. The dev proxy answers the same key — the two hosts
+    // must not drift, or the same failure reads differently in each.
     if (deadline?.aborted) {
       return Response.json(
         {
-          error: `opencode serve at ${upstream} did not answer within ${PROXY_TIMEOUT / 1000}s — it may have been restarted; retry`,
+          message: `opencode serve at ${upstream} did not answer within ${PROXY_TIMEOUT / 1000}s — it may have been restarted; retry`,
         },
         { status: 504 },
       )
     }
     return Response.json(
-      { error: `cannot reach opencode serve at ${upstream}: ${error instanceof Error ? error.message : error}` },
+      { message: `cannot reach opencode serve at ${upstream}: ${error instanceof Error ? error.message : error}` },
       { status: 502 },
     )
   }

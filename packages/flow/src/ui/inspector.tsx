@@ -2,7 +2,7 @@ import { For, Show, createMemo, createSignal } from "solid-js"
 import { upstream } from "../graph/validate"
 import * as api from "../server/client"
 import type { ProviderRow } from "../server/providers"
-import { TOOLS } from "../server/store"
+import { TOOLS, TOOL_HELP } from "../server/store"
 import { actions, runtimeOf, state } from "../state"
 import { Attachments, readFiles } from "./attachments"
 import { IconTrash } from "./icons"
@@ -60,7 +60,9 @@ export function Inspector(props: {
                 controls, so they get a plain row and a <span> caption instead.
               */}
               <label class="field-row">
-                <span class="field-label">role</span>
+                <span class="field-label" title="this card's label and colour — also the role text runs read in the pipeline">
+                  role
+                </span>
                 <input
                   class="field"
                   value={selected().role}
@@ -69,7 +71,9 @@ export function Inspector(props: {
               </label>
 
               <div class="field-row">
-                <span class="field-label">model</span>
+                <span class="field-label" title="which model runs this card — blank uses the agent's own default">
+                  model
+                </span>
                 <ModelPicker
                   value={selected().agent.model ?? ""}
                   rows={props.providers}
@@ -90,7 +94,9 @@ export function Inspector(props: {
               </div>
 
               <div class="field-row">
-                <span class="field-label">agent</span>
+                <span class="field-label" title="the opencode agent whose tool allowlist this card runs under">
+                  agent
+                </span>
                 <Select
                   value={selected().agent.name ?? ""}
                   options={[
@@ -102,7 +108,9 @@ export function Inspector(props: {
               </div>
 
               <label class="field-row">
-                <span class="field-label">prompt</span>
+                <span class="field-label" title="role instructions prepended to every prompt this card sends">
+                  prompt
+                </span>
                 <textarea
                   class="field"
                   rows="8"
@@ -114,7 +122,7 @@ export function Inspector(props: {
               <div class="tools">
                 <For each={TOOLS}>
                   {(tool) => (
-                    <label class="tool-check">
+                    <label class="tool-check" title={TOOL_HELP[tool] ?? tool}>
                       <input
                         type="checkbox"
                         checked={selected().agent.tools?.[tool] ?? false}

@@ -8,6 +8,7 @@ import {
   type ProviderRow,
 } from "../server/providers"
 import { store } from "../server/store"
+import { state } from "../state"
 import { IconBack, IconCheck, IconClose, IconSearch } from "./icons"
 
 /**
@@ -194,8 +195,21 @@ export function ProvidersPanel(props: {
             <div class="oc-group">All providers</div>
             <For each={rest().other}>{(row) => <Row row={row} />}</For>
           </Show>
+          {/*
+            An unreachable engine leaves `rows` empty, which used to render as
+            `No provider matches ""` — blaming an empty search box for a dead
+            server. The catalog being unreadable is a different sentence.
+          */}
           <Show when={!matched().length}>
-            <div class="oc-menu-empty">No provider matches “{query()}”.</div>
+            <div class="oc-menu-empty">
+              <Show
+                when={!state.engineReachable && !props.rows.length}
+                fallback={<>No provider matches “{query()}”.</>}
+              >
+                No providers to show — `opencode serve` is not answering, so the catalog could not be read. Start or
+                restart the engine, then reopen this dialog.
+              </Show>
+            </div>
           </Show>
         </div>
       </>

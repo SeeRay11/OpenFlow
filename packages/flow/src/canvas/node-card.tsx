@@ -1,8 +1,22 @@
 import { Show } from "solid-js"
 import { roleColor } from "../graph/roles"
-import type { FlowNode } from "../graph/types"
+import type { FlowNode, NodeStatus } from "../graph/types"
 import { actions, runtimeOf, state } from "../state"
 import { NODE_WIDTH } from "./geometry"
+
+/** One line explaining what a card's status word means, for the badge tooltip. */
+function statusHelp(status: NodeStatus) {
+  const help: Record<NodeStatus, string> = {
+    idle: "idle — waiting to be run",
+    queued: "queued — waiting for its turn in the run",
+    running: "running — this card's session is active",
+    done: "done — the session finished",
+    error: "error — the session failed",
+    skipped: "skipped — an upstream node failed, so this never ran",
+    stopped: "stopped — the run was stopped before this finished",
+  }
+  return help[status]
+}
 
 export function NodeCard(props: {
   node: FlowNode
@@ -56,15 +70,21 @@ export function NodeCard(props: {
         if (hasActivity()) actions.expand(expanded() ? undefined : props.node.id)
       }}
     >
-      <div class="node-header" onPointerDown={(event) => props.onDragStart(event, props.node.id)}>
+      <div
+        class="node-header"
+        title="drag to move this card"
+        onPointerDown={(event) => props.onDragStart(event, props.node.id)}
+      >
         <span class="node-role">{props.node.role}</span>
-        <span class="badge" data-status={runtime().status}>
+        <span class="badge" data-status={runtime().status} title={statusHelp(runtime().status)}>
           {runtime().status}
         </span>
       </div>
 
       <div class="node-body">
-        <div class="node-line">{props.node.agent.model || "default model"}</div>
+        <div class="node-line" title="runs on the agent's own default when blank">
+          {props.node.agent.model || "default model"}
+        </div>
         <Show when={props.node.agent.name}>
           <div class="node-meta">agent: {props.node.agent.name}</div>
         </Show>

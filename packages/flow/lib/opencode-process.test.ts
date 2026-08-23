@@ -115,6 +115,15 @@ describe("ownership", () => {
     expect((await supervisor.status()).command).toBe("opencode serve --port 4096")
     expect(supervisor.restart()).rejects.toThrow(/opencode serve --port 4096/)
   })
+
+  test("both supervisors report the directory the command has to run from", async () => {
+    // The UI prints `cd <cwd>` above the command because the from-source command
+    // is relative; without this it invented a checkout name.
+    const spec = { command: ["opencode", "serve", "--port", "4096"], cwd: "/repo/root", url: "http://127.0.0.1:1" }
+    expect((await unmanaged(spec, "not ours").status()).cwd).toBe("/repo/root")
+    // Nothing is spawned — `status()` only probes the (dead) url.
+    expect((await createSupervisor(spec).status()).cwd).toBe("/repo/root")
+  })
 })
 
 describe("restart", () => {

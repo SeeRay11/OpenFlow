@@ -81,11 +81,18 @@ function loadCustomRoles(): Role[] {
 const [customRoles, setCustomRoles] = createSignal<Role[]>(loadCustomRoles())
 export { customRoles }
 
+/**
+ * Write-through to localStorage. The signal stays the source of truth, so the
+ * session works either way — but a `false` return means the role is gone on
+ * reload, and every caller has to say so. Silently swallowing this loses a
+ * hand-written prompt with the UI still showing it saved.
+ */
 function persistCustomRoles(roles: Role[]) {
   try {
     localStorage.setItem(CUSTOM_ROLES_KEY, JSON.stringify(roles))
+    return true
   } catch {
-    // storage disabled or full — the session still works, it just won't remember next time
+    return false
   }
 }
 
@@ -103,24 +110,21 @@ export function allRoles(): Role[] {
  * same convention the built-ins use — `roleColor` is looked up by the text a
  * node's `role` field holds, not a separate id, so keeping them equal is what
  * lets a custom role's colour resolve at all.
+ *
+ * Returns `persisted: false` when the role only made it into this session.
  */
 export function saveCustomRole(input: { id?: string; label: string; color: string; agent: FlowAgent }) {
   const next: Role = { id: input.label, label: input.label, color: input.color, agent: input.agent }
-  setCustomRoles((roles) => {
-    const others = roles.filter((entry) => entry.id !== input.id && entry.id !== next.id)
-    const merged = [...others, next]
-    persistCustomRoles(merged)
-    return merged
-  })
-  return next
+  const merged = [...customRoles().filter((entry) => entry.id !== input.id && entry.id !== next.id), next]
+  setCustomRoles(merged)
+  return { role: next, persisted: persistCustomRoles(merged) }
 }
 
+/** Returns false when the deletion only applies to this session. */
 export function removeCustomRole(id: string) {
-  setCustomRoles((roles) => {
-    const next = roles.filter((entry) => entry.id !== id)
-    persistCustomRoles(next)
-    return next
-  })
+  const next = customRoles().filter((entry) => entry.id !== id)
+  setCustomRoles(next)
+  return persistCustomRoles(next)
 }
 
 export function role(id: string) {

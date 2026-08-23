@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { pipeline } from "./test-support"
 import type { Pipeline } from "./types"
-import { ancestors, downstream, layer, upstream, wouldCycle } from "./validate"
+import { ancestors, downstream, layer, preflight, upstream, wouldCycle } from "./validate"
 
 function layersOf(graph: Pipeline) {
   const result = layer(graph)
@@ -84,6 +84,122 @@ describe("layer", () => {
     const placed = layersOf(graph).flat()
     expect(placed.length).toBe(graph.nodes.length)
     expect(new Set(placed).size).toBe(graph.nodes.length)
+  })
+})
+
+describe("preflight", () => {
+  // Every node the builder makes starts with no model, so a runnable graph has
+  // to have one assigned; this helper does it in place for the whole pipeline.
+  function withModel(graph: Pipeline, model: string) {
+    for (const node of graph.nodes) node.agent.model = model
+    return graph
+  }
+  const unlocked = (...models: string[]) => ({ unlockedModels: new Set(models) })
+
+  test("an empty pipeline blocks on the structural check", () => {
+    const result = preflight(pipeline(), unlocked())
+    expect(result.blocking.map((problem) => problem.kind)).toEqual(["structure"])
+    expect(result.blocking[0].message).toBe("pipeline has no nodes")
+  })
+
+  test("a cycle blocks", () => {
+    const result = preflight(withModel(pipeline("a->b", "b->c", "c->a"), "opencode/x"), unlocked("opencode/x"))
+    expect(result.blocking.some((problem) => problem.kind === "structure")).toBe(true)
+  })
+
+  test("a node with no model and no agent blocks, naming the node", () => {
+    const result = preflight(pipeline("a"), unlocked())
+    expect(result.blocking.map((problem) => [problem.kind, problem.nodeId])).toEqual([["no-model", "a"]])
+    expect(result.blocking[0].message).toContain("'a'")
+  })
+
+  test("a node with no model but a named agent is fine — it runs on the agent's default", () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.name = "reviewer"
+    expect(preflight(graph, unlocked()).blocking).toEqual([])
+  })
+
+  test("a model that no connected provider can run blocks and names the node", () => {
+    const result = preflight(withModel(pipeline("a"), "groq/llama"), unlocked("opencode/x"))
+    expect(result.blocking.map((problem) => problem.kind)).toEqual(["locked-model"])
+    expect(result.blocking[0].nodeId).toBe("a")
+  })
+
+  test("a fully wired graph on unlocked models has no blocking problems", () => {
+    const graph = withModel(pipeline("a->b", "b->c"), "opencode/x")
+    const result = preflight(graph, unlocked("opencode/x"))
+    expect(result.blocking).toEqual([])
+  })
+
+  test("edit or bash without a restricted agent warns but does not block", () => {
+    const graph = withModel(pipeline("a"), "opencode/x")
+    graph.nodes[0].agent.tools = { bash: true }
+    const result = preflight(graph, unlocked("opencode/x"))
+    expect(result.blocking).toEqual([])
+    expect(result.warnings.map((problem) => problem.kind)).toEqual(["unrestricted-write"])
+  })
+
+  test("a named agent silences the write warning", () => {
+    const graph = withModel(pipeline("a"), "opencode/x")
+    graph.nodes[0].agent.tools = { edit: true }
+    graph.nodes[0].agent.name = "coder"
+    expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
+  })
+
+  test("an isolated node in a multi-node graph warns", () => {
+    const graph = withModel(pipeline("a->b", "lonely"), "opencode/x")
+    const result = preflight(graph, unlocked("opencode/x"))
+    expect(result.warnings.map((problem) => [problem.kind, problem.nodeId])).toEqual([["isolated", "lonely"]])
+  })
+
+  test("two nodes generating the same agent id block", () => {
+    // The key carries the node id, so this only happens if two nodes are given
+    // the same id — but a collision silently merges their permission blocks,
+    // which is worth refusing rather than running.
+    const graph = withModel(pipeline("a", "b"), "opencode/x")
+    graph.nodes[1].id = graph.nodes[0].id
+    graph.nodes[1].role = graph.nodes[0].role
+
+    const result = preflight(graph, unlocked("opencode/x"))
+
+    expect(result.blocking.map((problem) => problem.kind)).toEqual(["duplicate-agent"])
+    expect(result.blocking[0].message).toContain("test-a-a")
+  })
+
+  test("two nodes sharing only a role are fine", () => {
+    const graph = withModel(pipeline("a->b"), "opencode/x")
+    graph.nodes[1].role = graph.nodes[0].role
+    expect(preflight(graph, unlocked("opencode/x")).blocking).toEqual([])
+  })
+
+  test("a lone single node is not treated as isolated", () => {
+    const graph = withModel(pipeline("a"), "opencode/x")
+    expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
+  })
+
+  test("an unreachable engine blames the engine once and suppresses every locked model", () => {
+    // The exact false alarm: with the engine down nothing can read the catalog,
+    // so all three nodes look like they picked a model nobody can run.
+    const graph = withModel(pipeline("a->b", "b->c"), "anthropic/claude-sonnet-4")
+    const result = preflight(graph, { unlockedModels: new Set<string>(), engineReachable: false })
+
+    expect(result.blocking.map((problem) => problem.kind)).toEqual(["engine-unreachable"])
+    expect(result.blocking[0].message).toContain("opencode serve")
+    expect(result.blocking[0].nodeId).toBeUndefined()
+  })
+
+  test("an unreachable engine still reports problems that are not about models", () => {
+    const graph = withModel(pipeline("a->b", "b->a"), "opencode/x")
+    const kinds = preflight(graph, { unlockedModels: new Set<string>(), engineReachable: false }).blocking.map(
+      (problem) => problem.kind,
+    )
+    expect(kinds).toEqual(["engine-unreachable", "structure"])
+  })
+
+  test("a reachable engine still blocks a model no connected provider can run", () => {
+    const graph = withModel(pipeline("a"), "groq/llama")
+    const result = preflight(graph, { unlockedModels: new Set(["opencode/x"]), engineReachable: true })
+    expect(result.blocking.map((problem) => problem.kind)).toEqual(["locked-model"])
   })
 })
 

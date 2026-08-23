@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test"
+import { setAvailableModels, setDefaultModel } from "./graph/default-model"
 import { actions, runtimeOf, state } from "./state"
 
 /**
@@ -11,6 +12,8 @@ beforeEach(() => {
   actions.reset()
   actions.rejectPermissions()
   actions.clearNotice()
+  setDefaultModel(undefined)
+  setAvailableModels(new Set<string>())
 })
 
 function graph(...roles: string[]) {
@@ -30,6 +33,20 @@ describe("nodes", () => {
   test("falls back to the last role for an unknown one", () => {
     const [id] = graph("not-a-role")
     expect(state.pipeline.nodes.find((node) => node.id === id)).toBeTruthy()
+  })
+
+  test("applies the default model to a preset that has none, when it is available", () => {
+    setAvailableModels(new Set(["opencode/grok-code-free"]))
+    setDefaultModel("opencode/grok-code-free")
+    const [id] = graph("coder")
+    expect(state.pipeline.nodes.find((node) => node.id === id)!.agent.model).toBe("opencode/grok-code-free")
+  })
+
+  test("leaves the model blank when the default is not currently available", () => {
+    setAvailableModels(new Set(["opencode/other"]))
+    setDefaultModel("opencode/grok-code-free")
+    const [id] = graph("coder")
+    expect(state.pipeline.nodes.find((node) => node.id === id)!.agent.model).toBeUndefined()
   })
 
   test("gives each node its own tools object", () => {
@@ -169,5 +186,94 @@ describe("permissions", () => {
 
   test("answering something unknown is harmless", () => {
     expect(() => actions.answerPermission("nope", "once")).not.toThrow()
+  })
+})
+
+describe("dirty", () => {
+  test("a fresh graph is clean", () => {
+    expect(state.dirty).toBe(false)
+  })
+
+  test("every mutating edit marks the graph dirty", () => {
+    const [id] = graph("planner")
+    expect(state.dirty).toBe(true)
+
+    actions.markSaved()
+    actions.moveNode(id, { x: 10, y: 10 })
+    expect(state.dirty).toBe(true)
+
+    actions.markSaved()
+    actions.updateAgent(id, { prompt: "write the plan" })
+    expect(state.dirty).toBe(true)
+
+    actions.markSaved()
+    actions.rename("renamed")
+    expect(state.dirty).toBe(true)
+  })
+
+  test("saving and loading both clear it", () => {
+    graph("planner")
+    actions.markSaved()
+    expect(state.dirty).toBe(false)
+
+    graph("coder")
+    actions.load({ id: "p1", name: "loaded", nodes: [], edges: [] })
+    expect(state.dirty).toBe(false)
+  })
+})
+
+describe("undo", () => {
+  test("restores a deleted node, its edges and its hand-written prompt", () => {
+    const [a, b] = graph("planner", "coder")
+    actions.updateAgent(a, { prompt: "the prompt nobody wants to retype" })
+    actions.connect(a, b)
+
+    actions.removeNode(a)
+    expect(state.pipeline.nodes.map((node) => node.id)).toEqual([b])
+    expect(state.pipeline.edges).toEqual([])
+
+    expect(actions.undo()).toBe(true)
+    expect(state.pipeline.nodes.map((node) => node.id)).toEqual([a, b])
+    expect(state.pipeline.edges).toHaveLength(1)
+    expect(state.pipeline.nodes[0].agent.prompt).toBe("the prompt nobody wants to retype")
+  })
+
+  test("undoing leaves the graph dirty — the file on disk still has the delete", () => {
+    graph("planner")
+    actions.markSaved()
+    actions.removeNode(state.pipeline.nodes[0].id)
+    actions.undo()
+
+    expect(state.dirty).toBe(true)
+  })
+
+  test("steps back one edit at a time and stops when there is nothing left", () => {
+    graph("planner", "coder")
+
+    expect(actions.undo()).toBe(true)
+    expect(state.pipeline.nodes).toHaveLength(1)
+    expect(actions.undo()).toBe(true)
+    expect(state.pipeline.nodes).toHaveLength(0)
+    expect(actions.undo()).toBe(false)
+  })
+
+  test("loading a pipeline drops the history rather than undoing into another graph", () => {
+    graph("planner")
+    actions.load({ id: "p1", name: "loaded", nodes: [], edges: [] })
+
+    expect(actions.undo()).toBe(false)
+    expect(state.pipeline.name).toBe("loaded")
+  })
+})
+
+describe("engine reachability", () => {
+  test("starts optimistic and follows the last probe", () => {
+    expect(state.engineReachable).toBe(true)
+
+    actions.setEngineReachable(false)
+    expect(state.engineReachable).toBe(false)
+
+    actions.setEngineReachable(true)
+    expect(state.engineReachable).toBe(true)
   })
 })

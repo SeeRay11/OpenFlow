@@ -1,2 +1,7 @@
 packages/core/migration/**/snapshot.json linguist-generated
 packages/core/src/database/migration.gen.ts linguist-generated
+
+# OpenFlow launcher: must stay LF or it dies under WSL/Git-Bash from a Windows
+# clone with `bad interpreter: /bin/bash^M`. Scoped to the fork-owned script so
+# no upstream file changes how it checks out.
+openflow.sh text eol=lf

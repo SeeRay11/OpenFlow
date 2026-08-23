@@ -1,5 +1,6 @@
 import { For, Show } from "solid-js"
 import type { Attachment } from "../graph/types"
+import { state } from "../state"
 import { IconClose, IconPaperclip } from "./icons"
 
 /**
@@ -9,24 +10,73 @@ import { IconClose, IconPaperclip } from "./icons"
  * prompt. That is what the server accepts, and it means no upload endpoint, no
  * temp file on the host, and nothing left behind after a run. The cost is size:
  * base64 inflates by a third and the whole prompt travels through the dev
- * proxy, so anything over `MAX_ATTACHMENT` is refused with a reason rather than
- * failing later as an opaque request error.
+ * proxy, so anything over `MAX_ATTACHMENT` on its own, or over
+ * `ATTACHMENT_BUDGET` in total, is refused with a reason rather than failing
+ * later as an opaque request error.
  */
 export const MAX_ATTACHMENT = 4 * 1024 * 1024
 
+/**
+ * Ceiling on everything attached at once, run files plus every node's pinned
+ * files.
+ *
+ * Both hosts cap a request body at 8 MB (`server.ts`, `vite/flow-store.ts`) and
+ * attachments travel inline as base64, which inflates raw bytes by 4/3 — so 5 MB
+ * of files is already ~6.7 MB of JSON, leaving the rest of the pipeline about
+ * 1.3 MB. Crossing the cap does not fail the attach, it fails every later
+ * `PUT /flow/api/pipelines/:name`: an already-saved pipeline that can never be
+ * saved again, with no clue which file to drop. So the refusal happens here.
+ */
+export const ATTACHMENT_BUDGET = 5 * 1024 * 1024
+
 export type AttachmentError = { name: string; reason: string }
+
+/**
+ * Which of `files` fit given `used` bytes already attached. Kept pure and
+ * separate from the reading so the budget arithmetic is testable without a DOM.
+ */
+export function planAttachments<T extends { name: string; size: number }>(used: number, files: Iterable<T>) {
+  const accepted: T[] = []
+  const errors: AttachmentError[] = []
+  let total = used
+  for (const file of files) {
+    const name = file.name || "pasted file"
+    if (file.size > MAX_ATTACHMENT) {
+      errors.push({
+        name,
+        reason: `${formatSize(file.size)} is over the ${formatSize(MAX_ATTACHMENT)} per-file limit`,
+      })
+      continue
+    }
+    if (total + file.size > ATTACHMENT_BUDGET) {
+      errors.push({
+        name,
+        reason: `${formatSize(file.size)} would pass the ${formatSize(ATTACHMENT_BUDGET)} total attachment limit — ${formatSize(total)} is already attached. Remove an attachment before adding this one.`,
+      })
+      continue
+    }
+    total += file.size
+    accepted.push(file)
+  }
+  return { accepted, errors }
+}
+
+/** Bytes already spoken for: the run's own files plus everything pinned to a node. */
+function attachedBytes() {
+  return [...state.attachments, ...state.pipeline.nodes.flatMap((node) => node.agent.attachments ?? [])].reduce(
+    (total, file) => total + file.size,
+    0,
+  )
+}
 
 export async function readFiles(files: Iterable<File>): Promise<{
   attachments: Attachment[]
   errors: AttachmentError[]
 }> {
+  const plan = planAttachments(attachedBytes(), files)
   const attachments: Attachment[] = []
-  const errors: AttachmentError[] = []
-  for (const file of files) {
-    if (file.size > MAX_ATTACHMENT) {
-      errors.push({ name: file.name, reason: `${formatSize(file.size)} is over the ${formatSize(MAX_ATTACHMENT)} limit` })
-      continue
-    }
+  const errors = [...plan.errors]
+  for (const file of plan.accepted) {
     try {
       attachments.push({
         id: crypto.randomUUID(),

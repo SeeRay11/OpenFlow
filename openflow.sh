@@ -1,45 +1,68 @@
 #!/usr/bin/env bash
-# OpenFlow launcher (macOS / Linux)
+# OpenFlow launcher (macOS / Linux) — thin shim over `bun openflow.ts`.
 #
-# Starts both processes OpenFlow needs and wires them together:
-#   1. opencode serve  — the headless engine that drives the agents
-#   2. the flow canvas — the SolidJS UI at http://localhost:5174
-#
-# The engine starts first; we wait until its port is actually listening (~30s
-# cold) before launching the canvas so the UI never comes up talking to a server
-# that is not there yet. Ctrl+C stops both.
+# The launcher itself is cross-platform and lives in `openflow.ts`. This shim
+# holds no launcher logic: it only translates the POSIX-style flags into the
+# environment variables the TS launcher already honours, then hands off.
+# `openflow.ps1` does the same for PowerShell, so the two cannot drift — and
+# the shared implementation is what brought stale-port freeing, reuse of an
+# already-running process, and opening the browser to this platform. It also
+# removed this script's dependency on `setsid`, which stock macOS does not ship.
 #
 # Usage:
 #   ./openflow.sh                       # dev canvas, agents work in this repo
 #   ./openflow.sh -p ~/code/my-app      # point the agents at another repo
-#   ./openflow.sh -b                    # serve the built bundle (no vite)
 #   ./openflow.sh -s 4097               # use a non-default engine port
-#   ./openflow.sh -m                    # let the canvas own the engine, so its
-#                                       # "restart engine" button works
-#
-# Before the first run: log in a provider (`opencode auth login`, a provider env
-# var, or OPENCODE_AUTH_CONTENT). Flow inherits the server's credentials; an empty
-# model dropdown means no auth.
+#   ./openflow.sh -b                    # serve the built bundle (no vite)
+#   ./openflow.sh -m                    # let the canvas own the engine
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project=""
 server_port=4096
-built=0
-manage=0
-startup_timeout=90
 
-while getopts "p:s:bmh" opt; do
-  case "$opt" in
-    p) project="$OPTARG" ;;
-    s) server_port="$OPTARG" ;;
-    b) built=1 ;;
+usage() {
+  cat <<'EOF'
+OpenFlow — starts the engine and the canvas, then opens the browser.
+
+Usage: ./openflow.sh [-p <dir>] [-s <n>] [-b] [-m] [-h]
+
+  -p, --project <dir>      Repo the agents read and write (default: this repo).
+                           These agents edit real files — point this at the
+                           project you actually want changed.
+  -s, --server-port <n>    Port for `opencode serve` (default: 4096).
+  -b, --built              Serve the built bundle instead of the vite dev server.
+  -m, --manage             Let the canvas own the engine, which enables the UI's
+                           "restart engine" button.
+  -h, --help               Show this help.
+
+Environment:
+  OPENFLOW_DRY_RUN=1   Print the resolved plan and exit without starting
+                       anything — useful for checking how flags resolved.
+
+Connect a provider before the first run: click "api keys" in the canvas
+titlebar, pick a provider, paste its key — models appear immediately. Keys the
+opencode CLI already holds are offered for import there; the server does not
+read its `auth.json` for the model catalog, so importing is what makes them
+count. An empty model menu means no provider is connected.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p|--project)
+      [ $# -ge 2 ] || { echo "$1 needs a directory. Use -h for help." >&2; exit 1; }
+      project="$2"; shift 2 ;;
+    -s|--server-port)
+      [ $# -ge 2 ] || { echo "$1 needs a port. Use -h for help." >&2; exit 1; }
+      server_port="$2"; shift 2 ;;
+    -b|--built) export OPENFLOW_BUILT=1; shift ;;
     # Hand the engine to the canvas: it spawns it, waits for it, and can then
     # restart it from the UI. The server has no shutdown route, so only the
     # process that started it can do that.
-    m) manage=1 ;;
-    h) sed -n '2,25p' "$0"; exit 0 ;;
-    *) echo "Unknown flag. Use -h for help." >&2; exit 1 ;;
+    -m|--manage) export FLOW_MANAGE_SERVER=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown flag: $1. Use -h for help." >&2; exit 1 ;;
   esac
 done
 
@@ -51,69 +74,9 @@ command -v bun >/dev/null 2>&1 || {
 # Keep the canvas proxy pointed at whatever engine port we use.
 export OPENCODE_SERVER_URL="http://127.0.0.1:${server_port}"
 if [ -n "$project" ]; then
-  export OPENFLOW_PROJECT="$(cd "$project" && pwd)"
-fi
-project_display="${OPENFLOW_PROJECT:-$repo (this repo)}"
-
-echo
-echo "OpenFlow"
-echo "  engine   : $OPENCODE_SERVER_URL"
-echo "  project  : $project_display"
-echo "  canvas   : http://localhost:5174"
-echo
-
-server_pid=""
-cleanup() {
-  echo
-  echo "Stopping engine..."
-  # Kill the whole process group; bun spawns a child that holds the port.
-  [ -n "$server_pid" ] && kill -- -"$server_pid" 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
-
-if [ "$manage" -eq 1 ]; then
-  export FLOW_MANAGE_SERVER=1
-  echo "Engine will be started and owned by the canvas (-m)."
-  echo "Starting canvas — open http://localhost:5174"
-  echo "Press Ctrl+C to stop both."
-  echo
-  if [ "$built" -eq 1 ]; then
-    bun run --cwd "$repo/packages/flow" build
-    bun run --cwd "$repo/packages/flow" start
-  else
-    bun run --cwd "$repo/packages/flow" dev
-  fi
-  exit 0
+  [ -d "$project" ] || { echo "Project directory not found: $project" >&2; exit 1; }
+  OPENFLOW_PROJECT="$(cd "$project" && pwd)"
+  export OPENFLOW_PROJECT
 fi
 
-echo "Starting engine (opencode serve)..."
-# setsid gives the engine its own process group so cleanup can take the tree.
-setsid bun run --cwd "$repo/packages/opencode" --conditions=browser \
-  src/index.ts serve --port "$server_port" &
-server_pid=$!
-
-# Poll the port instead of sleeping a fixed amount — cold starts vary.
-deadline=$(( $(date +%s) + startup_timeout ))
-until (exec 3<>"/dev/tcp/127.0.0.1/${server_port}") 2>/dev/null; do
-  if ! kill -0 "$server_pid" 2>/dev/null; then
-    echo "Engine exited during startup. Check the output above." >&2
-    exit 1
-  fi
-  if [ "$(date +%s)" -ge "$deadline" ]; then
-    echo "Engine did not start listening on ${server_port} within ${startup_timeout}s." >&2
-    exit 1
-  fi
-  sleep 0.5
-done
-exec 3<&- 3>&- 2>/dev/null || true
-echo "Engine listening on ${server_port}."
-
-echo "Starting canvas — open http://localhost:5174"
-echo "Press Ctrl+C to stop both."
-echo
-if [ "$built" -eq 1 ]; then
-  bun run --cwd "$repo/packages/flow" build
-  bun run --cwd "$repo/packages/flow" start
-else
-  bun run --cwd "$repo/packages/flow" dev
-fi
+exec bun "$repo/openflow.ts"

@@ -81,11 +81,26 @@ export type RunOptions = {
    * behind it — for the full wait.
    */
   nodeTimeout?: number
+  /**
+   * Shortest gap between two mid-run writes of the run log, in milliseconds.
+   * Only worth changing in tests — the run log is checkpointed so that a run
+   * killed at minute 25 still leaves what it had on disk.
+   */
+  checkpointEvery?: number
+  /**
+   * How long to wait before re-reading a model catalog that did not contain a
+   * model some node names, in milliseconds. `0` disables the re-read, which is
+   * what a test wants when the unknown model is unknown on purpose.
+   */
+  catalogRetry?: number
 }
 
 export const DEFAULT_MAX_PARALLEL = 4
 export const DEFAULT_NODE_TIMEOUT = 30 * 60_000
 export const DEFAULT_QUESTION_TIMEOUT = 5 * 60_000
+export const DEFAULT_CHECKPOINT_EVERY = 2_000
+/** How long to wait before re-reading a model catalog that looked incomplete. */
+export const DEFAULT_CATALOG_RETRY = 1_500
 
 export type Run = {
   log: RunLog
@@ -191,6 +206,8 @@ export function start(
   const limit = Math.max(1, Math.floor(options.maxParallel ?? DEFAULT_MAX_PARALLEL))
   const nodeTimeout = Math.max(1_000, options.nodeTimeout ?? DEFAULT_NODE_TIMEOUT)
   const questionTimeout = Math.max(100, options.questionTimeout ?? DEFAULT_QUESTION_TIMEOUT)
+  const checkpointEvery = Math.max(1, options.checkpointEvery ?? DEFAULT_CHECKPOINT_EVERY)
+  const catalogRetry = Math.max(0, options.catalogRetry ?? DEFAULT_CATALOG_RETRY)
   const runFiles = options.attachments ?? []
   const validation = layer(pipeline)
   if (!validation.ok) throw new Error(validation.error)
@@ -280,6 +297,46 @@ export function start(
     Object.assign(entry(id), next)
     hooks.onNode(id, next)
     hooks.onRun?.(log)
+    checkpoint()
+  }
+
+  let checkpointTimer: ReturnType<typeof setTimeout> | undefined
+  let writes: Promise<unknown> = Promise.resolve()
+
+  /**
+   * Writes the run log as it stands.
+   *
+   * Saving only at the end loses the whole run when the tab is closed or the
+   * host is killed mid-run — half an hour of real spend with nothing on disk —
+   * so this also runs while the pipeline is going. Writes are chained behind
+   * each other so a slow one cannot be overtaken and land stale; the store's
+   * own write is atomic, so a half-written file is not a concern here.
+   */
+  function save() {
+    if (checkpointTimer) clearTimeout(checkpointTimer)
+    checkpointTimer = undefined
+    // The full stream stays in memory for the open page; the log keeps the
+    // tail, with bodies clipped, so reopening a run replays what happened
+    // without turning the run file into a transcript store.
+    for (const node of log.nodes) {
+      const stream = events.get(node.id)
+      if (stream?.length) node.events = persistable(stream)
+    }
+    writes = writes.then(() =>
+      deps.saveRun(log).catch((error) => hooks.onNotice?.("error", `run log not saved: ${api.describe(error)}`)),
+    )
+    return writes
+  }
+
+  /**
+   * Schedules a checkpoint, at most one per `checkpointEvery`. The timer is
+   * never pushed back by later updates, so a run that keeps patching still
+   * reaches disk on a fixed cadence, and the final `save()` clears whatever is
+   * pending — the last state is written either way.
+   */
+  function checkpoint() {
+    if (checkpointTimer) return
+    checkpointTimer = setTimeout(save, checkpointEvery)
   }
 
   // Live status from the event bus. Best-effort: execution never depends on it.
@@ -524,6 +581,18 @@ export function start(
       const models = await api.models().catch(() => undefined)
       for (const model of models ?? []) catalog.set(`${model.providerID}/${model.id}`, model)
 
+      // A restarted engine answers `/api/health` before its model catalog has
+      // finished filling, so a run started in that window sees a partial list
+      // and every node reads as naming a model that does not exist — which
+      // sends the user to change a model that was right all along. One re-read
+      // separates "still loading" from "genuinely not offered"; a complete
+      // catalog resolves on the first pass and never reaches this.
+      if (models && unknownModels(pipeline, catalog).length && catalogRetry > 0) {
+        await new Promise((resolve) => setTimeout(resolve, catalogRetry))
+        for (const model of (await api.models().catch(() => [])) ?? [])
+          catalog.set(`${model.providerID}/${model.id}`, model)
+      }
+
       const unresolved = models ? unknownModels(pipeline, catalog) : []
       if (unresolved.length) {
         for (const node of unresolved) {
@@ -578,22 +647,14 @@ ${serve.command}`
       log.status = "error"
       hooks.onNotice?.("error", api.describe(error))
     } finally {
-      for (const node of log.nodes) {
+      for (const node of log.nodes)
         if (node.status === "queued" || node.status === "running") node.status = "stopped"
-        // The full stream stays in memory for the open page; the log keeps the
-        // tail, with bodies clipped, so reopening a run replays what happened
-        // without turning the run file into a transcript store.
-        const stream = events.get(node.id)
-        if (stream?.length) node.events = persistable(stream)
-      }
       log.finished = Date.now()
       log.usage = mergeSpend(log.nodes.map((node) => node.usage))
       controller.abort()
       void bus
       hooks.onRun?.(log)
-      await deps
-        .saveRun(log)
-        .catch((error) => hooks.onNotice?.("error", `run log not saved: ${api.describe(error)}`))
+      await save()
     }
     return log
   })()

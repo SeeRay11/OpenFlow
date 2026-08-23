@@ -29,21 +29,55 @@ bun install
 
 `bun install`은 전체 워크스페이스를 가져옵니다 — OpenCode 엔진과
 [`packages/flow`](packages/flow)에 있는 OpenFlow 자체 코드입니다. 첫 설치는 용량이 큽니
-다. 엔진의 네이티브 의존성을 내려받고 `node-pty`를 빌드하는 `postinstall`을 실행합니다.
+다. 엔진의 네이티브 의존성을 내려받습니다. `postinstall` 단계는 미리 빌드된 `node-pty` 헬퍼
+바이너리에 실행 권한을 표시할 뿐이며, Windows에서는 아무 일도 하지 않고 즉시 반환합니다.
 
 ### 실행
 
-**빠른 시작 — 명령 하나로 두 프로세스가 모두 시작됩니다:**
+명령 하나로 두 프로세스가 모두 시작되며, 모든 플랫폼에서 동일합니다:
 
 ```bash
-./openflow.ps1   # Windows (PowerShell)
-./openflow.sh    # macOS / Linux
+bun openflow.ts
 ```
 
-런처는 엔진을 시작하고, 수신 대기할 때까지 기다린 다음, http://localhost:5174에서 캔버스를
-엽니다. Ctrl+C로 둘 다 중지합니다. `-Project <dir>`(PowerShell) 또는 `-p <dir>`(shell)
-로 에이전트를 다른 저장소로 향하게 하세요. 빌드된 번들을 제공하려면 `-Built` / `-b`를
-전달하세요. 그래도 먼저 공급자에 로그인하세요(아래 참조).
+엔진을 시작하고, 응답할 때까지 기다린 다음, http://localhost:5174에서 캔버스를 엽니다.
+Ctrl+C로 둘 다 중지합니다. 죽은 실행이 점유한 채로 남긴 포트는 먼저 해제되고, 이미 서비스 중인
+포트는 두 번 시작하는 대신 재사용됩니다.
+
+같은 파일을 감싸는 심(shim)이 둘 있으며, 자기 플랫폼의 런처를 선호하는 사람을 위한 것입니다.
+자체 로직은 없고, 플래그를 `openflow.ts`가 이미 읽는 환경 변수로 옮길 뿐입니다.
+
+```powershell
+.\openflow.ps1
+```
+
+```bash
+./openflow.sh
+```
+
+**Windows에서는 심이 시작을 거부할 수 있습니다.** PowerShell은 기본적으로 서명되지 않은 로
+컬 스크립트를 실행하지 않으므로, `.\openflow.ps1`이 *"openflow.ps1 cannot be loaded
+because running scripts is disabled on this system"*으로 실패할 수 있습니다. 클론이 아니
+라 ZIP으로 내려받은 저장소는 인터넷에서 온 것으로 표시되어 두 번째 방식으로도 차단됩니다.
+`bun openflow.ts`는 둘 중 어느 것에도 해당되지 않으며 둘 다 우회하는 가장 짧은 방법입니다. 그
+래도 심을 쓰려면 본인 계정에 한해 로컬 스크립트를 허용하고, 파일이 ZIP에서 왔다면 차단을 해제
+하세요:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+Unblock-File .\openflow.ps1
+```
+
+플래그는 선택 사항이며, 세 가지 경로 모두 같은 결과로 이어집니다:
+
+| PowerShell | shell | 환경 변수 | 하는 일 |
+|---|---|---|---|
+| `-Project <dir>` | `-p`, `--project <dir>` | `OPENFLOW_PROJECT` | 에이전트가 읽고 쓰는 저장소 — **실제 파일을 편집합니다** |
+| `-ServerPort <n>` | `-s`, `--server-port <n>` | `OPENCODE_SERVER_URL` | 엔진 포트, 기본값 4096 |
+| `-Built` | `-b`, `--built` | `OPENFLOW_BUILT=1` | vite를 실행하는 대신 정적 번들을 빌드해 제공 |
+| `-Manage` | `-m`, `--manage` | `FLOW_MANAGE_SERVER=1` | 캔버스가 엔진을 소유하게 하여 재시작 버튼이 동작하도록 함 |
+| `-Help` | `-h`, `--help` | — | 플래그 목록 출력 |
+| — | — | `OPENFLOW_DRY_RUN=1` | 결정된 실행 계획만 출력하고 아무것도 시작하지 않음 |
 
 또는 두 프로세스를 수동으로 시작하세요. 먼저 서버:
 

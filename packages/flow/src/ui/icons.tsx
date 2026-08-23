@@ -104,6 +104,28 @@ export function IconFolder() {
   )
 }
 
+/** Export — a downward arrow dropping into a tray, saving the graph to a file. */
+export function IconExport() {
+  return (
+    <Svg>
+      <path d="M8 2.5v6.5" />
+      <path d="M5.25 6.25 8 9l2.75-2.75" />
+      <path d="M3 11v1.5a.5.5 0 0 0 .5.5h9a.5.5 0 0 0 .5-.5V11" />
+    </Svg>
+  )
+}
+
+/** Import — an upward arrow lifting out of a tray, loading a graph from a file. */
+export function IconImport() {
+  return (
+    <Svg>
+      <path d="M8 9V2.5" />
+      <path d="M5.25 5.25 8 2.5l2.75 2.75" />
+      <path d="M3 11v1.5a.5.5 0 0 0 .5.5h9a.5.5 0 0 0 .5-.5V11" />
+    </Svg>
+  )
+}
+
 /** Merge — two stacked layers folding into one, for the agent merge action. */
 export function IconLayers() {
   return (

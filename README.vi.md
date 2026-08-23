@@ -30,21 +30,58 @@ bun install
 
 `bun install` kéo về toàn bộ workspace — engine OpenCode cùng với mã riêng của
 OpenFlow trong [`packages/flow`](packages/flow). Lần cài đặt đầu tiên khá lớn; nó tải
-các phụ thuộc native của engine và chạy một `postinstall` để build `node-pty`.
+các phụ thuộc native của engine. Bước `postinstall` chỉ đánh dấu các tệp nhị phân hỗ
+trợ dựng sẵn của `node-pty` là có thể thực thi, và trên Windows nó trả về ngay lập
+tức.
 
 ### Chạy
 
-**Bắt đầu nhanh — một lệnh khởi động cả hai tiến trình:**
+Một lệnh duy nhất khởi động cả hai tiến trình, giống nhau trên mọi nền tảng:
 
 ```bash
-./openflow.ps1   # Windows (PowerShell)
-./openflow.sh    # macOS / Linux
+bun openflow.ts
 ```
 
-Trình khởi chạy sẽ khởi động engine, chờ đến khi nó lắng nghe, rồi mở canvas tại
-http://localhost:5174; Ctrl+C dừng cả hai. Trỏ các tác nhân đến một repo khác bằng
-`-Project <dir>` (PowerShell) hoặc `-p <dir>` (shell); truyền `-Built` / `-b` để phục
-vụ bản bundle đã build. Dù vậy, hãy đăng nhập một nhà cung cấp trước (xem bên dưới).
+Nó khởi động engine, chờ đến khi engine phản hồi, rồi mở canvas tại
+http://localhost:5174; Ctrl+C dừng cả hai. Cổng bị một lần chạy đã chết giữ lại sẽ
+được giải phóng trước, còn cổng đang phục vụ sẵn thì được dùng lại thay vì khởi động
+lần thứ hai.
+
+Hai shim bọc chính tệp đó, dành cho những ai quen dùng trình khởi chạy của nền tảng
+mình. Bản thân chúng không chứa logic nào — chúng chỉ chuyển các cờ thành những biến
+môi trường mà `openflow.ts` vốn đã đọc.
+
+```powershell
+.\openflow.ps1
+```
+
+```bash
+./openflow.sh
+```
+
+**Trên Windows, shim có thể từ chối khởi động:** mặc định PowerShell không chạy các
+script cục bộ chưa ký, nên `.\openflow.ps1` có thể thất bại với *"openflow.ps1 cannot
+be loaded because running scripts is disabled on this system"*. Một repo được tải về
+dưới dạng ZIP thay vì clone còn bị đánh dấu là đến từ internet, chặn nó thêm một
+đường nữa. `bun openflow.ts` không chịu ràng buộc nào trong hai điều đó và là cách
+ngắn nhất để vượt qua cả hai. Nếu vẫn muốn dùng shim, hãy cho phép script cục bộ với
+tài khoản của bạn, và bỏ chặn tệp nếu nó đến từ một tệp ZIP:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+Unblock-File .\openflow.ps1
+```
+
+Các cờ là tùy chọn, và cả ba bề mặt đều dẫn tới cùng một kế hoạch:
+
+| PowerShell | shell | biến môi trường | tác dụng |
+|---|---|---|---|
+| `-Project <dir>` | `-p`, `--project <dir>` | `OPENFLOW_PROJECT` | repo mà các tác nhân đọc và ghi — **chúng sửa tệp thật** |
+| `-ServerPort <n>` | `-s`, `--server-port <n>` | `OPENCODE_SERVER_URL` | cổng của engine, mặc định 4096 |
+| `-Built` | `-b`, `--built` | `OPENFLOW_BUILT=1` | build và phục vụ bản bundle tĩnh thay vì chạy vite |
+| `-Manage` | `-m`, `--manage` | `FLOW_MANAGE_SERVER=1` | để canvas quản lý engine, nhờ đó nút khởi động lại của nó hoạt động |
+| `-Help` | `-h`, `--help` | — | in danh sách cờ |
+| — | — | `OPENFLOW_DRY_RUN=1` | in kế hoạch đã xác định và không khởi động gì cả |
 
 Hoặc khởi động hai tiến trình thủ công. Máy chủ trước:
 

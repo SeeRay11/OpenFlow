@@ -29,23 +29,59 @@ bun install
 
 `bun install` tüm workspace'i çeker — OpenCode motoru artı OpenFlow'un
 [`packages/flow`](packages/flow) içindeki kendi kodu. İlk kurulum büyüktür; motorun
-yerel (native) bağımlılıklarını indirir ve `node-pty` derleyen bir `postinstall`
-çalıştırır.
+yerel (native) bağımlılıklarını indirir. Bir `postinstall` adımı `node-pty`'nin
+önceden derlenmiş yardımcı ikili dosyalarını çalıştırılabilir olarak işaretler ve
+Windows'ta hemen geri döner.
 
 ### Çalıştırma
 
-**Hızlı başlangıç — tek bir komut her iki süreci de başlatır:**
+Tek bir komut her iki süreci de başlatır, her platformda aynı şekilde:
 
 ```bash
-./openflow.ps1   # Windows (PowerShell)
-./openflow.sh    # macOS / Linux
+bun openflow.ts
 ```
 
-Başlatıcı motoru başlatır, dinlemeye geçene kadar bekler, sonra tuvali
-http://localhost:5174 adresinde açar; Ctrl+C ikisini de durdurur. Ajanları başka bir
-depoya `-Project <dir>` (PowerShell) veya `-p <dir>` (shell) ile yöneltin; derlenmiş
-paketi sunmak için `-Built` / `-b` geçirin. Yine de önce bir sağlayıcıya giriş yapın
-(aşağıya bakın).
+Motoru başlatır, yanıt verene kadar bekler, sonra tuvali http://localhost:5174
+adresinde açar; Ctrl+C ikisini de durdurur. Ölü bir çalıştırmanın bağlı bıraktığı
+bir port önce serbest bırakılır, halihazırda hizmet veren bir port ise ikinci kez
+başlatılmak yerine yeniden kullanılır.
+
+İki shim, kendi platformunun başlatıcısını tercih edenler için aynı dosyayı sarar.
+Kendilerine ait bir mantıkları yoktur — yalnızca bayrakları `openflow.ts`'nin zaten
+okuduğu ortam değişkenlerine çevirirler.
+
+```powershell
+.\openflow.ps1
+```
+
+```bash
+./openflow.sh
+```
+
+**Windows'ta shim başlamayı reddedebilir:** PowerShell varsayılan olarak imzasız
+yerel betikleri çalıştırmaz, bu yüzden `.\openflow.ps1` *"openflow.ps1 cannot be
+loaded because running scripts is disabled on this system"* hatasıyla
+başarısız olabilir. Klonlanmak yerine ZIP olarak indirilen bir depo ayrıca
+internetten geldiği şeklinde işaretlenir ve bu da onu ikinci bir yoldan engeller.
+`bun openflow.ts` bunların hiçbirine tabi değildir ve ikisini de aşmanın en kısa
+yoludur. Yine de shim'i kullanmak isterseniz kendi hesabınız için yerel betiklere
+izin verin ve dosya bir ZIP'ten geldiyse engelini kaldırın:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+Unblock-File .\openflow.ps1
+```
+
+Bayraklar isteğe bağlıdır ve üç yüzey de aynı plana çözümlenir:
+
+| PowerShell | shell | ortam | ne yapar |
+|---|---|---|---|
+| `-Project <dir>` | `-p`, `--project <dir>` | `OPENFLOW_PROJECT` | ajanların okuyup yazdığı depo — **gerçek dosyaları düzenlerler** |
+| `-ServerPort <n>` | `-s`, `--server-port <n>` | `OPENCODE_SERVER_URL` | motor portu, varsayılan 4096 |
+| `-Built` | `-b`, `--built` | `OPENFLOW_BUILT=1` | vite çalıştırmak yerine statik paketi derleyip sun |
+| `-Manage` | `-m`, `--manage` | `FLOW_MANAGE_SERVER=1` | motorun sahipliğini tuvale bırak; böylece yeniden başlatma düğmesi çalışır |
+| `-Help` | `-h`, `--help` | — | bayrak listesini yazdır |
+| — | — | `OPENFLOW_DRY_RUN=1` | çözümlenen planı yazdır ve hiçbir şey başlatma |
 
 Ya da iki süreci elle başlatın. Önce sunucu:
 

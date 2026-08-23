@@ -117,6 +117,10 @@ Check these first when the UI misbehaves — each one cost a debugging session.
   option ("(server default)", "Agent default").
 - `<Show when={sig()}>{(entry) => <Comp prop={entry()} />}</Show>` — the callback form gives
   an accessor, not a value.
+- When overlaying the empty canvas (the first-run walkthrough, any hint layer), the full-bleed
+  container must keep `pointer-events: none` and re-enable it only on the buttons — the same
+  rule as `.canvas-empty` — or drag-to-create and panning die. The walkthrough is a `position:
+  fixed` layer in `src/ui/walkthrough.tsx` following this exactly.
 
 ## Config and cost gotchas
 
@@ -131,6 +135,14 @@ Check these first when the UI misbehaves — each one cost a debugging session.
   `src/server/usage.ts` from models.dev per-1M tiers. **An unpriced model must never render
   as zero** — show it as unknown.
 - Permissions set to `auto` reply `once` to every ask.
+- `bun test` has **no `localStorage`** (it is a browser global). When persisting a preference
+  the browser stores there — custom roles, the default-model preference (`graph/default-model.ts`),
+  the walkthrough-dismissed flag — make a Solid signal the source of truth and treat
+  localStorage as best-effort persistence wrapped in `try/catch`. Then signal-backed get/set
+  round-trips in tests while storage silently no-ops, so no test needs a `globalThis` polyfill.
+- Pre-run validation lives in `preflight(pipeline, { unlockedModels })` in `graph/validate.ts`
+  (reuses `layer()` for structural checks). `run()` calls it before any session is created:
+  blocking problems abort, warnings render but let the run proceed.
 
 ## When a rule is missing
 

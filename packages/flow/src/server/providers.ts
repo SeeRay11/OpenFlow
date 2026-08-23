@@ -25,6 +25,16 @@ export type ModelOption = {
   runnable: boolean
   /** The API shape, shown when it is the reason a model cannot run. */
   api: string
+  /**
+   * Zen's free tier: runs with no key, no account and no bill.
+   *
+   * The only flag here that grants access rather than describing it — a free
+   * model is offered on a fresh install while every other model on the same
+   * locked provider is not. The quota is shared across everyone using it, so a
+   * free model can answer `429 FreeUsageLimit` while the paid ones beside it
+   * are fine. See [isFreeModel].
+   */
+  free: boolean
 }
 
 /**
@@ -106,14 +116,16 @@ export function providerRows(
     const listed = serves?.get(model.providerID)
     if (listed && !listed.has(model.id)) continue
     const list = byProvider.get(model.providerID) ?? []
+    const routed = runnable(model.api)
     list.push({
       value: `${model.providerID}/${model.id}`,
       id: model.id,
       name: model.name || model.id,
       providerID: model.providerID,
       providerName: names.get(model.providerID) ?? model.providerID,
-      runnable: runnable(model.api),
+      runnable: routed,
       api: model.api?.type === "aisdk" ? (model.api.package ?? "aisdk") : (model.api?.type ?? "unknown"),
+      free: isFreeModel({ providerID: model.providerID, id: model.id, runnable: routed }),
     })
     byProvider.set(model.providerID, list)
   }
@@ -158,6 +170,63 @@ export function providerRows(
   return rows.sort(compareRows)
 }
 
+/**
+ * Zen's free tier marks its keyless models with a `-free` suffix on the id
+ * (e.g. `nemotron-3.5-lightning-free`). The suffix is the only stable marker —
+ * the exact ids change — so it lives here, in one place, rather than as a
+ * hardcoded model id anywhere.
+ */
+const FREE_SUFFIX = "-free"
+
+/**
+ * A free, keyless model: served by the `opencode` (zen) provider, actually
+ * runnable, and carrying zen's free-tier suffix. This is what lets a fresh
+ * install "just try it" with no key and no signup.
+ *
+ * All three conditions carry weight. The provider check keeps a `-free` id from
+ * some other provider — where the suffix means nothing — from unlocking itself.
+ * The suffix check keeps zen's *paid* models (claude-*, gpt-5*, glm-*, kimi-*,
+ * which sit on the same row and bill a connected account) locked. The runnable
+ * check drops the free ids with no route, zen's `gemini-*-free` among them:
+ * they use `@ai-sdk/google`, produce no assistant message at all, and reading
+ * as free would make silence look like the free tier's fault.
+ *
+ * Beyond that, a listed model is still only a claim — `deepseek-v4-flash-free`
+ * answered HTTP 400 and `mimo-v2.5-free` 429 on 2026-08-23 while their
+ * neighbours ran. Which ids are healthy changes by the hour, so nothing here
+ * pins one: only a real prompt proves a model, which is what the per-node test
+ * button is for.
+ *
+ * Takes the fields rather than a whole [ModelOption] because it is what
+ * computes that type's `free`.
+ */
+export function isFreeModel(option: { providerID: string; id: string; runnable: boolean }): boolean {
+  return option.providerID === "opencode" && option.runnable && option.id.endsWith(FREE_SUFFIX)
+}
+
+/** Every runnable free zen model across the catalog, provider order preserved. */
+export function freeModels(rows: ProviderRow[]): ModelOption[] {
+  return rows.flatMap((row) => row.models).filter((model) => model.free)
+}
+
+/**
+ * Every model a node could dispatch right now — the set pre-run validation
+ * checks a chosen model against.
+ *
+ * Not "the models of an unlocked provider". Zen's free tier needs no key, so a
+ * fresh install can run those and nothing else, while the paid zen models on
+ * that same locked row stay out: dispatching one would bill an account the user
+ * never connected. Free-ness is per model, so the gate has to be too.
+ */
+export function availableModels(rows: ProviderRow[]): ModelOption[] {
+  return rows.flatMap((row) => row.models.filter((model) => model.runnable && (row.unlocked || model.free)))
+}
+
+/** `opencode/<id>` of the first runnable free model, or undefined when none is served. */
+export function suggestedFreeDefault(rows: ProviderRow[]): string | undefined {
+  return freeModels(rows)[0]?.value
+}
+
 /** The server offers models for this provider — it may still not run them. */
 export function isActive(row: ProviderRow) {
   return row.models.length > 0
@@ -182,6 +251,11 @@ export function isConnected(row: ProviderRow) {
  * chose a provider for. The rule here is the one the user goes through: pick a
  * provider, give it a key — or have its environment variable already set —
  * and only then do its models exist.
+ *
+ * This stays whole-row and strict, so it still answers "which providers did the
+ * user connect". The free zen tier is an exception granted per model, not per
+ * provider — [availableModels] and [searchModels] apply it; a row that owes its
+ * only runnable models to that exception is still not connected.
  */
 export function unlockedRows(rows: ProviderRow[]) {
   return rows.filter((row) => row.unlocked)
@@ -228,17 +302,20 @@ function sortModels(models: ModelOption[]) {
 /**
  * Substring match over provider and model, in the order the dropdown renders.
  *
- * Locked providers are skipped entirely — see [unlockedRows]. `openai/gpt` has
- * to match too, so the joined `provider/model` value is part of the haystack
- * rather than the two halves being matched separately.
+ * A locked provider contributes only its free models — see [unlockedRows] for
+ * why everything else of its is hidden, and [isFreeModel] for why the free zen
+ * tier is exempt. `openai/gpt` has to match too, so the joined `provider/model`
+ * value is part of the haystack rather than the two halves being matched
+ * separately.
  */
 export function searchModels(rows: ProviderRow[], query: string, limit = 200): ModelOption[] {
   const needle = query.trim().toLowerCase()
   const out: ModelOption[] = []
   for (const row of rows) {
-    if (!row.unlocked || !row.models.length) continue
+    if (!row.models.length) continue
     const providerHit = !needle || row.id.toLowerCase().includes(needle) || row.name.toLowerCase().includes(needle)
     for (const model of row.models) {
+      if (!row.unlocked && !model.free) continue
       if (out.length >= limit) return out
       if (
         providerHit ||

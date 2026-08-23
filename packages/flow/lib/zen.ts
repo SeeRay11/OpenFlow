@@ -16,6 +16,12 @@
  * directly. It is the only provider that allows this: everyone else's `/models`
  * needs the credential, which lives in the opencode server's store and never
  * reaches OpenFlow.
+ *
+ * Public to read is not free to run. The same list carries zen's paid models
+ * (claude-*, gpt-5*, gemini-*, glm-*, kimi-*) beside the `-free` ids, and a
+ * stored zen key unlocks the paid ones with real billing attached. So being on
+ * this list only means "zen still serves it"; whether it costs money is decided
+ * by `isFreeModel` in [../src/server/providers.ts], never here.
  */
 const ENDPOINT = "https://opencode.ai/zen/v1/models"
 const TTL = 10 * 60_000

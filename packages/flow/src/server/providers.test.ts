@@ -1,15 +1,19 @@
 import { describe, expect, test } from "bun:test"
 import type { Integration } from "./client"
 import {
+  availableModels,
+  freeModels,
   groupMatches,
   isActive,
   isConnected,
+  isFreeModel,
   providerRows,
   readyRows,
   runnable,
   searchModels,
   searchProviders,
   splitProviders,
+  suggestedFreeDefault,
   unlockedRows,
   usableCount,
 } from "./providers"
@@ -174,6 +178,167 @@ describe("providerRows", () => {
     expect(isActive(rows[0])).toBe(true)
     // Nothing here can be keyed, so hiding its models would hide them forever.
     expect(rows[0].unlocked).toBe(true)
+  })
+})
+
+describe("free models", () => {
+  const option = (over: Partial<ReturnType<typeof optionBase>> = {}) => ({ ...optionBase(), ...over })
+  function optionBase() {
+    return {
+      value: "opencode/nemotron-3.5-lightning-free",
+      id: "nemotron-3.5-lightning-free",
+      name: "Nemotron 3.5 Lightning (free)",
+      providerID: "opencode",
+      providerName: "OpenCode Zen",
+      runnable: true,
+      api: "@ai-sdk/openai-compatible",
+    }
+  }
+
+  test("accepts an opencode runnable model whose id ends in -free", () => {
+    expect(isFreeModel(option())).toBe(true)
+  })
+
+  test("rejects a free-suffixed model from another provider", () => {
+    expect(isFreeModel(option({ value: "groq/x-free", id: "x-free", providerID: "groq" }))).toBe(false)
+  })
+
+  test("rejects an unrunnable free model", () => {
+    expect(isFreeModel(option({ runnable: false }))).toBe(false)
+  })
+
+  test("rejects an opencode model without the suffix", () => {
+    expect(isFreeModel(option({ value: "opencode/nemotron", id: "nemotron" }))).toBe(false)
+  })
+
+  test("freeModels and suggestedFreeDefault pick the runnable free zen models", () => {
+    const rows = providerRows(
+      [integration("opencode", { name: "OpenCode Zen" })],
+      [
+        { id: "grok-code-free", providerID: "opencode", name: "Grok Code (free)", api: compatible },
+        { id: "kimi-k2", providerID: "opencode", name: "Kimi K2", api: compatible },
+        { id: "dead-free", providerID: "opencode", name: "Dead (free)", api: groqSdk },
+      ],
+    )
+    expect(freeModels(rows).map((model) => model.value)).toEqual(["opencode/grok-code-free"])
+    expect(suggestedFreeDefault(rows)).toBe("opencode/grok-code-free")
+  })
+
+  test("no free model served means no suggestion and no crash", () => {
+    const rows = providerRows(catalog, models)
+    expect(freeModels(rows)).toEqual([])
+    expect(suggestedFreeDefault(rows)).toBeUndefined()
+  })
+})
+
+describe("a fresh install: no stored key, no environment variable", () => {
+  // Zen ids as the server really serves them: two keyless free ones, one paid
+  // model on the same provider, and a free id whose api the runner cannot route.
+  const zen = [
+    { id: "nemotron-3.5-lightning-free", providerID: "opencode", name: "Nemotron 3.5 Lightning (free)", api: compatible },
+    { id: "hy3-free", providerID: "opencode", name: "HY3 (free)", api: compatible },
+    { id: "claude-opus-5", providerID: "opencode", name: "Claude Opus 5", api: compatible },
+    { id: "gemini-3-free", providerID: "opencode", name: "Gemini 3 (free)", api: { type: "aisdk", package: "@ai-sdk/google" } },
+  ]
+  const fresh = (serves?: Map<string, Set<string>>) =>
+    providerRows(
+      [integration("opencode", { name: "OpenCode Zen" }), integration("anthropic", { name: "Anthropic", env: ["ANTHROPIC_API_KEY"] })],
+      zen,
+      [],
+      serves,
+    )
+
+  test("offers the free zen models to a user who has connected nothing", () => {
+    expect(availableModels(fresh()).map((model) => model.value)).toEqual([
+      "opencode/hy3-free",
+      "opencode/nemotron-3.5-lightning-free",
+    ])
+    expect(searchModels(fresh(), "").map((model) => model.value)).toEqual([
+      "opencode/hy3-free",
+      "opencode/nemotron-3.5-lightning-free",
+    ])
+  })
+
+  test("a paid zen model still needs a key, so a fresh install cannot spend money", () => {
+    expect(availableModels(fresh()).some((model) => model.id === "claude-opus-5")).toBe(false)
+    expect(searchModels(fresh(), "claude")).toEqual([])
+    const keyed = providerRows([integration("opencode", { name: "OpenCode Zen", credentials: ["cred_zen"] })], zen)
+    expect(availableModels(keyed).map((model) => model.id)).toContain("claude-opus-5")
+  })
+
+  test("a free id the runner cannot route is not offered — it would fail silently", () => {
+    // zen's gemini-* are `@ai-sdk/google`; a node dispatching one produces no
+    // assistant message at all, which reads as OpenFlow hanging.
+    const opencode = fresh().find((row) => row.id === "opencode")!
+    expect(opencode.models.find((model) => model.id === "gemini-3-free")!.free).toBe(false)
+    expect(availableModels(fresh()).some((model) => model.id === "gemini-3-free")).toBe(false)
+  })
+
+  test("the free flag rides on the model, so the picker can label it", () => {
+    const opencode = fresh().find((row) => row.id === "opencode")!
+    expect(opencode.models.filter((model) => model.free).map((model) => model.id)).toEqual([
+      "hy3-free",
+      "nemotron-3.5-lightning-free",
+    ])
+    expect(opencode.models.find((model) => model.id === "claude-opus-5")!.free).toBe(false)
+  })
+
+  test("free models do not make their provider read as connected", () => {
+    // The distinction the whole gate rests on: the server being generous is not
+    // the user having connected zen. A remove-key button here would remove
+    // nothing, and the paid models must stay locked.
+    const opencode = fresh().find((row) => row.id === "opencode")!
+    expect(opencode.unlocked).toBe(false)
+    expect(isConnected(opencode)).toBe(false)
+    expect(unlockedRows(fresh()).map((row) => row.id)).toEqual([])
+  })
+
+  test("a locked provider with no free model still contributes nothing", () => {
+    // openrouter and groq keep the old behaviour exactly: no key, no env var,
+    // no models — the `-free` suffix means nothing outside zen.
+    const rows = providerRows(
+      [integration("openrouter", { name: "OpenRouter", env: ["OPENROUTER_API_KEY"] })],
+      [{ id: "grok-4-free", providerID: "openrouter", name: "Grok 4 free", api: compatible }],
+    )
+    expect(availableModels(rows)).toEqual([])
+    expect(searchModels(rows, "")).toEqual([])
+  })
+
+  test("an unreachable zen list leaves the free models available rather than wiping them", () => {
+    // `serves` undefined is UNKNOWN, not empty: an offline user keeps every zen
+    // model, including the only ones they can run without a key.
+    expect(availableModels(fresh(undefined)).map((model) => model.value)).toEqual([
+      "opencode/hy3-free",
+      "opencode/nemotron-3.5-lightning-free",
+    ])
+  })
+
+  test("a free id zen no longer serves is dropped like any other ghost", () => {
+    const serves = new Map([["opencode", new Set(["nemotron-3.5-lightning-free"])]])
+    expect(availableModels(fresh(serves)).map((model) => model.value)).toEqual([
+      "opencode/nemotron-3.5-lightning-free",
+    ])
+  })
+
+  test("a search that names a free model finds it on the locked provider", () => {
+    expect(searchModels(fresh(), "nemotron").map((model) => model.value)).toEqual([
+      "opencode/nemotron-3.5-lightning-free",
+    ])
+    // A provider-name hit still cannot drag the paid models along.
+    expect(searchModels(fresh(), "zen").map((model) => model.id)).toEqual(["hy3-free", "nemotron-3.5-lightning-free"])
+  })
+
+  test("connecting a provider adds its models without disturbing the free ones", () => {
+    const rows = providerRows(
+      [integration("opencode", { name: "OpenCode Zen" }), integration("anthropic", { name: "Anthropic", env: ["ANTHROPIC_API_KEY"] })],
+      [...zen, { id: "claude-sonnet-5", providerID: "anthropic", name: "Claude Sonnet 5", api: { type: "aisdk", package: "@ai-sdk/anthropic" } }],
+      ["ANTHROPIC_API_KEY"],
+    )
+    expect(availableModels(rows).map((model) => model.value)).toEqual([
+      "anthropic/claude-sonnet-5",
+      "opencode/hy3-free",
+      "opencode/nemotron-3.5-lightning-free",
+    ])
   })
 })
 

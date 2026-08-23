@@ -27,15 +27,31 @@ export function RoleEditor(props: { role?: Role; onClose: () => void; onSaved: (
     if (!name) return setError("Name this role.")
     const taken = allRoles().some((entry) => entry.label === name && entry.id !== props.role?.id)
     if (taken) return setError(`A role named "${name}" already exists.`)
-    saveCustomRole({ id: props.role?.id, label: name, color: color(), agent: { prompt: prompt(), tools: tools() } })
+    const saved = saveCustomRole({
+      id: props.role?.id,
+      label: name,
+      color: color(),
+      agent: { prompt: prompt(), tools: tools() },
+    })
     props.onSaved()
+    // The role is live either way — only the write-through failed. Stay open so
+    // the prompt can be copied out before a reload takes it.
+    if (!saved.persisted)
+      return setError(
+        "Saved for this session only — the browser refused to store it. Copy your prompt somewhere safe before reloading.",
+      )
     props.onClose()
   }
 
   function remove() {
     if (!props.role) return
-    removeCustomRole(props.role.id)
+    if (!window.confirm(`Delete the role "${props.role.label}"? Its prompt, tools and color are gone for good.`)) return
+    const persisted = removeCustomRole(props.role.id)
     props.onSaved()
+    if (!persisted)
+      return setError(
+        "Deleted for this session only — the browser refused to store the change, so the role comes back on reload.",
+      )
     props.onClose()
   }
 

@@ -30,22 +30,58 @@ bun install
 
 `bun install` pobiera cały workspace — silnik OpenCode plus własny kod OpenFlow w
 [`packages/flow`](packages/flow). Pierwsza instalacja jest duża; pobiera natywne
-zależności silnika i uruchamia `postinstall`, który buduje `node-pty`.
+zależności silnika. Krok `postinstall` oznacza prekompilowane binaria pomocnicze
+`node-pty` jako wykonywalne, a na Windowsie kończy się natychmiast.
 
 ### Uruchamianie
 
-**Szybki start — jedno polecenie uruchamia oba procesy:**
+Jedno polecenie uruchamia oba procesy, tak samo na każdej platformie:
 
 ```bash
-./openflow.ps1   # Windows (PowerShell)
-./openflow.sh    # macOS / Linux
+bun openflow.ts
 ```
 
-Launcher uruchamia silnik, czeka, aż zacznie nasłuchiwać, a następnie otwiera płótno
-pod adresem http://localhost:5174; Ctrl+C zatrzymuje oba. Skieruj agentów na inne
-repozytorium za pomocą `-Project <dir>` (PowerShell) lub `-p <dir>` (shell); podaj
-`-Built` / `-b`, aby serwować zbudowany pakiet. I tak najpierw zaloguj się u
-dostawcy (patrz poniżej).
+Uruchamia silnik, czeka, aż zacznie odpowiadać, a następnie otwiera płótno pod
+adresem http://localhost:5174; Ctrl+C zatrzymuje oba. Port pozostawiony zajęty przez
+martwe uruchomienie jest najpierw zwalniany, a port, który już obsługuje ruch, jest
+ponownie wykorzystywany zamiast uruchamiany po raz drugi.
+
+Dwie nakładki (shimy) opakowują ten sam plik dla osób, które wolą launcher własnej
+platformy. Nie zawierają własnej logiki — tłumaczą jedynie flagi na zmienne
+środowiskowe, które `openflow.ts` i tak odczytuje.
+
+```powershell
+.\openflow.ps1
+```
+
+```bash
+./openflow.sh
+```
+
+**W systemie Windows shim może odmówić uruchomienia:** PowerShell domyślnie nie
+uruchamia niepodpisanych skryptów lokalnych, więc `.\openflow.ps1` może zakończyć
+się błędem *"openflow.ps1 cannot be loaded because running scripts is disabled on
+this system"*. Repozytorium pobrane jako ZIP zamiast sklonowane jest dodatkowo
+oznaczone jako pochodzące z internetu, co blokuje je po raz drugi. `bun openflow.ts`
+nie podlega żadnemu z tych ograniczeń i jest najkrótszą drogą, by ominąć oba. Aby
+mimo to użyć shima, zezwól na skrypty lokalne dla własnego konta i odblokuj plik,
+jeśli pochodzi z archiwum ZIP:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+Unblock-File .\openflow.ps1
+```
+
+Flagi są opcjonalne, a wszystkie trzy powierzchnie prowadzą do tego samego planu:
+
+| PowerShell | shell | zmienna środowiskowa | co robi |
+|---|---|---|---|
+| `-Project <dir>` | `-p`, `--project <dir>` | `OPENFLOW_PROJECT` | repozytorium, które agenci czytają i zapisują — **edytują prawdziwe pliki** |
+| `-ServerPort <n>` | `-s`, `--server-port <n>` | `OPENCODE_SERVER_URL` | port silnika, domyślnie 4096 |
+| `-Built` | `-b`, `--built` | `OPENFLOW_BUILT=1` | zbuduj i serwuj statyczny pakiet zamiast uruchamiać vite |
+| `-Manage` | `-m`, `--manage` | `FLOW_MANAGE_SERVER=1` | pozwól, aby to płótno zarządzało silnikiem, dzięki czemu działa jego przycisk restartu |
+| `-Help` | `-h`, `--help` | — | wypisz listę flag |
+| — | — | `OPENFLOW_DRY_RUN=1` | wypisz ustalony plan i nic nie uruchamiaj |
 
 Albo uruchom oba procesy ręcznie. Najpierw serwer:
 

@@ -80,6 +80,10 @@ function reason(error: unknown): string | undefined {
   const record = error as Record<string, any>
   if (typeof record.message === "string" && record.message) return record.message
   if (typeof record.data?.message === "string" && record.data.message) return record.data.message
+  // Both hosts answer a proxy failure with `message`, but `error` is the key
+  // the `/flow/api` store uses and the one the built host used to emit. Reading
+  // it too means a host drifting back to it renders a sentence, not a JSON blob.
+  if (typeof record.error === "string" && record.error) return record.error
   if (typeof record._tag === "string" && record._tag) return record._tag
   const json = JSON.stringify(error)
   return json && json !== "{}" && json !== "[]" ? json : undefined

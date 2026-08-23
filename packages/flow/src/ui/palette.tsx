@@ -1,5 +1,6 @@
 import { For, Show, createSignal } from "solid-js"
 import { allRoles, isCustomRole, removeCustomRole, type Role } from "../graph/roles"
+import { TEMPLATES, type Template } from "../graph/templates"
 import { actions, state } from "../state"
 import { IconEdit, IconPlus, IconTrash } from "./icons"
 import { RoleEditor } from "./role-editor"
@@ -8,8 +9,34 @@ export function Palette() {
   // undefined = closed, "new" = blank editor, a Role = editing that saved role
   const [editing, setEditing] = createSignal<Role | "new">()
 
+  /** Loads a template, replacing the graph — guarded when there is work to lose. */
+  function loadTemplate(template: Template) {
+    if (state.pipeline.nodes.length && !window.confirm("Replace the current pipeline?")) return
+    actions.load(template.build())
+  }
+
   return (
     <aside class="panel palette">
+      <div class="panel-section">
+        <h2 class="panel-title">templates</h2>
+        <p class="hint">start from a ready-made pipeline</p>
+        <div class="template-list">
+          <For each={TEMPLATES}>
+            {(template) => (
+              <button
+                class="template-card"
+                type="button"
+                title={template.description}
+                onClick={() => loadTemplate(template)}
+              >
+                <span class="template-name">{template.name}</span>
+                <span class="template-desc">{template.description}</span>
+              </button>
+            )}
+          </For>
+        </div>
+      </div>
+
       <div class="panel-section roles-section">
         <div class="row">
           <h2 class="panel-title">roles</h2>
@@ -74,7 +101,19 @@ export function Palette() {
                         aria-label={`delete ${role.label}`}
                         onClick={(event) => {
                           event.stopPropagation()
-                          removeCustomRole(role.id)
+                          // The trash sits one icon away from edit, and the role's
+                          // prompt is hand-written — same guard the skills panel uses.
+                          if (
+                            !window.confirm(
+                              `Delete the role "${role.label}"? Its prompt, tools and color are gone for good.`,
+                            )
+                          )
+                            return
+                          if (!removeCustomRole(role.id))
+                            actions.notice(
+                              "error",
+                              `deleted "${role.label}" for this session only — the browser refused to store the change`,
+                            )
                         }}
                       >
                         <IconTrash />

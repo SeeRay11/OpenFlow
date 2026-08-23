@@ -1058,6 +1058,72 @@ input[type="checkbox"] {
   flex-shrink: 0;
 }
 
+/* pre-run validation ---------------------------------------------------- */
+
+.preflight {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  padding: 8px 12px;
+  gap: 4px;
+  background: var(--v2-state-bg-danger);
+  border-bottom: 1px solid var(--v2-state-border-danger);
+}
+
+.preflight-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.preflight-title {
+  color: var(--v2-text-text-base);
+  font-weight: 440;
+}
+
+.preflight-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--v2-text-text-base);
+  text-align: left;
+  cursor: pointer;
+}
+
+.preflight-item:hover:not(:disabled) {
+  background: var(--v2-overlay-simple-overlay-hover);
+}
+
+.preflight-item:disabled {
+  cursor: default;
+}
+
+.preflight-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.preflight-dot[data-kind="bad"] {
+  background: var(--v2-state-fg-danger);
+}
+
+.preflight-dot[data-kind="warn"] {
+  background: var(--v2-state-fg-warning);
+}
+
+.preflight-message {
+  flex: 1;
+  min-width: 0;
+}
+
 /* layout ---------------------------------------------------------------- */
 
 main {
@@ -1117,6 +1183,45 @@ main {
   min-height: 0;
   gap: 6px;
   overflow-y: auto;
+}
+
+/* templates mirror the role-card frame but stack a name over a description and
+   never drag — they load a whole graph on click, so they read as buttons */
+.template-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.template-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border: 0.5px solid var(--v2-border-border-base);
+  border-radius: 5px;
+  background: var(--v2-background-bg-button-neutral);
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+}
+
+.template-card:hover {
+  background: var(--v2-overlay-simple-overlay-hover);
+}
+
+.template-card:active {
+  background: var(--v2-overlay-simple-overlay-pressed);
+}
+
+.template-name {
+  color: var(--v2-text-text-base);
+}
+
+.template-desc {
+  color: var(--v2-text-text-muted);
 }
 
 /* the role is a dot, never a filled card — colour marks, it does not shout */
@@ -1604,6 +1709,113 @@ main {
   color: var(--v2-text-text-faint);
   text-align: center;
   pointer-events: none;
+}
+
+/* first-run walkthrough ------------------------------------------------- */
+
+/* Layered over the empty canvas like `.canvas-empty`, and click-through for
+   the same reason: drag-to-create and panning must still reach the canvas.
+   Only the card and its buttons re-enable pointer events. */
+.walkthrough {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.walkthrough-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 340px;
+  max-width: calc(100vw - 48px);
+  padding: 16px;
+  pointer-events: auto;
+  background: var(--v2-background-bg-layer-01);
+  border: 1px solid var(--v2-border-border-base);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgb(0 0 0 / 32%);
+}
+
+.walkthrough-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.walkthrough-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 440;
+  color: var(--v2-text-text-base);
+}
+
+.walkthrough-skip {
+  border: 0;
+  background: transparent;
+  color: var(--v2-text-text-muted);
+  cursor: pointer;
+}
+
+.walkthrough-skip:hover {
+  color: var(--v2-text-text-base);
+}
+
+.walkthrough-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.walkthrough-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.walkthrough-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  border: 1px solid var(--v2-border-border-base);
+  border-radius: 50%;
+  color: var(--v2-state-fg-success);
+}
+
+.walkthrough-step[data-done] .walkthrough-mark {
+  border-color: var(--v2-state-fg-success);
+}
+
+.walkthrough-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.walkthrough-label {
+  color: var(--v2-text-text-base);
+}
+
+.walkthrough-step[data-done] .walkthrough-label {
+  color: var(--v2-text-text-muted);
+}
+
+.walkthrough-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
 }
 
 /* opencode menus and dialogs -------------------------------------------- */

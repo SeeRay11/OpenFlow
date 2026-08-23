@@ -29,21 +29,57 @@ bun install
 
 `bun install` preuzima cijeli workspace — OpenCode motor plus vlastiti kod OpenFlow-a
 u [`packages/flow`](packages/flow). Prva instalacija je velika; preuzima nativne
-zavisnosti motora i pokreće `postinstall` koji gradi `node-pty`.
+zavisnosti motora. Korak `postinstall` označava unaprijed izgrađene pomoćne binarne
+datoteke `node-pty` kao izvršne, a na Windowsu odmah završava.
 
 ### Pokretanje
 
-**Brzi start — jedna komanda pokreće oba procesa:**
+Jedna komanda pokreće oba procesa, jednako na svakoj platformi:
 
 ```bash
-./openflow.ps1   # Windows (PowerShell)
-./openflow.sh    # macOS / Linux
+bun openflow.ts
 ```
 
-Pokretač startuje motor, čeka dok ne počne slušati, a zatim otvara platno na
-http://localhost:5174; Ctrl+C zaustavlja oba. Usmjerite agente na drugi repozitorij
-sa `-Project <dir>` (PowerShell) ili `-p <dir>` (shell); proslijedite `-Built` / `-b`
-da poslužite izgrađeni bundle. Ipak se prvo prijavite kod provajdera (vidi ispod).
+Pokreće motor, čeka dok ne odgovori, a zatim otvara platno na
+http://localhost:5174; Ctrl+C zaustavlja oba. Port koji je mrtvo pokretanje
+ostavilo zauzetim prvo se oslobađa, a port koji već poslužuje ponovo se koristi
+umjesto da se pokrene drugi put.
+
+Dva shim-a omotavaju istu tu datoteku za one koji radije koriste pokretač svoje
+platforme. Nemaju vlastitu logiku — samo prevode zastavice u varijable okruženja
+koje `openflow.ts` ionako čita.
+
+```powershell
+.\openflow.ps1
+```
+
+```bash
+./openflow.sh
+```
+
+**Na Windowsu shim može odbiti da se pokrene:** PowerShell podrazumijevano ne
+pokreće nepotpisane lokalne skripte, pa `.\openflow.ps1` može pasti uz *"openflow.ps1
+cannot be loaded because running scripts is disabled on this system"*. Repozitorij
+preuzet kao ZIP umjesto kloniran dodatno je označen kao da dolazi s interneta, što ga
+blokira i na drugi način. `bun openflow.ts` ne podliježe nijednom od toga i najkraći
+je put pored oba. Ako ipak želite koristiti shim, dozvolite lokalne skripte za
+vlastiti nalog i deblokirajte datoteku ako je došla iz ZIP-a:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+Unblock-File .\openflow.ps1
+```
+
+Zastavice su opcionalne, a sve tri površine vode do istog plana:
+
+| PowerShell | shell | okruženje | šta radi |
+|---|---|---|---|
+| `-Project <dir>` | `-p`, `--project <dir>` | `OPENFLOW_PROJECT` | repozitorij koji agenti čitaju i u koji pišu — **uređuju stvarne datoteke** |
+| `-ServerPort <n>` | `-s`, `--server-port <n>` | `OPENCODE_SERVER_URL` | port motora, podrazumijevano 4096 |
+| `-Built` | `-b`, `--built` | `OPENFLOW_BUILT=1` | izgradi i posluži statički bundle umjesto pokretanja vite |
+| `-Manage` | `-m`, `--manage` | `FLOW_MANAGE_SERVER=1` | pusti da platno upravlja motorom, čime njegovo dugme za restart proradi |
+| `-Help` | `-h`, `--help` | — | ispiši spisak zastavica |
+| — | — | `OPENFLOW_DRY_RUN=1` | ispiši razriješeni plan i ne pokreći ništa |
 
 Ili pokrenite dva procesa ručno. Prvo server:
 
