@@ -1,5 +1,6 @@
 import { For, Show, createMemo, createSignal, onCleanup } from "solid-js"
 import {
+  freeModels,
   groupMatches,
   readyRows,
   searchModels,
@@ -7,6 +8,7 @@ import {
   unlockedRows,
   type ProviderRow,
 } from "../server/providers"
+import { defaultModel, setDefaultModel } from "../graph/default-model"
 import { IconChevron, IconClose, IconSearch, IconSliders } from "./icons"
 
 /**
@@ -39,6 +41,14 @@ export function ModelPicker(props: {
   const CONNECT = "action:connect"
   const matches = createMemo(() => searchModels(props.rows, query()))
   const groups = createMemo(() => groupMatches(matches()))
+  const FREE = "free:"
+  /**
+   * Free zen models pinned above every provider, but only with an empty query —
+   * a search should behave exactly as it did before. These carry a `free:` key
+   * prefix so arrow-key nav reaches them even though the same model can also
+   * appear, un-pinned, under its provider group.
+   */
+  const free = createMemo(() => (query().trim() ? [] : freeModels(props.rows)))
   const unlocked = createMemo(() => unlockedRows(props.rows))
   const ready = createMemo(() => readyRows(props.rows))
   /**
@@ -53,9 +63,14 @@ export function ModelPicker(props: {
     query().trim() ? searchProviders(props.rows.filter((row) => !row.unlocked), query()).slice(0, 3) : [],
   )
   const CLEAR = "action:clear"
+  const DEFAULT = "action:default"
+  /** Only offer "set as default" when a model is chosen and is not already it. */
+  const canSetDefault = createMemo(() => Boolean(props.value) && props.value !== defaultModel())
   const keys = createMemo(() => [
+    ...free().map((model) => `${FREE}${model.value}`),
     ...matches().map((model) => model.value),
     ...(props.value ? [CLEAR] : []),
+    ...(canSetDefault() ? [DEFAULT] : []),
     CONNECT,
   ])
 
@@ -77,6 +92,12 @@ export function ModelPicker(props: {
     props.onManage?.(search)
   }
 
+  /** Pins the chosen model as the app-wide default for future new nodes. */
+  function setAsDefault() {
+    if (props.value) setDefaultModel(props.value)
+    setOpen(false)
+  }
+
   function move(step: number) {
     const options = keys()
     if (!options.length) return
@@ -96,9 +117,12 @@ export function ModelPicker(props: {
     if (event.key !== "Enter" || event.isComposing) return
     event.preventDefault()
     if (active() === CONNECT) return connect()
+    // A pinned free row picks the plain model value its `free:` key wraps.
+    if (active().startsWith(FREE)) return choose(active().slice(FREE.length))
     // "clear" carries a key of its own because the value it picks is "", which
     // a truthiness check would swallow.
     if (active() === CLEAR) return choose("")
+    if (active() === DEFAULT) return setAsDefault()
     if (active()) choose(active())
   }
 
@@ -160,6 +184,28 @@ export function ModelPicker(props: {
           <div class="oc-divider" />
 
           <div class="oc-menu-list">
+            <Show when={free().length}>
+              <div class="oc-group">Free — no key needed</div>
+              <For each={free()}>
+                {(model) => (
+                  <button
+                    type="button"
+                    class="oc-item"
+                    data-key={`${FREE}${model.value}`}
+                    data-active={active() === `${FREE}${model.value}` ? true : undefined}
+                    data-selected={props.value === model.value ? true : undefined}
+                    title={model.value}
+                    onMouseEnter={() => setActive(`${FREE}${model.value}`)}
+                    onClick={() => choose(model.value)}
+                  >
+                    <span class="oc-item-label">{model.name}</span>
+                    <span class="oc-tag">free</span>
+                  </button>
+                )}
+              </For>
+              <div class="oc-divider" />
+            </Show>
+
             <Show
               when={matches().length}
               fallback={
@@ -228,6 +274,23 @@ export function ModelPicker(props: {
           </div>
 
           <div class="oc-divider" />
+
+          <Show when={canSetDefault()}>
+            <button
+              type="button"
+              class="oc-item"
+              data-key={DEFAULT}
+              data-active={active() === DEFAULT ? true : undefined}
+              onMouseEnter={() => setActive(DEFAULT)}
+              onClick={setAsDefault}
+            >
+              <span class="oc-item-label">Set as default for new nodes</span>
+            </button>
+          </Show>
+
+          <Show when={defaultModel()}>
+            <div class="oc-group">default for new nodes: {defaultModel()}</div>
+          </Show>
 
           <button
             type="button"

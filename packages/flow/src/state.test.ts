@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test"
+import { setAvailableModels, setDefaultModel } from "./graph/default-model"
 import { actions, runtimeOf, state } from "./state"
 
 /**
@@ -11,6 +12,8 @@ beforeEach(() => {
   actions.reset()
   actions.rejectPermissions()
   actions.clearNotice()
+  setDefaultModel(undefined)
+  setAvailableModels(new Set<string>())
 })
 
 function graph(...roles: string[]) {
@@ -30,6 +33,20 @@ describe("nodes", () => {
   test("falls back to the last role for an unknown one", () => {
     const [id] = graph("not-a-role")
     expect(state.pipeline.nodes.find((node) => node.id === id)).toBeTruthy()
+  })
+
+  test("applies the default model to a preset that has none, when it is available", () => {
+    setAvailableModels(new Set(["opencode/grok-code-free"]))
+    setDefaultModel("opencode/grok-code-free")
+    const [id] = graph("coder")
+    expect(state.pipeline.nodes.find((node) => node.id === id)!.agent.model).toBe("opencode/grok-code-free")
+  })
+
+  test("leaves the model blank when the default is not currently available", () => {
+    setAvailableModels(new Set(["opencode/other"]))
+    setDefaultModel("opencode/grok-code-free")
+    const [id] = graph("coder")
+    expect(state.pipeline.nodes.find((node) => node.id === id)!.agent.model).toBeUndefined()
   })
 
   test("gives each node its own tools object", () => {

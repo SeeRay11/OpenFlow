@@ -158,6 +158,33 @@ export function providerRows(
   return rows.sort(compareRows)
 }
 
+/**
+ * Zen's free tier marks its keyless models with a `-free` suffix on the id
+ * (e.g. `nemotron-3.5-lightning-free`). The suffix is the only stable marker —
+ * the exact ids change — so it lives here, in one place, rather than as a
+ * hardcoded model id anywhere.
+ */
+const FREE_SUFFIX = "-free"
+
+/**
+ * A free, keyless model: served by the always-unlocked `opencode` (zen)
+ * provider, actually runnable, and carrying zen's free-tier suffix. This is
+ * what lets a fresh install "just try it" with no key and no signup.
+ */
+export function isFreeModel(option: ModelOption): boolean {
+  return option.providerID === "opencode" && option.runnable && option.id.endsWith(FREE_SUFFIX)
+}
+
+/** Every runnable free zen model across the catalog, provider order preserved. */
+export function freeModels(rows: ProviderRow[]): ModelOption[] {
+  return rows.flatMap((row) => row.models).filter(isFreeModel)
+}
+
+/** `opencode/<id>` of the first runnable free model, or undefined when none is served. */
+export function suggestedFreeDefault(rows: ProviderRow[]): string | undefined {
+  return freeModels(rows)[0]?.value
+}
+
 /** The server offers models for this provider — it may still not run them. */
 export function isActive(row: ProviderRow) {
   return row.models.length > 0

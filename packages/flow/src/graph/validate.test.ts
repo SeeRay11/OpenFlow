@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { pipeline } from "./test-support"
 import type { Pipeline } from "./types"
-import { ancestors, downstream, layer, upstream, wouldCycle } from "./validate"
+import { ancestors, downstream, layer, preflight, upstream, wouldCycle } from "./validate"
 
 function layersOf(graph: Pipeline) {
   const result = layer(graph)
@@ -84,6 +84,77 @@ describe("layer", () => {
     const placed = layersOf(graph).flat()
     expect(placed.length).toBe(graph.nodes.length)
     expect(new Set(placed).size).toBe(graph.nodes.length)
+  })
+})
+
+describe("preflight", () => {
+  // Every node the builder makes starts with no model, so a runnable graph has
+  // to have one assigned; this helper does it in place for the whole pipeline.
+  function withModel(graph: Pipeline, model: string) {
+    for (const node of graph.nodes) node.agent.model = model
+    return graph
+  }
+  const unlocked = (...models: string[]) => ({ unlockedModels: new Set(models) })
+
+  test("an empty pipeline blocks on the structural check", () => {
+    const result = preflight(pipeline(), unlocked())
+    expect(result.blocking.map((problem) => problem.kind)).toEqual(["structure"])
+    expect(result.blocking[0].message).toBe("pipeline has no nodes")
+  })
+
+  test("a cycle blocks", () => {
+    const result = preflight(withModel(pipeline("a->b", "b->c", "c->a"), "opencode/x"), unlocked("opencode/x"))
+    expect(result.blocking.some((problem) => problem.kind === "structure")).toBe(true)
+  })
+
+  test("a node with no model and no agent blocks, naming the node", () => {
+    const result = preflight(pipeline("a"), unlocked())
+    expect(result.blocking.map((problem) => [problem.kind, problem.nodeId])).toEqual([["no-model", "a"]])
+    expect(result.blocking[0].message).toContain("'a'")
+  })
+
+  test("a node with no model but a named agent is fine — it runs on the agent's default", () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.name = "reviewer"
+    expect(preflight(graph, unlocked()).blocking).toEqual([])
+  })
+
+  test("a model that no connected provider can run blocks and names the node", () => {
+    const result = preflight(withModel(pipeline("a"), "groq/llama"), unlocked("opencode/x"))
+    expect(result.blocking.map((problem) => problem.kind)).toEqual(["locked-model"])
+    expect(result.blocking[0].nodeId).toBe("a")
+  })
+
+  test("a fully wired graph on unlocked models has no blocking problems", () => {
+    const graph = withModel(pipeline("a->b", "b->c"), "opencode/x")
+    const result = preflight(graph, unlocked("opencode/x"))
+    expect(result.blocking).toEqual([])
+  })
+
+  test("edit or bash without a restricted agent warns but does not block", () => {
+    const graph = withModel(pipeline("a"), "opencode/x")
+    graph.nodes[0].agent.tools = { bash: true }
+    const result = preflight(graph, unlocked("opencode/x"))
+    expect(result.blocking).toEqual([])
+    expect(result.warnings.map((problem) => problem.kind)).toEqual(["unrestricted-write"])
+  })
+
+  test("a named agent silences the write warning", () => {
+    const graph = withModel(pipeline("a"), "opencode/x")
+    graph.nodes[0].agent.tools = { edit: true }
+    graph.nodes[0].agent.name = "coder"
+    expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
+  })
+
+  test("an isolated node in a multi-node graph warns", () => {
+    const graph = withModel(pipeline("a->b", "lonely"), "opencode/x")
+    const result = preflight(graph, unlocked("opencode/x"))
+    expect(result.warnings.map((problem) => [problem.kind, problem.nodeId])).toEqual([["isolated", "lonely"]])
+  })
+
+  test("a lone single node is not treated as isolated", () => {
+    const graph = withModel(pipeline("a"), "opencode/x")
+    expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
   })
 })
 

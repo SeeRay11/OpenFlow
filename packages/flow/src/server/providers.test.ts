@@ -1,15 +1,18 @@
 import { describe, expect, test } from "bun:test"
 import type { Integration } from "./client"
 import {
+  freeModels,
   groupMatches,
   isActive,
   isConnected,
+  isFreeModel,
   providerRows,
   readyRows,
   runnable,
   searchModels,
   searchProviders,
   splitProviders,
+  suggestedFreeDefault,
   unlockedRows,
   usableCount,
 } from "./providers"
@@ -174,6 +177,56 @@ describe("providerRows", () => {
     expect(isActive(rows[0])).toBe(true)
     // Nothing here can be keyed, so hiding its models would hide them forever.
     expect(rows[0].unlocked).toBe(true)
+  })
+})
+
+describe("free models", () => {
+  const option = (over: Partial<ReturnType<typeof optionBase>> = {}) => ({ ...optionBase(), ...over })
+  function optionBase() {
+    return {
+      value: "opencode/nemotron-3.5-lightning-free",
+      id: "nemotron-3.5-lightning-free",
+      name: "Nemotron 3.5 Lightning (free)",
+      providerID: "opencode",
+      providerName: "OpenCode Zen",
+      runnable: true,
+      api: "@ai-sdk/openai-compatible",
+    }
+  }
+
+  test("accepts an opencode runnable model whose id ends in -free", () => {
+    expect(isFreeModel(option())).toBe(true)
+  })
+
+  test("rejects a free-suffixed model from another provider", () => {
+    expect(isFreeModel(option({ value: "groq/x-free", id: "x-free", providerID: "groq" }))).toBe(false)
+  })
+
+  test("rejects an unrunnable free model", () => {
+    expect(isFreeModel(option({ runnable: false }))).toBe(false)
+  })
+
+  test("rejects an opencode model without the suffix", () => {
+    expect(isFreeModel(option({ value: "opencode/nemotron", id: "nemotron" }))).toBe(false)
+  })
+
+  test("freeModels and suggestedFreeDefault pick the runnable free zen models", () => {
+    const rows = providerRows(
+      [integration("opencode", { name: "OpenCode Zen" })],
+      [
+        { id: "grok-code-free", providerID: "opencode", name: "Grok Code (free)", api: compatible },
+        { id: "kimi-k2", providerID: "opencode", name: "Kimi K2", api: compatible },
+        { id: "dead-free", providerID: "opencode", name: "Dead (free)", api: groqSdk },
+      ],
+    )
+    expect(freeModels(rows).map((model) => model.value)).toEqual(["opencode/grok-code-free"])
+    expect(suggestedFreeDefault(rows)).toBe("opencode/grok-code-free")
+  })
+
+  test("no free model served means no suggestion and no crash", () => {
+    const rows = providerRows(catalog, models)
+    expect(freeModels(rows)).toEqual([])
+    expect(suggestedFreeDefault(rows)).toBeUndefined()
   })
 })
 

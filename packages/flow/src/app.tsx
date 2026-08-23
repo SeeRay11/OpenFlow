@@ -1,7 +1,8 @@
 import { For, Show, createSignal, onMount } from "solid-js"
 import { Canvas } from "./canvas/canvas"
 import type { Pipeline, RunLog } from "./graph/types"
-import { layer } from "./graph/validate"
+import { layer, preflight, type Preflight } from "./graph/validate"
+import { isPipeline } from "./graph/pipeline-io"
 import * as api from "./server/client"
 import {
   DEFAULT_MAX_PARALLEL,
@@ -11,7 +12,8 @@ import {
   type PipeMode,
   type Run,
 } from "./server/engine"
-import { providerRows, type ProviderRow } from "./server/providers"
+import { providerRows, suggestedFreeDefault, unlockedRows, type ProviderRow } from "./server/providers"
+import { defaultModel, setAvailableModels, setDefaultModel } from "./graph/default-model"
 import {
   agentBlock,
   agentKey,
@@ -26,9 +28,11 @@ import {
   IconAlert,
   IconClose,
   IconCoin,
+  IconExport,
   IconFlow,
   IconFolder,
   IconHistory,
+  IconImport,
   IconInfo,
   IconKey,
   IconLayers,
@@ -46,6 +50,7 @@ import { Inspector } from "./ui/inspector"
 import { McpPanel } from "./ui/mcp-panel"
 import { QuestionDialog } from "./ui/question-dialog"
 import { Palette } from "./ui/palette"
+import { Walkthrough } from "./ui/walkthrough"
 import { ProjectPicker } from "./ui/project-picker"
 import { ProvidersPanel } from "./ui/providers-panel"
 import { SkillsPanel } from "./ui/skills-panel"
@@ -104,7 +109,17 @@ export function App() {
   const [policy, setPolicy] = createSignal<PermissionPolicy>("auto")
   const [parallel, setParallel] = createSignal(DEFAULT_MAX_PARALLEL)
   const [nodeTimeout, setNodeTimeout] = createSignal(DEFAULT_NODE_TIMEOUT)
+  const [issues, setIssues] = createSignal<Preflight>()
   let current: Run | undefined
+
+  /** The `providerID/modelID` set a node could actually run right now. */
+  const unlockedModels = () =>
+    new Set(
+      unlockedRows(providers())
+        .flatMap((row) => row.models)
+        .filter((model) => model.runnable)
+        .map((model) => model.value),
+    )
 
   /**
    * Connects (or reconnects, after a project switch) and reloads everything
@@ -266,6 +281,9 @@ export function App() {
     // rest stay as the catalog reports them.
     const serves = zen.ids ? new Map([["opencode", new Set(zen.ids)]]) : undefined
     setProviders(providerRows(integrationList, modelList, env.present, serves))
+    // Keep the default-model gate current: a node only inherits the default
+    // when it is still among the models a connected provider can actually run.
+    setAvailableModels(unlockedModels())
   }
 
   /** `query` carries a provider name the model search could not satisfy. */
@@ -302,6 +320,32 @@ export function App() {
     } catch (error) {
       actions.notice("error", api.describe(error))
     }
+  }
+
+  let importInput: HTMLInputElement | undefined
+
+  /** Saves the current graph to a `.json` file — the same schema the server stores. */
+  function exportPipeline() {
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(state.pipeline, null, 2)], { type: "application/json" }),
+    )
+    const anchor = document.createElement("a")
+    anchor.href = url
+    anchor.download = `${state.pipeline.name || "pipeline"}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
+  /**
+   * Loads a `.json` file exported here or hand-edited. A bad file becomes a
+   * notice, never a throw; a non-empty graph is guarded like a template load.
+   */
+  async function importPipeline(file: File) {
+    const parsed = parseJson(await file.text())
+    if (!isPipeline(parsed)) return actions.notice("error", "Not a valid OpenFlow pipeline")
+    if (state.pipeline.nodes.length && !window.confirm("Replace the current pipeline?")) return
+    actions.load(parsed)
+    actions.notice("info", `imported ${parsed.name}`)
   }
 
   async function load(name: string) {
@@ -366,8 +410,12 @@ export function App() {
   }
 
   async function run() {
-    const check = layer(state.pipeline)
-    if (!check.ok) return actions.notice("error", check.error)
+    // One place tells the user everything that is wrong before a session is
+    // ever created. Blocking problems abort; warnings are shown but let the run
+    // proceed. The list survives on screen so each problem can select its node.
+    const pre = preflight(state.pipeline, { unlockedModels: unlockedModels() })
+    setIssues(pre.blocking.length || pre.warnings.length ? pre : undefined)
+    if (pre.blocking.length) return
     actions.clearNotice()
 
     // Fold any pending agent edits into opencode.json before the run so a node
@@ -542,6 +590,36 @@ export function App() {
           <button
             class="icon-btn"
             type="button"
+            title="export this pipeline to a .json file"
+            aria-label="export pipeline"
+            onClick={exportPipeline}
+          >
+            <IconExport />
+          </button>
+          <button
+            class="icon-btn"
+            type="button"
+            title="import a pipeline from a .json file"
+            aria-label="import pipeline"
+            onClick={() => importInput?.click()}
+          >
+            <IconImport />
+          </button>
+          <input
+            ref={importInput}
+            style={{ display: "none" }}
+            type="file"
+            accept="application/json,.json"
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0]
+              // Reset so re-importing the same file fires change again.
+              event.currentTarget.value = ""
+              if (file) void importPipeline(file)
+            }}
+          />
+          <button
+            class="icon-btn"
+            type="button"
             title="merge generated agent defs into the project opencode.json"
             aria-label="merge agents"
             onClick={mergeAgents}
@@ -685,6 +763,44 @@ export function App() {
         )}
       </Show>
 
+      <Show when={issues()}>
+        {(pre) => (
+          <div class="preflight">
+            <div class="preflight-head">
+              <span class="preflight-title">
+                <Show when={pre().blocking.length} fallback={<>Warnings before this run</>}>
+                  Fix before running
+                </Show>
+              </span>
+              <button
+                class="icon-btn"
+                type="button"
+                title="dismiss"
+                aria-label="dismiss"
+                onClick={() => setIssues(undefined)}
+              >
+                <IconClose />
+              </button>
+            </div>
+            <For each={[...pre().blocking, ...pre().warnings]}>
+              {(problem) => (
+                <button
+                  class="preflight-item"
+                  type="button"
+                  data-kind={pre().blocking.includes(problem) ? "bad" : "warn"}
+                  disabled={!problem.nodeId}
+                  title={problem.nodeId ? "show this node in the inspector" : undefined}
+                  onClick={() => problem.nodeId && actions.select(problem.nodeId)}
+                >
+                  <span class="preflight-dot" data-kind={pre().blocking.includes(problem) ? "bad" : "warn"} />
+                  <span class="preflight-message">{problem.message}</span>
+                </button>
+              )}
+            </For>
+          </div>
+        )}
+      </Show>
+
       <Show when={state.permissions.length}>
         <div class="permissions">
           <For each={state.permissions}>
@@ -733,6 +849,18 @@ export function App() {
           onManageMcp={() => setShowMcp(true)}
         />
       </main>
+
+      <Walkthrough
+        unlockedProviders={unlockedRows(providers()).length}
+        suggestedFree={defaultModel() ? undefined : suggestedFreeDefault(providers())}
+        onOpenProviders={() => setShowProviders(true)}
+        onUseFree={() => {
+          const free = suggestedFreeDefault(providers())
+          if (!free) return
+          setDefaultModel(free)
+          actions.notice("info", `default model set to ${free} — new nodes will use it`)
+        }}
+      />
 
       {/* Below the graph, above the status bar: the expanded card. */}
       <Show when={state.expanded}>
@@ -793,7 +921,12 @@ export function App() {
 
       <footer class="statusbar">
         <div class="statusbar-left">
-          <span class="statusbar-dot" data-state={status().startsWith("offline") ? "bad" : "ok"} aria-hidden="true" />
+          <span
+            class="statusbar-dot"
+            data-state={status().startsWith("offline") ? "bad" : "ok"}
+            title={status()}
+            aria-hidden="true"
+          />
           <span class="status">{status()}</span>
           <Show when={state.run} fallback={<span class="hint">no run yet</span>}>
             {(log) => (
@@ -885,4 +1018,13 @@ export function App() {
 
 function clone(log: RunLog): RunLog {
   return { ...log, nodes: log.nodes.map((node) => ({ ...node })) }
+}
+
+/** Parses untrusted file text; a malformed file yields `undefined`, not a throw. */
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
 }

@@ -1,4 +1,5 @@
 import { createStore, produce, reconcile } from "solid-js/store"
+import { nodeModel } from "./graph/default-model"
 import { ROLES, role } from "./graph/roles"
 import type {
   Attachment,
@@ -97,10 +98,13 @@ export const actions = {
 
   addNode(roleID: string, position: { x: number; y: number }) {
     const preset = role(roleID) ?? ROLES[ROLES.length - 1]
+    // A preset with no model of its own inherits the default model preference,
+    // but only when that model is actually runnable now (see `nodeModel`).
+    const model = nodeModel(preset.agent.model)
     const node: FlowNode = {
       id: nodeID(),
       role: preset.label,
-      agent: { ...preset.agent, tools: { ...(preset.agent.tools ?? {}) } },
+      agent: { ...preset.agent, model, tools: { ...(preset.agent.tools ?? {}) } },
       position,
     }
     setState("pipeline", "nodes", (nodes) => [...nodes, node])

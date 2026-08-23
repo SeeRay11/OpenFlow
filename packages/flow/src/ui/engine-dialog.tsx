@@ -22,6 +22,20 @@ export function EngineDialog(props: {
 }) {
   const [copied, setCopied] = createSignal(false)
 
+  // The command is relative (`--cwd packages/opencode`), so it only resolves from
+  // the repo root; and `serve` refuses to bind a port another process still holds.
+  // Both are the usual reasons a copy-pasted restart fails, so spell them out and
+  // hand over ready-to-run `cd` + port-kill lines for either shell.
+  const port = () => {
+    const parsed = Number.parseInt(new URL(props.status.url).port, 10)
+    return Number.isNaN(parsed) ? 4096 : parsed
+  }
+  const killPowershell = () =>
+    `Get-NetTCPConnection -LocalPort ${port()} -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }`
+  const killCmd = () =>
+    `for /f "tokens=5" %P in ('netstat -ano ^| findstr :${port()} ^| findstr LISTENING') do taskkill /PID %P /F`
+  const killUnix = () => `lsof -ti tcp:${port()} | xargs kill`
+
   async function copy() {
     await navigator.clipboard.writeText(props.status.command).catch(() => undefined)
     setCopied(true)
@@ -57,14 +71,33 @@ export function EngineDialog(props: {
               fallback={
                 <>
                   OpenFlow did not start <code>opencode serve</code>, so it cannot restart it —{" "}
-                  {props.status.reason ?? "it belongs to whichever process launched it"}. Stop it where it is running —
-                  Ctrl+C in that terminal — and start it again from the OpenFlow repo root with:
+                  {props.status.reason ?? "it belongs to whichever process launched it"}. Restart it yourself with the
+                  three steps below.
                 </>
               }
             >
-              Or run it yourself, from the OpenFlow repo root:
+              Or run it yourself, with the three steps below:
             </Show>
           </p>
+
+          <p class="hint">
+            1. Go to the OpenFlow repo root (the command is relative and only resolves there):
+          </p>
+          <pre class="transcript mono">cd OpenFlow</pre>
+
+          <p class="hint">
+            2. Stop the engine still on port {port()} — <code>Ctrl+C</code> in the terminal that owns it, or, if you
+            cannot find it, free the port with the line for your shell:
+          </p>
+          <pre class="transcript mono">{killPowershell()}</pre>
+          <pre class="transcript mono">{killCmd()}</pre>
+          <pre class="transcript mono">{killUnix()}</pre>
+          <p class="hint">
+            First line is Windows PowerShell, second is Windows cmd, third is macOS/Linux. Skipping this leaves the old
+            engine bound to the port and <code>serve</code> fails to start.
+          </p>
+
+          <p class="hint">3. Start it again:</p>
           <pre class="transcript mono">{props.status.command}</pre>
           <div class="row">
             <span class="hint">

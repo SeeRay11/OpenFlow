@@ -53,6 +53,77 @@ export function layer(pipeline: Pipeline): Validation {
   return { ok: true, layers }
 }
 
+/** One thing wrong with a pipeline, in words a first-timer can act on. */
+export type Problem = { nodeId?: string; kind: string; message: string }
+
+/** Blocking problems stop a run; warnings are surfaced but let it proceed. */
+export type Preflight = { blocking: Problem[]; warnings: Problem[] }
+
+/**
+ * Everything that would make a run fail or surprise the user, gathered in one
+ * place before a single session is created. Structural checks reuse `layer()`
+ * so the graph rules live in exactly one algorithm; the rest are per-node.
+ *
+ * `unlockedModels` is the `providerID/modelID` set the user can actually run
+ * right now (a keyed, runnable model). A model set but absent from it is the
+ * "keyed provider that still 401s" case, so it blocks rather than warns.
+ */
+export function preflight(pipeline: Pipeline, ctx: { unlockedModels: Set<string> }): Preflight {
+  const blocking: Problem[] = []
+  const warnings: Problem[] = []
+
+  // One structural problem is enough to stop the run, and `layer` already
+  // reports the first it finds (no nodes, a cycle, an unknown or self edge).
+  const structure = layer(pipeline)
+  if (!structure.ok) blocking.push({ kind: "structure", message: structure.error })
+
+  for (const node of pipeline.nodes) {
+    const model = node.agent.model
+    if (!model) {
+      // No model and no agent to fall back on means nothing to run it on.
+      if (!node.agent.name)
+        blocking.push({
+          nodeId: node.id,
+          kind: "no-model",
+          message: `Node '${node.role}' has no model — pick one or set a default`,
+        })
+    } else if (!ctx.unlockedModels.has(model)) {
+      blocking.push({
+        nodeId: node.id,
+        kind: "locked-model",
+        message: `Node '${node.role}' uses ${model}, which no connected provider can run — add its key or pick another model`,
+      })
+    }
+
+    // edit/bash without a restricted agent runs as the default `build` agent,
+    // which can write real files — the known hazard, named for the user.
+    const tools = node.agent.tools ?? {}
+    if ((tools.edit || tools.write || tools.bash) && !node.agent.name)
+      warnings.push({
+        nodeId: node.id,
+        kind: "unrestricted-write",
+        message: `Node '${node.role}' can edit files or run commands but has no agent — it may write real files as the default build agent`,
+      })
+  }
+
+  if (pipeline.nodes.length > 1) {
+    const connected = new Set<string>()
+    for (const edge of pipeline.edges) {
+      connected.add(edge.source)
+      connected.add(edge.target)
+    }
+    for (const node of pipeline.nodes)
+      if (!connected.has(node.id))
+        warnings.push({
+          nodeId: node.id,
+          kind: "isolated",
+          message: `Node '${node.role}' has no connections — it runs on the task alone`,
+        })
+  }
+
+  return { blocking, warnings }
+}
+
 /** True when adding source->target would close a cycle. */
 export function wouldCycle(pipeline: Pipeline, source: string, target: string) {
   if (source === target) return true
