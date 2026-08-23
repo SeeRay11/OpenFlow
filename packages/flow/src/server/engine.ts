@@ -93,6 +93,16 @@ export type RunOptions = {
    * what a test wants when the unknown model is unknown on purpose.
    */
   catalogRetry?: number
+  /**
+   * Outputs already known from a previous run, keyed by node id. A node listed
+   * here is satisfied the moment its layer starts: no session, no prompt, no
+   * tokens, no bill. Its text lands in the same `outputs` map a freshly
+   * produced one would, so downstream nodes cannot tell the difference.
+   *
+   * Re-running a node is the caller's decision, not an inference: leave it out
+   * of this map and it runs normally, even if a previous run produced it.
+   */
+  resume?: Record<string, string>
 }
 
 export const DEFAULT_MAX_PARALLEL = 4
@@ -209,6 +219,10 @@ export function start(
   const checkpointEvery = Math.max(1, options.checkpointEvery ?? DEFAULT_CHECKPOINT_EVERY)
   const catalogRetry = Math.max(0, options.catalogRetry ?? DEFAULT_CATALOG_RETRY)
   const runFiles = options.attachments ?? []
+  const resume = options.resume ?? {}
+  // Preflight only covers what this run will dispatch: a reused node creates no
+  // session, so a model or agent it names having gone missing cannot break it.
+  const dispatching = pipeline.nodes.filter((node) => resume[node.id] === undefined)
   const validation = layer(pipeline)
   if (!validation.ok) throw new Error(validation.error)
   const order = new Map(validation.layers.flatMap((ids, index) => ids.map((id) => [id, index] as const)))
@@ -506,6 +520,17 @@ export function start(
   }
 
   async function runNode(node: FlowNode) {
+    const seeded = resume[node.id]
+    if (seeded !== undefined) {
+      // Already paid for. Checked before the upstream-failure guard because a
+      // reused output does not depend on anything this run does.
+      outputs.set(node.id, seeded)
+      const at = Date.now()
+      activity.note(node.id, `reused:${node.id}`, "reused from a previous run", undefined, "done")
+      patch(node.id, { status: "done", output: seeded, activity: undefined, started: at, finished: at })
+      return
+    }
+
     const sources = upstream(pipeline, node.id)
     if (sources.some((source) => failed.has(source))) {
       failed.add(node.id)
@@ -587,13 +612,13 @@ export function start(
       // sends the user to change a model that was right all along. One re-read
       // separates "still loading" from "genuinely not offered"; a complete
       // catalog resolves on the first pass and never reaches this.
-      if (models && unknownModels(pipeline, catalog).length && catalogRetry > 0) {
+      if (models && unknownModels(dispatching, catalog).length && catalogRetry > 0) {
         await new Promise((resolve) => setTimeout(resolve, catalogRetry))
         for (const model of (await api.models().catch(() => [])) ?? [])
           catalog.set(`${model.providerID}/${model.id}`, model)
       }
 
-      const unresolved = models ? unknownModels(pipeline, catalog) : []
+      const unresolved = models ? unknownModels(dispatching, catalog) : []
       if (unresolved.length) {
         for (const node of unresolved) {
           failed.add(node.id)
@@ -604,7 +629,7 @@ export function start(
         return log
       }
 
-      const missing = await unknownAgents(pipeline, api)
+      const missing = await unknownAgents(dispatching, api)
       if (missing.length) {
         // The fix is always the same — restart the engine — so the message
         // carries the command for *this* host rather than the generic name of
@@ -699,8 +724,8 @@ async function pool<T>(items: T[], limit: number, signal: AbortSignal, work: (it
  * Nodes pinned to a model the server does not offer. Checked before any
  * dispatch so a typo fails in a second instead of after a wait timeout.
  */
-function unknownModels(pipeline: Pipeline, catalog: Map<string, unknown>) {
-  return pipeline.nodes.filter((node) => node.agent.model && !catalog.has(node.agent.model))
+function unknownModels(nodes: FlowNode[], catalog: Map<string, unknown>) {
+  return nodes.filter((node) => node.agent.model && !catalog.has(node.agent.model))
 }
 
 /**
@@ -712,8 +737,8 @@ function unknownModels(pipeline: Pipeline, catalog: Map<string, unknown>) {
  * permission ruleset and every tool call dies with "Unable to read ...", which
  * reads like a broken model rather than a stale config.
  */
-async function unknownAgents(pipeline: Pipeline, api: EngineDeps["api"]) {
-  const named = pipeline.nodes.filter((node) => node.agent.name)
+async function unknownAgents(nodes: FlowNode[], api: EngineDeps["api"]) {
+  const named = nodes.filter((node) => node.agent.name)
   if (!named.length) return []
   const available = await api
     .agents()
