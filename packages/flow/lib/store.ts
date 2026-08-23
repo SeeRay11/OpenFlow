@@ -163,6 +163,17 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
   // reopening where the user left off costs no extra round trip.
   if (segments[0] === "context" && method === "GET") return ok({ ...paths, pipeline: recallPipeline(paths.project) })
 
+  // Custom roles used to live only in localStorage, so clearing site data or
+  // moving to another browser threw away every hand-written role prompt. They
+  // are a project artifact like a pipeline, so they are stored like one.
+  if (segments[0] === "roles") {
+    if (method === "GET") return ok(await readRoles(paths))
+    if (method === "PUT") {
+      await writeRoles(paths, await request.json())
+      return ok({ saved: true })
+    }
+  }
+
   if (segments[0] === "pipelines") {
     const name = segments[1] ? slug(decodeURIComponent(segments[1])) : undefined
 
@@ -377,6 +388,40 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
 
 function ok(body: unknown): FlowResponse {
   return { status: 200, body }
+}
+
+function rolesFile(paths: FlowPaths) {
+  return path.join(paths.project, ".openflow", "roles.json")
+}
+
+/**
+ * The user's own role cards.
+ *
+ * A file someone hand-edited into nonsense reads as "no custom roles" rather
+ * than throwing, and is deliberately left on disk: overwriting it on a failed
+ * read is how the recovery copy disappears before anyone can look at it.
+ */
+async function readRoles(paths: FlowPaths) {
+  const raw = await fs.readFile(rolesFile(paths), "utf8").catch(() => undefined)
+  if (!raw) return []
+  let parsed: any = []
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+  return parsed.filter(
+    (entry) => entry && typeof entry.id === "string" && typeof entry.label === "string" && entry.agent,
+  )
+}
+
+async function writeRoles(paths: FlowPaths, body: unknown) {
+  const file = rolesFile(paths)
+  return serialize(file, async () => {
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await writeAtomic(file, JSON.stringify(Array.isArray(body) ? body : [], null, 2) + "\n")
+  })
 }
 
 async function listPipelines(paths: FlowPaths) {

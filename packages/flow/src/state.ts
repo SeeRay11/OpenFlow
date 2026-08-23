@@ -242,6 +242,7 @@ export const actions = {
   },
 
   load(pipeline: Pipeline) {
+    migrateAgentNames(pipeline)
     // Snapshots of the graph being replaced would undo into a different
     // pipeline, so loading starts a fresh history.
     history.length = 0
@@ -415,4 +416,25 @@ export function runtimeOf(id: string): NodeRuntime {
 
 export function runNodeLogs(): RunNodeLog[] {
   return state.run?.nodes ?? []
+}
+
+/**
+ * Repairs generated agent names saved before the key gained the node id.
+ *
+ * The key used to be `<pipeline>-<role>`, so two nodes of the same role shared
+ * one agent and one permission set. Pipelines saved then still name the old
+ * key, and the server has no such agent, so the run aborts with "the server
+ * does not know an agent named …" — correct, but a dead end for a file the user
+ * did nothing wrong to.
+ *
+ * Only a name this app is known to have generated is touched. An agent the user
+ * picked themselves does not match the old shape and is left exactly as it is.
+ */
+function migrateAgentNames(pipeline: Pipeline) {
+  const sanitize = (value: string) => value.replace(/[^a-zA-Z0-9-_]/g, "-").toLowerCase()
+  for (const node of pipeline.nodes) {
+    if (!node.agent?.name) continue
+    if (node.agent.name !== sanitize(`${pipeline.name}-${node.role}`)) continue
+    node.agent.name = sanitize(`${pipeline.name}-${node.role}-${node.id}`)
+  }
 }

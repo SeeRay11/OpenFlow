@@ -1036,3 +1036,50 @@ describe("server control", () => {
     }
   })
 })
+
+describe("custom roles", () => {
+  const role = (label: string) => ({
+    id: label,
+    label,
+    color: "#9ad1f0",
+    agent: { prompt: `you are the ${label}`, tools: { read: true } },
+  })
+
+  test("round-trips through the project rather than the browser", async () => {
+    const saved = await call("PUT", "/flow/api/roles", { body: [role("design planner")] })
+    expect(saved!.status).toBe(200)
+
+    const response = await call("GET", "/flow/api/roles")
+    expect(response!.body).toEqual([role("design planner")])
+    // The point of the move: it is a file someone can copy, commit or back up.
+    expect(JSON.parse(await read(path.join(dir, ".openflow", "roles.json")))).toHaveLength(1)
+  })
+
+  test("a hand-mangled roles.json reads as none and is left where it can be recovered", async () => {
+    const file = path.join(dir, ".openflow", "roles.json")
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, "{ this is not json")
+
+    const response = await call("GET", "/flow/api/roles")
+    expect(response!.body).toEqual([])
+    // Overwriting on a failed read is how the only copy disappears.
+    expect(await read(file)).toBe("{ this is not json")
+  })
+
+  test("drops entries that are not roles instead of handing them to the palette", async () => {
+    await call("PUT", "/flow/api/roles", { body: [role("keeper"), { id: "no-agent" }, null, 7] })
+    const response = await call("GET", "/flow/api/roles")
+    expect((response!.body as any[]).map((entry) => entry.id)).toEqual(["keeper"])
+  })
+
+  test("concurrent saves both land instead of interleaving", async () => {
+    await Promise.all([
+      call("PUT", "/flow/api/roles", { body: [role("first")] }),
+      call("PUT", "/flow/api/roles", { body: [role("first"), role("second")] }),
+    ])
+    const response = await call("GET", "/flow/api/roles")
+    // Serialised, so the file is one whole write or the other — never a blend.
+    const ids = (response!.body as any[]).map((entry) => entry.id)
+    expect([["first"], ["first", "second"]]).toContainEqual(ids)
+  })
+})

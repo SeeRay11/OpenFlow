@@ -14,6 +14,7 @@ import {
 } from "./server/engine"
 import { availableModels, providerRows, suggestedFreeDefault, unlockedRows, type ProviderRow } from "./server/providers"
 import { defaultModel, setAvailableModels, setDefaultModel } from "./graph/default-model"
+import { hydrateCustomRoles, onRolesSyncError } from "./graph/roles"
 import {
   agentBlock,
   agentKey,
@@ -181,6 +182,10 @@ export function App() {
     try {
       const { context } = await api.connect()
       setProject(context.project)
+      // Before the palette settles, so a project's own saved roles are what it
+      // renders rather than the built-ins alone. Roles follow the project, so
+      // this re-runs on a switch too.
+      await hydrateCustomRoles()
       await api.health()
       actions.setEngineReachable(true)
       setStatus("connected")
@@ -272,6 +277,9 @@ export function App() {
     }
   }
 
+  // A role that only reached this browser is one cleared cache from gone, so a
+  // failed write to the project's roles.json has to be said out loud.
+  onRolesSyncError((reason) => actions.notice("error", `custom roles were not saved to this project — ${reason}`))
   onMount(bootstrap)
 
   onMount(() => {
@@ -529,7 +537,28 @@ export function App() {
     }
   }
 
-  async function run() {
+  /**
+   * Outputs from the last run that are worth keeping.
+   *
+   * A node that finished is a node already paid for, so re-running the tail
+   * after a failure should not buy its answer twice. Anything not `done` —
+   * failed, skipped, stopped, still queued — is absent and therefore re-runs.
+   */
+  function reusableOutputs() {
+    return Object.fromEntries(
+      (state.run?.nodes ?? [])
+        .filter((node) => node.status === "done" && node.output !== undefined)
+        .map((node) => [node.id, node.output as string]),
+    )
+  }
+
+  /** A finished run with something left undone is the only time resuming means anything. */
+  function canRerunFailed() {
+    const nodes = state.run?.nodes ?? []
+    return !state.running && nodes.length > 0 && nodes.some((node) => node.status !== "done")
+  }
+
+  async function run(resume?: Record<string, string>) {
     // One place tells the user everything that is wrong before a session is
     // ever created. Blocking problems abort; warnings are shown but let the run
     // proceed. The list survives on screen so each problem can select its node.
@@ -574,7 +603,10 @@ export function App() {
     try {
       current = start(
         state.pipeline,
-        state.input,
+        // A resumed run must re-send the task the reused outputs were produced
+        // from: downstream prompts are built from both, so a task edited in the
+        // meantime would pair new instructions with old answers.
+        resume ? (state.run?.input ?? state.input) : state.input,
         {
           onNode: (id, patch) => actions.patchRuntime(id, patch),
           onNodeEvent: (id, event) => actions.pushEvent(id, event),
@@ -608,6 +640,7 @@ export function App() {
           maxParallel: parallel(),
           nodeTimeout: nodeTimeout(),
           attachments: [...state.attachments],
+          resume,
         },
       )
       const log = await current.done
@@ -874,10 +907,21 @@ export function App() {
           />
         </div>
         <div class="runbar-actions">
-          <button class="btn btn-primary" type="button" disabled={state.running} onClick={run}>
+          <button class="btn btn-primary" type="button" disabled={state.running} onClick={() => void run()}>
             <IconPlay />
             Run
           </button>
+          <Show when={canRerunFailed()}>
+            <button
+              class="btn"
+              type="button"
+              title="run only the cards that did not finish, reusing the outputs of the ones that did"
+              onClick={() => void run(reusableOutputs())}
+            >
+              <IconPlay />
+              Re-run failed
+            </button>
+          </Show>
           <button class="btn btn-danger" type="button" disabled={!state.running} onClick={stop}>
             <IconStop />
             Stop

@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js"
+import { store } from "../server/store"
 import type { FlowAgent } from "./types"
 
 export type Role = {
@@ -63,9 +64,13 @@ export const ROLES: Role[] = [
   },
 ]
 
-// User-defined roles, saved globally (not per-pipeline) so a role built once
-// is reusable across every workflow. Kept flat in localStorage — this is a
-// single-user desktop-style app with no backend concept of "my roles" yet.
+// User-defined roles, saved per project (not per-pipeline) so a role built once
+// is reusable across every workflow in that project.
+//
+// The durable copy is `.openflow/roles.json`, written through the flow store.
+// localStorage is kept as a same-machine mirror and as the migration source for
+// roles saved before the store existed — it was the only home once, and
+// clearing site data threw away every hand-written role prompt with no warning.
 const CUSTOM_ROLES_KEY = "openflow.customRoles.v1"
 
 function loadCustomRoles(): Role[] {
@@ -88,12 +93,44 @@ export { customRoles }
  * hand-written prompt with the UI still showing it saved.
  */
 function persistCustomRoles(roles: Role[]) {
+  // The store is the durable copy, but it answers asynchronously and every
+  // caller here is synchronous, so its failure is reported through `onSyncError`
+  // rather than the return value. Returning the localStorage result keeps the
+  // immediate answer honest: "this survives a reload on this machine".
+  void store
+    .saveRoles(roles)
+    .catch((error) => syncError?.(error instanceof Error ? error.message : String(error)))
   try {
     localStorage.setItem(CUSTOM_ROLES_KEY, JSON.stringify(roles))
     return true
   } catch {
     return false
   }
+}
+
+let syncError: ((reason: string) => void) | undefined
+
+/** Lets the app surface a failed write to `.openflow/roles.json` as a notice. */
+export function onRolesSyncError(handler: (reason: string) => void) {
+  syncError = handler
+}
+
+/**
+ * Adopts the project's saved roles, and migrates a browser-only set the first
+ * time a project that has none is opened.
+ *
+ * Called once at boot, before the palette renders — otherwise the palette
+ * flashes the built-ins alone. A store that cannot be read leaves whatever
+ * localStorage already gave the signal, so this never empties a working setup.
+ */
+export async function hydrateCustomRoles() {
+  const stored = await store.roles().catch(() => undefined)
+  if (!stored) return
+  if (stored.length) return setCustomRoles(stored as Role[])
+  // Nothing on disk yet: push up whatever this browser was holding, so a role
+  // written before the store existed becomes a project file rather than staying
+  // one cleared cache away from gone.
+  if (customRoles().length) await store.saveRoles(customRoles()).catch(() => undefined)
 }
 
 export function isCustomRole(id: string) {

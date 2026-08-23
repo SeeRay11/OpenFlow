@@ -61,6 +61,8 @@ export type ServeStatus = {
 }
 
 export const store = {
+  roles: () => request<unknown[]>("/roles"),
+  saveRoles: (roles: unknown[]) => request<{ saved: true }>("/roles", { method: "PUT", body: JSON.stringify(roles) }),
   pipelines: () => request<PipelineEntry[]>("/pipelines"),
   pipeline: (name: string) => request<Pipeline>(`/pipelines/${encodeURIComponent(name)}`),
   savePipeline: (pipeline: Pipeline) =>
