@@ -34,6 +34,44 @@ code in [`packages/flow`](packages/flow). First install is large; it downloads t
 engine's native deps and runs a `postinstall` that marks the engine's prebuilt
 `node-pty` helpers executable — a no-op on Windows.
 
+### Stop anything already running
+
+OpenFlow uses two ports: **4096** for the engine and **5174** for the canvas. If a
+previous run is still holding them, starting the engine by hand fails with
+`Error: Unexpected error` / `ServeError` — that is a port already bound, not a
+broken install.
+
+`bun openflow.ts` handles this for you: it reuses a port that is already serving
+and frees one a dead run left bound. Kill the old processes yourself only when
+you want a genuinely fresh engine — after editing `opencode.json`, for example,
+since the engine caches project config at boot and never re-reads it.
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+Both are safe to run when nothing is listening — they simply match no process.
+They kill *any* process on those ports, so check first if you run something else
+there:
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### Run it
 
 One command starts both processes, the same way on every platform:

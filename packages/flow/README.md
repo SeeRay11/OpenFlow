@@ -32,6 +32,31 @@ First install is large; it downloads the engine's native deps and runs a
 `node-pty` `spawn-helper` binaries executable. It builds nothing, and it returns
 immediately on Windows.
 
+## Stop anything already running
+
+The engine binds **4096** and the canvas **5174**. A previous run still holding
+them is the usual cause of `Error: Unexpected error` / `ServeError` from
+`opencode serve` — a failed bind, not a broken install. `netstat -ano | findstr
+:4096` (Windows) or `lsof -i :4096` names the owner.
+
+`bun openflow.ts` already reuses a healthy engine and frees a port a dead run
+left bound, so a manual kill is only needed when you want a genuinely fresh
+engine — notably after editing `opencode.json` or merging agents, which the
+engine reads once at boot and caches for the life of the process.
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+Both no-op when nothing is listening. Both kill whatever holds those ports, so
+confirm the owner first if you run something else there.
+
 ## Run it
 
 OpenFlow is two processes — `opencode serve` and the canvas — and the launcher
