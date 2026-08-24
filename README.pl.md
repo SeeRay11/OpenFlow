@@ -71,6 +71,26 @@ Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPor
 lsof -i :4096 -i :5174
 ```
 
+**Jeśli silnik kończy się błędem `database is locked`,** gdzieś już działa inny
+silnik opencode — druga kopia OpenFlow albo silnik pozostawiony przez wcześniejszy
+program startowy. Wszystkie silniki dzielą jedną bazę danych w katalogu danych
+opencode, więc drugi z nich nie zdoła jej otworzyć. Zwolnienie portów nic tu nie
+daje, bo tamten silnik wcale nie musi ich zajmować. Zatrzymaj go po tym, co
+uruchamia:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='bun.exe'" |
+  Where-Object { $_.CommandLine -match 'openflow\.ts|src/index\.ts serve|packages/flow dev' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+```bash
+pkill -f 'openflow\.ts|src/index\.ts serve|packages/flow dev'
+```
+
+Potem uruchom OpenFlow ponownie. Jeśli zdarza się to za każdym razem, zapewne masz
+OpenFlow sklonowany w dwóch miejscach i oba są uruchamiane — zostaw jedno.
+
 ### Uruchamianie
 
 Jedno polecenie uruchamia oba procesy, tak samo na każdej platformie:

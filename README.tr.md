@@ -72,6 +72,26 @@ Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPor
 lsof -i :4096 -i :5174
 ```
 
+**Motor `database is locked` hatasıyla başarısız oluyorsa,** başka bir yerde zaten
+başka bir opencode motoru çalışıyordur — OpenFlow'un ikinci bir kopyası ya da
+önceki bir başlatıcının geride bıraktığı bir motor. Bütün motorlar opencode veri
+dizinindeki tek bir veritabanını paylaşır, bu yüzden ikinci başlayan onu açamaz.
+Burada portları boşaltmak işe yaramaz, çünkü o motor portları tutuyor olmayabilir.
+Onun yerine ne çalıştırdığına bakarak durdurun:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='bun.exe'" |
+  Where-Object { $_.CommandLine -match 'openflow\.ts|src/index\.ts serve|packages/flow dev' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+```bash
+pkill -f 'openflow\.ts|src/index\.ts serve|packages/flow dev'
+```
+
+Ardından OpenFlow'u yeniden başlatın. Bu her seferinde oluyorsa, büyük ihtimalle
+OpenFlow iki yere klonlanmış ve ikisi de başlatılıyordur — birini tutun.
+
 ### Çalıştırma
 
 Tek bir komut her iki süreci de başlatır, her platformda aynı şekilde:

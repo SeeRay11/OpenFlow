@@ -70,6 +70,25 @@ Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPor
 lsof -i :4096 -i :5174
 ```
 
+**Якщо рушій завершується помилкою `database is locked`,** десь уже працює інший
+рушій opencode — друга копія OpenFlow або рушій, який залишив попередній запуск.
+Усі рушії використовують одну базу даних у каталозі даних opencode, тож другий
+запущений не може її відкрити. Звільнення портів тут не допомагає, бо той рушій
+не обов'язково їх тримає. Зупиніть його за тим, що він виконує:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='bun.exe'" |
+  Where-Object { $_.CommandLine -match 'openflow\.ts|src/index\.ts serve|packages/flow dev' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+```bash
+pkill -f 'openflow\.ts|src/index\.ts serve|packages/flow dev'
+```
+
+Потім запустіть OpenFlow знову. Якщо це стається щоразу, найімовірніше OpenFlow
+склоновано у двох місцях і запускаються обидва — залиште один.
+
 ### Запуск
 
 Одна команда запускає обидва процеси — однаково на будь-якій платформі:

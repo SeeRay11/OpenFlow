@@ -69,6 +69,25 @@ Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPor
 lsof -i :4096 -i :5174
 ```
 
+**ইঞ্জিন যদি `database is locked` বলে ব্যর্থ হয়,** তাহলে অন্য কোথাও আরেকটি opencode
+ইঞ্জিন ইতিমধ্যেই চলছে — OpenFlow-এর দ্বিতীয় একটি কপি, কিংবা আগের কোনো লঞ্চারের
+ফেলে যাওয়া ইঞ্জিন। প্রতিটি ইঞ্জিন আপনার opencode ডেটা ডিরেক্টরির একটিমাত্র
+ডেটাবেস ভাগ করে নেয়, তাই দ্বিতীয়টি সেটি খুলতে পারে না। পোর্ট খালি করে এখানে লাভ
+নেই, কারণ সেই ইঞ্জিন পোর্ট ধরে না-ও রাখতে পারে। বরং এটি কী চালাচ্ছে তা দেখে থামান:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='bun.exe'" |
+  Where-Object { $_.CommandLine -match 'openflow\.ts|src/index\.ts serve|packages/flow dev' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+```bash
+pkill -f 'openflow\.ts|src/index\.ts serve|packages/flow dev'
+```
+
+তারপর OpenFlow আবার চালু করুন। প্রতিবারই যদি এটি ঘটে, তাহলে সম্ভবত OpenFlow দুই
+জায়গায় ক্লোন করা আছে এবং দুটোই চালু হচ্ছে — একটিই রাখুন।
+
 ### চালানো
 
 একটি কমান্ডই দুটি প্রসেস চালু করে, প্রতিটি প্ল্যাটফর্মে একইভাবে:

@@ -69,6 +69,25 @@ Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPor
 lsof -i :4096 -i :5174
 ```
 
+**엔진이 `database is locked`로 실패하면,** 다른 opencode 엔진이 이미 어딘가에서
+실행 중입니다. OpenFlow의 두 번째 사본이거나, 이전 실행기가 남긴 엔진입니다. 모든
+엔진은 opencode 데이터 디렉터리의 데이터베이스 하나를 공유하므로 나중에 시작한
+쪽은 그것을 열 수 없습니다. 그 엔진이 포트를 쥐고 있다는 보장이 없으니 포트를
+비워도 해결되지 않습니다. 대신 무엇을 실행 중인지를 기준으로 중지하세요:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='bun.exe'" |
+  Where-Object { $_.CommandLine -match 'openflow\.ts|src/index\.ts serve|packages/flow dev' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+```bash
+pkill -f 'openflow\.ts|src/index\.ts serve|packages/flow dev'
+```
+
+그런 다음 OpenFlow를 다시 시작하세요. 매번 이런다면 OpenFlow가 두 곳에 복제되어
+둘 다 시작되고 있을 가능성이 큽니다 — 하나만 남기세요.
+
 ### 실행
 
 명령 하나로 두 프로세스가 모두 시작되며, 모든 플랫폼에서 동일합니다:

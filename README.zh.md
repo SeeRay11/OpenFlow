@@ -64,6 +64,24 @@ Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPor
 lsof -i :4096 -i :5174
 ```
 
+**如果引擎报 `database is locked` 而失败，** 说明别处已经有另一个 opencode 引擎在运行
+——可能是 OpenFlow 的第二份副本，也可能是上一次启动残留的引擎。所有引擎共用 opencode
+数据目录中的同一个数据库，因此后启动的那个打不开它。这时释放端口没有用，因为那个引擎
+未必占着端口。改用它正在运行的内容来停止它：
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='bun.exe'" |
+  Where-Object { $_.CommandLine -match 'openflow\.ts|src/index\.ts serve|packages/flow dev' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+```bash
+pkill -f 'openflow\.ts|src/index\.ts serve|packages/flow dev'
+```
+
+然后重新启动 OpenFlow。如果每次都这样，多半是你把 OpenFlow 克隆到了两个位置并且都被
+启动了——只保留一个。
+
 ### 运行
 
 一条命令即可同时启动两个进程，在所有平台上用法相同：
