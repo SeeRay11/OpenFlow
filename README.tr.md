@@ -33,6 +33,45 @@ yerel (native) bağımlılıklarını indirir. Bir `postinstall` adımı `node-p
 önceden derlenmiş yardımcı ikili dosyalarını çalıştırılabilir olarak işaretler ve
 Windows'ta hemen geri döner.
 
+### Zaten çalışanları durdurma
+
+OpenFlow iki port kullanır: motor için **4096**, tuval için **5174**. Önceki bir
+çalıştırma bunları hâlâ tutuyorsa motoru elle başlatmak `Error: Unexpected
+error` / `ServeError` ile başarısız olur — bu dolu bir porttur, bozuk bir
+kurulum değil.
+
+`bun openflow.ts` bunu kendisi halleder: zaten hizmet veren portu yeniden
+kullanır, ölü bir çalıştırmanın bağlı bıraktığını serbest bırakır. Eski
+süreçleri yalnızca gerçekten taze bir motor istediğinde kendin sonlandır —
+örneğin `opencode.json` düzenledikten sonra, çünkü motor proje yapılandırmasını
+açılışta önbelleğe alır ve bir daha okumaz.
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+Hiçbir şey dinlemiyorken iki komut da güvenlidir; hiçbir süreçle eşleşmezler. Bu
+portlardaki her süreci sonlandırırlar, bu yüzden orada başka bir şey
+çalıştırıyorsan önce kontrol et:
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### Çalıştırma
 
 Tek bir komut her iki süreci de başlatır, her platformda aynı şekilde:

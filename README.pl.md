@@ -33,6 +33,44 @@ bun install
 zależności silnika. Krok `postinstall` oznacza prekompilowane binaria pomocnicze
 `node-pty` jako wykonywalne, a na Windowsie kończy się natychmiast.
 
+### Zatrzymywanie tego, co już działa
+
+OpenFlow zajmuje dwa porty: **4096** dla silnika i **5174** dla płótna. Jeśli
+trzyma je poprzednie uruchomienie, ręczny start silnika kończy się `Error:
+Unexpected error` / `ServeError` — to zajęty port, a nie zepsuta instalacja.
+
+`bun openflow.ts` robi to sam: ponownie używa portu, który już odpowiada, i
+zwalnia ten, który zostawiło martwe uruchomienie. Ubijaj stare procesy ręcznie
+tylko wtedy, gdy naprawdę chcesz świeży silnik — na przykład po zmianie
+`opencode.json`, bo silnik zapisuje konfigurację projektu w pamięci przy starcie
+i nigdy jej nie czyta ponownie.
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+Obie komendy są bezpieczne, gdy nic nie nasłuchuje — po prostu nie trafią w
+żaden proces. Ubijają dowolny proces na tych portach, więc sprawdź najpierw, czy
+nie działa tam coś innego:
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### Uruchamianie
 
 Jedno polecenie uruchamia oba procesy, tak samo na każdej platformie:

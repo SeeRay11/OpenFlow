@@ -32,6 +32,43 @@ bun install
 다. 엔진의 네이티브 의존성을 내려받습니다. `postinstall` 단계는 미리 빌드된 `node-pty` 헬퍼
 바이너리에 실행 권한을 표시할 뿐이며, Windows에서는 아무 일도 하지 않고 즉시 반환합니다.
 
+### 이미 실행 중인 것 정리
+
+OpenFlow는 포트 두 개를 쓴다. 엔진은 **4096**, 캔버스는 **5174**. 이전 실행이
+아직 잡고 있으면 엔진을 수동으로 띄울 때 `Error: Unexpected error` /
+`ServeError`로 실패한다. 설치가 깨진 게 아니라 포트가 이미 점유된 것이다.
+
+`bun openflow.ts`는 이를 알아서 처리한다. 이미 응답 중인 포트는 재사용하고, 죽은
+실행이 물고 있던 포트는 해제한다. 직접 종료해야 할 때는 정말로 새 엔진이 필요할
+때뿐이다 — 예를 들어 `opencode.json`을 수정한 뒤. 엔진은 부팅 시 프로젝트 설정을
+캐시하고 다시 읽지 않는다.
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+아무것도 리스닝하지 않으면 두 명령 모두 안전하며 일치하는 프로세스가 없을
+뿐이다. 해당 포트를 점유한 프로세스는 무엇이든 종료시키므로, 다른 것을 돌리고
+있다면 먼저 확인할 것:
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### 실행
 
 명령 하나로 두 프로세스가 모두 시작되며, 모든 플랫폼에서 동일합니다:

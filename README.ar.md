@@ -32,6 +32,42 @@ bun install
 للمحرك. أما خطوة `postinstall` فتكتفي بوسم الملفات التنفيذية المساعدة المبنية مسبقًا
 لـ `node-pty` بأنها قابلة للتنفيذ، وتعود فورًا على Windows دون أن تفعل شيئًا.
 
+### إيقاف ما يعمل بالفعل
+
+يستخدم OpenFlow منفذين: **4096** للمحرك و**5174** للوحة. إذا كان تشغيل سابق ما
+زال يحتجزهما، يفشل تشغيل المحرك يدويًا مع `Error: Unexpected error` /
+`ServeError` — وهذا يعني أن المنفذ محجوز بالفعل، لا أن التثبيت معطوب.
+
+يتولى `bun openflow.ts` ذلك نيابة عنك: فهو يعيد استخدام منفذ يعمل بالفعل، ويحرر
+منفذًا تركه تشغيل ميت محجوزًا. لا تُنهِ العمليات القديمة بنفسك إلا عندما تريد
+محركًا جديدًا تمامًا — بعد تعديل `opencode.json` مثلًا، لأن المحرك يخزن إعدادات
+المشروع عند الإقلاع ولا يعيد قراءتها أبدًا.
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+الأمران آمنان عند عدم وجود أي شيء يستمع — لن يطابقا أي عملية. وهما ينهيان أي
+عملية على هذين المنفذين، لذا تحقق أولًا إن كنت تشغّل شيئًا آخر عليهما:
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### التشغيل
 
 أمر واحد يبدأ كلتا العمليتين، بالطريقة نفسها على كل نظام:

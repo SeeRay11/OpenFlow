@@ -34,6 +34,45 @@ descarga las dependencias nativas del motor. Un paso `postinstall` marca como
 ejecutables los binarios auxiliares precompilados de `node-pty`, y en Windows
 retorna de inmediato.
 
+### Detener lo que ya esté en ejecución
+
+OpenFlow usa dos puertos: **4096** para el motor y **5174** para el lienzo. Si
+una ejecución anterior los sigue ocupando, arrancar el motor a mano falla con
+`Error: Unexpected error` / `ServeError`: es un puerto ocupado, no una
+instalación rota.
+
+`bun openflow.ts` se encarga de esto: reutiliza un puerto que ya está sirviendo
+y libera el que dejó ocupado una ejecución muerta. Mata los procesos antiguos tú
+mismo solo cuando quieras un motor realmente nuevo — por ejemplo tras editar
+`opencode.json`, ya que el motor cachea la configuración del proyecto al
+arrancar y no vuelve a leerla.
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+Ambos comandos son seguros cuando no hay nada escuchando: simplemente no
+encuentran ningún proceso. Matan cualquier proceso en esos puertos, así que
+comprueba antes si ejecutas algo más ahí:
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### Ejecutar
 
 Un solo comando arranca ambos procesos, igual en todas las plataformas:

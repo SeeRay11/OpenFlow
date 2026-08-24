@@ -32,6 +32,42 @@ bun install
 く、エンジンのネイティブ依存関係をダウンロードします。`postinstall` のステップは `node-pty`
 のビルド済みヘルパーバイナリに実行権限を付けるだけで、Windows では何もせずすぐに終了します。
 
+### すでに動いているものを止める
+
+OpenFlow はポートを 2 つ使う。エンジンが **4096**、キャンバスが
+**5174**。前回の実行がまだ握っていると、エンジンを手動で起動しても `Error:
+Unexpected error` / `ServeError`
+で失敗する。これはポートが埋まっているだけで、インストールの破損ではない。
+
+`bun openflow.ts`
+はこれを自動で処理する。すでに応答しているポートは再利用し、死んだ実行が握ったままのポートは解放する。自分で古いプロセスを終了させるのは、本当に新しいエンジンが欲しいときだけでよい。たとえば
+`opencode.json`
+を編集したあと。エンジンは起動時にプロジェクト設定をキャッシュし、二度と読み直さないからだ。
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+どちらのコマンドも、何も待ち受けていなければ安全で、対象のプロセスが見つからないだけで終わる。ただしそのポートを握っているプロセスは何であれ終了させるので、他のものを動かしているなら先に確認すること。
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### 実行する
 
 1 つのコマンドで両方のプロセスが起動します。どのプラットフォームでも同じです：

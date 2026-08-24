@@ -33,6 +33,42 @@ bun install
 করা সহায়ক বাইনারিগুলোকে এক্সিকিউটেবল হিসেবে চিহ্নিত করে, আর Windows-এ কিছু না করেই সঙ্গে
 সঙ্গে ফিরে আসে।
 
+### আগে থেকে চলা কিছু বন্ধ করা
+
+OpenFlow দুটি পোর্ট ব্যবহার করে: ইঞ্জিনের জন্য **4096** এবং ক্যানভাসের জন্য
+**5174**। আগের কোনো রান সেগুলো ধরে রাখলে ইঞ্জিন হাতে চালাতে গেলে `Error:
+Unexpected error` / `ServeError` আসে — এটি পোর্ট আটকে থাকার ফল, ভাঙা ইনস্টল নয়।
+
+`bun openflow.ts` এটি নিজেই সামলায়: যে পোর্টে ইতিমধ্যেই সার্ভ হচ্ছে তা পুনরায়
+ব্যবহার করে, আর মৃত রানের আটকে রাখা পোর্ট মুক্ত করে। পুরোনো প্রসেস নিজে বন্ধ
+করুন কেবল তখনই, যখন আপনি সত্যিই নতুন ইঞ্জিন চান — যেমন `opencode.json` সম্পাদনার
+পরে, কারণ ইঞ্জিন বুটের সময় প্রজেক্ট কনফিগ ক্যাশ করে এবং আর কখনো পড়ে না।
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+কিছুই লিসেন না করলে দুটি কমান্ডই নিরাপদ — কোনো প্রসেস মিলবে না। এগুলো ওই পোর্টের
+যেকোনো প্রসেস বন্ধ করে, তাই সেখানে অন্য কিছু চালালে আগে যাচাই করুন:
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### চালানো
 
 একটি কমান্ডই দুটি প্রসেস চালু করে, প্রতিটি প্ল্যাটফর্মে একইভাবে:

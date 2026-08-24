@@ -32,6 +32,44 @@ u [`packages/flow`](packages/flow). Prva instalacija je velika; preuzima nativne
 zavisnosti motora. Korak `postinstall` označava unaprijed izgrađene pomoćne binarne
 datoteke `node-pty` kao izvršne, a na Windowsu odmah završava.
 
+### Zaustavljanje onoga što već radi
+
+OpenFlow koristi dva porta: **4096** za motor i **5174** za platno. Ako ih
+prethodno pokretanje još drži, ručno pokretanje motora pada uz `Error:
+Unexpected error` / `ServeError` — to je zauzet port, a ne pokvarena
+instalacija.
+
+`bun openflow.ts` to rješava sam: ponovo koristi port koji već poslužuje i
+oslobađa onaj koji je mrtvo pokretanje ostavilo zauzetim. Stare procese gasi sam
+samo kada želiš zaista svjež motor — na primjer nakon izmjene `opencode.json`,
+jer motor konfiguraciju projekta učita pri pokretanju i više je ne čita.
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+Obje naredbe su sigurne kada ništa ne sluša — jednostavno ne pronađu nijedan
+proces. Ubijaju bilo koji proces na tim portovima, pa provjeri prvo ako tamo
+pokrećeš nešto drugo:
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### Pokretanje
 
 Jedna komanda pokreće oba procesa, jednako na svakoj platformi:

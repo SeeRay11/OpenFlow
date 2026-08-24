@@ -34,6 +34,45 @@ sie lädt die nativen Abhängigkeiten der Engine herunter. Ein `postinstall`-Sch
 markiert die vorgebauten `node-pty`-Hilfsprogramme als ausführbar und kehrt unter
 Windows sofort zurück.
 
+### Laufende Prozesse beenden
+
+OpenFlow belegt zwei Ports: **4096** für die Engine und **5174** für die Canvas.
+Hält ein früherer Lauf sie noch, scheitert ein manueller Start der Engine mit
+`Error: Unexpected error` / `ServeError` — ein belegter Port, keine kaputte
+Installation.
+
+`bun openflow.ts` erledigt das selbst: Es nutzt einen bereits bedienenden Port
+weiter und gibt einen frei, den ein toter Lauf gebunden gelassen hat. Beende die
+alten Prozesse nur dann selbst, wenn du wirklich eine frische Engine willst —
+etwa nach einer Änderung an `opencode.json`, denn die Engine liest die
+Projektkonfiguration beim Start einmal und nie wieder.
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+Beide Befehle sind gefahrlos, wenn nichts lauscht — sie treffen dann einfach
+keinen Prozess. Sie beenden jeden Prozess auf diesen Ports, prüfe also zuerst,
+ob dort etwas anderes läuft:
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### Ausführen
 
 Ein Befehl startet beide Prozesse, auf jeder Plattform gleich:

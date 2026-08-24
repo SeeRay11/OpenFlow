@@ -32,6 +32,43 @@ bun install
 เนทีฟของเอนจิน ส่วนขั้นตอน `postinstall` เพียงแค่ทำเครื่องหมายให้ไบนารีตัวช่วยของ `node-pty`
 ที่ build มาแล้วสามารถรันได้ และบน Windows มันจะคืนค่าทันทีโดยไม่ทำอะไรเลย
 
+### หยุดสิ่งที่รันค้างอยู่
+
+OpenFlow ใช้สองพอร์ต: **4096** สำหรับเอนจิน และ **5174** สำหรับแคนวาส
+ถ้าการรันครั้งก่อนยังจับพอร์ตไว้ การสตาร์ตเอนจินเองจะล้มเหลวด้วย `Error:
+Unexpected error` / `ServeError` — นั่นคือพอร์ตถูกใช้อยู่ ไม่ใช่การติดตั้งเสีย
+
+`bun openflow.ts` จัดการให้เอง: ใช้พอร์ตที่ให้บริการอยู่แล้วซ้ำ
+และปลดพอร์ตที่การรันซึ่งตายไปแล้วยังจับค้างไว้
+ฆ่าโปรเซสเก่าด้วยตัวเองเฉพาะเมื่อต้องการเอนจินใหม่จริง ๆ เช่น หลังแก้
+`opencode.json` เพราะเอนจินแคชคอนฟิกของโปรเจกต์ตอนบูตและไม่อ่านซ้ำอีก
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+ทั้งสองคำสั่งปลอดภัยเมื่อไม่มีอะไรฟังอยู่ — มันจะไม่ตรงกับโปรเซสใดเลย
+แต่มันฆ่าโปรเซสใดก็ตามบนพอร์ตเหล่านั้น
+จึงควรตรวจก่อนถ้าคุณรันอย่างอื่นอยู่ตรงนั้น:
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### การรัน
 
 คำสั่งเดียวเริ่มทั้งสองโปรเซส เหมือนกันทุกแพลตฟอร์ม:

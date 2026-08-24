@@ -30,6 +30,40 @@ bun install
 `postinstall` 這一步只是把 `node-pty` 預先建置好的輔助執行檔標記為可執行，在 Windows 上會
 立即返回、什麼也不做。
 
+### 先停掉已經在跑的行程
+
+OpenFlow 佔用兩個連接埠：引擎 **4096**，畫布
+**5174**。若上一次執行仍佔著它們，手動啟動引擎會以 `Error: Unexpected error` /
+`ServeError` 失敗——這是連接埠被佔用，不是安裝損毀。
+
+`bun openflow.ts`
+會自行處理：已在提供服務的連接埠直接沿用，死掉的執行殘留佔用的連接埠會被釋放。只有在確實需要全新引擎時才手動結束舊行程——例如改過
+`opencode.json` 之後，因為引擎在啟動時快取專案設定，之後不再重讀。
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+兩條指令在沒有任何監聽時都是安全的，只是匹配不到任何行程。它們會結束這些連接埠上的任何行程，所以若你在那裡跑著別的東西，請先確認：
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### 執行
 
 一條命令即可同時啟動兩個行程，在所有平台上用法相同：

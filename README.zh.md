@@ -30,6 +30,40 @@ bun install
 `postinstall` 这一步只是把 `node-pty` 预编译好的辅助二进制文件标记为可执行，在 Windows 上会
 立即返回、什么也不做。
 
+### 先停掉已经在跑的进程
+
+OpenFlow 占用两个端口：引擎 **4096**，画布
+**5174**。若上一次运行仍占着它们，手动启动引擎会以 `Error: Unexpected error` /
+`ServeError` 失败——这是端口被占用，不是安装损坏。
+
+`bun openflow.ts`
+会自行处理：已在提供服务的端口直接复用，死掉的运行残留占用的端口会被释放。只有在确实需要一个全新引擎时才手动结束旧进程——例如改过
+`opencode.json` 之后，因为引擎在启动时缓存项目配置，之后不再重读。
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+两条命令在无人监听时都是安全的，只是匹配不到任何进程。它们会结束这些端口上的任何进程，所以若你在那里跑着别的东西，请先确认：
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### 运行
 
 一条命令即可同时启动两个进程，在所有平台上用法相同：

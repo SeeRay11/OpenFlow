@@ -34,6 +34,44 @@ các phụ thuộc native của engine. Bước `postinstall` chỉ đánh dấu
 trợ dựng sẵn của `node-pty` là có thể thực thi, và trên Windows nó trả về ngay lập
 tức.
 
+### Dừng những gì đang chạy sẵn
+
+OpenFlow dùng hai cổng: **4096** cho engine và **5174** cho canvas. Nếu một lần
+chạy trước vẫn giữ chúng, việc tự tay khởi động engine sẽ thất bại với `Error:
+Unexpected error` / `ServeError` — đó là cổng đã bị chiếm, không phải bản cài
+hỏng.
+
+`bun openflow.ts` tự xử lý việc này: nó dùng lại cổng đang phục vụ và giải phóng
+cổng mà một lần chạy đã chết còn giữ. Chỉ tự tay tắt tiến trình cũ khi bạn thực
+sự muốn một engine mới tinh — ví dụ sau khi sửa `opencode.json`, vì engine nạp
+cấu hình dự án lúc khởi động và không đọc lại nữa.
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+Cả hai lệnh đều an toàn khi không có gì đang lắng nghe — chúng đơn giản là không
+khớp tiến trình nào. Chúng tắt bất kỳ tiến trình nào trên các cổng đó, nên hãy
+kiểm tra trước nếu bạn chạy thứ khác ở đấy:
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### Chạy
 
 Một lệnh duy nhất khởi động cả hai tiến trình, giống nhau trên mọi nền tảng:

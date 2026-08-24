@@ -32,6 +32,45 @@ i [`packages/flow`](packages/flow). Den første installasjonen er stor; den last
 motorens native avhengigheter. Et `postinstall`-steg merker `node-pty` sine
 ferdigbygde hjelpebinærfiler som kjørbare, og returnerer umiddelbart på Windows.
 
+### Stopp det som allerede kjører
+
+OpenFlow bruker to porter: **4096** til motoren og **5174** til lerretet. Holder
+en tidligere kjøring dem fortsatt, feiler manuell start av motoren med `Error:
+Unexpected error` / `ServeError` — en opptatt port, ikke en ødelagt
+installasjon.
+
+`bun openflow.ts` ordner dette selv: den gjenbruker en port som allerede svarer,
+og frigjør en som en død kjøring lot stå bundet. Drep de gamle prosessene selv
+bare når du vil ha en helt fersk motor — for eksempel etter en endring i
+`opencode.json`, siden motoren cacher prosjektkonfigurasjonen ved oppstart og
+aldri leser den på nytt.
+
+**Windows (PowerShell)**
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { taskkill /pid $_ /T /F }
+```
+
+**macOS / Linux**
+
+```bash
+lsof -t -i :4096 -i :5174 | xargs kill -9
+```
+
+Begge er trygge å kjøre når ingenting lytter — de treffer rett og slett ingen
+prosess. De dreper enhver prosess på disse portene, så sjekk først om du kjører
+noe annet der:
+
+```powershell
+Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+```bash
+lsof -i :4096 -i :5174
+```
+
 ### Kjør det
 
 Én kommando starter begge prosessene, på samme måte på alle plattformer:
