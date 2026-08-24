@@ -5,3 +5,8 @@ packages/core/src/database/migration.gen.ts linguist-generated
 # clone with `bad interpreter: /bin/bash^M`. Scoped to the fork-owned script so
 # no upstream file changes how it checks out.
 openflow.sh text eol=lf
+
+# `bun install` always writes this file with LF. Without this pin, a Windows
+# clone with core.autocrlf=true checks it out as CRLF, bun rewrites it as LF,
+# and every fresh install reports a modified bun.lock with an empty diff.
+bun.lock text eol=lf
