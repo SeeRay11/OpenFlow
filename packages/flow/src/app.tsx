@@ -12,7 +12,14 @@ import {
   type PipeMode,
   type Run,
 } from "./server/engine"
-import { availableModels, providerRows, suggestedFreeDefault, unlockedRows, type ProviderRow } from "./server/providers"
+import {
+  availableModels,
+  freeModels,
+  providerRows,
+  suggestedFreeDefault,
+  unlockedRows,
+  type ProviderRow,
+} from "./server/providers"
 import { defaultModel, setAvailableModels, setDefaultModel } from "./graph/default-model"
 import { hydrateCustomRoles, onRolesSyncError } from "./graph/roles"
 import {
@@ -1046,11 +1053,21 @@ export function App() {
         unlockedProviders={unlockedRows(providers()).length}
         suggestedFree={defaultModel() ? undefined : suggestedFreeDefault(providers())}
         onOpenProviders={() => openProviders()}
-        onUseFree={() => {
-          const free = suggestedFreeDefault(providers())
-          if (!free) return
-          setDefaultModel(free)
-          actions.notice("info", `default model set to ${free} — new nodes will use it`)
+        onUseFree={async () => {
+          // suggestedFreeDefault picks by catalog order, not liveness — the free
+          // tier's health drifts hour to hour, so probe each candidate with a real
+          // prompt (same check the per-node "test" button runs) until one answers.
+          const candidates = freeModels(providers())
+          if (!candidates.length) return
+          actions.notice("info", "checking free models…")
+          for (const candidate of candidates) {
+            const result = await api.testModel(candidate.value)
+            if (!result.ok) continue
+            setDefaultModel(candidate.value)
+            actions.notice("info", `default model set to ${candidate.value} — new nodes will use it`)
+            return
+          }
+          actions.notice("error", "no free model answered right now — try again in a moment")
         }}
       />
 
