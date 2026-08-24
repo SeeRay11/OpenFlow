@@ -69,6 +69,24 @@ Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPor
 lsof -i :4096 -i :5174
 ```
 
+**ถ้าเอนจินล้มเหลวด้วย `database is locked`** แปลว่ามีเอนจิน opencode อีกตัวทำงานอยู่ที่อื่นแล้ว
+— สำเนา OpenFlow ชุดที่สอง หรือเอนจินที่ตัวเรียกใช้งานครั้งก่อนทิ้งค้างไว้ ทุกเอนจินใช้ฐานข้อมูล
+เดียวกันในไดเรกทอรีข้อมูลของ opencode ตัวที่เริ่มทีหลังจึงเปิดมันไม่ได้ การปล่อยพอร์ตให้ว่าง
+ไม่ช่วยในกรณีนี้ เพราะเอนจินตัวนั้นอาจไม่ได้ถือพอร์ตอยู่ ให้หยุดมันจากสิ่งที่มันกำลังรันแทน:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='bun.exe'" |
+  Where-Object { $_.CommandLine -match 'openflow\.ts|src/index\.ts serve|packages/flow dev' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+```bash
+pkill -f 'openflow\.ts|src/index\.ts serve|packages/flow dev'
+```
+
+จากนั้นเริ่ม OpenFlow ใหม่อีกครั้ง ถ้าเกิดขึ้นทุกครั้ง เป็นไปได้มากว่าคุณโคลน OpenFlow ไว้สองที่
+และถูกเริ่มทั้งคู่ — ให้เก็บไว้ที่เดียว
+
 ### การรัน
 
 คำสั่งเดียวเริ่มทั้งสองโปรเซส เหมือนกันทุกแพลตฟอร์ม:

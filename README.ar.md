@@ -68,6 +68,25 @@ Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPor
 lsof -i :4096 -i :5174
 ```
 
+**إذا فشل المحرّك برسالة `database is locked`،** فهناك محرّك opencode آخر يعمل
+بالفعل في مكان ما — نسخة ثانية من OpenFlow، أو محرّك تركه مُشغِّل سابق. كل
+المحرّكات تتشارك قاعدة بيانات واحدة في مجلد بيانات opencode، لذا لا يستطيع الثاني
+فتحها. تحرير المنافذ لا يفيد هنا، لأن ذلك المحرّك قد لا يكون محتجزًا لها. أوقفه
+بحسب ما يُشغِّله بدلًا من ذلك:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='bun.exe'" |
+  Where-Object { $_.CommandLine -match 'openflow\.ts|src/index\.ts serve|packages/flow dev' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+```bash
+pkill -f 'openflow\.ts|src/index\.ts serve|packages/flow dev'
+```
+
+ثم شغّل OpenFlow من جديد. إذا تكرر ذلك في كل مرة، فالأرجح أن لديك OpenFlow
+مستنسخًا في مكانين ويجري تشغيلهما معًا — احتفظ بواحد فقط.
+
 ### التشغيل
 
 أمر واحد يبدأ كلتا العمليتين، بالطريقة نفسها على كل نظام:

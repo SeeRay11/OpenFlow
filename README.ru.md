@@ -70,6 +70,26 @@ Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPor
 lsof -i :4096 -i :5174
 ```
 
+**Если движок падает с `database is locked`,** значит где-то уже работает другой
+движок opencode — вторая копия OpenFlow или движок, оставшийся от предыдущего
+запуска. Все движки используют одну базу данных в каталоге данных opencode,
+поэтому второй запущенный открыть её не может. Освобождение портов здесь не
+помогает: тот движок вовсе не обязан их занимать. Остановите его по тому, что он
+выполняет:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='bun.exe'" |
+  Where-Object { $_.CommandLine -match 'openflow\.ts|src/index\.ts serve|packages/flow dev' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+```bash
+pkill -f 'openflow\.ts|src/index\.ts serve|packages/flow dev'
+```
+
+Затем запустите OpenFlow снова. Если это повторяется каждый раз, скорее всего
+OpenFlow склонирован в двух местах и запускаются оба — оставьте один.
+
 ### Запуск
 
 Одна команда запускает оба процесса — одинаково на любой платформе:

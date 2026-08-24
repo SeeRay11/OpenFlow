@@ -72,6 +72,26 @@ Get-NetTCPConnection -LocalPort 4096,5174 -State Listen | Select-Object LocalPor
 lsof -i :4096 -i :5174
 ```
 
+**Nếu engine lỗi với `database is locked`,** thì đã có một engine opencode khác
+đang chạy ở nơi khác — một bản sao OpenFlow thứ hai, hoặc engine do lần khởi chạy
+trước bỏ lại. Mọi engine dùng chung một cơ sở dữ liệu trong thư mục dữ liệu
+opencode, nên engine khởi động sau không mở được nó. Giải phóng cổng không giúp
+ích ở đây, vì engine đó chưa chắc đang giữ cổng. Hãy dừng nó dựa trên thứ nó đang
+chạy:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='bun.exe'" |
+  Where-Object { $_.CommandLine -match 'openflow\.ts|src/index\.ts serve|packages/flow dev' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+```bash
+pkill -f 'openflow\.ts|src/index\.ts serve|packages/flow dev'
+```
+
+Sau đó khởi động lại OpenFlow. Nếu lần nào cũng vậy, nhiều khả năng bạn đã clone
+OpenFlow ở hai nơi và cả hai đều được khởi chạy — hãy giữ lại một.
+
 ### Chạy
 
 Một lệnh duy nhất khởi động cả hai tiến trình, giống nhau trên mọi nền tảng:
