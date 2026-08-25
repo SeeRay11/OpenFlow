@@ -12,7 +12,14 @@ import {
   type PipeMode,
   type Run,
 } from "./server/engine"
-import { availableModels, providerRows, suggestedFreeDefault, unlockedRows, type ProviderRow } from "./server/providers"
+import {
+  availableModels,
+  freeModels,
+  providerRows,
+  suggestedFreeDefault,
+  unlockedRows,
+  type ProviderRow,
+} from "./server/providers"
 import { defaultModel, setAvailableModels, setDefaultModel } from "./graph/default-model"
 import { hydrateCustomRoles, onRolesSyncError } from "./graph/roles"
 import {
@@ -362,10 +369,11 @@ export function App() {
    * no server restart, unlike an agent merge.
    */
   async function refreshProviders() {
-    const [integrationList, modelList] = await Promise.all([
-      api.integrations().catch(() => []),
-      api.models().catch(() => []),
-    ])
+    const integrationList = await readCatalog()
+    // A provider with a key always serves models, so an empty model list beside
+    // a connected provider is the same cold-catalog race — and it reads worse,
+    // since every connected provider then shows as "no runnable models".
+    const modelList = await readModels(integrationList.some((item) => (item.connections ?? []).length > 0))
     const names = [
       ...new Set(
         integrationList.flatMap((item) =>
@@ -390,6 +398,9 @@ export function App() {
   function openProviders(query?: string) {
     setProviderQuery(query ?? "")
     setShowProviders(true)
+    // Nothing to pick means the boot read came back empty. Try again rather
+    // than show a first-time user an empty list with no way out of it.
+    if (!providers().length) void refreshProviders()
   }
 
   async function refresh() {
@@ -1041,12 +1052,22 @@ export function App() {
       <Walkthrough
         unlockedProviders={unlockedRows(providers()).length}
         suggestedFree={defaultModel() ? undefined : suggestedFreeDefault(providers())}
-        onOpenProviders={() => setShowProviders(true)}
-        onUseFree={() => {
-          const free = suggestedFreeDefault(providers())
-          if (!free) return
-          setDefaultModel(free)
-          actions.notice("info", `default model set to ${free} — new nodes will use it`)
+        onOpenProviders={() => openProviders()}
+        onUseFree={async () => {
+          // suggestedFreeDefault picks by catalog order, not liveness — the free
+          // tier's health drifts hour to hour, so probe each candidate with a real
+          // prompt (same check the per-node "test" button runs) until one answers.
+          const candidates = freeModels(providers())
+          if (!candidates.length) return
+          actions.notice("info", "checking free models…")
+          for (const candidate of candidates) {
+            const result = await api.testModel(candidate.value)
+            if (!result.ok) continue
+            setDefaultModel(candidate.value)
+            actions.notice("info", `default model set to ${candidate.value} — new nodes will use it`)
+            return
+          }
+          actions.notice("error", "no free model answered right now — try again in a moment")
         }}
       />
 
@@ -1207,6 +1228,42 @@ export function App() {
 function clone(log: RunLog): RunLog {
   return { ...log, nodes: log.nodes.map((node) => ({ ...node })) }
 }
+
+/**
+ * Reads the provider catalog, retrying while it comes back empty.
+ *
+ * `GET /api/integration` answers as soon as the engine is listening, but the
+ * catalog behind it is populated separately, so a page that loads the instant
+ * the engine comes up can get `200` with nothing in it. An empty catalog is
+ * never a real answer — models.dev knows hundreds of providers — and nothing
+ * refetches it until a key changes, so without this the first thing a fresh
+ * install sees when it clicks "api keys" is an empty list.
+ */
+async function readCatalog() {
+  for (const wait of RETRIES) {
+    if (wait) await new Promise((done) => setTimeout(done, wait))
+    const list = await api.integrations().catch(() => [])
+    if (list.length) return list
+  }
+  return []
+}
+
+/**
+ * Reads the model list. `expected` says whether an empty answer can be real:
+ * a fresh install with no key connected genuinely has no models, and retrying
+ * that would only delay the panel that exists to fix it.
+ */
+async function readModels(expected: boolean) {
+  for (const wait of RETRIES) {
+    if (wait) await new Promise((done) => setTimeout(done, wait))
+    const list = await api.models().catch(() => [])
+    if (list.length || !expected) return list
+  }
+  return []
+}
+
+/** Backoff for the two catalog reads, in ms before each attempt. */
+const RETRIES = [0, 300, 900, 2000]
 
 /** Parses untrusted file text; a malformed file yields `undefined`, not a throw. */
 function parseJson(text: string): unknown {
