@@ -97,12 +97,20 @@ cloned in two places and both are being started — keep one.
 One command starts both processes, the same way on every platform:
 
 ```bash
-bun openflow.ts
+FLOW_MANAGE_SERVER=1 bun openflow.ts
 ```
 
 It starts the engine, waits until it answers, then opens the canvas on
 http://localhost:5174; Ctrl+C stops both. A port a dead run left bound is freed
 first, and a port that is already serving is reused rather than started twice.
+
+`FLOW_MANAGE_SERVER=1` hands the engine to the canvas, so its restart button
+works — one click stops `opencode serve`, starts it again, and re-reads agents,
+models and MCP status. This is the easy way to apply a merged agent, a new skill
+or an MCP change without leaving the app. It is opt-in and never adopts a running
+engine; drop it (`bun openflow.ts`) to start the engine unmanaged. The prefix is
+POSIX shell syntax — on PowerShell use `$env:FLOW_MANAGE_SERVER=1; bun
+openflow.ts`, on cmd `set FLOW_MANAGE_SERVER=1` on its own line first.
 
 Two shims wrap that same file for people who prefer their platform's own
 launcher. They hold no logic of their own — they translate flags into the
