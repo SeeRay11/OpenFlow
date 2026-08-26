@@ -94,10 +94,31 @@ cloned in two places and both are being started — keep one.
 
 ### Run it
 
-One command starts both processes, the same way on every platform:
+One command starts both processes. Setting the variable is the only part that
+differs per shell, so pick the line for the terminal you are in.
+
+PowerShell (the Windows default):
+
+```powershell
+$env:FLOW_MANAGE_SERVER=1; bun openflow.ts
+```
+
+bash, zsh, Git Bash, WSL, macOS, Linux:
 
 ```bash
 FLOW_MANAGE_SERVER=1 bun openflow.ts
+```
+
+Windows `cmd.exe`:
+
+```bash
+set FLOW_MANAGE_SERVER=1 && bun openflow.ts
+```
+
+fish:
+
+```bash
+env FLOW_MANAGE_SERVER=1 bun openflow.ts
 ```
 
 It starts the engine, waits until it answers, then opens the canvas on
@@ -108,9 +129,7 @@ first, and a port that is already serving is reused rather than started twice.
 works — one click stops `opencode serve`, starts it again, and re-reads agents,
 models and MCP status. This is the easy way to apply a merged agent, a new skill
 or an MCP change without leaving the app. It is opt-in and never adopts a running
-engine; drop it (`bun openflow.ts`) to start the engine unmanaged. The prefix is
-POSIX shell syntax — on PowerShell use `$env:FLOW_MANAGE_SERVER=1; bun
-openflow.ts`, on cmd `set FLOW_MANAGE_SERVER=1` on its own line first.
+engine; drop it (`bun openflow.ts`, on every shell) to start the engine unmanaged.
 
 Two shims wrap that same file for people who prefer their platform's own
 launcher. They hold no logic of their own — they translate flags into the

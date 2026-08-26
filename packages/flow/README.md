@@ -138,7 +138,9 @@ says otherwise — `bun start` exits, and `vite --host` fails to start rather th
 coming up with the store quietly exposed. Request bodies are capped at 8 MB on
 both.
 
-Environment overrides:
+Environment overrides. Setting one differs per shell — `VAR=1 bun openflow.ts` on
+bash/zsh/Git Bash/WSL, `$env:VAR=1; bun openflow.ts` on PowerShell,
+`set VAR=1 && bun openflow.ts` on cmd, `env VAR=1 bun openflow.ts` on fish:
 
 | Variable | Default | Meaning |
 |---|---|---|
