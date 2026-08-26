@@ -182,7 +182,7 @@ bun run --cwd packages/flow dev
 Or run it built, which serves the same app without vite:
 
 ```bash
-bun run --cwd packages/flow build && bun run --cwd packages/flow start
+bun run --cwd packages/flow start
 ```
 
 ### Before the first run

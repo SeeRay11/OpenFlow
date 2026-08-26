@@ -15,7 +15,9 @@ export type LaunchEnv = Record<string, string | undefined>
 /**
  * argv to spawn (cwd is always the repo root) and whether it can be skipped.
  * `prebuild` runs to completion first and must succeed — built mode needs
- * `vite build` before the static host has anything to serve.
+ * `vite build` before the static host has anything to serve. That is why the
+ * canvas runs `serve` and not `start`: `start` builds too, and building twice
+ * per launch is pure waiting.
  */
 export type ChildPlan = { argv: string[]; skip: boolean; prebuild?: string[] }
 
@@ -79,7 +81,7 @@ export async function launchPlan(input: {
     },
     canvas: built
       ? {
-          argv: ["bun", "run", "--cwd", "packages/flow", "start"],
+          argv: ["bun", "run", "--cwd", "packages/flow", "serve"],
           prebuild: ["bun", "run", "--cwd", "packages/flow", "build"],
           skip: canvasUp,
         }

@@ -230,6 +230,11 @@ async function body(request: Request) {
  * Serves the built bundle, falling back to index.html so a deep link still
  * boots the app. Requests are resolved inside `dist` and refused if they
  * escape it.
+ *
+ * index.html is served `no-store`. Vite hashes asset filenames, so the assets
+ * may be cached forever, but index.html is the pointer to them — cached under
+ * the browser's own heuristic it pins the tab to the previous build's chunks,
+ * and the app opens at an old version no rebuild can dislodge.
  */
 async function statics(url: URL) {
   const requested = path.join(dist, decodeURIComponent(url.pathname))
@@ -238,8 +243,13 @@ async function statics(url: URL) {
     return new Response("not found", { status: 404 })
   }
   const file = Bun.file(resolved)
-  if (url.pathname !== "/" && (await file.exists())) return new Response(file)
+  if (url.pathname !== "/" && (await file.exists())) {
+    const hashed = resolved.startsWith(path.join(dist, "assets") + path.sep)
+    return new Response(file, {
+      headers: { "cache-control": hashed ? "public, max-age=31536000, immutable" : "no-cache" },
+    })
+  }
   return new Response(Bun.file(path.join(dist, "index.html")), {
-    headers: { "content-type": "text/html; charset=utf-8" },
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
   })
 }

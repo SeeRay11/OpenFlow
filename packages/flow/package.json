@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "start": "bun server.ts",
+    "start": "vite build && bun server.ts",
+    "serve": "bun server.ts",
     "test": "bun test",
     "typecheck": "tsgo --noEmit"
   },

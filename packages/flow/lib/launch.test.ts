@@ -53,7 +53,7 @@ describe("launchPlan", () => {
     const plan = await launchPlan({ env: { OPENFLOW_BUILT: "1" }, repo })
     expect(plan.built).toBe(true)
     expect(plan.canvas.prebuild).toEqual(["bun", "run", "--cwd", "packages/flow", "build"])
-    expect(plan.canvas.argv).toEqual(["bun", "run", "--cwd", "packages/flow", "start"])
+    expect(plan.canvas.argv).toEqual(["bun", "run", "--cwd", "packages/flow", "serve"])
     expect(plan.canvas.argv).not.toContain("dev")
   })
 
@@ -92,7 +92,7 @@ describe("launchPlan", () => {
     expect(plan.managed).toBe(true)
     expect(plan.engineUrl).toBe("http://127.0.0.1:4097")
     expect(plan.engine.argv.at(-1)).toBe("4097")
-    expect(plan.canvas.argv).toEqual(["bun", "run", "--cwd", "packages/flow", "start"])
+    expect(plan.canvas.argv).toEqual(["bun", "run", "--cwd", "packages/flow", "serve"])
   })
 
   test("an explicitly off flag reads as off", async () => {

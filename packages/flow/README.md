@@ -120,11 +120,13 @@ page: the `/flow/api` store and the proxy to `opencode serve` are what make save
 load and run work. `server.ts` serves all three.
 
 ```bash
-bun run --cwd packages/flow build
 bun run --cwd packages/flow start
 ```
 
-Same URL, same behaviour, no vite.
+Same URL, same behaviour, no vite. `start` rebuilds before it serves, so it
+cannot open an old bundle — `dist/` is not checked against source, and serving a
+stale one is otherwise silent. `serve` skips the build for when you have just
+run `build` yourself; that is what the launcher's `-Built` uses.
 
 ### Loopback only
 
