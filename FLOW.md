@@ -188,6 +188,23 @@ Check these first when the UI misbehaves — each one cost a debugging session.
   (reuses `layer()` for structural checks). `run()` calls it before any session is created:
   blocking problems abort, warnings render but let the run proceed.
 
+## Codebase tooling (graphify, context-mode)
+
+Generic routing for both tools lives in the global `~/.claude/CLAUDE.md`. Only the
+OpenFlow-specific facts belong here.
+
+- **graphify scope is `packages/flow/src`, never `graphify .`.** The rest of the repo is a
+  vendored OpenCode fork — indexing it buries the flow signal and (in the installed 0.8.45
+  CLI) aborts demanding an LLM key for thousands of doc/image files. Build with `graphify
+  extract packages/flow/src`. The graph lands in `packages/flow/src/graphify-out/`
+  (git-ignored via `packages/flow/.gitignore`), **not** at repo root.
+- **Verify the graph is the real one before trusting a query.** The live graph is
+  `packages/flow/src/graphify-out/`. Any empty `graphify-out/` elsewhere (a stray root dir has
+  appeared before) trips the "graph exists → query it first" rule while holding nothing —
+  target the flow path explicitly.
+- **context-mode captures that run tests or typecheck must `cd packages/flow` first**
+  (the `do-not-run-tests-from-root` guard). Host shell is PowerShell.
+
 ## When a rule is missing
 
 If a correction here would apply to future work, add it to this file rather than leaving it
