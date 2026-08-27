@@ -1152,6 +1152,128 @@ main {
   border-left: 1px solid var(--v2-border-border-muted);
 }
 
+/* sessions ---------------------------------------------------------------
+   A fourth column, left of the palette, holding the sessions `opencode serve`
+   already has for this project. It is unmounted rather than hidden when
+   collapsed, so the canvas gets the width back and the list stops polling. */
+
+.sessions {
+  width: 240px;
+  gap: 8px;
+  border-right: 1px solid var(--v2-border-border-muted);
+  /* the list scrolls in its own frame; the column itself must not, or the
+     search row scrolls away from the results it filters */
+  overflow: hidden;
+}
+
+.session-search {
+  flex-shrink: 0;
+  border: 0.5px solid var(--v2-border-border-muted);
+  border-radius: 5px;
+  background: var(--v2-background-bg-layer-02);
+}
+
+.session-error {
+  color: var(--v2-text-text-danger, var(--v2-text-text-base));
+}
+
+.session-list,
+.session-transcript {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+.session-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border: 0.5px solid var(--v2-border-border-base);
+  border-radius: 5px;
+  background: var(--v2-background-bg-button-neutral);
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+}
+
+.session-card:hover {
+  background: var(--v2-background-bg-button-neutral-hover, var(--v2-background-bg-layer-02));
+}
+
+.session-card-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+/* the title takes what is left after the age, and truncates rather than
+   wrapping — a three-line card buries the next session */
+.session-card-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-card-age,
+.session-card-meta {
+  flex-shrink: 0;
+  color: var(--v2-text-text-muted);
+}
+
+.session-card-meta {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.session-card-tag {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--v2-background-bg-layer-02);
+}
+
+.session-meta {
+  display: flex;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.session-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--v2-border-border-muted);
+}
+
+.session-turn-assistant {
+  border-left-color: var(--v2-border-border-base);
+}
+
+.session-turn-role {
+  color: var(--v2-text-text-muted);
+}
+
+/* a transcript is prose and code both, and it arrives with its own newlines —
+   preserving them is what keeps a pasted diff readable */
+.session-turn-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .panel-section {
   display: flex;
   flex-direction: column;

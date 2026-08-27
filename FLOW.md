@@ -141,6 +141,27 @@ Check these first when the UI misbehaves — each one cost a debugging session.
   rule as `.canvas-empty` — or drag-to-create and panning die. The walkthrough is a `position:
   fixed` layer in `src/ui/walkthrough.tsx` following this exactly.
 
+## Sessions come from opencode, not from OpenFlow
+
+The sessions sidebar (`src/ui/sessions-panel.tsx`) reads `GET /api/session` — the rows of
+OpenCode's drizzle sqlite `session` table in `opencode.db`. **Never open that file
+directly.** `opencode serve` owns the handle; a second writer from `server.ts` or the vite
+plugin is a corruption path, and it would drag `@opencode-ai/core` into a browser dep tree
+that only carries `@opencode-ai/sdk`. The HTTP route *is* the drizzle system.
+
+Two shapes that surprise, both learned the hard way:
+
+- **`?search=` matches the session title and nothing else.** No node ever sets a title, so
+  every OpenFlow session is auto-named `New session - <iso>`; `search=coder` answers zero
+  for a project holding ten coder sessions, and the fields that identify a node — its
+  generated agent, its model — are unsearchable server-side. When filtering a session list
+  by anything a user would actually type, fetch a page and match client-side
+  (`matches()` in `src/server/sessions.ts`).
+- **User and assistant messages are not shaped alike.** A user message carries its prompt
+  in a top-level `text` and has **no `content` array at all**; an assistant message carries
+  `content` parts. Reading only `content` silently drops every prompt and renders replies
+  to nothing. `transcriptTurns()` reads both, and its tests pin both.
+
 ## Config and cost gotchas
 
 - **`opencode serve` caches config per project and never re-reads it.** Restart the server

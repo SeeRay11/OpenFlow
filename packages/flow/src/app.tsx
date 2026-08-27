@@ -61,6 +61,7 @@ import { Palette } from "./ui/palette"
 import { Walkthrough } from "./ui/walkthrough"
 import { ProjectPicker } from "./ui/project-picker"
 import { ProvidersPanel } from "./ui/providers-panel"
+import { SessionsPanel } from "./ui/sessions-panel"
 import { SkillsPanel } from "./ui/skills-panel"
 import { SpendPanel } from "./ui/spend-panel"
 import { EngineDialog } from "./ui/engine-dialog"
@@ -109,6 +110,32 @@ function namesEngine(text: string) {
   )
 }
 
+/**
+ * Whether the sessions column was left open.
+ *
+ * Closed by default: the canvas is the app, and a first run should get the full
+ * width rather than 240px of empty history. Storage is best-effort in both
+ * directions — the signal is the source of truth, so `bun test` (which has no
+ * `localStorage`) and a private window both behave, they just do not remember.
+ */
+const SESSIONS_KEY = "openflow.sessionsOpen.v1"
+
+function readShowSessions() {
+  try {
+    return localStorage.getItem(SESSIONS_KEY) === "1"
+  } catch {
+    return false
+  }
+}
+
+function writeShowSessions(open: boolean) {
+  try {
+    localStorage.setItem(SESSIONS_KEY, open ? "1" : "0")
+  } catch {
+    // A browser that refuses storage still gets a working panel for this tab.
+  }
+}
+
 export function App() {
   const [status, setStatus] = createSignal("connecting…")
   const [agents, setAgents] = createSignal<string[]>([])
@@ -134,6 +161,7 @@ export function App() {
   const [pipelines, setPipelines] = createSignal<PipelineEntry[]>([])
   const [runs, setRuns] = createSignal<RunEntry[]>([])
   const [project, setProject] = createSignal("")
+  const [showSessions, setShowSessions] = createSignal(readShowSessions())
   const [pipe, setPipe] = createSignal<PipeMode>("ancestors")
   const [policy, setPolicy] = createSignal<PermissionPolicy>("auto")
   const [parallel, setParallel] = createSignal(DEFAULT_MAX_PARALLEL)
@@ -743,6 +771,21 @@ export function App() {
         <div class="titlebar-actions">
           <button
             class="icon-btn"
+            classList={{ active: showSessions() }}
+            type="button"
+            title="show the sessions this project has on the server"
+            aria-label="toggle sessions panel"
+            aria-pressed={showSessions()}
+            onClick={() => {
+              const next = !showSessions()
+              setShowSessions(next)
+              writeShowSessions(next)
+            }}
+          >
+            <IconHistory />
+          </button>
+          <button
+            class="icon-btn"
             type="button"
             title="new pipeline"
             aria-label="new pipeline"
@@ -1038,6 +1081,15 @@ export function App() {
       </Show>
 
       <main>
+        <Show when={showSessions()}>
+          <SessionsPanel
+            project={project()}
+            onClose={() => {
+              setShowSessions(false)
+              writeShowSessions(false)
+            }}
+          />
+        </Show>
         <Palette />
         <Canvas />
         <Inspector

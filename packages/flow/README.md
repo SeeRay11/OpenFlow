@@ -527,6 +527,29 @@ variable the host already holds.
 | `PUT /flow/api/mcp/{name}` | add or update one (backs the config up first) |
 | `DELETE /flow/api/mcp/{name}` | drop one from the config |
 
+## Sessions
+
+The history icon in the titlebar opens a column on the left listing the sessions
+`opencode serve` holds for the current project, newest first, with a search box
+over them. Click one to read its turns; `←` goes back to the list.
+
+These are not a history OpenFlow keeps. Every node is one full primary session on
+the server, so they are already rows in OpenCode's sqlite database (`opencode.db`,
+drizzle) and this reads them back through `GET /api/session`. A session you start
+from the `opencode` CLI or TUI in the same project is listed here too, and one a
+card started is listed there — one store, two front ends. Nothing in the panel
+writes: it lists and it reads.
+
+The column is closed by default and remembered per browser, because a 240px
+sidebar is cheap on a wide screen and not on a laptop — collapsed, the canvas
+gets the full width back.
+
+Cards are labelled by generated agent (`plan-and-code-coder-…`) rather than by
+title, and the search matches agent, model, id and title. A node never titles its
+session, so every one of them is auto-named `New session - <iso>`; labelling by
+title would give a column of identical rows, and the server's own `?search=`
+looks at nothing else — which is why the filter runs over a fetched page instead.
+
 ## Canvas
 
 Hand-rolled: HTML node cards over an SVG edge layer inside one CSS-transformed

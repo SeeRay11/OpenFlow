@@ -1,7 +1,9 @@
 import { createOpencodeClient, type AgentV2Info, type ModelRef, type ModelV2Info } from "@opencode-ai/sdk/v2/client"
 import type { Attachment, StepUsage } from "../graph/types"
+import { sessionRows, transcriptTurns, type SessionRow, type Turn } from "./sessions"
 
 export type { Attachment }
+export type { SessionRow, Turn }
 
 export type FlowContext = {
   project: string
@@ -199,6 +201,38 @@ export async function createSession(input: { agent?: string; model?: string }) {
   )
   const session = body.data ?? body
   return session as { id: string }
+}
+
+/** One page of history — enough that the sidebar filter has everything to match. */
+const SESSION_PAGE = 200
+
+/**
+ * The sessions `opencode serve` holds for this project, newest first.
+ *
+ * These are the rows of the drizzle-backed `session` table in `opencode.db`,
+ * the same ones the CLI and TUI list: a node's session is created through the
+ * server, so it is already there and OpenFlow keeps no second store.
+ *
+ * `search` is deliberately *not* forwarded to the endpoint. The server matches
+ * it against the session title only, and an OpenFlow node never sets a title —
+ * every one of them is auto-named "New session - <iso>". So `search=coder`
+ * answers zero for a project holding ten coder sessions, while the fields that
+ * actually identify a node (its generated agent, its model) are unsearchable.
+ * Filtering a page here matches what the user can see; see `matches()`.
+ */
+export async function sessions(limit = SESSION_PAGE): Promise<SessionRow[]> {
+  const { client, context } = await connect()
+  const body = unwrap<any>(
+    (await client.v2.session.list({ directory: context.project, order: "desc", limit })) as any,
+  )
+  return sessionRows(body.data ?? [])
+}
+
+/** A session's readable turns, oldest first, for the sidebar's detail view. */
+export async function sessionTranscript(sessionID: string, limit = 100): Promise<Turn[]> {
+  const { client } = await connect()
+  const body = unwrap<any>((await client.v2.session.messages({ sessionID, order: "asc", limit })) as any)
+  return transcriptTurns(body.data ?? [])
 }
 
 /**
