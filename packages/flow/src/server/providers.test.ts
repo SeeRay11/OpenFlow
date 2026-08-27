@@ -56,6 +56,20 @@ describe("runnable", () => {
     expect(runnable({ type: "aisdk", package: "@ai-sdk/google" })).toBe(false)
   })
 
+  test("a profiled provider is routed by id, whatever its package says", () => {
+    expect(runnable(groqSdk, "groq")).toBe(true)
+    expect(runnable({ type: "aisdk", package: "@openrouter/ai-sdk-provider" }, "openrouter")).toBe(true)
+    // The profile supplies the base URL these entries never carry.
+    expect(runnable({ type: "aisdk", package: "@ai-sdk/openai-compatible" }, "cerebras")).toBe(true)
+  })
+
+  test("the profile is keyed by provider, not by package", () => {
+    // No profile exists for these, so the package is all they have to stand on.
+    expect(runnable({ type: "aisdk", package: "@ai-sdk/google" }, "opencode")).toBe(false)
+    expect(runnable(groqSdk, "nvidia")).toBe(false)
+    expect(runnable({ type: "native", url: "https://example.test" }, "groq")).toBe(false)
+  })
+
   test("openai-compatible without a base URL has nowhere to send the request", () => {
     expect(runnable({ type: "aisdk", package: "@ai-sdk/openai-compatible" })).toBe(false)
   })
@@ -79,27 +93,43 @@ describe("providerRows", () => {
   test("counts only the models this build can dispatch, and lists them first", () => {
     const rows = providerRows(catalog, models)
     const groq = rows.find((row) => row.id === "groq")!
-    expect(usableCount(groq)).toBe(1)
-    // The unrunnable one sinks below the runnable one rather than disappearing.
+    // Both count: groq is in the profile table, so its own SDK package routes too.
+    expect(usableCount(groq)).toBe(2)
     expect(groq.models.map((model) => [model.id, model.runnable])).toEqual([
       ["kimi-k2", true],
-      ["llama-4", false],
+      ["llama-4", true],
     ])
     expect(groq.models[1].api).toBe("@ai-sdk/groq")
   })
 
+  test("an unroutable model sinks below a runnable one rather than disappearing", () => {
+    const rows = providerRows(
+      [integration("opencode", { name: "OpenCode Zen" })],
+      [
+        { id: "gemini-x", providerID: "opencode", api: { type: "aisdk", package: "@ai-sdk/google" } },
+        { id: "nemotron", providerID: "opencode", api: compatible },
+      ],
+    )
+    const zen = rows[0]
+    expect(usableCount(zen)).toBe(1)
+    expect(zen.models.map((model) => [model.id, model.runnable])).toEqual([
+      ["nemotron", true],
+      ["gemini-x", false],
+    ])
+  })
+
   test("a provider whose every model is unroutable ranks below one that works", () => {
     const rows = providerRows(
-      [integration("openrouter", { name: "OpenRouter" }), integration("nvidia", { name: "Nvidia" })],
+      [integration("opencode", { name: "OpenCode Zen" }), integration("nvidia", { name: "Nvidia" })],
       [
-        { id: "gpt-oss", providerID: "openrouter", api: { type: "aisdk", package: "@openrouter/ai-sdk-provider" } },
+        { id: "gemini-x", providerID: "opencode", api: { type: "aisdk", package: "@ai-sdk/google" } },
         { id: "nemotron", providerID: "nvidia", api: compatible },
       ],
     )
-    expect(rows.map((row) => row.id)).toEqual(["nvidia", "openrouter"])
-    const openrouter = rows[1]
-    expect(isActive(openrouter)).toBe(true)
-    expect(usableCount(openrouter)).toBe(0)
+    expect(rows.map((row) => row.id)).toEqual(["nvidia", "opencode"])
+    const zen = rows[1]
+    expect(isActive(zen)).toBe(true)
+    expect(usableCount(zen)).toBe(0)
   })
 
   test("a stored key that yields no models still reads as connected, not as ready", () => {

@@ -55,12 +55,45 @@ export type ModelOption = {
  * duplicate of server logic and will drift when the runner learns a new
  * package — the cost of being wrong is a model marked unusable that works, so
  * these stay selectable rather than hidden.
+ *
+ * A fourth shape reaches the runner by provider id rather than by package: the
+ * OpenAI-compatible profile table in
+ * `llm/src/providers/openai-compatible-profile.ts`, which the runner falls back
+ * to for a provider whose package it has no protocol for. That is what makes
+ * every `openrouter` and `groq` model dispatchable despite their packages. See
+ * [COMPATIBLE_PROVIDERS] for what that costs when the server is older.
  */
-export function runnable(api?: { type?: string; package?: string; url?: string }) {
+export function runnable(api?: { type?: string; package?: string; url?: string }, providerID?: string) {
   if (!api || api.type !== "aisdk") return false
   if (api.package === "@ai-sdk/openai" || api.package === "@ai-sdk/anthropic") return true
-  return api.package === "@ai-sdk/openai-compatible" && Boolean(api.url)
+  if (api.package === "@ai-sdk/openai-compatible" && api.url) return true
+  return providerID !== undefined && COMPATIBLE_PROVIDERS.has(providerID)
 }
+
+/**
+ * Providers the runner can route by id alone, copied from upstream's
+ * `openai-compatible-profile.ts`. Each one speaks OpenAI chat and the profile
+ * supplies the base URL, so a model of theirs runs even when its package has no
+ * protocol (`@openrouter/ai-sdk-provider`) and its catalog entry carries no URL
+ * at all (`@ai-sdk/groq`).
+ *
+ * This is the one place OpenFlow is ahead of the engine it ships against: the
+ * fallback landed upstream after this fork's vendored core. Against an engine
+ * without it these models read as runnable and still fail to dispatch, unless
+ * the provider is repackaged in the global config (see FLOW.md). Keep the list
+ * in sync with upstream rather than growing a local one.
+ */
+const COMPATIBLE_PROVIDERS = new Set([
+  "baseten",
+  "cerebras",
+  "deepinfra",
+  "deepseek",
+  "fireworks",
+  "groq",
+  "openrouter",
+  "togetherai",
+  "xai",
+])
 
 export type ProviderRow = {
   id: string
@@ -116,7 +149,7 @@ export function providerRows(
     const listed = serves?.get(model.providerID)
     if (listed && !listed.has(model.id)) continue
     const list = byProvider.get(model.providerID) ?? []
-    const routed = runnable(model.api)
+    const routed = runnable(model.api, model.providerID)
     list.push({
       value: `${model.providerID}/${model.id}`,
       id: model.id,
