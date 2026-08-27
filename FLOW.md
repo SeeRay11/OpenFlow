@@ -79,6 +79,25 @@ literally and edited `packages/cli`.
 Before any run that could write: give it a restricted agent, and set `OPENFLOW_PROJECT` to
 the target repo.
 
+The mechanism, measured 2026-08-26: **a session's location is the engine's cwd, never
+`OPENFLOW_PROJECT`.** `supervisorFor` spawns `opencode serve` with `cwd: input.repo` — the
+OpenFlow checkout (`packages/opencode` when run from source) — so every session records that
+directory, and the merged project agents are simply not there at drain time. `AgentV2.select`
+does not fail on an unknown id; it returns `{ id, info: undefined }`, and the runner then reads
+`agent.info?.system` and `agent.info?.permissions` as undefined. A session created with the
+agent name `this-agent-does-not-exist-xyz` answered normally — no node system prompt, default
+tool set. `x-opencode-directory` only steers the *reads* (`/api/agent`, `/api/model`), not the
+drain. Anything that must reach a run — an agent, a permission ruleset, a provider override —
+therefore belongs in the global config or in the engine's own cwd, not in the target project.
+
+**Skills written through `PUT /flow/api/skills/:name` are subject to the same trap.** The file
+lands in `<project>/.openflow/skills/<name>/SKILL.md` and the path is registered in the project
+`opencode.json` — both correct, and both at a location no run ever reads. Measured 2026-08-26:
+after a restart, `GET /api/skill` did not list the new skill, with or without
+`x-opencode-directory`; copying the same folder to `~/.config/opencode/skills/<name>/` made it
+appear immediately and every provider then used it. Until the engine is spawned in the project,
+a skill that must reach a card has to be global.
+
 ## Design directive (standing)
 
 **The entire OpenFlow UI matches upstream OpenCode, and stays minimal.** Copy from upstream
@@ -135,6 +154,31 @@ Check these first when the UI misbehaves — each one cost a debugging session.
   `src/server/usage.ts` from models.dev per-1M tiers. **An unpriced model must never render
   as zero** — show it as unknown.
 - Permissions set to `auto` reply `once` to every ask.
+- **A provider whose models the runner cannot route is fixed by repackaging it, in the *global*
+  config.** The v2 runner routes three API packages only (`@ai-sdk/openai`, `@ai-sdk/anthropic`,
+  `@ai-sdk/openai-compatible` + url); everything else — OpenRouter's `@openrouter/ai-sdk-provider`,
+  `@ai-sdk/groq` — throws `UnsupportedApiError` at dispatch, which the panel renders as
+  `no runnable models` and a run reports as "the session never started executing". For an
+  OpenAI-compatible endpoint, override the provider's package in
+  `~/.config/opencode/opencode.json`:
+  `"provider": { "openrouter": { "npm": "@ai-sdk/openai-compatible", "api": "https://openrouter.ai/api/v1" } }`,
+  and groq the same with `https://api.groq.com/openai/v1`. Both URLs are upstream's own, from
+  `packages/llm/src/providers/openai-compatible-profile.ts` — that table already classes
+  openrouter, groq, cerebras, deepseek, fireworks, togetherai, xai, baseten and deepinfra as
+  OpenAI-compatible, so it is the list to copy from when a new provider needs this.
+  Provider-level is enough — every model of that provider inherits the new package; no per-model
+  map. Stored credentials still resolve, because the provider id is unchanged.
+  **Project-level config does not work for this.** A session's location is the *engine's* cwd
+  (`packages/opencode`), not `OPENFLOW_PROJECT`, so the target project's `opencode.json` reaches
+  the catalog reads the browser makes with `x-opencode-directory` but never the drain that runs
+  the model. Global config applies to both. Restart the engine after editing either.
+  Cost of the swap: the OpenRouter plugin keys off the old package, so its `HTTP-Referer`/`X-Title`
+  headers and its disabling of the broken `gpt-5-chat` aliases stop applying.
+- **`runnable()` mirrors that profile table by provider id**, so the panel counts an `openrouter`
+  or `groq` model as usable whatever its package says. That anticipates the upstream fallback
+  (anomalyco/opencode#45424) which this fork's vendored core does not have yet: against an engine
+  without it *and* without the config override above, those models read as runnable and still fail
+  to dispatch. Drop the id list from `COMPATIBLE_PROVIDERS` if that PR is rejected.
 - `bun test` has **no `localStorage`** (it is a browser global). When persisting a preference
   the browser stores there — custom roles, the default-model preference (`graph/default-model.ts`),
   the walkthrough-dismissed flag — make a Solid signal the source of truth and treat
