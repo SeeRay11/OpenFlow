@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { FENCE, parseDispatch } from "./dispatch"
+import { DISPATCH_TOOL, FENCE, FINISH_TOOL, fromToolCall, parseDispatch } from "./dispatch"
 
 const children = ["n1", "n2"]
 const block = (body: string) => "```" + FENCE + "\n" + body + "\n```"
@@ -98,10 +98,12 @@ describe("parseDispatch", () => {
     expect(parseDispatch(block('{ "dispatch": [] }'), children).kind).toBe("error")
   })
 
-  test("a leaf card told to dispatch is pointed at final instead", () => {
+  test("a leaf card told to dispatch is pointed at answering instead", () => {
+    // Channel-agnostic wording: the briefing is where the card learns whether
+    // it answers with the tool or with a block.
     const result = parseDispatch(block('{ "dispatch": [ { "card": "n1", "task": "x" } ] }'), [])
     expect(result.kind).toBe("error")
-    expect(result).toHaveProperty("reason", expect.stringContaining("final"))
+    expect(result).toHaveProperty("reason", expect.stringContaining("Answer instead"))
   })
 })
 
@@ -130,5 +132,45 @@ describe("parseDispatch without a fence", () => {
 
   test("a bare object that is not the protocol is refused on its own terms", () => {
     expect(parseDispatch('{ "notes": "hello" }', children).kind).toBe("error")
+  })
+})
+
+describe("fromToolCall", () => {
+  test("reads a dispatch call", () => {
+    expect(
+      fromToolCall(DISPATCH_TOOL, { assignments: [{ card: "n1", task: " read it " }] }, children),
+    ).toEqual({ kind: "dispatch", assignments: [{ card: "n1", task: "read it" }] })
+  })
+
+  test("reads a finish call", () => {
+    expect(fromToolCall(FINISH_TOOL, { answer: "  done  " }, children)).toEqual({ kind: "final", answer: "done" })
+  })
+
+  test("a tool that is not ours is not a decision", () => {
+    // The caller keeps looking back through the turn, so "not mine" has to be
+    // distinguishable from "mine and wrong".
+    expect(fromToolCall("todowrite", { todos: [] }, children)).toBeUndefined()
+    expect(fromToolCall("bash", { command: "ls" }, children)).toBeUndefined()
+  })
+
+  test("both channels judge a batch the same way", () => {
+    const bad = [{ card: "ghost", task: "x" }]
+    const viaTool = fromToolCall(DISPATCH_TOOL, { assignments: bad }, children)
+    const viaText = parseDispatch(block(JSON.stringify({ dispatch: bad })), children)
+    expect(viaTool).toEqual(viaText)
+
+    const twice = [
+      { card: "n1", task: "a" },
+      { card: "n1", task: "b" },
+    ]
+    expect(fromToolCall(DISPATCH_TOOL, { assignments: twice }, children)).toEqual(
+      parseDispatch(block(JSON.stringify({ dispatch: twice })), children),
+    )
+  })
+
+  test("a malformed call is an error, not a shrug", () => {
+    expect(fromToolCall(FINISH_TOOL, { answer: "  " }, children)!.kind).toBe("error")
+    expect(fromToolCall(DISPATCH_TOOL, {}, children)!.kind).toBe("error")
+    expect(fromToolCall(DISPATCH_TOOL, undefined, children)!.kind).toBe("error")
   })
 })

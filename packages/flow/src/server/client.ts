@@ -431,6 +431,44 @@ export async function transcript(sessionID: string): Promise<Transcript> {
   return { text, error: assistant.error ? describe(assistant.error) : undefined }
 }
 
+export type ToolCall = { id: string; name: string; input: unknown }
+
+/**
+ * Tool calls the session made, newest first, each with the id opencode gave it.
+ *
+ * The id is what lets the caller tell this turn's calls from earlier ones. An
+ * earlier attempt bounded the scan at the most recent user message instead, and
+ * it silently returned nothing: a tool *result* comes back as a user-type
+ * message, so the scan stopped before it ever reached the assistant message
+ * holding the call. Measured — the card called the tool correctly and the
+ * engine read its text anyway.
+ *
+ * Read from the message history rather than the event bus for the same reason
+ * usage is: the bus is best-effort and reconnects, while this is what the
+ * server persisted. It is also why the orchestrator's decision is read here
+ * rather than from `transcript` — a card that dispatches and then writes a
+ * to-do list has the call sitting under later parts, and `transcript` only ever
+ * returns the newest assistant message's *text*.
+ *
+ * One page is enough: the caller wants the decision this turn ended on, not the
+ * history of every turn before it.
+ */
+export async function sessionCalls(sessionID: string, limit = 30): Promise<ToolCall[]> {
+  const { client } = await connect()
+  const body = unwrap<any>((await client.v2.session.messages({ sessionID, order: "desc", limit })) as any)
+  const calls: ToolCall[] = []
+  for (const message of (body.data ?? []) as any[]) {
+    if (message.type !== "assistant") continue
+    // Messages arrive newest-first but parts within one are in the order they
+    // happened, so they are walked backwards to keep the whole list newest-first.
+    for (const part of [...((message.content ?? []) as any[])].reverse()) {
+      if (part.type !== "tool" || typeof part.name !== "string" || typeof part.id !== "string") continue
+      calls.push({ id: part.id, name: part.name, input: part.state?.input })
+    }
+  }
+  return calls
+}
+
 /**
  * Every settled assistant step in a session, with the tokens the provider
  * reported for it.

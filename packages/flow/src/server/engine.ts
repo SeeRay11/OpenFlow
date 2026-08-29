@@ -1,4 +1,4 @@
-import { parseDispatch } from "../graph/dispatch"
+import { fromToolCall, parseDispatch } from "../graph/dispatch"
 import { orchestrationShape } from "../graph/orchestration"
 import {
   buildPrompt,
@@ -161,6 +161,13 @@ export type EngineDeps = {
      * reported, which is the same data one round-trip earlier.
      */
     sessionSteps?: typeof api.sessionSteps
+    /**
+     * Tool calls a session made, newest first — how an orchestrator's dispatch
+     * is read. Optional for the same reason as `sessionSteps`: a test double
+     * may leave it out, and a host without the MCP server installed has no tool
+     * calls to read anyway. Absent means the text fallback decides.
+     */
+    sessionCalls?: typeof api.sessionCalls
   }
   saveRun: (log: RunLog) => Promise<unknown>
   /**
@@ -265,6 +272,8 @@ export function start(
   const sessions = new Map<string, string>() // sessionID -> nodeID
   /** nodeID -> the session it opened, so a later turn can prompt into it again. */
   const nodeSession = new Map<string, string>()
+  /** Tool-call ids already read, so an old call cannot decide a new turn. */
+  const consumed = new Map<string, Set<string>>()
   const active = new Set<string>() // sessionIDs still running
   const answered = new Set<string>() // permission requests already replied to
   const asked = new Set<string>() // question requests already handled
@@ -715,8 +724,7 @@ export function start(
       await runTurn(node, build, true)
       if (failed.has(node.id) || controller.signal.aborted) return undefined
 
-      const raw = outputs.get(node.id) ?? ""
-      const decision = parseDispatch(raw, children)
+      const decision = await decide(node, children)
 
       if (decision.kind === "error") {
         if (retried) {
@@ -787,6 +795,38 @@ export function start(
           ? dispatchResultPrompt(pipeline, results, remaining)
           : `${dispatchResultPrompt(pipeline, results, 0)}\n\n${forceFinalPrompt("Your dispatch budget is spent.")}`
     }
+  }
+
+  /**
+   * What the orchestrator decided this turn, read from whichever channel it
+   * used.
+   *
+   * The tool call wins. It is what a model that follows instructions reaches
+   * for, it survives the card carrying on afterwards — the call sits in the
+   * message history whatever is written after it — and the arguments arrive
+   * already parsed, so a model that is fine at tool use but sloppy at fenced
+   * JSON gets through. The text block stays as the fallback for a card whose
+   * allowlist does not include the tool, or a run against a host where the MCP
+   * server is not installed.
+   *
+   * A failed history read is not a failed turn: fall back to the text rather
+   * than killing a run over one flaky request.
+   */
+  async function decide(node: FlowNode, children: string[]) {
+    const calls = (await api.sessionCalls?.(nodeSession.get(node.id)!).catch(() => [])) ?? []
+    const seen = consumed.get(node.id) ?? new Set<string>()
+    let decision: ReturnType<typeof parseDispatch> | undefined
+    for (const call of calls) {
+      // Only calls this turn made. The orchestrator is re-prompted into the
+      // session it already holds, so every earlier turn's calls are still in
+      // the history — without this a turn that called nothing would act on the
+      // previous turn's dispatch a second time.
+      if (seen.has(call.id)) continue
+      decision ??= fromToolCall(call.name, call.input, children)
+    }
+    for (const call of calls) seen.add(call.id)
+    consumed.set(node.id, seen)
+    return decision ?? parseDispatch(outputs.get(node.id) ?? "", children)
   }
 
   /** A leaf card: one turn, one assignment, no protocol to speak. */

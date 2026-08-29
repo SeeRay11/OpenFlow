@@ -138,6 +138,20 @@ export const store = {
       method: "POST",
       body: JSON.stringify({ providers }),
     }),
+  /**
+   * Whether the *global* opencode config starts OpenFlow's dispatch MCP server,
+   * and whether the command it holds still points at this checkout. See
+   * [../../lib/dispatch-tool.ts]: without it an orchestrator has no `dispatch`
+   * tool to call and falls back to a fenced block, which measurably loses.
+   */
+  dispatchToolStatus: () =>
+    request<{ path: string; present: boolean; current: boolean; root: string; error?: string }>("/dispatch-tool"),
+  /** Installs or repoints it. The engine must restart before cards can call it. */
+  installDispatchTool: () =>
+    request<{ path: string; present: boolean; current: boolean; changed: boolean; backup?: string; restart: boolean }>(
+      "/dispatch-tool",
+      { method: "POST" },
+    ),
   /** State of the engine this host proxies. */
   serverStatus: () => request<ServeStatus>("/server"),
   /**

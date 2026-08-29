@@ -6,6 +6,7 @@ import { recallPipeline, rememberPipeline, rememberProject } from "./last-sessio
 import { hasNativePicker, pickFolderNative } from "./native-picker"
 import type { Supervisor } from "./opencode-process"
 import { COMPATIBLE_PROFILES, globalConfigCandidates, repackage, repackaged } from "./repackage"
+import { install, installed, uninstall } from "./dispatch-tool"
 import { zenModels } from "./zen"
 
 /**
@@ -43,6 +44,10 @@ import { zenModels } from "./zen"
  *                                             `null` when cancelled (loopback hosts only)
  *   POST   /flow/api/project               -> { path } — switch the live project directory,
  *                                             and remember it for the next launch
+ *   GET    /flow/api/dispatch-tool       -> { path, present, current, root } — whether the global
+ *                                             config starts OpenFlow's dispatch MCP server
+ *   POST   /flow/api/dispatch-tool       -> installs (or repoints) it there; DELETE removes it.
+ *                                             Both need an engine restart to take effect
  *   GET    /flow/api/repackage             -> { path, applied, available, error? } — which
  *                                             OpenAI-compatible providers the global config
  *                                             already repackages
@@ -300,6 +305,15 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
       return ok(await browseDirectory(target))
     } catch (error) {
       return { status: 400, body: { error: error instanceof Error ? error.message : String(error) } }
+    }
+  }
+
+  if (segments[0] === "dispatch-tool") {
+    if (method === "GET") return ok(await dispatchToolStatus())
+    if (method === "POST" || method === "DELETE") {
+      const result = await applyDispatchTool(method === "POST")
+      if ("error" in result) return { status: 409, body: result }
+      return ok(result)
     }
   }
 
@@ -831,6 +845,81 @@ async function readGlobalConfig() {
     raw: undefined,
     comments: false,
   }
+}
+
+/**
+ * Where this package lives on disk, so the MCP server can be started from it.
+ *
+ * Found by locating the server file rather than by `import.meta.dir`, which is
+ * undefined once the vite plugin bundles this module — the two hosts (the vite
+ * plugin and `server.ts`) would otherwise disagree about where they are. Both
+ * run from `packages/flow`, and a repo-root launch is checked too, so the path
+ * is discovered rather than configured: a checkout that moves repoints itself
+ * on the next install instead of leaving a command aimed at nothing.
+ */
+async function packageRoot() {
+  const cwd = process.cwd()
+  const candidates = [cwd, path.join(cwd, "packages", "flow"), path.resolve(cwd, ".."), path.resolve(cwd, "..", "..")]
+  for (const root of candidates) {
+    if (await fs.stat(path.join(root, "mcp", "dispatch.ts")).then(() => true, () => false)) return root
+  }
+  return cwd
+}
+
+/**
+ * An absolute path to the bun that can run `mcp/dispatch.ts`.
+ *
+ * `process.execPath` is only right when this host is itself running under bun —
+ * the vite dev server runs under node, and node cannot execute a `.ts` entry.
+ * So PATH is searched, with `.exe` on Windows because opencode spawns a local
+ * MCP server without a shell and PATHEXT is not applied for it.
+ *
+ * Falls back to the bare name rather than failing the install: on a POSIX host
+ * that is usually resolvable anyway, and a wrong command is visible in the
+ * config the panel just told the user about.
+ */
+async function bunPath() {
+  if (path.basename(process.execPath).toLowerCase().startsWith("bun")) return process.execPath
+  const names = process.platform === "win32" ? ["bun.exe", "bun.cmd", "bun"] : ["bun"]
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
+    for (const name of names) {
+      const candidate = path.join(dir, name)
+      if (await fs.stat(candidate).then((entry) => entry.isFile(), () => false)) return candidate
+    }
+  }
+  return "bun"
+}
+
+/** Whether the global config starts OpenFlow's dispatch MCP server. */
+async function dispatchToolStatus() {
+  const root = await packageRoot()
+  const runtime = await bunPath()
+  const config = await readGlobalConfig()
+  if ("error" in config) return { path: config.target, present: false, current: false, root, error: config.error }
+  return { path: config.target, ...installed(config.value, root, runtime), root }
+}
+
+/**
+ * Adds or removes the server in the global config, backing the file up first.
+ *
+ * `restart: true` is not advice: opencode reads config once at boot, so the
+ * tool does not exist for any card until `opencode serve` restarts.
+ */
+async function applyDispatchTool(wanted: boolean) {
+  const root = await packageRoot()
+  const runtime = await bunPath()
+  const config = await readGlobalConfig()
+  if ("error" in config) return { error: config.error, path: config.target }
+  const result = wanted ? install(config.value, root, runtime) : uninstall(config.value)
+  if (!result.changed)
+    return { path: config.target, ...installed(config.value, root, runtime), root, changed: false, restart: false }
+  if (config.comments) return { error: CONFIG_HAS_COMMENTS, path: config.target }
+  return serialize(config.target, async () => {
+    const backup = config.raw === undefined ? undefined : await backupConfig(config.target, config.raw)
+    await fs.mkdir(path.dirname(config.target), { recursive: true })
+    await writeAtomic(config.target, JSON.stringify(result.value, null, 2) + "\n")
+    return { path: config.target, ...installed(result.value, root, runtime), root, changed: true, backup, restart: true }
+  })
 }
 
 /** Which OpenAI-compatible providers the global config already repackages. */

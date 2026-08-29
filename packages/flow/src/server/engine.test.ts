@@ -27,6 +27,11 @@ type Behavior = {
   error?: string
   /** Keeps the node running until the test calls `release(id)`. */
   hold?: boolean
+  /**
+   * Tool calls the node's session made, newest first — what an orchestrator
+   * that used the MCP tools looks like from the message history.
+   */
+  calls?: { id?: string; name: string; input: unknown }[]
 }
 
 type HarnessOptions = {
@@ -164,6 +169,12 @@ function harness(options: HarnessOptions = {}) {
     },
     async agents() {
       return (options.agents ?? []).map((id) => ({ id })) as any
+    },
+    async sessionCalls(sessionID: string) {
+      const rows = behavior[nodeOf.get(sessionID)!]?.calls ?? []
+      // Ids default to position, which is enough for the engine's
+      // already-consumed check as long as they are stable per node.
+      return rows.map((row, index) => ({ id: row.id ?? `call-${index}`, name: row.name, input: row.input }))
     },
     describe(error: unknown) {
       return error instanceof Error ? error.message : String(error)
@@ -1550,5 +1561,134 @@ describe("orchestration mode", () => {
     const h = harness()
     expect(() => h.run(tree(["root->a", "other->b"]))).toThrow("exactly one")
     expect(h.dispatched).toEqual([])
+  })
+})
+
+describe("orchestration over the MCP tools", () => {
+  const call = (name: string, input: unknown) => [{ name, input }]
+
+  function tree(spec: string[], options: { depth?: number; dispatches?: number } = {}): Pipeline {
+    return { ...pipeline(...spec), mode: "orchestration", ...options }
+  }
+
+  test("a dispatch tool call is read, and the text is never consulted", async () => {
+    const h = harness({
+      behavior: {
+        // Prose only — under the text protocol this turn would have failed.
+        root: {
+          output: "Right, I will split this between the two of them.",
+          calls: call("openflow_dispatch", {
+            assignments: [
+              { card: "a", task: "take the first half" },
+              { card: "b", task: "take the second" },
+            ],
+          }),
+        },
+      },
+    })
+    await h.run(tree(["root->a", "root->b"], { dispatches: 1 })).done
+
+    expect(h.dispatched.slice(0, 3)).toEqual(["root", "a", "b"])
+    expect(h.prompts.get("a")).toContain("take the first half")
+    expect(h.prompts.get("b")).toContain("take the second")
+  })
+
+  test("a finish tool call ends the run, and its answer is the result", async () => {
+    const h = harness({
+      behavior: { root: { output: "thinking out loud", calls: call("openflow_finish", { answer: "the answer" }) } },
+    })
+    const log = await h.run(tree(["root->a"])).done
+
+    expect(h.dispatched).toEqual(["root"])
+    expect(log.status).toBe("done")
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("the answer")
+  })
+
+  test("the call survives the card carrying on afterwards", async () => {
+    // The failure the tool channel exists to fix: a model emitted a valid
+    // decision and then kept working, so the decision was no longer in the
+    // message OpenFlow read. Newest-first means the to-do list written after
+    // is skipped and the dispatch under it still counts.
+    const h = harness({
+      behavior: {
+        root: {
+          output: "and then I wrote a to-do list",
+          calls: [
+            { name: "todowrite", input: { todos: [] } },
+            { name: "openflow_dispatch", input: { assignments: [{ card: "a", task: "do it" }] } },
+          ],
+        },
+      },
+    })
+    await h.run(tree(["root->a"], { dispatches: 1 })).done
+
+    expect(h.dispatched.slice(0, 2)).toEqual(["root", "a"])
+    expect(h.prompts.get("a")).toContain("do it")
+  })
+
+  test("the newest of our calls wins over an older one", async () => {
+    const h = harness({
+      behavior: {
+        root: {
+          output: "",
+          calls: [
+            { name: "openflow_finish", input: { answer: "changed my mind" } },
+            { name: "openflow_dispatch", input: { assignments: [{ card: "a", task: "stale" }] } },
+          ],
+        },
+      },
+    })
+    const log = await h.run(tree(["root->a"])).done
+
+    expect(h.dispatched).toEqual(["root"])
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("changed my mind")
+  })
+
+  test("a bad tool call is refused the same way a bad block is", async () => {
+    const h = harness({
+      behavior: { root: { output: "", calls: call("openflow_dispatch", { assignments: [{ card: "ghost", task: "x" }] }) } },
+    })
+    await h.run(tree(["root->a"])).done
+
+    expect(h.dispatched.filter((node) => node !== "root")).toEqual([])
+    expect(h.promptLog[1].text).toContain("not a card you can dispatch to")
+  })
+
+  test("with no tool calls at all, the fenced block still decides", async () => {
+    // A host without the MCP server installed, or a card whose allowlist does
+    // not include it, keeps working.
+    const h = harness({
+      behavior: { root: { output: "```openflow\n" + JSON.stringify({ final: "text still works" }) + "\n```" } },
+    })
+    const log = await h.run(tree(["root->a"])).done
+
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("text still works")
+  })
+})
+
+describe("a tool call belongs to the turn that made it", () => {
+  test("a rejected call is not read again on the re-ask", async () => {
+    // Measured: the re-ask answered correctly and was then overruled by the
+    // very call that had just been rejected, because the history read was not
+    // bounded to the current turn. The harness models the fix by clearing the
+    // calls once they have been consumed, which is what the user-message bound
+    // does against a real server.
+    const h = harness({
+      behavior: {
+        root: {
+          output: "```openflow\n" + JSON.stringify({ final: "answered on the re-ask" }) + "\n```",
+          // The same call, still in the history on the re-ask — which is what a
+          // real session looks like, since the orchestrator is re-prompted into
+          // the one it already holds. Its id has been consumed, so the second
+          // turn falls through to the text instead of acting on it again.
+          calls: [{ id: "call-1", name: "openflow_dispatch", input: { assignments: [{ card: "ghost", task: "x" }] } }],
+        },
+      },
+    })
+    const log = await h.run({ ...pipeline("root->a"), mode: "orchestration" }).done
+
+    expect(h.promptLog.filter((entry) => entry.node === "root")).toHaveLength(2)
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("answered on the re-ask")
+    expect(log.status).toBe("done")
   })
 })

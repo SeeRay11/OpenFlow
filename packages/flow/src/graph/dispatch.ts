@@ -15,6 +15,19 @@
 
 export const FENCE = "openflow"
 
+/**
+ * The MCP server that carries the same protocol as tool calls, and the tool
+ * names opencode registers it under (`<server>_<tool>`).
+ *
+ * A tool call is the channel models actually reach for — measured — so it is
+ * tried first and the fenced block is the fallback. Both ends up in
+ * `assignmentsFrom` below, so the two channels cannot drift into disagreeing
+ * about what a valid dispatch is.
+ */
+export const MCP_SERVER = "openflow"
+export const DISPATCH_TOOL = `${MCP_SERVER}_dispatch`
+export const FINISH_TOOL = `${MCP_SERVER}_finish`
+
 export type Assignment = { card: string; task: string }
 
 export type Dispatch =
@@ -67,19 +80,53 @@ export function parseDispatch(text: string, children: string[]): Dispatch {
     return { kind: "final", answer: block.final.trim() }
   }
 
-  if (!Array.isArray(block.dispatch) || !block.dispatch.length)
-    return { kind: "error", reason: "`dispatch` must be a non-empty array of `{ card, task }` objects." }
+  return assignmentsFrom(block.dispatch, children)
+}
+
+/**
+ * Reads the protocol out of a tool call the card made.
+ *
+ * Returns `undefined` for any tool that is not ours, so the caller can keep
+ * looking back through the turn: an orchestrator that dispatches and then
+ * writes a to-do list has the call buried under later parts, and only the
+ * newest *matching* call is the decision.
+ */
+export function fromToolCall(name: string, input: unknown, children: string[]): Dispatch | undefined {
+  if (name !== DISPATCH_TOOL && name !== FINISH_TOOL) return undefined
+  const args = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>
+
+  if (name === FINISH_TOOL) {
+    if (typeof args.answer !== "string" || !args.answer.trim())
+      return { kind: "error", reason: "`finish` needs an `answer` holding the result itself." }
+    return { kind: "final", answer: args.answer.trim() }
+  }
+  // `dispatch` is accepted alongside the schema's own `assignments`: measured,
+  // a model that had also been shown the fenced block called the tool with the
+  // block's key. Both name the same array, and refusing one of them spends a
+  // paid retry to correct a spelling.
+  return assignmentsFrom(args.assignments ?? args.dispatch, children)
+}
+
+/**
+ * The one place a batch of assignments is judged, whichever channel carried it.
+ *
+ * Everything here is deliberately strict, and the reasons are written to be
+ * handed straight back to the model.
+ */
+function assignmentsFrom(value: unknown, children: string[]): Dispatch {
+  if (!Array.isArray(value) || !value.length)
+    return { kind: "error", reason: "A dispatch must be a non-empty array of `{ card, task }` objects." }
   if (!children.length)
     return {
       kind: "error",
-      reason: "No cards are connected below you, so there is nobody to dispatch to. Answer with `final` instead.",
+      reason: "No cards are connected below you, so there is nobody to dispatch to. Answer instead.",
     }
 
   const assignments: Assignment[] = []
   const claimed = new Set<string>()
-  for (const entry of block.dispatch) {
+  for (const entry of value) {
     if (typeof entry !== "object" || entry === null)
-      return { kind: "error", reason: "Every `dispatch` entry must be an object with a `card` and a `task`." }
+      return { kind: "error", reason: "Every assignment must be an object with a `card` and a `task`." }
     const row = entry as Record<string, unknown>
     if (typeof row.card !== "string" || !children.includes(row.card))
       return {

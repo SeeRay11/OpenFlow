@@ -1,4 +1,4 @@
-import { FENCE } from "./dispatch"
+import { DISPATCH_TOOL, FENCE, FINISH_TOOL } from "./dispatch"
 import { orchestrationShape, subagentsOf } from "./orchestration"
 import { swarmShape } from "./swarm"
 import { dispatchesOf, roundsOf, type Attachment, type FlowNode, type Pipeline } from "./types"
@@ -332,17 +332,19 @@ export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode) {
     "",
     "## How you say what happens next",
     "",
-    "End every message with exactly one fenced block. Nothing outside it is read as an",
-    "instruction, so think out loud above it as much as you like.",
+    `Two tools decide it. Call **\`${DISPATCH_TOOL}\`** to hand work out — the cards you name run`,
+    `at the same time, so only batch work that does not depend on itself — or **\`${FINISH_TOOL}\`\``,
+    "to answer the run. Call exactly one of them, once, and then end your turn: say nothing after",
+    "it and call no other tool, because anything you do next is what gets read instead.",
     "",
-    "To hand work out — the cards named run at the same time, so only batch work that does not",
-    "depend on itself:",
+    "Think out loud as much as you like before the call. Only the call is read as an instruction.",
+    "",
+    "If neither tool is available to you, say the same thing in a fenced block at the very end of",
+    "your message instead:",
     "",
     "```" + FENCE,
     '{ "dispatch": [ { "card": "<id from the list above>", "task": "what it must do, in full" } ] }',
     "```",
-    "",
-    "To finish, when you can answer:",
     "",
     "```" + FENCE,
     '{ "final": "the answer to the task" }',
@@ -443,7 +445,8 @@ export function forceFinalPrompt(reason: string) {
     "",
     reason,
     "",
-    "Write the answer to the run's task from what you already have, and send it as:",
+    `Write the answer to the run's task from what you already have and send it with \`${FINISH_TOOL}\`,`,
+    "or, if that tool is not available to you, as a fenced block:",
     "",
     "```" + FENCE,
     '{ "final": "the answer to the task" }',

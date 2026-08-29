@@ -60,7 +60,28 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   re-prompt a session still working on the first orchestrator's task. There is deliberately no
   "no root" or "unreachable card" check: in a DAG something always has nothing pointing at it,
   and everything is downstream of some root, so those cases surface as a cycle or a second root.
-- **The orchestrator speaks through a fenced ` ```openflow ` block** — `{dispatch:[{card,task}]}`
+- **The orchestrator's channel is a tool call first, a fenced block second.**
+  `mcp/dispatch.ts` is a hand-rolled stdio MCP server (no dependency: `bun.lock` gains only
+  the workspace entry) exposing `dispatch` and `finish`; `lib/dispatch-tool.ts` writes it into
+  the **global** config, and the runbar shows an install banner in orchestration mode. The
+  reason it is a tool is measured, not theoretical: a text-only protocol lost three ways — a
+  model sent the JSON with no fence, a model emitted the block and then kept calling tools so
+  the block was no longer in the message read, and a strong model tried to *call* `dispatch`
+  as a tool because that is what the schema in front of it looks like.
+  The call is read back out of the session's **message history** (`sessionCalls`), never the
+  bus, and only calls whose ids this turn has not already consumed count — the orchestrator is
+  re-prompted into the session it already holds, so every earlier turn's calls are still
+  there. Do **not** bound that scan at the newest user message instead: a tool *result* comes
+  back as a user-type message, so the scan stops before reaching the call that produced it.
+  The MCP command must be an **absolute path to bun**, never the bare word: opencode spawns a
+  local MCP server without a shell, and Windows does not apply PATHEXT for it. `process.execPath`
+  is not enough — the vite dev host runs under node — so `bunPath()` searches PATH.
+  **Open, as of 2026-08-29:** with all of that correct, `opencode serve` still reports
+  `Unknown tool: openflow_dispatch` on most starts and registered the server on one. The text
+  fallback carries those runs. Unproven leads: the 5s default MCP startup timeout against a
+  cold `bun` start on Windows (the v1 config dialect this file uses has no `startup` timeout
+  key), and whether the v1 migration's `mcp.<name>` to `mcp.servers.<name>` mapping survives.
+- **The orchestrator also speaks a fenced ` ```openflow ` block** — `{dispatch:[{card,task}]}`
   or `{final}` — parsed by `graph/dispatch.ts`. The **last** block wins, because a model often
   quotes the protocol before using it. A malformed block is handed back **once** with the exact
   reason; a second failure fails the card, since every ask is a paid turn. A card id outside the

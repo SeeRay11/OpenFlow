@@ -198,6 +198,9 @@ export function App() {
   const [parallel, setParallel] = createSignal(DEFAULT_MAX_PARALLEL)
   const [nodeTimeout, setNodeTimeout] = createSignal(DEFAULT_NODE_TIMEOUT)
   const [issues, setIssues] = createSignal<Preflight>()
+  /** Whether the global config starts OpenFlow's dispatch MCP server. */
+  const [dispatchTool, setDispatchTool] = createSignal<Awaited<ReturnType<typeof store.dispatchToolStatus>>>()
+  const [installing, setInstalling] = createSignal(false)
   let current: Run | undefined
 
   /**
@@ -281,6 +284,29 @@ export function App() {
    * the command rather than failing silently.
    */
   /** Opens the restart dialog with whatever this host knows about the engine. */
+  /**
+   * Writes the MCP server into the global config, then offers the restart it
+   * needs — opencode reads config once at boot, so until the engine restarts
+   * the tool exists in the file and not in any card.
+   */
+  async function installDispatchTool() {
+    setInstalling(true)
+    try {
+      const result = await store.installDispatchTool()
+      setDispatchTool(await store.dispatchToolStatus().catch(() => undefined))
+      notice(
+        "info",
+        `dispatch tool written to ${result.path}${result.backup ? ` (backup ${result.backup})` : ""}`,
+      )
+      if (result.restart)
+        void showEngineHelp("The dispatch tool is in your config now, and the engine has to restart before cards can call it.")
+    } catch (error) {
+      notice("error", api.describe(error))
+    } finally {
+      setInstalling(false)
+    }
+  }
+
   async function showEngineHelp(why?: string) {
     const status = (await store.serverStatus().catch(() => undefined)) ?? engine()
     if (!status) return actions.notice("error", "cannot tell how `opencode serve` was started on this host")
@@ -463,6 +489,7 @@ export function App() {
   }
 
   async function refresh() {
+    setDispatchTool(await store.dispatchToolStatus().catch(() => undefined))
     const entries = await store.pipelines().catch(() => [])
     setPipelines(entries)
     setRuns(await store.runs().catch(() => []))
@@ -1079,6 +1106,24 @@ export function App() {
             </button>
           </div>
         )}
+      </Show>
+
+      {/* Orchestration only, and only while the tool is missing or pointing at
+          a checkout that has moved. An orchestrator without it falls back to a
+          fenced block, which measurably loses — but the fallback works, so this
+          is a banner rather than a blocking problem. */}
+      <Show when={modeOf(state.pipeline) === "orchestration" && dispatchTool() && !dispatchTool()!.current}>
+        <div class="notice" data-kind="info">
+          <IconInfo />
+          <span class="notice-text">
+            {dispatchTool()!.present
+              ? "The dispatch tool in your global opencode config points at a different checkout — repoint it so orchestrator cards can call it."
+              : "Orchestrator cards have no dispatch tool to call. Installing it writes one entry into your global opencode config, backed up first."}
+          </span>
+          <button class="btn" type="button" disabled={installing()} onClick={() => void installDispatchTool()}>
+            {installing() ? "installing…" : dispatchTool()!.present ? "repoint" : "install"}
+          </button>
+        </div>
       </Show>
 
       <Show when={issues()}>
