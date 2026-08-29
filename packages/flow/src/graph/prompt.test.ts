@@ -1,5 +1,16 @@
 import { describe, expect, test } from "bun:test"
-import { buildPrompt, pipelineBriefing, swarmBriefing, swarmPrompt, synthesisPrompt } from "./prompt"
+import {
+  buildPrompt,
+  dispatchResultPrompt,
+  orchestratorPrompt,
+  pipelineBriefing,
+  reassignPrompt,
+  subOrchestratorPrompt,
+  subagentPrompt,
+  swarmBriefing,
+  swarmPrompt,
+  synthesisPrompt,
+} from "./prompt"
 import { nodeMap, pipeline } from "./test-support"
 import type { FlowNode, Pipeline } from "./types"
 
@@ -261,5 +272,80 @@ describe("swarm prompts", () => {
     const graph = swarm()
     const text = synthesisPrompt(graph, at(graph, "verdict"), new Map(), "t")
     expect(text).toContain("Every agent in the swarm failed")
+  })
+})
+
+describe("orchestration prompts", () => {
+  /** A boss with two specialists, one of which has a card of its own. */
+  function tree(): Pipeline {
+    const graph = pipeline("boss->coder", "boss->reviewer", "coder->helper")
+    for (const entry of graph.nodes) entry.agent.model = "opencode/x"
+    graph.nodes[1].agent.prompt = "You are the coder.\nKeep diffs tight."
+    return { ...graph, mode: "orchestration", dispatches: 2 }
+  }
+  const at = (graph: Pipeline, id: string) => graph.nodes.find((entry) => entry.id === id)!
+
+  test("the orchestrator sees its cards, what each is for, and the exact block", () => {
+    const graph = tree()
+    const text = orchestratorPrompt(graph, at(graph, "boss"), "ship the feature")
+
+    expect(text).toContain("Cards you can dispatch to — 2")
+    expect(text).toContain("`coder`")
+    // Assigning by label alone is how the reviewer gets asked to write code.
+    expect(text).toContain("what it is for: You are the coder.")
+    expect(text).toContain("it hands work to 1 card(s) of its own")
+    expect(text).toContain('{ "dispatch": [ { "card": "<id from the list above>"')
+    expect(text).toContain('{ "final": "the answer to the task" }')
+    expect(text).toContain("You may dispatch 2 time(s)")
+    expect(text).toContain("ship the feature")
+  })
+
+  test("a subagent with cards of its own is briefed as an orchestrator and given an assignment", () => {
+    const graph = tree()
+    const text = subOrchestratorPrompt(graph, at(graph, "coder"), at(graph, "boss"), "do the thing", "ship it")
+
+    expect(text).toContain("You are a subagent of an OpenFlow run")
+    expect(text).toContain("Cards you can dispatch to — 1")
+    expect(text).toContain("boss (boss) dispatched you")
+    expect(text).toContain("do the thing")
+  })
+
+  test("a leaf is never shown the protocol it cannot use", () => {
+    const graph = tree()
+    const text = subagentPrompt(graph, at(graph, "reviewer"), at(graph, "boss"), "audit it", "ship it")
+
+    expect(text).toContain("boss (boss) dispatched you")
+    expect(text).toContain("# Your assignment")
+    expect(text).toContain("audit it")
+    expect(text).not.toContain("Cards you can dispatch to")
+    expect(text).not.toContain('"dispatch"')
+  })
+
+  test("results come back with the remaining budget, and a failure says what to do about it", () => {
+    const graph = tree()
+    const text = dispatchResultPrompt(
+      graph,
+      [
+        { card: "coder", text: "wrote it" },
+        { card: "reviewer", error: "provider said no" },
+      ],
+      1,
+    )
+    expect(text).toContain("You may dispatch 1 more time(s)")
+    expect(text).toContain("## coder (coder)\n\nwrote it")
+    expect(text).toContain("## reviewer (reviewer) — failed")
+    expect(text).toContain("answer without it")
+  })
+
+  test("a spent budget says so rather than offering a dispatch that would be refused", () => {
+    const graph = tree()
+    expect(dispatchResultPrompt(graph, [{ card: "coder", text: "x" }], 0)).toContain("no dispatches left")
+  })
+
+  test("a re-dispatched card is told the old assignment is over", () => {
+    // Otherwise it reads the second task as more detail on the first.
+    const text = reassignPrompt("now do this instead")
+    expect(text).toContain("earlier assignment is finished with")
+    expect(text).toContain("now do this instead")
   })
 })

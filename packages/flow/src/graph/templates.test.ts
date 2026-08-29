@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { orchestrationShape } from "./orchestration"
 import { swarmShape } from "./swarm"
 import { TEMPLATES } from "./templates"
 import { modeOf } from "./types"
@@ -51,6 +52,29 @@ describe("the swarm template", () => {
 
   test("draws no edges — wiring one would only earn the ignored-edges warning", () => {
     expect(built().edges).toEqual([])
+  })
+
+  test("passes its own mode's shape rules on drop", () => {
+    const graph = built()
+    for (const node of graph.nodes) node.agent.model = "opencode/x"
+    expect(preflight(graph, { unlockedModels: new Set(["opencode/x"]) }).blocking).toEqual([])
+  })
+})
+
+describe("the orchestration template", () => {
+  const built = () => TEMPLATES.find((template) => template.id === "orchestrated-build")!.build()
+
+  test("is a tree with one card at the top and the rest wired under it", () => {
+    const graph = built()
+    expect(modeOf(graph)).toBe("orchestration")
+    const shape = orchestrationShape(graph)
+    expect(shape.roots).toHaveLength(1)
+    expect(shape.root.role).toBe("orchestrator")
+    expect(shape.children(shape.root.id)).toHaveLength(3)
+  })
+
+  test("is one level deep, so dropping it cannot start a run nobody sized", () => {
+    expect(orchestrationShape(built()).depth).toBe(1)
   })
 
   test("passes its own mode's shape rules on drop", () => {

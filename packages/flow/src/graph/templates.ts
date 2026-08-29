@@ -71,6 +71,32 @@ function swarm(name: string, steps: Step[], rounds: number): Pipeline {
   return pipeline
 }
 
+/**
+ * An orchestrator with a row of subagents wired under it.
+ *
+ * One level deep on purpose: a template's job is to be runnable on drop, and a
+ * second level multiplies the worst-case session count by however many cards
+ * hang off it. Wiring a card under a subagent is the one edit that turns this
+ * into the recursive shape.
+ */
+function orchestration(name: string, steps: Step[]): Pipeline {
+  const pipeline = emptyPipeline(name)
+  const stamp = Date.now().toString(36)
+  const card = (step: Step, index: number, position: { x: number; y: number }): FlowNode => {
+    const preset = role(step.role)
+    const agent = { ...(preset?.agent ?? { prompt: "" }), tools: { ...(preset?.agent.tools ?? {}) } }
+    if (step.prompt) agent.prompt = step.prompt
+    agent.model = nodeModel(preset?.agent.model)
+    return { id: `n${stamp}${index.toString(36)}`, role: preset?.label ?? step.role, agent, position }
+  }
+  const boss = card({ role: "orchestrator" }, 0, { x: 40 + Math.max(0, steps.length - 1) * 150, y: 60 })
+  const crew = steps.map((step, index) => card(step, index + 1, { x: 40 + index * 300, y: 300 }))
+  pipeline.nodes = [boss, ...crew]
+  pipeline.edges = crew.map((node, index) => ({ id: `e${stamp}${index}`, source: boss.id, target: node.id }))
+  pipeline.mode = "orchestration"
+  return pipeline
+}
+
 const WRITER_PROMPT =
   "You are the writer. Using the plan above, draft a clear, well-structured document in prose. " +
   "Follow the plan's outline, fill in each section, and do not write code."
@@ -105,5 +131,12 @@ export const TEMPLATES: Template[] = [
     name: "swarm debate",
     description: "Three views argue, one decides.",
     build: () => swarm("swarm debate", [{ role: "planner" }, { role: "architect" }, { role: "reviewer" }], 3),
+  },
+  {
+    id: "orchestrated-build",
+    name: "orchestrated build",
+    description: "One boss, three specialists.",
+    build: () =>
+      orchestration("orchestrated build", [{ role: "architect" }, { role: "coder" }, { role: "reviewer" }]),
   },
 ]

@@ -1,6 +1,7 @@
 import { agentKey } from "../server/store"
+import { orchestrationShape } from "./orchestration"
 import { swarmShape } from "./swarm"
-import { modeOf, type Pipeline } from "./types"
+import { depthOf, dispatchesOf, modeOf, type Pipeline } from "./types"
 
 export type Validation = { ok: true; layers: string[][] } | { ok: false; error: string }
 
@@ -173,16 +174,7 @@ export function preflight(
 function shapeProblems(pipeline: Pipeline): Preflight {
   const mode = modeOf(pipeline)
   if (mode === "swarm") return swarmProblems(pipeline)
-  if (mode !== "pipeline")
-    return {
-      blocking: [
-        {
-          kind: "mode-unimplemented",
-          message: `${mode} mode is not runnable in this build yet — switch the canvas back to pipeline to run it`,
-        },
-      ],
-      warnings: [],
-    }
+  if (mode === "orchestration") return orchestrationProblems(pipeline)
   // One structural problem is enough to stop the run, and `layer` already
   // reports the first it finds (no nodes, a cycle, an unknown or self edge).
   const structure = layer(pipeline)
@@ -229,6 +221,86 @@ function swarmProblems(pipeline: Pipeline): Preflight {
     })
 
   return { blocking, warnings }
+}
+
+/**
+ * An orchestration is a tree: one card at the top, and every card below it owed
+ * to exactly one orchestrator.
+ *
+ * A diamond is the interesting rejection. Two parents means one card's answer is
+ * owed to two orchestrators, and the second dispatch would re-prompt a session
+ * that is still working on the first one's task — the sort of thing that
+ * produces a plausible answer to a question nobody asked.
+ */
+function orchestrationProblems(pipeline: Pipeline): Preflight {
+  const structure = layer(pipeline)
+  if (!structure.ok) return { blocking: [{ kind: "structure", message: structure.error }], warnings: [] }
+
+  const shape = orchestrationShape(pipeline)
+  const blocking: Problem[] = []
+  const warnings: Problem[] = []
+
+  // A graph with no root at all is a cycle, and `layer` above already refused
+  // it — in a DAG something always has nothing pointing at it. For the same
+  // reason there is no unreachable-card case: every card is downstream of some
+  // root, so a stray one shows up as a second root rather than as an orphan.
+  for (const extra of shape.roots.slice(1))
+    blocking.push({
+      nodeId: extra.id,
+      kind: "duplicate-orchestrator",
+      message: `An orchestration runs from one card, and this canvas has ${shape.roots.length} with no incoming connection — wire the extras under the orchestrator, or delete them`,
+    })
+  for (const node of shape.shared)
+    blocking.push({
+      nodeId: node.id,
+      kind: "shared-subagent",
+      message: `Card '${node.role}' is dispatched by more than one orchestrator — a card answers to exactly one, or its session gets re-prompted mid-task`,
+    })
+  const limit = depthOf(pipeline)
+  if (shape.depth > limit)
+    blocking.push({
+      kind: "too-deep",
+      message: `The subagent tree is ${shape.depth} level(s) deep and the limit is ${limit} — raise the depth setting or flatten the graph`,
+    })
+  if (shape.roots.length === 1 && !shape.depth)
+    blocking.push({
+      nodeId: shape.root.id,
+      kind: "no-subagents",
+      message: `Card '${shape.root.role}' has nobody to dispatch to — connect the subagent cards it should assign work to`,
+    })
+
+  // Worst case, stated before a session exists. Every level multiplies, so the
+  // number is the one thing a user cannot work out by looking at the canvas.
+  const worst = worstCase(pipeline)
+  if (worst > 12)
+    warnings.push({
+      kind: "fan-out",
+      message: `This graph can reach ${worst} sessions if every orchestrator uses all ${dispatchesOf(pipeline)} of its dispatches`,
+    })
+
+  return { blocking, warnings }
+}
+
+/**
+ * How many sessions the run can cost if every orchestrator dispatches to
+ * everything, every time it is allowed to.
+ *
+ * A card is one session however often it is re-prompted, so this counts cards
+ * weighted by how many times an ancestor could reach them — which is what makes
+ * a shallow-looking graph expensive.
+ */
+function worstCase(pipeline: Pipeline) {
+  const shape = orchestrationShape(pipeline)
+  if (shape.roots.length !== 1) return pipeline.nodes.length
+  const dispatches = dispatchesOf(pipeline)
+  const count = (id: string, guard: Set<string>): number => {
+    if (guard.has(id)) return 0
+    guard.add(id)
+    const below = shape.children(id).reduce((total, child) => total + count(child, guard), 0)
+    guard.delete(id)
+    return 1 + (below ? below * dispatches : 0)
+  }
+  return count(shape.root.id, new Set())
 }
 
 /** True when adding source->target would close a cycle. */

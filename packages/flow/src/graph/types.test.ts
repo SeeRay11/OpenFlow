@@ -1,6 +1,20 @@
 import { describe, expect, test } from "bun:test"
 import { pipeline } from "./test-support"
-import { DEFAULT_ROUNDS, emptyPipeline, MAX_ROUNDS, modeOf, MODES, roundsOf, type Pipeline } from "./types"
+import {
+  DEFAULT_DEPTH,
+  DEFAULT_DISPATCHES,
+  DEFAULT_ROUNDS,
+  depthOf,
+  dispatchesOf,
+  emptyPipeline,
+  MAX_DEPTH,
+  MAX_DISPATCHES,
+  MAX_ROUNDS,
+  modeOf,
+  MODES,
+  roundsOf,
+  type Pipeline,
+} from "./types"
 
 describe("modeOf", () => {
   test("a canvas saved before modes existed reads as pipeline", () => {
@@ -38,5 +52,19 @@ describe("roundsOf", () => {
   test("a fractional or unusable count falls back rather than half-running a round", () => {
     expect(roundsOf({ ...pipeline("a"), rounds: 2.7 })).toBe(2)
     expect(roundsOf({ ...pipeline("a"), rounds: Number.NaN })).toBe(DEFAULT_ROUNDS)
+  })
+})
+
+describe("orchestration budgets", () => {
+  test("default until the graph says otherwise", () => {
+    expect(depthOf(pipeline("a"))).toBe(DEFAULT_DEPTH)
+    expect(dispatchesOf(pipeline("a"))).toBe(DEFAULT_DISPATCHES)
+  })
+
+  test("clamp, because depth is the exponent on an orchestration's bill", () => {
+    expect(depthOf({ ...pipeline("a"), depth: 99 })).toBe(MAX_DEPTH)
+    expect(depthOf({ ...pipeline("a"), depth: 0 })).toBe(1)
+    expect(dispatchesOf({ ...pipeline("a"), dispatches: 99 })).toBe(MAX_DISPATCHES)
+    expect(dispatchesOf({ ...pipeline("a"), dispatches: -1 })).toBe(1)
   })
 })

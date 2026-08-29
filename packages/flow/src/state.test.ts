@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 import { setAvailableModels, setDefaultModel } from "./graph/default-model"
-import { DEFAULT_ROUNDS, modeOf, roundsOf } from "./graph/types"
+import {
+  DEFAULT_DEPTH,
+  DEFAULT_DISPATCHES,
+  DEFAULT_ROUNDS,
+  depthOf,
+  dispatchesOf,
+  modeOf,
+  roundsOf,
+} from "./graph/types"
 import { actions, runtimeOf, state } from "./state"
 
 /**
@@ -320,5 +328,19 @@ describe("engine reachability", () => {
 
     actions.setEngineReachable(true)
     expect(state.engineReachable).toBe(true)
+  })
+})
+
+describe("orchestration budgets", () => {
+  test("depth and dispatches live on the graph, and default until set", () => {
+    actions.setMode("orchestration")
+    expect(depthOf(state.pipeline)).toBe(DEFAULT_DEPTH)
+    expect(dispatchesOf(state.pipeline)).toBe(DEFAULT_DISPATCHES)
+
+    actions.setDepth(3)
+    actions.setDispatches(1)
+    expect(depthOf(state.pipeline)).toBe(3)
+    expect(dispatchesOf(state.pipeline)).toBe(1)
+    expect(state.dirty).toBe(true)
   })
 })

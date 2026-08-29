@@ -243,6 +243,18 @@ export const actions = {
     setState("pipeline", "rounds", rounds)
   },
 
+  /** How deep an orchestration's subagent tree may go. */
+  setDepth(depth: number) {
+    setState("dirty", true)
+    setState("pipeline", "depth", depth)
+  },
+
+  /** How many times one orchestrator may dispatch before it has to answer. */
+  setDispatches(dispatches: number) {
+    setState("dirty", true)
+    setState("pipeline", "dispatches", dispatches)
+  },
+
   /**
    * Restores the last snapshot. Selection and the drawer are dropped rather
    * than guessed: whatever they pointed at may be the node coming back.

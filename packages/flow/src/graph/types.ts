@@ -83,6 +83,13 @@ export type Pipeline = {
    * — the briefing tells every agent which round it is on and how many remain.
    */
   rounds?: number
+  /**
+   * Orchestration only: how many dispatch levels may sit below the root, and
+   * how many times one orchestrator may dispatch before it has to answer. Both
+   * are caps on the same thing — how many sessions a run can talk itself into.
+   */
+  depth?: number
+  dispatches?: number
 }
 
 export type PermissionDecision = {
@@ -251,7 +258,42 @@ export const MAX_ROUNDS = 6
 
 /** How many rounds a swarm runs, clamped to what the engine will dispatch. */
 export function roundsOf(pipeline: Pipeline) {
-  const rounds = Math.floor(pipeline.rounds ?? DEFAULT_ROUNDS)
-  if (!Number.isFinite(rounds)) return DEFAULT_ROUNDS
-  return Math.min(MAX_ROUNDS, Math.max(1, rounds))
+  return clamp(pipeline.rounds, DEFAULT_ROUNDS, MAX_ROUNDS)
+}
+
+export const DEFAULT_DEPTH = 2
+/**
+ * Depth is the exponent on an orchestration's bill: each level multiplies by
+ * however many children a card has. Four levels of a four-way fan-out is 340
+ * sessions, which is not a run anybody meant to start.
+ */
+export const MAX_DEPTH = 4
+
+export const DEFAULT_DISPATCHES = 3
+/**
+ * How many times one orchestrator may dispatch before it is made to answer.
+ * Without a cap, "that was not quite right, try again" is an unbounded loop
+ * that reads as progress the whole way down.
+ */
+export const MAX_DISPATCHES = 6
+
+/** How deep an orchestration's subagent tree may go. A lone orchestrator is 0. */
+export function depthOf(pipeline: Pipeline) {
+  return clamp(pipeline.depth, DEFAULT_DEPTH, MAX_DEPTH)
+}
+
+/** How many dispatch rounds one orchestrator gets before it must answer. */
+export function dispatchesOf(pipeline: Pipeline) {
+  return clamp(pipeline.dispatches, DEFAULT_DISPATCHES, MAX_DISPATCHES)
+}
+
+/**
+ * A hand-edited store file must not be able to talk the engine into a bigger
+ * run than the UI can ask for, so every budget is clamped where it is read
+ * rather than trusted where it was written.
+ */
+function clamp(value: number | undefined, fallback: number, max: number) {
+  const rounded = Math.floor(value ?? fallback)
+  if (!Number.isFinite(rounded)) return fallback
+  return Math.min(max, Math.max(1, rounded))
 }

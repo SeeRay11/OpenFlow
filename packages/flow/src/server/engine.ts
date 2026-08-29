@@ -1,4 +1,16 @@
-import { buildPrompt, swarmPrompt, synthesisPrompt } from "../graph/prompt"
+import { parseDispatch } from "../graph/dispatch"
+import { orchestrationShape } from "../graph/orchestration"
+import {
+  buildPrompt,
+  dispatchResultPrompt,
+  forceFinalPrompt,
+  orchestratorPrompt,
+  reassignPrompt,
+  subOrchestratorPrompt,
+  subagentPrompt,
+  swarmPrompt,
+  synthesisPrompt,
+} from "../graph/prompt"
 import { swarmShape } from "../graph/swarm"
 import type {
   Attachment,
@@ -11,7 +23,7 @@ import type {
   Spend,
   StepUsage,
 } from "../graph/types"
-import { modeOf, roundsOf } from "../graph/types"
+import { depthOf, dispatchesOf, modeOf, roundsOf } from "../graph/types"
 import { ancestors, layer, upstream } from "../graph/validate"
 import { applyEvent, createActivity, persistable } from "./activity"
 import * as api from "./client"
@@ -205,7 +217,8 @@ export type QuestionRequest = {
  * — creating it, prompting it, waiting it out, draining its transcript, pricing
  * it, streaming its activity — is `runNode` below and is shared. What a mode
  * changes is only the *scheduler*: which nodes run, in what order, and what text
- * their prompts carry. `runPipeline` is this build's only scheduler.
+ * their prompts carry — `runPipeline` over topological layers, `runSwarm` over
+ * rounds of peers, `orchestrate` down a tree of dispatches.
  */
 export function start(
   pipeline: Pipeline,
@@ -231,11 +244,19 @@ export function start(
   // is callable without it, and running a swarm's graph through the pipeline
   // scheduler would spend real money producing an answer nobody designed.
   const mode = modeOf(pipeline)
-  if (mode === "orchestration") throw new Error(`${mode} mode is not runnable in this build yet`)
   const swarm = mode === "swarm" ? swarmShape(pipeline) : undefined
   if (swarm && !swarm.synthesizers.length) throw new Error("a swarm has no synthesizer card to write its verdict")
+  const tree = mode === "orchestration" ? orchestrationShape(pipeline) : undefined
+  if (tree) {
+    if (tree.roots.length !== 1)
+      throw new Error(`an orchestration runs from exactly one card with no incoming connection, and this graph has ${tree.roots.length}`)
+    if (tree.shared.length) throw new Error("a card is dispatched by more than one orchestrator")
+    if (tree.depth > depthOf(pipeline))
+      throw new Error(`the subagent tree is ${tree.depth} level(s) deep and the limit is ${depthOf(pipeline)}`)
+  }
   // Swarm reads no edges at all, so a leftover cycle from a graph that used to
-  // be a pipeline is not a reason to refuse it.
+  // be a pipeline is not a reason to refuse it. Orchestration does read them,
+  // and `layer` is still what rejects a cycle before the recursion meets one.
   const validation = swarm ? { ok: true as const, layers: [] as string[][] } : layer(pipeline)
   if (!validation.ok) throw new Error(validation.error)
   const order = new Map(validation.layers.flatMap((ids, index) => ids.map((id) => [id, index] as const)))
@@ -655,6 +676,133 @@ export function start(
     await runTurn(node, (skipped) => swarmPrompt(pipeline, node, round, peers, input, skipped), round > 1)
   }
 
+  /**
+   * One orchestrator's whole dispatch loop, and every subtree under it.
+   *
+   * Runs until the card sends `final`, or until its dispatch budget is spent and
+   * one last turn is used to make it answer from what it has. A card with
+   * children of its own recurses through this same function one level down —
+   * that is what "subagents can deploy subagents" is, and it is bounded by the
+   * tree the user drew rather than by anything a model decides.
+   *
+   * Returns the answer, or undefined when the card failed or the run stopped.
+   */
+  async function orchestrate(node: FlowNode, task: string, first: boolean): Promise<string | undefined> {
+    const children = tree!.children(node.id)
+    const budget = dispatchesOf(pipeline)
+    // A card dispatched a second time is prompted into the session it already
+    // holds, so it still has its briefing and its earlier task — only the job
+    // is new.
+    const returning = nodeSession.has(node.id)
+    let build = (skipped: Attachment[]) =>
+      returning
+        ? reassignPrompt(task)
+        : first
+          ? orchestratorPrompt(pipeline, node, input, skipped)
+          : // Only a card with children reaches here; a leaf goes through
+            // `runSubagent`. So this is always somebody's subagent that must
+            // itself speak the protocol.
+            subOrchestratorPrompt(pipeline, node, parentOf(node.id)!, task, input, skipped)
+    let spent = 0
+    // One retry, and only for a malformed block. A model that cannot produce
+    // the protocol twice in a row will not produce it on the third ask, and
+    // every ask is a paid turn.
+    let retried = false
+
+    while (true) {
+      // Always `reuse`: `runTurn` opens a session when the card has none, so
+      // this is "keep the one you have" rather than "there must be one".
+      await runTurn(node, build, true)
+      if (failed.has(node.id) || controller.signal.aborted) return undefined
+
+      const raw = outputs.get(node.id) ?? ""
+      const decision = parseDispatch(raw, children)
+
+      if (decision.kind === "error") {
+        if (retried) {
+          failed.add(node.id)
+          const reason = `the orchestrator never produced a usable control block — ${decision.reason}`
+          activity.note(node.id, `protocol:${node.id}`, "unusable control block", decision.reason, "error")
+          patch(node.id, { status: "error", error: reason, activity: undefined, finished: Date.now() })
+          return undefined
+        }
+        retried = true
+        activity.note(node.id, `protocol:retry:${node.id}`, "re-asked for a control block", decision.reason, "done")
+        build = () => forceFinalPrompt(`${decision.reason} Send the block again, correctly.`)
+        continue
+      }
+
+      // A retry is spent on the malformed turn, not on the run's budget.
+      retried = false
+      if (decision.kind === "final") {
+        outputs.set(node.id, decision.answer)
+        patch(node.id, { output: decision.answer })
+        return decision.answer
+      }
+
+      // The previous turn was the forced one — it was told it had no dispatches
+      // left and dispatched anyway. Without this the loop never ends, and a
+      // model that ignores the budget once will ignore it every time.
+      if (spent >= budget) {
+        failed.add(node.id)
+        const reason = `the orchestrator kept dispatching after its ${budget} dispatch(es) were spent, instead of answering`
+        activity.note(node.id, `budget:${node.id}`, "dispatched past its budget", reason, "error")
+        patch(node.id, { status: "error", error: reason, activity: undefined, finished: Date.now() })
+        return undefined
+      }
+
+      spent++
+      activity.note(
+        node.id,
+        `dispatch:${node.id}:${spent}`,
+        `dispatch ${spent} of ${budget} — ${decision.assignments.map((entry) => entry.card).join(", ")}`,
+        decision.assignments.map((entry) => `${entry.card}: ${entry.task}`).join("\n\n"),
+        "done",
+      )
+
+      const results: { card: string; text?: string; error?: string }[] = []
+      await pool(decision.assignments, limit, controller.signal, async (assignment) => {
+        const child = nodes.get(assignment.card)!
+        const answer = tree!.children(child.id).length
+          ? await orchestrate(child, assignment.task, false)
+          : await runSubagent(child, node, assignment.task)
+        results.push(
+          answer === undefined
+            ? { card: assignment.card, error: entry(assignment.card).error ?? "the card produced nothing" }
+            : { card: assignment.card, text: answer },
+        )
+      })
+      if (controller.signal.aborted) return undefined
+
+      // `results` lands in pool completion order; the orchestrator asked in a
+      // particular order and reads more easily in it.
+      results.sort(
+        (a, b) =>
+          decision.assignments.findIndex((entry) => entry.card === a.card) -
+          decision.assignments.findIndex((entry) => entry.card === b.card),
+      )
+      const remaining = budget - spent
+      build = () =>
+        remaining > 0
+          ? dispatchResultPrompt(pipeline, results, remaining)
+          : `${dispatchResultPrompt(pipeline, results, 0)}\n\n${forceFinalPrompt("Your dispatch budget is spent.")}`
+    }
+  }
+
+  /** A leaf card: one turn, one assignment, no protocol to speak. */
+  async function runSubagent(node: FlowNode, parent: FlowNode, task: string) {
+    const returning = nodeSession.has(node.id)
+    await runTurn(
+      node,
+      (skipped) => (returning ? reassignPrompt(task) : subagentPrompt(pipeline, node, parent, task, input, skipped)),
+      true,
+    )
+    if (failed.has(node.id)) return undefined
+    return outputs.get(node.id)
+  }
+
+  const parentOf = (id: string) => pipeline.nodes.find((entry) => tree!.children(entry.id).includes(id))
+
   const done = (async () => {
     try {
       // One catalog read serves both jobs: rejecting a model the server does
@@ -741,7 +889,12 @@ ${serve.command}`
               synthesisPrompt(pipeline, swarm.synthesizers[0], outputs, input, skipped),
             ),
         })
+      else if (tree) await orchestrate(tree.root, input, true)
       else await runPipeline(validation.layers, limit, controller.signal, (id) => runNode(nodes.get(id)!))
+      // A card nobody dispatched never ran, and "queued" would read as though
+      // the run had stopped short of it. It was simply not needed.
+      if (tree)
+        for (const node of log.nodes) if (node.status === "queued") node.status = "skipped"
       log.status = controller.signal.aborted
         ? "stopped"
         : log.nodes.some((node) => node.status === "error")

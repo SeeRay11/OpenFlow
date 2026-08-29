@@ -57,9 +57,22 @@ export const ROLES: Role[] = [
       tools: { read: true, grep: true, glob: true, edit: false, bash: false },
     },
   },
-  // OpenFlow's own, because opencode has no agent that does this job: the card
-  // that reads a whole swarm and decides. Cyan is the one hue the five above
-  // leave free.
+  // The two below are OpenFlow's own, because opencode has no agent that does
+  // either job: reading a whole swarm and deciding, and handing work out to
+  // cards it can see. Cyan and amber are the hues the five above leave free.
+  {
+    id: "orchestrator",
+    label: "orchestrator",
+    color: "#f7c48b",
+    agent: {
+      prompt:
+        "You are the orchestrator. Decide what has to happen, split it across the cards below " +
+        "you by what each is for, and give each one a task it can finish alone. Read what they " +
+        "return, dispatch again where the answer is not good enough, and write the final answer " +
+        "yourself. Do a card's work yourself only when no card below you can do it.",
+      tools: { read: true, grep: true, glob: true, edit: false, bash: false },
+    },
+  },
   {
     id: "synthesizer",
     label: "synthesizer",

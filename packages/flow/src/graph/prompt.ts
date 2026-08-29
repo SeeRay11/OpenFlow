@@ -1,5 +1,7 @@
+import { FENCE } from "./dispatch"
+import { orchestrationShape, subagentsOf } from "./orchestration"
 import { swarmShape } from "./swarm"
-import { roundsOf, type Attachment, type FlowNode, type Pipeline } from "./types"
+import { dispatchesOf, roundsOf, type Attachment, type FlowNode, type Pipeline } from "./types"
 import { downstream, layer, upstream } from "./validate"
 
 /** `role (id)` — the one label every prompt in every mode uses for a card. */
@@ -274,5 +276,215 @@ export function synthesisPrompt(
       ? `# Final positions\n\n${positions.join("\n\n")}`
       : "# Final positions\n\nNone. Every agent in the swarm failed, so there is nothing to weigh; say so rather than answering the task yourself.",
   )
+  return sections.join("\n\n")
+}
+
+/**
+ * What the orchestrator sends on its first turn.
+ *
+ * The roster carries each subagent's own role instructions, not just its name:
+ * an orchestrator that cannot see what a card is for assigns by guessing at the
+ * label, which is how the reviewer gets asked to write code.
+ */
+export function orchestratorPrompt(
+  pipeline: Pipeline,
+  node: FlowNode,
+  input: string,
+  skipped: Attachment[] = [],
+) {
+  const sections = [orchestratorBriefing(pipeline, node)]
+  if (node.agent.prompt.trim()) sections.push(node.agent.prompt.trim())
+  if (input.trim()) sections.push(`# Task\n\n${input.trim()}`)
+  const unreadable = withheld(skipped)
+  if (unreadable) sections.push(unreadable)
+  return sections.join("\n\n")
+}
+
+export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode) {
+  const children = subagentsOf(pipeline, node)
+  const dispatches = dispatchesOf(pipeline)
+  const root = orchestrationShape(pipeline).root
+  const mine = children.map((child) => {
+    const owns = subagentsOf(pipeline, child)
+    const role = child.agent.prompt.trim().split("\n")[0] || "no role instructions"
+    return [
+      `- \`${child.id}\` — ${child.role} · ${child.agent.model ?? "its agent's own model"}`,
+      `  what it is for: ${role}`,
+      owns.length
+        ? `  it hands work to ${owns.length} card(s) of its own, so give it work worth splitting`
+        : "  it does the work itself",
+    ].join("\n")
+  })
+
+  return [
+    "# OpenFlow",
+    "",
+    node.id === root?.id
+      ? "You are the orchestrator of an OpenFlow run. You do not do the work: you decide what has to"
+      : "You are a subagent of an OpenFlow run, and you have cards of your own. You do not do the work: you decide what has to",
+    "happen, hand it to the cards below you, read what comes back, and answer. Each card is its own",
+    "session with its own role, model and tools; they share no memory, cannot talk to each other,",
+    "and know only the task you write for them.",
+    "",
+    `## Cards you can dispatch to — ${children.length}`,
+    "",
+    ...mine,
+    "",
+    "## How you say what happens next",
+    "",
+    "End every message with exactly one fenced block. Nothing outside it is read as an",
+    "instruction, so think out loud above it as much as you like.",
+    "",
+    "To hand work out — the cards named run at the same time, so only batch work that does not",
+    "depend on itself:",
+    "",
+    "```" + FENCE,
+    '{ "dispatch": [ { "card": "<id from the list above>", "task": "what it must do, in full" } ] }',
+    "```",
+    "",
+    "To finish, when you can answer:",
+    "",
+    "```" + FENCE,
+    '{ "final": "the answer to the task" }',
+    "```",
+    "",
+    "## Your part",
+    "",
+    `- You may dispatch ${dispatches} time(s) before you have to answer. Spend them on work that`,
+    "  changes the answer, not on confirming what a card already told you.",
+    "- A card only knows what you write in its task. It has not seen the run task, the other",
+    "  cards' answers, or anything you dispatched before — write the task so it can be finished",
+    "  by someone who has read nothing else.",
+    "- Dispatch a card again when its answer is wrong or thin, and say what was wrong with it.",
+    "  It remembers its earlier task; it does not know why you came back.",
+    "- Do a card's work yourself only when no card below you can do it.",
+    "- Nothing is interactive and no card can ask you anything. Where the task is ambiguous,",
+    "  state the assumption you took and continue.",
+    "- The text in `final` is the whole result of the run. Write it for the person who started",
+    "  the run, not as a report on what your cards said.",
+  ].join("\n")
+}
+
+/** One subagent's assignment: the run's context, then the job it was given. */
+export function subagentPrompt(
+  pipeline: Pipeline,
+  node: FlowNode,
+  parent: FlowNode,
+  task: string,
+  input: string,
+  skipped: Attachment[] = [],
+) {
+  const sections = [
+    [
+      "# OpenFlow",
+      "",
+      "You are one card in an OpenFlow run: a separate `opencode` session with your own role, model",
+      `and tools. ${label(pipeline, parent.id)} dispatched you and is the only thing that reads your`,
+      "answer. You share no memory with any other card, none of them can be asked anything, and",
+      "nothing you write goes anywhere else.",
+      "",
+      "## Your part",
+      "",
+      "- Do the assignment below and stop. If it is impossible or underspecified, say exactly what",
+      "  is missing rather than guessing broadly — the card that dispatched you can fix it and",
+      "  dispatch you again.",
+      "- State any assumption you had to take.",
+      "- Write for the card that reads you: what it needs to act, in the shortest form that",
+      "  carries it. No preamble.",
+    ].join("\n"),
+  ]
+  if (node.agent.prompt.trim()) sections.push(node.agent.prompt.trim())
+  if (input.trim()) sections.push(`# What the run is for\n\n${input.trim()}`)
+  const unreadable = withheld(skipped)
+  if (unreadable) sections.push(unreadable)
+  sections.push(`# Your assignment\n\n${task.trim()}`)
+  return sections.join("\n\n")
+}
+
+/**
+ * What the orchestrator is prompted with once its cards come back.
+ *
+ * Short on purpose: it is re-prompted into the session it already holds, so the
+ * briefing, the task and its own reasoning are still in front of it. What it
+ * does not have is what just happened.
+ */
+export function dispatchResultPrompt(
+  pipeline: Pipeline,
+  results: { card: string; text?: string; error?: string }[],
+  remaining: number,
+) {
+  const rows = results.map((result) =>
+    result.error
+      ? `## ${label(pipeline, result.card)} — failed\n\n${result.error}\n\nIt produced nothing. Dispatch it again with a task it can finish, hand the work to another card, or answer without it.`
+      : `## ${label(pipeline, result.card)}\n\n${result.text}`,
+  )
+  return [
+    "# What your cards returned",
+    "",
+    remaining > 0
+      ? `You may dispatch ${remaining} more time(s), or answer now. Same block as before: \`dispatch\` or \`final\`.`
+      : "You have no dispatches left. Answer now with a `final` block.",
+    "",
+    rows.join("\n\n"),
+  ].join("\n")
+}
+
+/**
+ * The last thing an orchestrator is told when it has run out of rope.
+ *
+ * A cap that simply cut the loop would end a run with a control block as its
+ * result. This spends one more turn to get an answer out of what it already has.
+ */
+export function forceFinalPrompt(reason: string) {
+  return [
+    "# Answer now",
+    "",
+    reason,
+    "",
+    "Write the answer to the run's task from what you already have, and send it as:",
+    "",
+    "```" + FENCE,
+    '{ "final": "the answer to the task" }',
+    "```",
+    "",
+    "Do not dispatch. If what you have is not enough, say what is missing and answer with the",
+    "best you can support.",
+  ].join("\n")
+}
+
+/**
+ * A card dispatched again.
+ *
+ * It is prompted into the session it already holds, so it still has its
+ * briefing, its role and its earlier task. Only the job is new — and it is told
+ * the old one is over, because otherwise a card reads a second assignment as
+ * more detail on the first.
+ */
+export function reassignPrompt(task: string) {
+  return `# A new assignment\n\nYou were dispatched again. Your earlier assignment is finished with; this replaces it.\n\n${task.trim()}`
+}
+
+/**
+ * A subagent that has cards of its own.
+ *
+ * It is briefed as an orchestrator — it has to speak the protocol, so it has to
+ * be shown it — but it is also somebody's subagent, so it gets an assignment
+ * rather than the run task. Without this it would be briefed as a leaf and then
+ * have its plain answer parsed for a control block it was never told about.
+ */
+export function subOrchestratorPrompt(
+  pipeline: Pipeline,
+  node: FlowNode,
+  parent: FlowNode,
+  task: string,
+  input: string,
+  skipped: Attachment[] = [],
+) {
+  const sections = [orchestratorBriefing(pipeline, node)]
+  if (node.agent.prompt.trim()) sections.push(node.agent.prompt.trim())
+  if (input.trim()) sections.push(`# What the run is for\n\n${input.trim()}`)
+  const unreadable = withheld(skipped)
+  if (unreadable) sections.push(unreadable)
+  sections.push(`# Your assignment\n\n${label(pipeline, parent.id)} dispatched you with this:\n\n${task.trim()}`)
   return sections.join("\n\n")
 }

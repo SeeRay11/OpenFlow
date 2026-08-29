@@ -1369,3 +1369,186 @@ describe("swarm mode", () => {
     expect(h.dispatched).toEqual(["a", "b", "verdict"])
   })
 })
+
+describe("orchestration mode", () => {
+  const block = (body: string) => "```openflow\n" + body + "\n```"
+  const dispatch = (...cards: string[]) =>
+    block(JSON.stringify({ dispatch: cards.map((card) => ({ card, task: `do ${card}` })) }))
+  const final = (answer: string) => block(JSON.stringify({ final: answer }))
+
+  /** A tree, with `mode` and the caps a run reads. */
+  function tree(spec: string[], options: { depth?: number; dispatches?: number } = {}): Pipeline {
+    return { ...pipeline(...spec), mode: "orchestration", ...options }
+  }
+
+  test("dispatches, reads what came back, then answers", async () => {
+    const h = harness({
+      behavior: {
+        root: { output: dispatch("a", "b") },
+        a: { output: "a found this" },
+        b: { output: "b found that" },
+      },
+    })
+    // The root's second turn answers; the fake returns one fixed text per node,
+    // so the answer arrives by re-behaving the root mid-run is not possible —
+    // instead the budget is 1, which forces the answer on the last turn.
+    const log = await h.run(tree(["root->a", "root->b"], { dispatches: 1 })).done
+
+    expect(h.dispatched.slice(0, 3)).toEqual(["root", "a", "b"])
+    expect(h.prompts.get("a")).toContain("do a")
+    expect(h.prompts.get("b")).toContain("do b")
+    expect(log.nodes.find((node) => node.id === "a")!.status).toBe("done")
+  })
+
+  test("an orchestrator that answers straight away spends nothing on its cards", async () => {
+    const h = harness({ behavior: { root: { output: final("the answer") } } })
+    const log = await h.run(tree(["root->a", "root->b"])).done
+
+    expect(h.dispatched).toEqual(["root"])
+    expect(log.status).toBe("done")
+    // The parsed answer replaces the raw block — the run's result is the answer,
+    // not the control instruction that carried it.
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("the answer")
+    // Cards nobody dispatched did not fail; they were not needed.
+    expect(log.nodes.find((node) => node.id === "a")!.status).toBe("skipped")
+  })
+
+  test("a subagent with cards of its own orchestrates its subtree one level down", async () => {
+    const h = harness({
+      behavior: {
+        root: { output: dispatch("mid") },
+        mid: { output: dispatch("leaf") },
+        leaf: { output: "leaf did the work" },
+      },
+    })
+    await h.run(tree(["root->mid", "mid->leaf"], { depth: 2, dispatches: 1 })).done
+
+    expect(h.dispatched.slice(0, 3)).toEqual(["root", "mid", "leaf"])
+    // The leaf is briefed as a card, not as an orchestrator: it has nobody to
+    // dispatch to and is never shown the protocol.
+    expect(h.prompts.get("leaf")).toContain("Your assignment")
+    expect(h.prompts.get("leaf")).not.toContain("Cards you can dispatch to")
+
+    // mid gets the orchestrator briefing on its first turn, naming its own one
+    // card — and is told it is a subagent, not the run's orchestrator.
+    const opening = h.promptLog.find((entry) => entry.node === "mid")!.text
+    expect(opening).toContain("Cards you can dispatch to — 1")
+    expect(opening).toContain("`leaf`")
+    expect(opening).toContain("You are a subagent of an OpenFlow run")
+  })
+
+  test("cards in one dispatch run at the same time", async () => {
+    const h = harness({
+      behavior: { root: { output: dispatch("a", "b") }, a: { hold: true }, b: { hold: true } },
+    })
+    const run = h.run(tree(["root->a", "root->b"], { dispatches: 1 }))
+    await flush()
+
+    expect(h.peak()).toBe(2)
+    h.release("a")
+    h.release("b")
+    await run.done
+  })
+
+  test("a malformed block is handed back once, with the reason", async () => {
+    const h = harness({ behavior: { root: { output: "I will just answer in prose." } } })
+    const log = await h.run(tree(["root->a"])).done
+
+    // Two turns: the original, and one re-ask. A model that cannot produce the
+    // protocol twice will not produce it on the third paid ask.
+    expect(h.promptLog.filter((turn) => turn.node === "root")).toHaveLength(2)
+    expect(h.promptLog[1].text).toContain("no ```openflow block")
+    expect(log.nodes.find((node) => node.id === "root")!.status).toBe("error")
+    expect(log.nodes.find((node) => node.id === "root")!.error).toContain("control block")
+    expect(log.status).toBe("error")
+  })
+
+  test("dispatching a card that is not below you is refused before a session opens", async () => {
+    const h = harness({
+      behavior: { root: { output: block(JSON.stringify({ dispatch: [{ card: "ghost", task: "x" }] })) } },
+    })
+    await h.run(tree(["root->a"])).done
+
+    expect(h.dispatched.filter((node) => node !== "root")).toEqual([])
+    expect(h.promptLog[1].text).toContain("not a card you can dispatch to")
+  })
+
+  test("the dispatch budget is a cap on turns, and the last one demands an answer", async () => {
+    const h = harness({ behavior: { root: { output: dispatch("a") }, a: { output: "a says so" } } })
+    const log = await h.run(tree(["root->a"], { dispatches: 2 })).done
+
+    // Turn 1 and 2 dispatch; turn 3 is the forced answer. This root dispatches
+    // again instead, which is where the loop is stopped rather than spun.
+    const turns = h.promptLog.filter((entry) => entry.node === "root")
+    expect(turns).toHaveLength(3)
+    expect(turns[2].text).toContain("no dispatches left")
+    expect(turns[2].text).toContain("Answer now")
+    expect(log.nodes.find((node) => node.id === "root")!.error).toContain("kept dispatching")
+    // a is dispatched twice and keeps its one session across both.
+    expect(h.promptLog.filter((entry) => entry.node === "a")).toHaveLength(2)
+    expect(new Set(h.sessionOf.values()).size).toBe(2)
+    expect(log.nodes.find((node) => node.id === "root")!.status).toBe("error")
+  })
+
+  test("a card dispatched again is told the old assignment is over", async () => {
+    const h = harness({ behavior: { root: { output: dispatch("a") }, a: { output: "a says so" } } })
+    await h.run(tree(["root->a"], { dispatches: 2 })).done
+
+    const turns = h.promptLog.filter((entry) => entry.node === "a")
+    expect(turns[0].text).toContain("# Your assignment")
+    expect(turns[1].text).toContain("A new assignment")
+    expect(turns[1].text).not.toContain("# OpenFlow")
+  })
+
+  test("a failed card is named to its orchestrator rather than ending the run", async () => {
+    const h = harness({
+      behavior: {
+        root: { output: dispatch("a", "b") },
+        a: { error: "provider said no" },
+        b: { output: "b managed it" },
+      },
+    })
+    await h.run(tree(["root->a", "root->b"], { dispatches: 1 })).done
+
+    const second = h.promptLog.filter((entry) => entry.node === "root")[1].text
+    expect(second).toContain("failed")
+    expect(second).toContain("provider said no")
+    expect(second).toContain("b managed it")
+  })
+
+  test("results are ordered the way the orchestrator asked for them", async () => {
+    const h = harness({
+      behavior: {
+        root: { output: dispatch("b", "a") },
+        a: { hold: true, output: "a text" },
+        b: { output: "b text" },
+      },
+    })
+    const run = h.run(tree(["root->a", "root->b"], { dispatches: 1 }))
+    await flush()
+    // a settles last, so completion order and dispatch order disagree.
+    h.release("a")
+    await run.done
+
+    const second = h.promptLog.filter((entry) => entry.node === "root")[1].text
+    expect(second.indexOf("(b)")).toBeLessThan(second.indexOf("(a)"))
+  })
+
+  test("a graph deeper than its cap refuses before anything is dispatched", () => {
+    const h = harness()
+    expect(() => h.run(tree(["root->a", "a->b", "b->c"], { depth: 2 }))).toThrow("deep")
+    expect(h.dispatched).toEqual([])
+  })
+
+  test("a card two orchestrators both dispatch refuses before anything runs", () => {
+    const h = harness()
+    expect(() => h.run(tree(["root->a", "root->b", "a->shared", "b->shared"]))).toThrow("more than one")
+    expect(h.dispatched).toEqual([])
+  })
+
+  test("two cards with nothing pointing at them refuse — a run has one result", () => {
+    const h = harness()
+    expect(() => h.run(tree(["root->a", "other->b"]))).toThrow("exactly one")
+    expect(h.dispatched).toEqual([])
+  })
+})

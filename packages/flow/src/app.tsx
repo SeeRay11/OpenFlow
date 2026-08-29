@@ -1,6 +1,17 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
 import { Canvas } from "./canvas/canvas"
-import { MAX_ROUNDS, modeOf, roundsOf, type FlowMode, type Pipeline, type RunLog } from "./graph/types"
+import {
+  depthOf,
+  dispatchesOf,
+  MAX_DEPTH,
+  MAX_DISPATCHES,
+  MAX_ROUNDS,
+  modeOf,
+  roundsOf,
+  type FlowMode,
+  type Pipeline,
+  type RunLog,
+} from "./graph/types"
 import { layer, preflight, type Preflight } from "./graph/validate"
 import { isPipeline } from "./graph/pipeline-io"
 import * as api from "./server/client"
@@ -81,6 +92,16 @@ const ROUND_OPTIONS: SelectOption[] = Array.from({ length: MAX_ROUNDS }, (_, ind
   value: String(index + 1),
   label: String(index + 1),
   hint: index === 0 ? "no debate — one answer each" : undefined,
+}))
+const DEPTH_OPTIONS: SelectOption[] = Array.from({ length: MAX_DEPTH }, (_, index) => ({
+  value: String(index + 1),
+  label: String(index + 1),
+  hint: index === 0 ? "one layer of subagents" : `subagents ${index + 1} deep`,
+}))
+const DISPATCH_OPTIONS: SelectOption[] = Array.from({ length: MAX_DISPATCHES }, (_, index) => ({
+  value: String(index + 1),
+  label: String(index + 1),
+  hint: index === 0 ? "hand out once, then answer" : undefined,
 }))
 const PIPE_OPTIONS: SelectOption[] = [
   { value: "ancestors", label: "ancestors", hint: "every upstream node" },
@@ -944,24 +965,22 @@ export function App() {
             options={MODE_OPTIONS}
             onChange={(value) => actions.setMode(value as FlowMode)}
           />
-          {/* Each mode reads exactly one of these. `pipe` means nothing to a
-              swarm, whose peers all see each other by definition, and rounds
-              mean nothing to a pipeline — showing both would offer a setting
-              that silently does not apply. */}
-          <Show
-            when={modeOf(state.pipeline) === "swarm"}
-            fallback={
-              <Select
-                variant="ghost"
-                prefix="pipe: "
-                width={320}
-                title="how much upstream output each node receives"
-                value={pipe()}
-                options={PIPE_OPTIONS}
-                onChange={(value) => setPipe(value as PipeMode)}
-              />
-            }
-          >
+          {/* Each mode reads its own budget and none of the others. `pipe`
+              means nothing to a swarm, whose peers all see each other by
+              definition; rounds mean nothing to a pipeline. Showing all of them
+              would offer settings that silently do not apply. */}
+          <Show when={modeOf(state.pipeline) === "pipeline"}>
+            <Select
+              variant="ghost"
+              prefix="pipe: "
+              width={320}
+              title="how much upstream output each node receives"
+              value={pipe()}
+              options={PIPE_OPTIONS}
+              onChange={(value) => setPipe(value as PipeMode)}
+            />
+          </Show>
+          <Show when={modeOf(state.pipeline) === "swarm"}>
             <Select
               variant="ghost"
               prefix="rounds: "
@@ -969,6 +988,26 @@ export function App() {
               value={String(roundsOf(state.pipeline))}
               options={ROUND_OPTIONS}
               onChange={(value) => actions.setRounds(Number(value))}
+            />
+          </Show>
+          <Show when={modeOf(state.pipeline) === "orchestration"}>
+            <Select
+              variant="ghost"
+              prefix="depth: "
+              width={280}
+              title="how many levels of subagents may sit below the orchestrator — every level multiplies the session count"
+              value={String(depthOf(state.pipeline))}
+              options={DEPTH_OPTIONS}
+              onChange={(value) => actions.setDepth(Number(value))}
+            />
+            <Select
+              variant="ghost"
+              prefix="dispatches: "
+              width={280}
+              title="how many times one orchestrator may hand work out before it has to answer"
+              value={String(dispatchesOf(state.pipeline))}
+              options={DISPATCH_OPTIONS}
+              onChange={(value) => actions.setDispatches(Number(value))}
             />
           </Show>
           <Select

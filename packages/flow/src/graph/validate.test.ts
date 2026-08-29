@@ -120,13 +120,6 @@ describe("preflight", () => {
     expect(result.blocking.some((problem) => problem.kind === "structure")).toBe(true)
   })
 
-  test("a mode without a scheduler blocks rather than running as a pipeline", () => {
-    const graph = withModel(pipeline("a->b"), "opencode/x")
-    const result = preflight({ ...graph, mode: "orchestration" }, unlocked("opencode/x"))
-    expect(result.blocking.map((problem) => problem.kind)).toEqual(["mode-unimplemented"])
-    expect(result.blocking[0].message).toContain("orchestration")
-  })
-
   test("an explicit pipeline mode behaves exactly like an absent one", () => {
     const graph = withModel(pipeline("a->b"), "opencode/x")
     expect(preflight({ ...graph, mode: "pipeline" }, unlocked("opencode/x"))).toEqual(
@@ -181,6 +174,70 @@ describe("preflight", () => {
   test("a cycle left behind by a pipeline does not block a swarm — swarm reads no edges", () => {
     const graph = swarm(withModel(pipeline("a->b", "b->a"), "opencode/x"))
     expect(preflight(graph, unlocked("opencode/x")).blocking).toEqual([])
+  })
+
+  /** Turns a built graph into an orchestration with the caps the run will use. */
+  function orchestrated(graph: Pipeline, options: { depth?: number; dispatches?: number } = {}) {
+    return { ...graph, mode: "orchestration" as const, ...options }
+  }
+
+  test("an orchestrator with its subagents wired under it passes", () => {
+    const graph = orchestrated(withModel(pipeline("root->a", "root->b"), "opencode/x"))
+    const result = preflight(graph, unlocked("opencode/x"))
+    expect(result.blocking).toEqual([])
+    expect(result.warnings).toEqual([])
+  })
+
+  test("a card with nobody to dispatch to blocks — that is a pipeline of one", () => {
+    const graph = orchestrated(withModel(pipeline("root"), "opencode/x"))
+    expect(preflight(graph, unlocked("opencode/x")).blocking.map((problem) => problem.kind)).toEqual(["no-subagents"])
+  })
+
+  test("a second card nothing points at blocks, because a run has one result", () => {
+    const graph = orchestrated(withModel(pipeline("root->a", "other->b"), "opencode/x"))
+    const result = preflight(graph, unlocked("opencode/x"))
+    expect(result.blocking.map((problem) => [problem.kind, problem.nodeId])).toEqual([
+      ["duplicate-orchestrator", "other"],
+    ])
+  })
+
+  test("a diamond blocks — a card answers to exactly one orchestrator", () => {
+    // Two parents means the second dispatch would re-prompt a session that is
+    // still working on the first one's task.
+    const graph = orchestrated(withModel(pipeline("root->a", "root->b", "a->shared", "b->shared"), "opencode/x"))
+    const result = preflight(graph, unlocked("opencode/x"))
+    expect(result.blocking.map((problem) => [problem.kind, problem.nodeId])).toEqual([
+      ["shared-subagent", "shared"],
+    ])
+  })
+
+  test("a tree deeper than the depth cap blocks, naming both numbers", () => {
+    const graph = orchestrated(withModel(pipeline("root->a", "a->b", "b->c"), "opencode/x"), { depth: 2 })
+    const result = preflight(graph, unlocked("opencode/x"))
+    expect(result.blocking.map((problem) => problem.kind)).toEqual(["too-deep"])
+    expect(result.blocking[0].message).toContain("3 level(s) deep")
+    expect(result.blocking[0].message).toContain("limit is 2")
+
+    // Raising the cap is the other half of the fix, and it works.
+    expect(preflight(orchestrated(graph, { depth: 3 }), unlocked("opencode/x")).blocking).toEqual([])
+  })
+
+  test("a cycle is still a cycle, whatever the mode calls its edges", () => {
+    const graph = orchestrated(withModel(pipeline("root->a", "a->b", "b->a"), "opencode/x"))
+    expect(preflight(graph, unlocked("opencode/x")).blocking.map((problem) => problem.kind)).toEqual(["structure"])
+  })
+
+  test("a graph that can fan out past a dozen sessions warns before it is run", () => {
+    // Depth multiplies: four cards under the root, each dispatchable three
+    // times, is the number a user cannot work out by looking at the canvas.
+    const graph = orchestrated(
+      withModel(pipeline("root->a", "root->b", "root->c", "root->d"), "opencode/x"),
+      { dispatches: 3 },
+    )
+    const result = preflight(graph, unlocked("opencode/x"))
+    expect(result.blocking).toEqual([])
+    expect(result.warnings.map((problem) => problem.kind)).toEqual(["fan-out"])
+    expect(result.warnings[0].message).toContain("13 sessions")
   })
 
   test("a node with no model and no agent blocks, naming the node", () => {
