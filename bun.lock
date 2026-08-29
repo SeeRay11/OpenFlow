@@ -493,7 +493,7 @@
     },
     "packages/flow": {
       "name": "@openflow/flow",
-      "version": "1.1.1",
+      "version": "1.1.2",
       "dependencies": {
         "@opencode-ai/sdk": "workspace:*",
         "solid-js": "catalog:",
