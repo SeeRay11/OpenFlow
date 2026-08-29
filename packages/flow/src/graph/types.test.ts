@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { pipeline } from "./test-support"
-import { emptyPipeline, modeOf, MODES, type Pipeline } from "./types"
+import { DEFAULT_ROUNDS, emptyPipeline, MAX_ROUNDS, modeOf, MODES, roundsOf, type Pipeline } from "./types"
 
 describe("modeOf", () => {
   test("a canvas saved before modes existed reads as pipeline", () => {
@@ -19,5 +19,24 @@ describe("modeOf", () => {
     // than falling through a scheduler switch.
     const graph = { ...pipeline("a"), mode: "quantum" } as unknown as Pipeline
     expect(modeOf(graph)).toBe("pipeline")
+  })
+})
+
+describe("roundsOf", () => {
+  test("a swarm with no round count set debates the default number of times", () => {
+    expect(roundsOf(pipeline("a"))).toBe(DEFAULT_ROUNDS)
+  })
+
+  test("clamps to what the engine will actually dispatch", () => {
+    // Rounds multiply the whole bill — agents x rounds + 1 sessions — so a
+    // hand-edited file cannot talk the engine into an unbounded run.
+    expect(roundsOf({ ...pipeline("a"), rounds: MAX_ROUNDS + 40 })).toBe(MAX_ROUNDS)
+    expect(roundsOf({ ...pipeline("a"), rounds: 0 })).toBe(1)
+    expect(roundsOf({ ...pipeline("a"), rounds: -3 })).toBe(1)
+  })
+
+  test("a fractional or unusable count falls back rather than half-running a round", () => {
+    expect(roundsOf({ ...pipeline("a"), rounds: 2.7 })).toBe(2)
+    expect(roundsOf({ ...pipeline("a"), rounds: Number.NaN })).toBe(DEFAULT_ROUNDS)
   })
 })

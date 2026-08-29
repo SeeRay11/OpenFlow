@@ -1,6 +1,8 @@
 import { For, Show, createSignal, onCleanup } from "solid-js"
+import { meshPairs, swarmShape } from "../graph/swarm"
+import { modeOf } from "../graph/types"
 import { actions, state } from "../state"
-import { bezier, inPort, outPort, type Point } from "./geometry"
+import { bezier, centre, inPort, outPort, type Point } from "./geometry"
 import { NodeCard } from "./node-card"
 
 type View = { x: number; y: number; k: number }
@@ -70,6 +72,9 @@ export function Canvas() {
   }
 
   function startLink(event: PointerEvent, source: string) {
+    // Nothing to draw in swarm mode: peers are meshed by membership, so a link
+    // the user dragged would be an edge the run never reads.
+    if (modeOf(state.pipeline) === "swarm") return
     event.stopPropagation()
     event.preventDefault()
     setLinking({ source, to: toGraph(event.clientX, event.clientY) })
@@ -129,7 +134,39 @@ export function Canvas() {
         style={{ transform: `translate(${view().x}px, ${view().y}px) scale(${view().k})` }}
       >
         <svg class="edges" width="1" height="1">
-          <For each={state.pipeline.edges}>
+          {/* Swarm has no edges to read: every agent is a peer of every other,
+              so the mesh is drawn from the node list and cannot be edited. The
+              lines are dashed and thin because they are a fact about the mode,
+              not wiring the user put there and can take away. */}
+          <Show when={modeOf(state.pipeline) === "swarm"}>
+            <For each={meshPairs(swarmShape(state.pipeline).agents)}>
+              {(pair) => (
+                <line
+                  class="edge-peer"
+                  x1={centre(pair.from.position).x}
+                  y1={centre(pair.from.position).y}
+                  x2={centre(pair.to.position).x}
+                  y2={centre(pair.to.position).y}
+                />
+              )}
+            </For>
+            <For each={swarmShape(state.pipeline).synthesizers.slice(0, 1)}>
+              {(verdict) => (
+                <For each={swarmShape(state.pipeline).agents}>
+                  {(agent) => (
+                    <line
+                      class="edge-verdict"
+                      x1={centre(agent.position).x}
+                      y1={centre(agent.position).y}
+                      x2={centre(verdict.position).x}
+                      y2={centre(verdict.position).y}
+                    />
+                  )}
+                </For>
+              )}
+            </For>
+          </Show>
+          <For each={modeOf(state.pipeline) === "swarm" ? [] : state.pipeline.edges}>
             {(edge) => {
               const from = () => node(edge.source)
               const to = () => node(edge.target)

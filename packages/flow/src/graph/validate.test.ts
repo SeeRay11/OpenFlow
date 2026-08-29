@@ -96,6 +96,19 @@ describe("preflight", () => {
   }
   const unlocked = (...models: string[]) => ({ unlockedModels: new Set(models) })
 
+  /** Turns a built graph into a swarm, appending the synthesizer card it needs. */
+  function swarm(graph: Pipeline, options: { synthesizer?: boolean } = {}) {
+    const next: Pipeline = { ...graph, mode: "swarm", nodes: [...graph.nodes] }
+    if (options.synthesizer !== false)
+      next.nodes.push({
+        id: "verdict",
+        role: "synthesizer",
+        agent: { prompt: "", model: graph.nodes[0]?.agent.model },
+        position: { x: 0, y: 0 },
+      })
+    return next
+  }
+
   test("an empty pipeline blocks on the structural check", () => {
     const result = preflight(pipeline(), unlocked())
     expect(result.blocking.map((problem) => problem.kind)).toEqual(["structure"])
@@ -108,12 +121,10 @@ describe("preflight", () => {
   })
 
   test("a mode without a scheduler blocks rather than running as a pipeline", () => {
-    for (const mode of ["swarm", "orchestration"] as const) {
-      const graph = withModel(pipeline("a->b"), "opencode/x")
-      const result = preflight({ ...graph, mode }, unlocked("opencode/x"))
-      expect(result.blocking.map((problem) => problem.kind)).toEqual(["mode-unimplemented"])
-      expect(result.blocking[0].message).toContain(mode)
-    }
+    const graph = withModel(pipeline("a->b"), "opencode/x")
+    const result = preflight({ ...graph, mode: "orchestration" }, unlocked("opencode/x"))
+    expect(result.blocking.map((problem) => problem.kind)).toEqual(["mode-unimplemented"])
+    expect(result.blocking[0].message).toContain("orchestration")
   })
 
   test("an explicit pipeline mode behaves exactly like an absent one", () => {
@@ -126,7 +137,50 @@ describe("preflight", () => {
   test("an unconnected card only warns in pipeline mode — a swarm's peers carry no edges", () => {
     const graph = withModel(pipeline("a->b", "loner"), "opencode/x")
     expect(preflight(graph, unlocked("opencode/x")).warnings.map((problem) => problem.kind)).toEqual(["isolated"])
-    expect(preflight({ ...graph, mode: "swarm" }, unlocked("opencode/x")).warnings).toEqual([])
+    expect(preflight(swarm(graph), unlocked("opencode/x")).warnings.map((problem) => problem.kind)).not.toContain(
+      "isolated",
+    )
+  })
+
+  test("a swarm runs on its node list — no synthesizer means nothing writes the verdict", () => {
+    const graph = swarm(withModel(pipeline("a", "b"), "opencode/x"), { synthesizer: false })
+    expect(preflight(graph, unlocked("opencode/x")).blocking.map((problem) => problem.kind)).toEqual(["no-synthesizer"])
+  })
+
+  test("a swarm of one has nobody to debate", () => {
+    const graph = swarm(withModel(pipeline("a"), "opencode/x"))
+    expect(preflight(graph, unlocked("opencode/x")).blocking.map((problem) => problem.kind)).toEqual([
+      "swarm-too-small",
+    ])
+  })
+
+  test("two synthesizers block, naming the extra card", () => {
+    const graph = swarm(withModel(pipeline("a", "b", "s2"), "opencode/x"))
+    graph.nodes[2].role = "synthesizer"
+    // The first synthesizer in node order is the one the engine would run, so
+    // every one after it is what preflight points at.
+    const result = preflight(graph, unlocked("opencode/x"))
+    expect(result.blocking.map((problem) => [problem.kind, problem.nodeId])).toEqual([
+      ["duplicate-synthesizer", "verdict"],
+    ])
+  })
+
+  test("a well-formed swarm passes, and its leftover wiring only warns", () => {
+    const clean = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    expect(preflight(clean, unlocked("opencode/x")).blocking).toEqual([])
+    expect(preflight(clean, unlocked("opencode/x")).warnings).toEqual([])
+
+    // Switching a pipeline to swarm keeps its edges, which now do nothing.
+    const rewired = swarm(withModel(pipeline("a->b"), "opencode/x"))
+    expect(preflight(rewired, unlocked("opencode/x")).blocking).toEqual([])
+    expect(preflight(rewired, unlocked("opencode/x")).warnings.map((problem) => problem.kind)).toEqual([
+      "ignored-edges",
+    ])
+  })
+
+  test("a cycle left behind by a pipeline does not block a swarm — swarm reads no edges", () => {
+    const graph = swarm(withModel(pipeline("a->b", "b->a"), "opencode/x"))
+    expect(preflight(graph, unlocked("opencode/x")).blocking).toEqual([])
   })
 
   test("a node with no model and no agent blocks, naming the node", () => {

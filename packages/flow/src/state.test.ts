@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 import { setAvailableModels, setDefaultModel } from "./graph/default-model"
-import { modeOf } from "./graph/types"
+import { DEFAULT_ROUNDS, modeOf, roundsOf } from "./graph/types"
 import { actions, runtimeOf, state } from "./state"
 
 /**
@@ -253,6 +253,16 @@ describe("mode", () => {
   test("switching marks the graph dirty", () => {
     actions.markSaved()
     actions.setMode("swarm")
+    expect(state.dirty).toBe(true)
+  })
+
+  test("rounds live on the graph, so exporting a swarm carries how long it debates", () => {
+    actions.setMode("swarm")
+    expect(roundsOf(state.pipeline)).toBe(DEFAULT_ROUNDS)
+
+    actions.setRounds(5)
+    expect(state.pipeline.rounds).toBe(5)
+    expect(roundsOf(state.pipeline)).toBe(5)
     expect(state.dirty).toBe(true)
   })
 })

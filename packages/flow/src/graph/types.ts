@@ -77,6 +77,12 @@ export type Pipeline = {
    * write time.
    */
   mode?: FlowMode
+  /**
+   * Swarm only: how many rounds of peer exchange before the synthesizer runs.
+   * Part of the document rather than the run because it is what the swarm *is*
+   * — the briefing tells every agent which round it is on and how many remain.
+   */
+  rounds?: number
 }
 
 export type PermissionDecision = {
@@ -233,4 +239,19 @@ export function emptyPipeline(name = "untitled"): Pipeline {
  */
 export function modeOf(pipeline: Pipeline): FlowMode {
   return MODES.includes(pipeline.mode as FlowMode) ? (pipeline.mode as FlowMode) : "pipeline"
+}
+
+export const DEFAULT_ROUNDS = 3
+/**
+ * A swarm costs `agents × rounds + 1` sessions, so rounds is the multiplier on
+ * the whole bill. Six is already 25 sessions for a four-agent swarm; past that
+ * the agents are repeating themselves and the run is just expensive.
+ */
+export const MAX_ROUNDS = 6
+
+/** How many rounds a swarm runs, clamped to what the engine will dispatch. */
+export function roundsOf(pipeline: Pipeline) {
+  const rounds = Math.floor(pipeline.rounds ?? DEFAULT_ROUNDS)
+  if (!Number.isFinite(rounds)) return DEFAULT_ROUNDS
+  return Math.min(MAX_ROUNDS, Math.max(1, rounds))
 }

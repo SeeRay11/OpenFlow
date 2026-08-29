@@ -1654,6 +1654,19 @@ main {
   stroke-dasharray: 4 4;
 }
 
+/* the swarm mesh — implicit, so it is drawn quieter than wiring the user drew,
+   and carries no hit target because there is nothing to delete */
+.edge-peer {
+  stroke: var(--v2-border-border-base);
+  stroke-width: 1;
+  stroke-dasharray: 3 5;
+}
+
+.edge-verdict {
+  stroke: var(--v2-border-border-strong);
+  stroke-width: 1.5;
+}
+
 /* a fat invisible stroke gives the hairline a clickable target */
 .edge-hit {
   fill: none;

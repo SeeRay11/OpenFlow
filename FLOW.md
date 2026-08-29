@@ -31,11 +31,30 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   because it changes what an existing graph does. Everything about running one session
   (`runNode`) is shared across modes; only the **scheduler** differs — which nodes run, in
   what order, and what their prompts carry. A mode with no scheduler refuses in two places
-  that must stay in step: `shapeProblem` in `graph/validate.ts` (the message the user sees)
+  that must stay in step: `shapeProblems` in `graph/validate.ts` (the message the user sees)
   and a throw at the top of `start()` (the engine is callable without preflight, and running
   a swarm's graph through the pipeline scheduler would spend real money on an answer nobody
   designed). `modeOf()` normalises anything unrecognised to `pipeline`; `isPipeline()`
   rejects it outright, because a file asking for rules this build lacks should not import.
+- **A swarm is a node list, not a wiring.** Every non-`synthesizer` card is a peer of every
+  other; `Pipeline.edges` is never read, so a cycle left behind by a pipeline is harmless and
+  leftover edges only warn. `swarmShape()` in `graph/swarm.ts` is the one place that splits
+  the canvas, by the card's **role text** — designating the decider is renaming a card, not
+  setting a hidden flag. The canvas draws the mesh from `meshPairs()` and refuses to start a
+  link, because an edge the user dragged would be one the run never reads.
+- **Swarm rounds are barriers, and the peer snapshot is taken on the boundary.** Round R
+  reads a frozen copy of round R−1 (`said = new Map(outputs)` before the pool is dispatched).
+  Snapshotting per card instead would let a peer early in the pool be read by a peer later in
+  the *same* round, so the debate would depend on scheduling order. A peer keeps **one
+  session** across every round — `runTurn(..., reuse)` — so it remembers its own reasoning and
+  the provider can cache the prefix; that is why round 1 carries the briefing and the task and
+  later rounds carry only the peers. Attachments ride the first turn only. A peer that failed
+  is dropped rather than retried: a new session in round 3 would answer with no memory of
+  rounds 1 and 2 while every peer around it has both, and the synthesizer is told who is
+  missing so it does not write a confident verdict over the hole.
+- Cost is the standing hazard of both new modes. A swarm is `agents × rounds + 1` sessions;
+  `MAX_ROUNDS` exists for that reason and `roundsOf()` clamps, so a hand-edited file cannot
+  talk the engine into an unbounded run.
 - **OpenFlow has no agent loop of its own.** The harness is identical to the OpenCode CLI
   harness, so a card inherits OpenCode's tools, permission ruleset, and subagents. Subagents
   work but are OpenCode-native and invisible to OpenFlow, which only sees the final
@@ -125,8 +144,11 @@ components rather than approximating them, and do not add extra affordances alon
 - Native `<select>` cannot be styled into OpenCode's popover. Every menu routes through
   `src/ui/select.tsx` (controlled; `value=""` for action menus). Zero native selects survive.
 - Icons are the hand-drawn 16px set in `src/ui/icons.tsx`. No icon dependency.
-- Role colors are OpenCode's five dark agent solids: planner `#f799c6`, architect `#9e99f7`,
-  coder `#c3d4fd`, reviewer `#b8e9c1`, custom `#f7e5b5`.
+- Five role colors are OpenCode's own dark agent solids: planner `#f799c6`, architect
+  `#9e99f7`, coder `#c3d4fd`, reviewer `#b8e9c1`, custom `#f7e5b5`. `synthesizer` `#8fd4e8`
+  is OpenFlow's own, because opencode has no agent that reads a swarm and decides; cyan is
+  the one hue the five leave free. Add a color here only for a role opencode genuinely has
+  no counterpart for, and say so where it sits.
 
 ## CSS and interaction traps
 

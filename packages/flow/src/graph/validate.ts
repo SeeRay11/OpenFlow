@@ -1,4 +1,5 @@
 import { agentKey } from "../server/store"
+import { swarmShape } from "./swarm"
 import { modeOf, type Pipeline } from "./types"
 
 export type Validation = { ok: true; layers: string[][] } | { ok: false; error: string }
@@ -90,8 +91,9 @@ export function preflight(
         "OpenFlow cannot reach `opencode serve`, so no model can run and no provider can be read — start the engine with `bun openflow.ts`, then try again",
     })
 
-  const shape = shapeProblem(pipeline)
-  if (shape) blocking.push(shape)
+  const shape = shapeProblems(pipeline)
+  blocking.push(...shape.blocking)
+  warnings.push(...shape.warnings)
 
   for (const node of pipeline.nodes) {
     const model = node.agent.model
@@ -160,26 +162,73 @@ export function preflight(
 }
 
 /**
- * The one structural rule of the mode this canvas is in, or nothing.
+ * The structural rules of the mode this canvas is in.
  *
  * Each mode wants a different graph — a DAG, a mesh, a tree — so this is the
- * only part of preflight that differs between them; every per-node check below
- * it is shared. Modes without a scheduler refuse here rather than falling
- * through, because the alternative is a graph the user built as a swarm quietly
- * running as a pipeline.
+ * only part of preflight that differs between them; every per-node check
+ * around it is shared. Modes without a scheduler refuse here rather than
+ * falling through, because the alternative is a graph the user built as a swarm
+ * quietly running as a pipeline.
  */
-function shapeProblem(pipeline: Pipeline): Problem | undefined {
+function shapeProblems(pipeline: Pipeline): Preflight {
   const mode = modeOf(pipeline)
+  if (mode === "swarm") return swarmProblems(pipeline)
   if (mode !== "pipeline")
     return {
-      kind: "mode-unimplemented",
-      message: `${mode} mode is not runnable in this build yet — switch the canvas back to pipeline to run it`,
+      blocking: [
+        {
+          kind: "mode-unimplemented",
+          message: `${mode} mode is not runnable in this build yet — switch the canvas back to pipeline to run it`,
+        },
+      ],
+      warnings: [],
     }
   // One structural problem is enough to stop the run, and `layer` already
   // reports the first it finds (no nodes, a cycle, an unknown or self edge).
   const structure = layer(pipeline)
-  if (!structure.ok) return { kind: "structure", message: structure.error }
-  return undefined
+  return { blocking: structure.ok ? [] : [{ kind: "structure", message: structure.error }], warnings: [] }
+}
+
+/**
+ * A swarm is a node list, not a wiring: enough agents to disagree, and exactly
+ * one card to decide.
+ *
+ * Both counts are blocking rather than defaulted. Auto-adding a synthesizer at
+ * run time would put a card on the canvas the user never placed and bill them
+ * for it; picking one of the agents to decide would silently privilege whichever
+ * one happened to be first.
+ */
+function swarmProblems(pipeline: Pipeline): Preflight {
+  const shape = swarmShape(pipeline)
+  const blocking: Problem[] = []
+  const warnings: Problem[] = []
+
+  if (shape.agents.length < 2)
+    blocking.push({
+      kind: "swarm-too-small",
+      message: `A swarm needs at least two agent cards to debate — this canvas has ${shape.agents.length}`,
+    })
+  if (!shape.synthesizers.length)
+    blocking.push({
+      kind: "no-synthesizer",
+      message: "A swarm has no synthesizer card, so nothing would write the verdict — drop one on the canvas",
+    })
+  for (const extra of shape.synthesizers.slice(1))
+    blocking.push({
+      nodeId: extra.id,
+      kind: "duplicate-synthesizer",
+      message: `Only one card can write a swarm's verdict, and this canvas has ${shape.synthesizers.length} synthesizers — delete the extras or change their role`,
+    })
+
+  // Switching a pipeline to swarm keeps its wiring, which now does nothing.
+  // Silence would read as "the graph still works the way it looks".
+  if (pipeline.edges.length)
+    warnings.push({
+      kind: "ignored-edges",
+      message: `Swarm mode ignores the ${pipeline.edges.length} connection(s) drawn here — every agent is a peer of every other automatically`,
+    })
+
+  return { blocking, warnings }
 }
 
 /** True when adding source->target would close a cycle. */

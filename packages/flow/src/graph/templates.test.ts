@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
+import { swarmShape } from "./swarm"
 import { TEMPLATES } from "./templates"
-import { layer } from "./validate"
+import { modeOf } from "./types"
+import { layer, preflight } from "./validate"
 
 describe("templates", () => {
   for (const template of TEMPLATES) {
@@ -33,5 +35,27 @@ describe("templates", () => {
   test("ids are unique across the catalog", () => {
     const ids = TEMPLATES.map((template) => template.id)
     expect(new Set(ids).size).toBe(ids.length)
+  })
+})
+
+describe("the swarm template", () => {
+  const built = () => TEMPLATES.find((template) => template.id === "swarm-debate")!.build()
+
+  test("is a swarm with exactly one synthesizer and peers to debate", () => {
+    const graph = built()
+    expect(modeOf(graph)).toBe("swarm")
+    const shape = swarmShape(graph)
+    expect(shape.agents).toHaveLength(3)
+    expect(shape.synthesizers).toHaveLength(1)
+  })
+
+  test("draws no edges — wiring one would only earn the ignored-edges warning", () => {
+    expect(built().edges).toEqual([])
+  })
+
+  test("passes its own mode's shape rules on drop", () => {
+    const graph = built()
+    for (const node of graph.nodes) node.agent.model = "opencode/x"
+    expect(preflight(graph, { unlockedModels: new Set(["opencode/x"]) }).blocking).toEqual([])
   })
 })

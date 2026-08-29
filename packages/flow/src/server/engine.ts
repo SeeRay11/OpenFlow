@@ -1,4 +1,5 @@
-import { buildPrompt } from "../graph/prompt"
+import { buildPrompt, swarmPrompt, synthesisPrompt } from "../graph/prompt"
+import { swarmShape } from "../graph/swarm"
 import type {
   Attachment,
   FlowNode,
@@ -10,7 +11,7 @@ import type {
   Spend,
   StepUsage,
 } from "../graph/types"
-import { modeOf } from "../graph/types"
+import { modeOf, roundsOf } from "../graph/types"
 import { ancestors, layer, upstream } from "../graph/validate"
 import { applyEvent, createActivity, persistable } from "./activity"
 import * as api from "./client"
@@ -230,13 +231,19 @@ export function start(
   // is callable without it, and running a swarm's graph through the pipeline
   // scheduler would spend real money producing an answer nobody designed.
   const mode = modeOf(pipeline)
-  if (mode !== "pipeline") throw new Error(`${mode} mode is not runnable in this build yet`)
-  const validation = layer(pipeline)
+  if (mode === "orchestration") throw new Error(`${mode} mode is not runnable in this build yet`)
+  const swarm = mode === "swarm" ? swarmShape(pipeline) : undefined
+  if (swarm && !swarm.synthesizers.length) throw new Error("a swarm has no synthesizer card to write its verdict")
+  // Swarm reads no edges at all, so a leftover cycle from a graph that used to
+  // be a pipeline is not a reason to refuse it.
+  const validation = swarm ? { ok: true as const, layers: [] as string[][] } : layer(pipeline)
   if (!validation.ok) throw new Error(validation.error)
   const order = new Map(validation.layers.flatMap((ids, index) => ids.map((id) => [id, index] as const)))
 
   const controller = new AbortController()
   const sessions = new Map<string, string>() // sessionID -> nodeID
+  /** nodeID -> the session it opened, so a later turn can prompt into it again. */
+  const nodeSession = new Map<string, string>()
   const active = new Set<string>() // sessionIDs still running
   const answered = new Set<string>() // permission requests already replied to
   const asked = new Set<string>() // question requests already handled
@@ -527,42 +534,43 @@ export function start(
     patch(nodeID, { activity: answers ? "answered" : "question unanswered" })
   }
 
-  async function runNode(node: FlowNode) {
-    const seeded = resume[node.id]
-    if (seeded !== undefined) {
-      // Already paid for. Checked before the upstream-failure guard because a
-      // reused output does not depend on anything this run does.
-      outputs.set(node.id, seeded)
-      const at = Date.now()
-      activity.note(node.id, `reused:${node.id}`, "reused from a previous run", undefined, "done")
-      patch(node.id, { status: "done", output: seeded, activity: undefined, started: at, finished: at, reused: true })
-      return
-    }
-
-    const sources = upstream(pipeline, node.id)
-    if (sources.some((source) => failed.has(source))) {
-      failed.add(node.id)
-      patch(node.id, { status: "skipped", activity: undefined, error: "upstream failed" })
-      return
-    }
-
-    patch(node.id, { status: "running", started: Date.now(), activity: "starting session" })
-    let sessionID: string | undefined
+  /**
+   * One turn of one card: open or reuse its session, prompt it, wait it out,
+   * drain the transcript into `outputs`.
+   *
+   * `build` is handed the attachments this card's model cannot read and returns
+   * the prompt; what goes in it is the mode's business, not this function's.
+   * `reuse` keeps the session the card opened on an earlier turn — a swarm agent
+   * revising in round 3 is the same session it answered round 1 in, so it
+   * remembers its own reasoning and the provider can cache the prefix.
+   *
+   * Files ride the first turn only. A reused session already holds them, and
+   * re-sending a 4MB screenshot once per round is the same picture at four times
+   * the price.
+   */
+  async function runTurn(node: FlowNode, build: (skipped: Attachment[]) => string, reuse = false) {
+    const opened = reuse ? nodeSession.get(node.id) : undefined
+    patch(node.id, {
+      status: "running",
+      ...(opened ? {} : { started: Date.now() }),
+      activity: opened ? "continuing session" : "starting session",
+    })
+    let sessionID = opened
     try {
-      const session = await api.createSession({ agent: node.agent.name, model: node.agent.model })
-      sessionID = session.id
-      sessions.set(session.id, node.id)
-      active.add(session.id)
-      patch(node.id, { sessionID: session.id, activity: "queued" })
+      if (!sessionID) {
+        const session = await api.createSession({ agent: node.agent.name, model: node.agent.model })
+        sessionID = session.id
+        nodeSession.set(node.id, session.id)
+        sessions.set(session.id, node.id)
+        patch(node.id, { sessionID: session.id })
+      }
+      active.add(sessionID)
+      patch(node.id, { activity: "queued" })
 
-      const context =
-        pipe === "direct"
-          ? sources
-          : [...ancestors(pipeline, node.id)].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0))
       // Run-level files first, then the node's own pins. A file the node's
       // model has no modality for is withheld and named in the text instead,
       // so one blind model in the middle of a chain does not stop the run.
-      const files = [...runFiles, ...(node.agent.attachments ?? [])]
+      const files = opened ? [] : [...runFiles, ...(node.agent.attachments ?? [])]
       const model = node.agent.model ? catalog.get(node.agent.model) : undefined
       const sendable = files.filter((file) => !model || api.accepts(model, file.mime))
       const skipped = files.filter((file) => !sendable.includes(file))
@@ -573,16 +581,16 @@ export function start(
         }
       }
 
-      const text = buildPrompt(pipeline, node, context, outputs, input, skipped)
+      const text = build(skipped)
       patch(node.id, { prompt: text })
 
-      await api.prompt(session.id, text, sendable)
+      await api.prompt(sessionID, text, sendable)
       if (controller.signal.aborted) throw new StopError()
-      await api.waitForIdle(session.id, { signal: controller.signal, timeout: nodeTimeout })
-      active.delete(session.id)
+      await api.waitForIdle(sessionID, { signal: controller.signal, timeout: nodeTimeout })
+      active.delete(sessionID)
       if (controller.signal.aborted) throw new StopError()
 
-      const result = await api.transcript(session.id)
+      const result = await api.transcript(sessionID)
       if (result.error) throw new Error(result.error)
       outputs.set(node.id, result.text)
       patch(node.id, { status: "done", output: result.text, activity: undefined, finished: Date.now() })
@@ -605,6 +613,46 @@ export function start(
       // the bill is read back in every case rather than only on success.
       if (sessionID) await reconcile(node.id, sessionID)
     }
+  }
+
+  /** A card's one turn in `pipeline` mode, after its layer's predecessors settled. */
+  async function runNode(node: FlowNode) {
+    const seeded = resume[node.id]
+    if (seeded !== undefined) {
+      // Already paid for. Checked before the upstream-failure guard because a
+      // reused output does not depend on anything this run does.
+      outputs.set(node.id, seeded)
+      const at = Date.now()
+      activity.note(node.id, `reused:${node.id}`, "reused from a previous run", undefined, "done")
+      patch(node.id, { status: "done", output: seeded, activity: undefined, started: at, finished: at, reused: true })
+      return
+    }
+
+    const sources = upstream(pipeline, node.id)
+    if (sources.some((source) => failed.has(source))) {
+      failed.add(node.id)
+      patch(node.id, { status: "skipped", activity: undefined, error: "upstream failed" })
+      return
+    }
+
+    const context =
+      pipe === "direct"
+        ? sources
+        : [...ancestors(pipeline, node.id)].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0))
+    await runTurn(node, (skipped) => buildPrompt(pipeline, node, context, outputs, input, skipped))
+  }
+
+  /**
+   * One agent's turn in round `round`, and one round's worth of bookkeeping.
+   *
+   * An agent that failed an earlier round is left out rather than retried: its
+   * session is gone, and re-opening one mid-swarm would answer round 3 with no
+   * memory of rounds 1 and 2 while every peer around it has both.
+   */
+  async function runPeer(node: FlowNode, round: number, peers: Map<string, string>) {
+    if (failed.has(node.id)) return
+    activity.note(node.id, `round:${node.id}:${round}`, `round ${round} of ${roundsOf(pipeline)}`, undefined, "done")
+    await runTurn(node, (skipped) => swarmPrompt(pipeline, node, round, peers, input, skipped), round > 1)
   }
 
   const done = (async () => {
@@ -667,7 +715,33 @@ ${serve.command}`
         return log
       }
 
-      await runPipeline(validation.layers, limit, controller.signal, (id) => runNode(nodes.get(id)!))
+      /** What every peer said in the round before the one now running. */
+      let said = new Map<string, string>()
+      if (swarm)
+        await runSwarm(roundsOf(pipeline), limit, controller.signal, {
+          // The round about to run overwrites every peer's output, so what they
+          // said last round is frozen on the boundary. Without this an agent
+          // early in the pool would read round 2 answers while one late in the
+          // same pool still reads round 1 — the debate would depend on
+          // scheduling order.
+          round: (round) => {
+            said = new Map(outputs)
+            activity.note(
+              swarm.synthesizers[0].id,
+              `swarm:round:${round}`,
+              `round ${round} of ${roundsOf(pipeline)} — ${swarm.agents.filter((node) => !failed.has(node.id)).length} agent(s) still in`,
+              undefined,
+              "done",
+            )
+          },
+          peers: swarm.agents.map((node) => node.id),
+          peer: (id, round) => runPeer(nodes.get(id)!, round, said),
+          synthesise: () =>
+            runTurn(swarm.synthesizers[0], (skipped) =>
+              synthesisPrompt(pipeline, swarm.synthesizers[0], outputs, input, skipped),
+            ),
+        })
+      else await runPipeline(validation.layers, limit, controller.signal, (id) => runNode(nodes.get(id)!))
       log.status = controller.signal.aborted
         ? "stopped"
         : log.nodes.some((node) => node.status === "error")
@@ -723,6 +797,39 @@ async function runPipeline(
     if (signal.aborted) return
     await pool(ids, limit, signal, run)
   }
+}
+
+/**
+ * The `swarm` mode scheduler: every peer at once, N times, then the synthesizer.
+ *
+ * A round is a barrier for the same reason a pipeline layer is — a peer can read
+ * the round before it only because that round has already settled — and it is
+ * the only ordering this mode has. Peers inside a round are unordered by design:
+ * they are answering the same question at the same time, which is the whole
+ * point of a swarm.
+ *
+ * The synthesizer runs once, after the last round, and outside the pool: there
+ * is one of it and nothing left to run beside it.
+ */
+async function runSwarm(
+  rounds: number,
+  limit: number,
+  signal: AbortSignal,
+  step: {
+    peers: string[]
+    /** Called on each round boundary, before any peer in it is dispatched. */
+    round: (round: number) => void
+    peer: (id: string, round: number) => Promise<void>
+    synthesise: () => Promise<void>
+  },
+) {
+  for (let round = 1; round <= rounds; round++) {
+    if (signal.aborted) return
+    step.round(round)
+    await pool(step.peers, limit, signal, (id) => step.peer(id, round))
+  }
+  if (signal.aborted) return
+  await step.synthesise()
 }
 
 /**

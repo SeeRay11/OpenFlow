@@ -68,6 +68,8 @@ function harness(options: HarnessOptions = {}) {
   const gates = new Map<string, ReturnType<typeof deferred>>()
   const dispatched: string[] = []
   const prompts = new Map<string, string>()
+  /** Every prompt in dispatch order — a card is prompted more than once in swarm mode. */
+  const promptLog: { node: string; text: string }[] = []
   const interrupted: string[] = []
   const replies: { sessionID: string; requestID: string; reply: PermissionReply }[] = []
   const sent = new Map<string, Attachment[]>()
@@ -100,6 +102,7 @@ function harness(options: HarnessOptions = {}) {
       const node = nodeOf.get(sessionID)!
       dispatched.push(node)
       prompts.set(node, text)
+      promptLog.push({ node, text })
       sent.set(node, files)
       inflight++
       peak = Math.max(peak, inflight)
@@ -207,6 +210,7 @@ function harness(options: HarnessOptions = {}) {
     hooks,
     dispatched,
     prompts,
+    promptLog,
     interrupted,
     replies,
     waits,
@@ -1244,5 +1248,124 @@ describe("reused nodes are legible in the run log", () => {
     expect(carried.output).toBe("an answer from last time")
     // The node this run actually executed must not be mistaken for a reused one.
     expect(log.nodes.find((node) => node.id === "b")!.reused).toBeUndefined()
+  })
+})
+
+describe("swarm mode", () => {
+  /** A swarm of `agents` peers plus the synthesizer card that decides. */
+  function swarm(agents: string[], rounds?: number): Pipeline {
+    const graph = pipeline(...agents, "verdict")
+    graph.nodes[graph.nodes.length - 1].role = "synthesizer"
+    return { ...graph, mode: "swarm", ...(rounds === undefined ? {} : { rounds }) }
+  }
+
+  test("every peer runs every round, then the synthesizer runs once", async () => {
+    const h = harness()
+    await h.run(swarm(["a", "b", "c"], 2)).done
+
+    expect(h.dispatched).toEqual(["a", "b", "c", "a", "b", "c", "verdict"])
+  })
+
+  test("a peer keeps one session across rounds, so it remembers its own reasoning", async () => {
+    const h = harness()
+    await h.run(swarm(["a", "b"], 3)).done
+
+    // Four cards' worth of turns (2 peers x 3 rounds + 1 verdict) over three
+    // sessions: reuse is the difference between remembering round 1 and not.
+    expect(h.promptLog).toHaveLength(7)
+    expect(new Set(h.sessionOf.values()).size).toBe(3)
+  })
+
+  test("round 1 carries the briefing and the task; round 2 carries the peers", async () => {
+    const h = harness({ behavior: { a: { output: "A says so" }, b: { output: "B disagrees" } } })
+    await h.run(swarm(["a", "b"], 2), "settle this").done
+
+    const first = h.promptLog.find((turn) => turn.node === "a")!.text
+    expect(first).toContain("You are one agent in an OpenFlow swarm")
+    expect(first).toContain("settle this")
+    // Round 1 is answered alone — quoting a peer there would be a lie about
+    // what the agent had in front of it.
+    expect(first).not.toContain("B disagrees")
+
+    const second = h.promptLog.filter((turn) => turn.node === "a")[1].text
+    expect(second).toContain("Round 2 of 2")
+    expect(second).toContain("B disagrees")
+    expect(second).not.toContain("A says so")
+  })
+
+  test("a round reads the round before it, not whatever a peer has already overwritten", async () => {
+    const h = harness({ behavior: { a: { output: "A" }, b: { output: "B" }, c: { output: "C" } } })
+    await h.run(swarm(["a", "b", "c"], 3)).done
+
+    // Every peer in round 3 sees both other peers. If the snapshot were taken
+    // per-card instead of on the boundary, a card late in the pool would be
+    // reading answers from the round it is itself in.
+    for (const node of ["a", "b", "c"]) {
+      const third = h.promptLog.filter((turn) => turn.node === node)[2].text
+      expect(third).toContain("Round 3 of 3")
+      for (const peer of ["a", "b", "c"].filter((id) => id !== node)) expect(third).toContain(`(${peer})`)
+    }
+  })
+
+  test("the synthesizer is handed every peer's final position and nothing of its own", async () => {
+    const h = harness({ behavior: { a: { output: "A final" }, b: { output: "B final" } } })
+    await h.run(swarm(["a", "b"], 2), "settle this").done
+
+    const verdict = h.prompts.get("verdict")!
+    expect(verdict).toContain("You are the synthesizer of an OpenFlow swarm")
+    expect(verdict).toContain("settle this")
+    expect(verdict).toContain("A final")
+    expect(verdict).toContain("B final")
+  })
+
+  test("a failed peer drops out of later rounds and is named to the synthesizer", async () => {
+    const h = harness({ behavior: { b: { error: "provider said no" } } })
+    const log = await h.run(swarm(["a", "b"], 3)).done
+
+    // b fails in round 1 and is never prompted again — reopening a session for
+    // it in round 2 would answer with no memory of the round every peer has.
+    expect(h.promptLog.filter((turn) => turn.node === "b")).toHaveLength(1)
+    expect(h.promptLog.filter((turn) => turn.node === "a")).toHaveLength(3)
+    expect(h.prompts.get("verdict")).toContain("Agents that produced nothing")
+    expect(log.nodes.find((node) => node.id === "b")!.status).toBe("error")
+    expect(log.nodes.find((node) => node.id === "verdict")!.status).toBe("done")
+  })
+
+  test("a one-round swarm answers once and goes straight to the verdict", async () => {
+    const h = harness()
+    await h.run(swarm(["a", "b"], 1)).done
+
+    expect(h.dispatched).toEqual(["a", "b", "verdict"])
+    // The briefing still names round 1; what must not exist is a second turn.
+    expect(h.prompts.get("a")).toContain("There are no further rounds")
+    expect(h.promptLog.filter((turn) => turn.node === "a")).toHaveLength(1)
+  })
+
+  test("peers in a round run concurrently — they are answering the same question at once", async () => {
+    const h = harness({ behavior: { a: { hold: true }, b: { hold: true } } })
+    const run = h.run(swarm(["a", "b"], 1))
+    await flush()
+
+    expect(h.peak()).toBe(2)
+    h.release("a")
+    h.release("b")
+    await run.done
+  })
+
+  test("a swarm with no synthesizer refuses before anything is dispatched", () => {
+    const h = harness()
+    const graph = { ...pipeline("a", "b"), mode: "swarm" as const }
+    expect(() => h.run(graph)).toThrow("synthesizer")
+    expect(h.dispatched).toEqual([])
+  })
+
+  test("a cycle left over from a pipeline does not stop a swarm — swarm reads no edges", async () => {
+    const h = harness()
+    const graph = pipeline("a->b", "b->a")
+    graph.nodes.push({ id: "verdict", role: "synthesizer", agent: { prompt: "" }, position: { x: 0, y: 0 } })
+    const log = await h.run({ ...graph, mode: "swarm", rounds: 1 }).done
+
+    expect(log.status).toBe("done")
+    expect(h.dispatched).toEqual(["a", "b", "verdict"])
   })
 })

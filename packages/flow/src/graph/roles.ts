@@ -9,9 +9,10 @@ export type Role = {
   agent: FlowAgent
 }
 
-// the five colours below are opencode's own agent colours (plan, writer, build,
-// review, explore) at their dark values, so a role reads the same here as it
-// does in the app — do not "fix" them back to a generic palette.
+// planner, architect, coder, reviewer and custom carry opencode's own agent
+// colours (plan, writer, build, review, explore) at their dark values, so a role
+// reads the same here as it does in the app — do not "fix" them back to a
+// generic palette. `synthesizer` is OpenFlow's own and says so where it sits.
 export const ROLES: Role[] = [
   {
     id: "planner",
@@ -53,6 +54,22 @@ export const ROLES: Role[] = [
       prompt:
         "You are the reviewer. Audit the upstream output for correctness bugs and missed requirements. " +
         "One line per finding, most severe first. No praise.",
+      tools: { read: true, grep: true, glob: true, edit: false, bash: false },
+    },
+  },
+  // OpenFlow's own, because opencode has no agent that does this job: the card
+  // that reads a whole swarm and decides. Cyan is the one hue the five above
+  // leave free.
+  {
+    id: "synthesizer",
+    label: "synthesizer",
+    color: "#8fd4e8",
+    agent: {
+      prompt:
+        "You are the synthesizer. You took no part in the debate. Weigh the agents' final " +
+        "positions against each other; do not average them. Where they conflict, decide on the " +
+        "evidence they gave and say which way you went and why. Where they agree, say it once. " +
+        "Name anything all of them missed. End with the answer itself.",
       tools: { read: true, grep: true, glob: true, edit: false, bash: false },
     },
   },

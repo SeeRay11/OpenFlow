@@ -1,6 +1,6 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
 import { Canvas } from "./canvas/canvas"
-import { modeOf, type FlowMode, type Pipeline, type RunLog } from "./graph/types"
+import { MAX_ROUNDS, modeOf, roundsOf, type FlowMode, type Pipeline, type RunLog } from "./graph/types"
 import { layer, preflight, type Preflight } from "./graph/validate"
 import { isPipeline } from "./graph/pipeline-io"
 import * as api from "./server/client"
@@ -77,6 +77,11 @@ const MODE_OPTIONS: SelectOption[] = [
   { value: "swarm", label: "swarm", hint: "peers debate, a synthesizer decides" },
   { value: "orchestration", label: "orchestration", hint: "an orchestrator assigns subagents" },
 ]
+const ROUND_OPTIONS: SelectOption[] = Array.from({ length: MAX_ROUNDS }, (_, index) => ({
+  value: String(index + 1),
+  label: String(index + 1),
+  hint: index === 0 ? "no debate — one answer each" : undefined,
+}))
 const PIPE_OPTIONS: SelectOption[] = [
   { value: "ancestors", label: "ancestors", hint: "every upstream node" },
   { value: "direct", label: "direct", hint: "immediate parents only" },
@@ -939,15 +944,33 @@ export function App() {
             options={MODE_OPTIONS}
             onChange={(value) => actions.setMode(value as FlowMode)}
           />
-          <Select
-            variant="ghost"
-            prefix="pipe: "
-            width={320}
-            title="how much upstream output each node receives"
-            value={pipe()}
-            options={PIPE_OPTIONS}
-            onChange={(value) => setPipe(value as PipeMode)}
-          />
+          {/* Each mode reads exactly one of these. `pipe` means nothing to a
+              swarm, whose peers all see each other by definition, and rounds
+              mean nothing to a pipeline — showing both would offer a setting
+              that silently does not apply. */}
+          <Show
+            when={modeOf(state.pipeline) === "swarm"}
+            fallback={
+              <Select
+                variant="ghost"
+                prefix="pipe: "
+                width={320}
+                title="how much upstream output each node receives"
+                value={pipe()}
+                options={PIPE_OPTIONS}
+                onChange={(value) => setPipe(value as PipeMode)}
+              />
+            }
+          >
+            <Select
+              variant="ghost"
+              prefix="rounds: "
+              title="how many times every agent reads its peers and revises — a swarm costs agents x rounds + 1 sessions"
+              value={String(roundsOf(state.pipeline))}
+              options={ROUND_OPTIONS}
+              onChange={(value) => actions.setRounds(Number(value))}
+            />
+          </Show>
           <Select
             variant="ghost"
             prefix="permissions: "

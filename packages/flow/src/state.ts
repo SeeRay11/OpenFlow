@@ -237,6 +237,12 @@ export const actions = {
     setState("pipeline", "mode", mode)
   },
 
+  /** How many rounds a swarm debates for. Clamped where it is read, not here. */
+  setRounds(rounds: number) {
+    setState("dirty", true)
+    setState("pipeline", "rounds", rounds)
+  },
+
   /**
    * Restores the last snapshot. Selection and the drawer are dropped rather
    * than guessed: whatever they pointed at may be the node coming back.

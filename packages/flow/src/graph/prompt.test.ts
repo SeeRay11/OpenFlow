@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { buildPrompt, pipelineBriefing } from "./prompt"
+import { buildPrompt, pipelineBriefing, swarmBriefing, swarmPrompt, synthesisPrompt } from "./prompt"
 import { nodeMap, pipeline } from "./test-support"
-import type { FlowNode } from "./types"
+import type { FlowNode, Pipeline } from "./types"
 
 const graph = pipeline("planner->coder", "architect->coder")
 const nodes = nodeMap(graph)
@@ -162,5 +162,104 @@ describe("pipelineBriefing", () => {
     expect(text).not.toContain("layer(s)")
     expect(text).toContain("- layer 1 · a (a)")
     expect(text).toContain("- layer 1 · b (b)")
+  })
+})
+
+describe("swarm prompts", () => {
+  /** Three peers and the card that decides, with the roles the run reads. */
+  function swarm(rounds = 3): Pipeline {
+    const graph = pipeline("alpha", "beta", "verdict")
+    graph.nodes[2].role = "synthesizer"
+    for (const entry of graph.nodes) entry.agent.model = "opencode/x"
+    return { ...graph, mode: "swarm", rounds }
+  }
+
+  const at = (graph: Pipeline, id: string) => graph.nodes.find((entry) => entry.id === id)!
+
+  test("the briefing names every peer, the round count and who decides", () => {
+    const graph = swarm()
+    const text = swarmBriefing(graph, at(graph, "alpha"))
+
+    expect(text).toContain("2 agent(s), 3 round(s)")
+    expect(text).toContain("- alpha (alpha) · opencode/x  <-- YOU ARE HERE")
+    expect(text).toContain("- beta (beta) · opencode/x")
+    expect(text).toContain("verdict: synthesizer (verdict)")
+    // The point of the mode: a swarm that agrees because nobody argued has
+    // burned every session in it for one opinion.
+    expect(text).toContain("Disagree explicitly")
+  })
+
+  test("a one-round swarm says so rather than promising a debate that never comes", () => {
+    const graph = swarm(1)
+    expect(swarmBriefing(graph, at(graph, "alpha"))).toContain("There are no further rounds")
+  })
+
+  test("round 1 is the whole setup; later rounds are only what changed", () => {
+    const graph = swarm()
+    const first = swarmPrompt(graph, at(graph, "alpha"), 1, new Map(), "settle this")
+    expect(first).toContain("OpenFlow swarm")
+    expect(first).toContain("settle this")
+
+    // The agent is re-prompted into the same session, so the briefing and the
+    // task are already in it — paying for them again would be paying R times.
+    const second = swarmPrompt(
+      graph,
+      at(graph, "alpha"),
+      2,
+      new Map([
+        ["alpha", "what alpha said"],
+        ["beta", "what beta said"],
+      ]),
+      "settle this",
+    )
+    expect(second).not.toContain("OpenFlow swarm")
+    expect(second).toContain("Round 2 of 3")
+    expect(second).toContain("## beta (beta)")
+    expect(second).toContain("what beta said")
+    expect(second).not.toContain("what alpha said")
+  })
+
+  test("the last round says it is the last, because nothing left out gets another chance", () => {
+    const graph = swarm(2)
+    const last = swarmPrompt(graph, at(graph, "alpha"), 2, new Map([["beta", "b"]]), "t")
+    expect(last).toContain("This is the final round")
+  })
+
+  test("a round with every peer gone tells the agent to carry on alone", () => {
+    const graph = swarm()
+    const text = swarmPrompt(graph, at(graph, "alpha"), 2, new Map([["alpha", "only me"]]), "t")
+    expect(text).toContain("No other agent produced an answer")
+    expect(text).not.toContain("only me")
+  })
+
+  test("the synthesizer gets every position and is told not to average them", () => {
+    const graph = swarm()
+    const text = synthesisPrompt(
+      graph,
+      at(graph, "verdict"),
+      new Map([
+        ["alpha", "alpha's case"],
+        ["beta", "beta's case"],
+      ]),
+      "settle this",
+    )
+    expect(text).toContain("You are the synthesizer")
+    expect(text).toContain("settle this")
+    expect(text).toContain("## alpha (alpha)")
+    expect(text).toContain("beta's case")
+    expect(text).toContain("do not average them")
+  })
+
+  test("a peer that produced nothing is named, so the verdict is not written over the hole", () => {
+    const graph = swarm()
+    const text = synthesisPrompt(graph, at(graph, "verdict"), new Map([["alpha", "alpha's case"]]), "t")
+    expect(text).toContain("Agents that produced nothing")
+    expect(text).toContain("- beta (beta)")
+  })
+
+  test("a swarm where everyone failed is told to say so rather than answer the task itself", () => {
+    const graph = swarm()
+    const text = synthesisPrompt(graph, at(graph, "verdict"), new Map(), "t")
+    expect(text).toContain("Every agent in the swarm failed")
   })
 })
