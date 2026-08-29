@@ -69,10 +69,19 @@ export function install(config: any, packageRoot: string, runtime: string) {
   }
 }
 
-/** Removes the server, for a user who wants their config back. */
+/**
+ * Removes the server, for a user who wants their config back.
+ *
+ * "Back" means exactly the shape it had: an `mcp` key left behind holding `{}`
+ * is inert, but it is a key this tool put there, and someone reading the file
+ * later would reasonably wonder what used to be in it.
+ */
 export function uninstall(config: any) {
   if (!config?.mcp?.[SERVER_NAME]) return { changed: false, value: config }
   const mcp = { ...config.mcp }
   delete mcp[SERVER_NAME]
-  return { changed: true, value: { ...config, mcp } }
+  if (Object.keys(mcp).length) return { changed: true, value: { ...config, mcp } }
+  const next = { ...config }
+  delete next.mcp
+  return { changed: true, value: next }
 }

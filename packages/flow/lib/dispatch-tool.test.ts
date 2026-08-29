@@ -80,6 +80,17 @@ describe("uninstall", () => {
     expect(uninstall({ mcp: {} }).changed).toBe(false)
     expect(uninstall({}).changed).toBe(false)
   })
+
+  test("takes the mcp key with it when ours was the only server", () => {
+    // The config should come back exactly as it was. An empty `mcp: {}` is
+    // inert, but it is a key this tool put there.
+    const before = { $schema: "x", provider: { p: {} } }
+    const after = uninstall(install(before, ROOT, BUN).value)
+
+    expect(after.changed).toBe(true)
+    expect(after.value).toEqual(before)
+    expect("mcp" in after.value).toBe(false)
+  })
 })
 
 describe("the runtime path", () => {
