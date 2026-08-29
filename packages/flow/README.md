@@ -321,10 +321,27 @@ awaited before the next starts.
 
 1. Validate — DAG, reachable nodes, models resolvable against `GET /api/model`.
 2. Layer with Kahn's algorithm.
-3. Dispatch each layer through a pool; prompt = role instructions + run task +
-   serialized upstream output.
+3. Dispatch each layer through a pool; prompt = pipeline briefing + role
+   instructions + run task + serialized upstream output.
 4. Live status from the event bus maps `session.next.*` events onto node badges.
 5. Capture each node's final assistant text; write `.openflow/runs/<id>.json`.
+
+### The pipeline briefing
+
+A card is an ordinary `opencode` session and knows nothing about the graph it
+sits in, so `pipelineBriefing()` in `src/graph/prompt.ts` prepends a map to every
+prompt: what OpenFlow is, every card in the pipeline with its execution layer and
+its wiring (`role (id) · receives: … · feeds: …`), which one the card is, and who
+reads its output next. Cards are named by the same `role (id)` label the
+`# Upstream output` headers use, so one card can refer to another by name and be
+understood — a planner told to "hand this to the architect" otherwise has never
+heard of an architect.
+
+The handoff rules ride along with the map: do your role's part and stop, do not
+redo upstream work, state assumptions rather than asking (nothing is
+interactive), and write for the next card rather than for a human — unless
+nothing runs after you, in which case the output is the run's answer. That is
+what keeps a planner from implementing the change a downstream coder owns.
 
 The run log is checkpointed as the run progresses rather than written once at the
 end, so closing the tab halfway through leaves a log of the nodes that finished

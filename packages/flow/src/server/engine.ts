@@ -567,7 +567,7 @@ export function start(
         }
       }
 
-      const text = buildPrompt(node, context, nodes, outputs, input, skipped)
+      const text = buildPrompt(pipeline, node, context, outputs, input, skipped)
       patch(node.id, { prompt: text })
 
       await api.prompt(session.id, text, sendable)
