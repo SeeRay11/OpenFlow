@@ -25,6 +25,17 @@ file layout, and API-key/model behavior are documented there rather than re-deri
 - **One card = one full `opencode serve` primary session.** `src/server/engine.ts` per
   node: `createSession({agent, model})` → `prompt` → `waitForIdle` → `transcript`. Nodes
   run in topological layers via a parallel pool.
+- **A canvas has a mode, and modes do not nest.** `Pipeline.mode` is `pipeline` (absent, and
+  what every canvas saved before modes existed reads as), `swarm`, or `orchestration`. It is
+  a property of the *document*, not of a run — it is persisted, exported, and undoable,
+  because it changes what an existing graph does. Everything about running one session
+  (`runNode`) is shared across modes; only the **scheduler** differs — which nodes run, in
+  what order, and what their prompts carry. A mode with no scheduler refuses in two places
+  that must stay in step: `shapeProblem` in `graph/validate.ts` (the message the user sees)
+  and a throw at the top of `start()` (the engine is callable without preflight, and running
+  a swarm's graph through the pipeline scheduler would spend real money on an answer nobody
+  designed). `modeOf()` normalises anything unrecognised to `pipeline`; `isPipeline()`
+  rejects it outright, because a file asking for rules this build lacks should not import.
 - **OpenFlow has no agent loop of its own.** The harness is identical to the OpenCode CLI
   harness, so a card inherits OpenCode's tools, permission ruleset, and subagents. Subagents
   work but are OpenCode-native and invisible to OpenFlow, which only sees the final

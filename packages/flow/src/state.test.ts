@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 import { setAvailableModels, setDefaultModel } from "./graph/default-model"
+import { modeOf } from "./graph/types"
 import { actions, runtimeOf, state } from "./state"
 
 /**
@@ -219,6 +220,40 @@ describe("dirty", () => {
     graph("coder")
     actions.load({ id: "p1", name: "loaded", nodes: [], edges: [] })
     expect(state.dirty).toBe(false)
+  })
+})
+
+describe("mode", () => {
+  test("a fresh canvas is a pipeline, and stays one until it is switched", () => {
+    expect(modeOf(state.pipeline)).toBe("pipeline")
+    expect(state.pipeline.mode).toBeUndefined()
+
+    actions.setMode("swarm")
+    expect(modeOf(state.pipeline)).toBe("swarm")
+  })
+
+  test("switching is undoable — it changes what an existing graph does", () => {
+    graph("planner", "coder")
+    actions.setMode("orchestration")
+
+    expect(actions.undo()).toBe(true)
+    expect(modeOf(state.pipeline)).toBe("pipeline")
+    expect(state.pipeline.nodes).toHaveLength(2)
+  })
+
+  test("re-picking the mode it is already in costs no undo step", () => {
+    graph("planner")
+    actions.setMode("pipeline")
+
+    // Undo steps back past the node, not past a switch that did nothing.
+    expect(actions.undo()).toBe(true)
+    expect(state.pipeline.nodes).toHaveLength(0)
+  })
+
+  test("switching marks the graph dirty", () => {
+    actions.markSaved()
+    actions.setMode("swarm")
+    expect(state.dirty).toBe(true)
   })
 })
 

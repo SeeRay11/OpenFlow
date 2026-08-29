@@ -1,6 +1,25 @@
 export type NodeStatus = "idle" | "queued" | "running" | "done" | "error" | "skipped" | "stopped"
 
 /**
+ * How a canvas executes.
+ *
+ * A mode belongs to the whole document, not to a region of it: modes do not
+ * nest, so one graph is one mode and every card in it plays by the same rules.
+ *
+ * - `pipeline` — topological layers. A card's final message is pasted into the
+ *   prompt of every card wired downstream of it.
+ * - `swarm` — every agent card is a peer of every other. They answer the same
+ *   task in parallel over a fixed number of rounds, reading each other's last
+ *   round in between, and a synthesizer card writes the verdict.
+ * - `orchestration` — one orchestrator card dispatches tasks to the subagent
+ *   cards below it, reads what they returned, and dispatches again until it
+ *   answers. A subagent with children orchestrates its own subtree.
+ */
+export type FlowMode = "pipeline" | "swarm" | "orchestration"
+
+export const MODES: FlowMode[] = ["pipeline", "swarm", "orchestration"]
+
+/**
  * A file handed to a session alongside the prompt text.
  *
  * `url` is a `data:` URL — the whole file, inline. That is what the server
@@ -52,6 +71,12 @@ export type Pipeline = {
   name: string
   nodes: FlowNode[]
   edges: FlowEdge[]
+  /**
+   * How this canvas runs. Absent means `pipeline` — every canvas saved before
+   * modes existed, which is why this is optional rather than defaulted at
+   * write time.
+   */
+  mode?: FlowMode
 }
 
 export type PermissionDecision = {
@@ -197,4 +222,15 @@ export type RunLog = {
 
 export function emptyPipeline(name = "untitled"): Pipeline {
   return { id: crypto.randomUUID(), name, nodes: [], edges: [] }
+}
+
+/**
+ * The mode a pipeline runs in, normalised.
+ *
+ * Anything unrecognised reads as `pipeline`: a store file hand-edited to a mode
+ * this build has never heard of should open as the safest graph there is, not
+ * fall through a `switch` into whichever scheduler happens to be last.
+ */
+export function modeOf(pipeline: Pipeline): FlowMode {
+  return MODES.includes(pipeline.mode as FlowMode) ? (pipeline.mode as FlowMode) : "pipeline"
 }

@@ -1,5 +1,5 @@
 import { agentKey } from "../server/store"
-import type { Pipeline } from "./types"
+import { modeOf, type Pipeline } from "./types"
 
 export type Validation = { ok: true; layers: string[][] } | { ok: false; error: string }
 
@@ -90,10 +90,8 @@ export function preflight(
         "OpenFlow cannot reach `opencode serve`, so no model can run and no provider can be read — start the engine with `bun openflow.ts`, then try again",
     })
 
-  // One structural problem is enough to stop the run, and `layer` already
-  // reports the first it finds (no nodes, a cycle, an unknown or self edge).
-  const structure = layer(pipeline)
-  if (!structure.ok) blocking.push({ kind: "structure", message: structure.error })
+  const shape = shapeProblem(pipeline)
+  if (shape) blocking.push(shape)
 
   for (const node of pipeline.nodes) {
     const model = node.agent.model
@@ -141,7 +139,9 @@ export function preflight(
     owners.set(key, node.role)
   }
 
-  if (pipeline.nodes.length > 1) {
+  // Only pipeline mode reads edges, so only pipeline mode can have a node the
+  // wiring forgot. A swarm's peers are implicit and carry no edges at all.
+  if (modeOf(pipeline) === "pipeline" && pipeline.nodes.length > 1) {
     const connected = new Set<string>()
     for (const edge of pipeline.edges) {
       connected.add(edge.source)
@@ -157,6 +157,29 @@ export function preflight(
   }
 
   return { blocking, warnings }
+}
+
+/**
+ * The one structural rule of the mode this canvas is in, or nothing.
+ *
+ * Each mode wants a different graph — a DAG, a mesh, a tree — so this is the
+ * only part of preflight that differs between them; every per-node check below
+ * it is shared. Modes without a scheduler refuse here rather than falling
+ * through, because the alternative is a graph the user built as a swarm quietly
+ * running as a pipeline.
+ */
+function shapeProblem(pipeline: Pipeline): Problem | undefined {
+  const mode = modeOf(pipeline)
+  if (mode !== "pipeline")
+    return {
+      kind: "mode-unimplemented",
+      message: `${mode} mode is not runnable in this build yet — switch the canvas back to pipeline to run it`,
+    }
+  // One structural problem is enough to stop the run, and `layer` already
+  // reports the first it finds (no nodes, a cycle, an unknown or self edge).
+  const structure = layer(pipeline)
+  if (!structure.ok) return { kind: "structure", message: structure.error }
+  return undefined
 }
 
 /** True when adding source->target would close a cycle. */

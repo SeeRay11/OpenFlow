@@ -10,6 +10,7 @@ import type {
   Spend,
   StepUsage,
 } from "../graph/types"
+import { modeOf } from "../graph/types"
 import { ancestors, layer, upstream } from "../graph/validate"
 import { applyEvent, createActivity, persistable } from "./activity"
 import * as api from "./client"
@@ -197,13 +198,13 @@ export type QuestionRequest = {
 }
 
 /**
- * Executes a pipeline over `opencode serve`.
+ * Executes a canvas over `opencode serve`.
  *
- * One node = one primary session. Nodes are grouped into topological layers;
- * every node in a layer is dispatched concurrently (`POST /api/session/:id/prompt`
- * only admits the input and schedules the agent loop, so the fan-out is real),
- * then the whole layer is awaited via `POST /api/session/:id/wait` before the
- * next layer starts. Live per-node status comes from the `/api/event` bus.
+ * One node = one primary session, whatever the mode. Everything a session needs
+ * — creating it, prompting it, waiting it out, draining its transcript, pricing
+ * it, streaming its activity — is `runNode` below and is shared. What a mode
+ * changes is only the *scheduler*: which nodes run, in what order, and what text
+ * their prompts carry. `runPipeline` is this build's only scheduler.
  */
 export function start(
   pipeline: Pipeline,
@@ -225,6 +226,11 @@ export function start(
   // Preflight only covers what this run will dispatch: a reused node creates no
   // session, so a model or agent it names having gone missing cannot break it.
   const dispatching = pipeline.nodes.filter((node) => resume[node.id] === undefined)
+  // Preflight says the same thing in words the user can act on, but the engine
+  // is callable without it, and running a swarm's graph through the pipeline
+  // scheduler would spend real money producing an answer nobody designed.
+  const mode = modeOf(pipeline)
+  if (mode !== "pipeline") throw new Error(`${mode} mode is not runnable in this build yet`)
   const validation = layer(pipeline)
   if (!validation.ok) throw new Error(validation.error)
   const order = new Map(validation.layers.flatMap((ids, index) => ids.map((id) => [id, index] as const)))
@@ -661,10 +667,7 @@ ${serve.command}`
         return log
       }
 
-      for (const ids of validation.layers) {
-        if (controller.signal.aborted) break
-        await pool(ids, limit, controller.signal, (id) => runNode(nodes.get(id)!))
-      }
+      await runPipeline(validation.layers, limit, controller.signal, (id) => runNode(nodes.get(id)!))
       log.status = controller.signal.aborted
         ? "stopped"
         : log.nodes.some((node) => node.status === "error")
@@ -699,6 +702,26 @@ ${serve.command}`
 class StopError extends Error {
   constructor() {
     super("stopped")
+  }
+}
+
+/**
+ * The `pipeline` mode scheduler: topological layers, one layer at a time.
+ *
+ * A layer's nodes depend only on layers before it, so the whole layer is
+ * dispatched at once through `pool` and awaited before the next one starts.
+ * That barrier is the entire ordering guarantee — a node's upstream output
+ * exists because its layer already settled.
+ */
+async function runPipeline(
+  layers: string[][],
+  limit: number,
+  signal: AbortSignal,
+  run: (id: string) => Promise<void>,
+) {
+  for (const ids of layers) {
+    if (signal.aborted) return
+    await pool(ids, limit, signal, run)
   }
 }
 

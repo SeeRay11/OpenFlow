@@ -1,6 +1,6 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
 import { Canvas } from "./canvas/canvas"
-import type { Pipeline, RunLog } from "./graph/types"
+import { modeOf, type FlowMode, type Pipeline, type RunLog } from "./graph/types"
 import { layer, preflight, type Preflight } from "./graph/validate"
 import { isPipeline } from "./graph/pipeline-io"
 import * as api from "./server/client"
@@ -72,6 +72,11 @@ import { Select, type SelectOption } from "./ui/select"
 // than rebuilt on every render. Each label is only the value — the trigger
 // prints the name through the `prefix` prop, so a row reads "auto" while the
 // bar reads "permissions: auto".
+const MODE_OPTIONS: SelectOption[] = [
+  { value: "pipeline", label: "pipeline", hint: "cards run in dependency order" },
+  { value: "swarm", label: "swarm", hint: "peers debate, a synthesizer decides" },
+  { value: "orchestration", label: "orchestration", hint: "an orchestrator assigns subagents" },
+]
 const PIPE_OPTIONS: SelectOption[] = [
   { value: "ancestors", label: "ancestors", hint: "every upstream node" },
   { value: "direct", label: "direct", hint: "immediate parents only" },
@@ -925,6 +930,15 @@ export function App() {
           onRemove={actions.removeAttachment}
         />
         <div class="runbar-settings">
+          <Select
+            variant="ghost"
+            prefix="mode: "
+            width={320}
+            title="how this canvas executes — it belongs to the graph, not to the run"
+            value={modeOf(state.pipeline)}
+            options={MODE_OPTIONS}
+            onChange={(value) => actions.setMode(value as FlowMode)}
+          />
           <Select
             variant="ghost"
             prefix="pipe: "

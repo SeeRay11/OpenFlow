@@ -42,6 +42,19 @@ describe("isPipeline", () => {
     expect(isPipeline(graph)).toBe(false)
   })
 
+  test("accepts an absent mode and every mode this build runs", () => {
+    expect(isPipeline({ ...pipeline("a->b"), mode: "pipeline" })).toBe(true)
+    expect(isPipeline({ ...pipeline("a", "b"), mode: "swarm" })).toBe(true)
+    expect(isPipeline({ ...pipeline("a->b"), mode: "orchestration" })).toBe(true)
+  })
+
+  test("rejects a mode this build cannot run", () => {
+    // Loading it anyway would execute the graph under different rules than the
+    // file asked for.
+    expect(isPipeline({ ...pipeline("a"), mode: "quantum" })).toBe(false)
+    expect(isPipeline({ ...pipeline("a"), mode: 3 })).toBe(false)
+  })
+
   test("a round-trip through JSON preserves validity", () => {
     const graph = pipeline("a->b", "b->c")
     expect(isPipeline(JSON.parse(JSON.stringify(graph)))).toBe(true)

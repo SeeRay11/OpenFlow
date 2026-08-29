@@ -13,7 +13,7 @@ import type {
 } from "./graph/types"
 import { applyEvent } from "./server/activity"
 import type { QuestionInfo } from "./server/client"
-import { emptyPipeline } from "./graph/types"
+import { emptyPipeline, modeOf, type FlowMode } from "./graph/types"
 import { wouldCycle } from "./graph/validate"
 
 export type NodeRuntime = {
@@ -221,6 +221,20 @@ export const actions = {
   rename(name: string) {
     setState("dirty", true)
     setState("pipeline", "name", name)
+  },
+
+  /**
+   * Switches how the whole canvas executes.
+   *
+   * Snapshotted like a graph-shaping edit rather than a field edit: the modes
+   * disagree about what the edges mean, so this is the one setting that can
+   * change what an existing graph does, and undo has to reach it.
+   */
+  setMode(mode: FlowMode) {
+    if (modeOf(state.pipeline) === mode) return
+    snapshot()
+    setState("dirty", true)
+    setState("pipeline", "mode", mode)
   },
 
   /**

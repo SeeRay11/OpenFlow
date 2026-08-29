@@ -107,6 +107,28 @@ describe("preflight", () => {
     expect(result.blocking.some((problem) => problem.kind === "structure")).toBe(true)
   })
 
+  test("a mode without a scheduler blocks rather than running as a pipeline", () => {
+    for (const mode of ["swarm", "orchestration"] as const) {
+      const graph = withModel(pipeline("a->b"), "opencode/x")
+      const result = preflight({ ...graph, mode }, unlocked("opencode/x"))
+      expect(result.blocking.map((problem) => problem.kind)).toEqual(["mode-unimplemented"])
+      expect(result.blocking[0].message).toContain(mode)
+    }
+  })
+
+  test("an explicit pipeline mode behaves exactly like an absent one", () => {
+    const graph = withModel(pipeline("a->b"), "opencode/x")
+    expect(preflight({ ...graph, mode: "pipeline" }, unlocked("opencode/x"))).toEqual(
+      preflight(graph, unlocked("opencode/x")),
+    )
+  })
+
+  test("an unconnected card only warns in pipeline mode — a swarm's peers carry no edges", () => {
+    const graph = withModel(pipeline("a->b", "loner"), "opencode/x")
+    expect(preflight(graph, unlocked("opencode/x")).warnings.map((problem) => problem.kind)).toEqual(["isolated"])
+    expect(preflight({ ...graph, mode: "swarm" }, unlocked("opencode/x")).warnings).toEqual([])
+  })
+
   test("a node with no model and no agent blocks, naming the node", () => {
     const result = preflight(pipeline("a"), unlocked())
     expect(result.blocking.map((problem) => [problem.kind, problem.nodeId])).toEqual([["no-model", "a"]])

@@ -1,4 +1,4 @@
-import type { Pipeline } from "./types"
+import { MODES, type FlowMode, type Pipeline } from "./types"
 
 /**
  * Whether a parsed value is a usable OpenFlow pipeline.
@@ -13,6 +13,10 @@ export function isPipeline(value: unknown): value is Pipeline {
   if (!isObject(value)) return false
   if (typeof value.id !== "string" || typeof value.name !== "string") return false
   if (!Array.isArray(value.nodes) || !Array.isArray(value.edges)) return false
+  // Absent is legal and means `pipeline`; a mode this build cannot run is not,
+  // because importing it would silently execute the graph under different rules
+  // than the file asked for.
+  if (value.mode !== undefined && !MODES.includes(value.mode as FlowMode)) return false
   return value.nodes.every(isNode) && value.edges.every(isEdge)
 }
 

@@ -280,6 +280,15 @@ describe("validation", () => {
     expect(h.dispatched).toEqual([])
   })
 
+  test("refuses a mode this build has no scheduler for", () => {
+    // Preflight says the same thing in the UI, but the engine is callable
+    // without it, and dispatching a swarm through the pipeline scheduler would
+    // spend real money producing an answer nobody designed.
+    const h = harness()
+    expect(() => h.run({ ...pipeline("a", "b"), mode: "swarm" })).toThrow("swarm")
+    expect(h.dispatched).toEqual([])
+  })
+
   test("fails every node when a model is not one the server offers", async () => {
     const graph = pipeline("a->b")
     graph.nodes[0].agent.model = "opencode/ghost-model"
