@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
+import { DISPATCH_TOOL, FINISH_TOOL, MCP_REACHES_SESSIONS } from "./dispatch"
 import {
   buildPrompt,
+  forceFinalPrompt,
   dispatchResultPrompt,
   orchestratorPrompt,
   pipelineBriefing,
@@ -360,5 +362,27 @@ describe("no card is ever asked to ask", () => {
     const text = orchestratorPrompt(graph, graph.nodes[0], "do it")
     expect(text).toContain("do not use a question or ask tool")
     expect(text).toContain("no answer is coming")
+  })
+})
+
+describe("the parked tool channel", () => {
+  // Naming a tool the card cannot call costs a whole turn: it calls, gets
+  // `Unknown tool`, and only then writes the block. Measured on every run.
+  test("the briefing teaches only the channel the card actually has", () => {
+    const graph: Pipeline = { ...pipeline("boss->a"), mode: "orchestration" }
+    const text = orchestratorPrompt(graph, graph.nodes[0], "do it")
+
+    expect(MCP_REACHES_SESSIONS).toBe(false)
+    expect(text).not.toContain(DISPATCH_TOOL)
+    expect(text).not.toContain(FINISH_TOOL)
+    expect(text).toContain("there is no dispatch tool")
+    expect(text).toContain("```openflow")
+    expect(text).toContain('{ "final": "the answer to the task" }')
+  })
+
+  test("the forced answer names no tool either", () => {
+    const text = forceFinalPrompt("Your dispatch budget is spent.")
+    expect(text).not.toContain(FINISH_TOOL)
+    expect(text).toContain("fenced block")
   })
 })

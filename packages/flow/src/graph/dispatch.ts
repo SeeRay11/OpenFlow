@@ -28,6 +28,35 @@ export const MCP_SERVER = "openflow"
 export const DISPATCH_TOOL = `${MCP_SERVER}_dispatch`
 export const FINISH_TOOL = `${MCP_SERVER}_finish`
 
+/**
+ * Whether an MCP tool can reach a card at all. **It cannot, in this fork.**
+ *
+ * OpenFlow drives `client.v2.session.*`, so a card runs through the v2 session
+ * runner — and that runner has never been wired to MCP. Its own spec comment
+ * says so, unticked, at `packages/core/src/session/runner/llm.ts`:
+ *
+ *   - [ ] Resolve policy-filtered built-in, MCP, plugin, and structured-output
+ *         tool definitions.
+ *
+ * MCP tools are converted and registered in exactly one place, the *v1* session
+ * path (`packages/opencode/src/session/tools.ts`), which OpenFlow does not use.
+ * The v2 tool registry (`packages/core/src/tool/`) holds read, grep, glob, bash,
+ * edit, write, question, skill, todowrite, webfetch, websearch and apply-patch,
+ * and nothing puts MCP beside them — so `openflow_dispatch` comes back as
+ * `Unknown tool` from `core/src/tool/registry.ts` however the config is written.
+ *
+ * `GET /mcp` still answers `connected`, which is what made this look like a
+ * config bug for so long: the MCP *service* connects the process and holds the
+ * client perfectly well. It simply never contributes a tool definition to a v2
+ * session.
+ *
+ * So the channel is parked, not deleted. Everything it needs is built and
+ * tested; flipping this to `true` is the whole of turning it back on the day
+ * that checklist line is ticked. Fixing it here is not an option — it would
+ * mean editing `packages/core`, and this fork modifies no upstream package.
+ */
+export const MCP_REACHES_SESSIONS = false
+
 export type Assignment = { card: string; task: string }
 
 export type Dispatch =

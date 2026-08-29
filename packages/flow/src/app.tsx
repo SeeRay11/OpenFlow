@@ -12,6 +12,7 @@ import {
   type Pipeline,
   type RunLog,
 } from "./graph/types"
+import { MCP_REACHES_SESSIONS } from "./graph/dispatch"
 import { layer, preflight, type Preflight } from "./graph/validate"
 import { isPipeline } from "./graph/pipeline-io"
 import * as api from "./server/client"
@@ -489,7 +490,8 @@ export function App() {
   }
 
   async function refresh() {
-    setDispatchTool(await store.dispatchToolStatus().catch(() => undefined))
+    // Only worth a request when something could show it — see the banner below.
+    if (MCP_REACHES_SESSIONS) setDispatchTool(await store.dispatchToolStatus().catch(() => undefined))
     const entries = await store.pipelines().catch(() => [])
     setPipelines(entries)
     setRuns(await store.runs().catch(() => []))
@@ -1108,11 +1110,12 @@ export function App() {
         )}
       </Show>
 
-      {/* Orchestration only, and only while the tool is missing or pointing at
-          a checkout that has moved. An orchestrator without it falls back to a
-          fenced block, which measurably loses — but the fallback works, so this
-          is a banner rather than a blocking problem. */}
-      <Show when={modeOf(state.pipeline) === "orchestration" && dispatchTool() && !dispatchTool()!.current}>
+      {/* Parked. The install works and the server is correct, but no MCP tool
+          reaches a v2 session in this fork, so offering the config write would
+          promise a fix it cannot deliver — see `MCP_REACHES_SESSIONS`. The
+          route stays live for anyone who wants to install it ahead of upstream;
+          it just is not advertised. Flip the constant to bring this back. */}
+      <Show when={MCP_REACHES_SESSIONS && modeOf(state.pipeline) === "orchestration" && dispatchTool() && !dispatchTool()!.current}>
         <div class="notice" data-kind="info">
           <IconInfo />
           <span class="notice-text">

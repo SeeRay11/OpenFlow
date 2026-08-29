@@ -1,4 +1,4 @@
-import { DISPATCH_TOOL, FENCE, FINISH_TOOL } from "./dispatch"
+import { DISPATCH_TOOL, FENCE, FINISH_TOOL, MCP_REACHES_SESSIONS } from "./dispatch"
 import { orchestrationShape, subagentsOf } from "./orchestration"
 import { swarmShape } from "./swarm"
 import { dispatchesOf, roundsOf, type Attachment, type FlowNode, type Pipeline } from "./types"
@@ -332,20 +332,36 @@ export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode) {
     "",
     "## How you say what happens next",
     "",
-    `Two tools decide it. Call **\`${DISPATCH_TOOL}\`** to hand work out — the cards you name run`,
-    `at the same time, so only batch work that does not depend on itself — or **\`${FINISH_TOOL}\`\``,
-    "to answer the run. Call exactly one of them, once, and then end your turn: say nothing after",
-    "it and call no other tool, because anything you do next is what gets read instead.",
-    "",
-    "Think out loud as much as you like before the call. Only the call is read as an instruction.",
-    "",
-    "If neither tool is available to you, say the same thing in a fenced block at the very end of",
-    "your message instead:",
+    // Naming the tools while the channel is parked costs a whole turn: the card
+    // calls one, gets `Unknown tool` back, and only then writes the block —
+    // measured, every run. So it is told about exactly the channel it has.
+    ...(MCP_REACHES_SESSIONS
+      ? [
+          `Two tools decide it. Call **\`${DISPATCH_TOOL}\`** to hand work out — the cards you name run`,
+          `at the same time, so only batch work that does not depend on itself — or **\`${FINISH_TOOL}\`\``,
+          "to answer the run. Call exactly one of them, once, and then end your turn: say nothing after",
+          "it and call no other tool, because anything you do next is what gets read instead.",
+          "",
+          "Think out loud as much as you like before the call. Only the call is read as an instruction.",
+          "",
+          "If neither tool is available to you, say the same thing in a fenced block at the very end of",
+          "your message instead:",
+        ]
+      : [
+          "End your message with exactly one fenced block, and let it be the last thing in the",
+          "message — nothing after it is read. Think out loud above it as much as you like; only the",
+          "block is an instruction. Do not reach for a tool to do this: there is no dispatch tool,",
+          "and calling one spends a turn to be told it does not exist.",
+          "",
+          "To hand work out — the cards you name run at the same time, so only batch work that does",
+          "not depend on itself:",
+        ]),
     "",
     "```" + FENCE,
     '{ "dispatch": [ { "card": "<id from the list above>", "task": "what it must do, in full" } ] }',
     "```",
     "",
+    ...(MCP_REACHES_SESSIONS ? [] : ["To finish, when you can answer:", ""]),
     "```" + FENCE,
     '{ "final": "the answer to the task" }',
     "```",
@@ -445,8 +461,12 @@ export function forceFinalPrompt(reason: string) {
     "",
     reason,
     "",
-    `Write the answer to the run's task from what you already have and send it with \`${FINISH_TOOL}\`,`,
-    "or, if that tool is not available to you, as a fenced block:",
+    ...(MCP_REACHES_SESSIONS
+      ? [
+          `Write the answer to the run's task from what you already have and send it with \`${FINISH_TOOL}\`,`,
+          "or, if that tool is not available to you, as a fenced block:",
+        ]
+      : ["Write the answer to the run's task from what you already have, and send it as a fenced block:"]),
     "",
     "```" + FENCE,
     '{ "final": "the answer to the task" }',

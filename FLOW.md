@@ -60,27 +60,42 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   re-prompt a session still working on the first orchestrator's task. There is deliberately no
   "no root" or "unreachable card" check: in a DAG something always has nothing pointing at it,
   and everything is downstream of some root, so those cases surface as a cycle or a second root.
-- **The orchestrator's channel is a tool call first, a fenced block second.**
-  `mcp/dispatch.ts` is a hand-rolled stdio MCP server (no dependency: `bun.lock` gains only
-  the workspace entry) exposing `dispatch` and `finish`; `lib/dispatch-tool.ts` writes it into
-  the **global** config, and the runbar shows an install banner in orchestration mode. The
-  reason it is a tool is measured, not theoretical: a text-only protocol lost three ways — a
-  model sent the JSON with no fence, a model emitted the block and then kept calling tools so
-  the block was no longer in the message read, and a strong model tried to *call* `dispatch`
-  as a tool because that is what the schema in front of it looks like.
-  The call is read back out of the session's **message history** (`sessionCalls`), never the
-  bus, and only calls whose ids this turn has not already consumed count — the orchestrator is
-  re-prompted into the session it already holds, so every earlier turn's calls are still
-  there. Do **not** bound that scan at the newest user message instead: a tool *result* comes
-  back as a user-type message, so the scan stops before reaching the call that produced it.
-  The MCP command must be an **absolute path to bun**, never the bare word: opencode spawns a
-  local MCP server without a shell, and Windows does not apply PATHEXT for it. `process.execPath`
-  is not enough — the vite dev host runs under node — so `bunPath()` searches PATH.
-  **Open, as of 2026-08-29:** with all of that correct, `opencode serve` still reports
-  `Unknown tool: openflow_dispatch` on most starts and registered the server on one. The text
-  fallback carries those runs. Unproven leads: the 5s default MCP startup timeout against a
-  cold `bun` start on Windows (the v1 config dialect this file uses has no `startup` timeout
-  key), and whether the v1 migration's `mcp.<name>` to `mcp.servers.<name>` mapping survives.
+- **No MCP tool can reach a card in this fork, so the dispatch tool is parked.** Proven
+  2026-08-29, after it looked like a config bug for a long time. OpenFlow drives
+  `client.v2.session.*`, so a card runs through the v2 session runner, and that runner has
+  never been wired to MCP — its own spec comment says so, unticked, at
+  `packages/core/src/session/runner/llm.ts`: *"[ ] Resolve policy-filtered built-in, MCP,
+  plugin, and structured-output tool definitions."* MCP tools are converted and registered in
+  exactly one place, the **v1** session path (`packages/opencode/src/session/tools.ts`), which
+  OpenFlow does not use. The v2 registry (`packages/core/src/tool/`) holds read, grep, glob,
+  bash, edit, write, question, skill, todowrite, webfetch, websearch, apply-patch — and
+  nothing puts MCP beside them, so any `<server>_<tool>` comes back `Unknown tool` from
+  `core/src/tool/registry.ts` however the config is written.
+  **`GET /mcp` answering `connected` is the trap**: the MCP *service* spawns the process and
+  completes the handshake perfectly well: it just never contributes a tool definition to a v2
+  session. Do not read that status as "the tool works". Fixing this here is not an option —
+  it means editing `packages/core`. It needs an upstream change, or a fork that stops being
+  fork-clean.
+  `MCP_REACHES_SESSIONS` in `graph/dispatch.ts` is the single switch: `false` parks the
+  channel (the engine skips the history scan, the runbar hides the install banner, and the
+  orchestrator briefing teaches only the fenced block). Flipping it to `true` is the whole of
+  turning it back on. **Do not name the tools in a prompt while it is parked** — measured, the
+  card calls one, is told `Unknown tool`, and only then writes the block, which costs a paid
+  turn on every single run.
+- **The tool channel itself is built, tested, and correct** — `mcp/dispatch.ts` (a hand-rolled
+  stdio MCP server; no dependency, since `bun.lock` gains only the workspace entry),
+  `fromToolCall`, `sessionCalls`, and `lib/dispatch-tool.ts` writing the **global** config.
+  Keep these working. The reason it is a tool at all is measured: a text-only protocol lost
+  three ways — a model sent the JSON with no fence, a model emitted the block and then kept
+  calling tools so the block was no longer in the message read, and a strong model tried to
+  *call* `dispatch` because that is what the schema in front of it looks like.
+  Two traps worth keeping, both found by running it: the call is read from the **message
+  history**, and that scan must **not** be bounded at the newest user message — a tool
+  *result* comes back as a user-type message, so the scan would stop before reaching the call
+  that produced it; consumed call ids are what separate this turn from the last. And the MCP
+  command must be an **absolute path to bun**, never the bare word, because opencode spawns a
+  local MCP server without a shell and Windows does not apply PATHEXT; `process.execPath` is
+  not enough either, since the vite dev host runs under node, so `bunPath()` searches PATH.
 - **The orchestrator also speaks a fenced ` ```openflow ` block** — `{dispatch:[{card,task}]}`
   or `{final}` — parsed by `graph/dispatch.ts`. The **last** block wins, because a model often
   quotes the protocol before using it. A malformed block is handed back **once** with the exact

@@ -1571,6 +1571,14 @@ describe("orchestration over the MCP tools", () => {
     return { ...pipeline(...spec), mode: "orchestration", ...options }
   }
 
+  /**
+   * The channel is parked — no MCP tool reaches a v2 session in this fork — so
+   * every test here turns it on explicitly. That is also what pins the code as
+   * working for the day upstream wires MCP into v2; the default is covered by
+   * its own test below.
+   */
+  const on = { toolChannel: true } as const
+
   test("a dispatch tool call is read, and the text is never consulted", async () => {
     const h = harness({
       behavior: {
@@ -1586,7 +1594,7 @@ describe("orchestration over the MCP tools", () => {
         },
       },
     })
-    await h.run(tree(["root->a", "root->b"], { dispatches: 1 })).done
+    await h.run(tree(["root->a", "root->b"], { dispatches: 1 }), "do the thing", on).done
 
     expect(h.dispatched.slice(0, 3)).toEqual(["root", "a", "b"])
     expect(h.prompts.get("a")).toContain("take the first half")
@@ -1597,7 +1605,7 @@ describe("orchestration over the MCP tools", () => {
     const h = harness({
       behavior: { root: { output: "thinking out loud", calls: call("openflow_finish", { answer: "the answer" }) } },
     })
-    const log = await h.run(tree(["root->a"])).done
+    const log = await h.run(tree(["root->a"]), "do the thing", on).done
 
     expect(h.dispatched).toEqual(["root"])
     expect(log.status).toBe("done")
@@ -1620,7 +1628,7 @@ describe("orchestration over the MCP tools", () => {
         },
       },
     })
-    await h.run(tree(["root->a"], { dispatches: 1 })).done
+    await h.run(tree(["root->a"], { dispatches: 1 }), "do the thing", on).done
 
     expect(h.dispatched.slice(0, 2)).toEqual(["root", "a"])
     expect(h.prompts.get("a")).toContain("do it")
@@ -1638,7 +1646,7 @@ describe("orchestration over the MCP tools", () => {
         },
       },
     })
-    const log = await h.run(tree(["root->a"])).done
+    const log = await h.run(tree(["root->a"]), "do the thing", on).done
 
     expect(h.dispatched).toEqual(["root"])
     expect(log.nodes.find((node) => node.id === "root")!.output).toBe("changed my mind")
@@ -1648,7 +1656,7 @@ describe("orchestration over the MCP tools", () => {
     const h = harness({
       behavior: { root: { output: "", calls: call("openflow_dispatch", { assignments: [{ card: "ghost", task: "x" }] }) } },
     })
-    await h.run(tree(["root->a"])).done
+    await h.run(tree(["root->a"]), "do the thing", on).done
 
     expect(h.dispatched.filter((node) => node !== "root")).toEqual([])
     expect(h.promptLog[1].text).toContain("not a card you can dispatch to")
@@ -1660,7 +1668,7 @@ describe("orchestration over the MCP tools", () => {
     const h = harness({
       behavior: { root: { output: "```openflow\n" + JSON.stringify({ final: "text still works" }) + "\n```" } },
     })
-    const log = await h.run(tree(["root->a"])).done
+    const log = await h.run(tree(["root->a"]), "do the thing", on).done
 
     expect(log.nodes.find((node) => node.id === "root")!.output).toBe("text still works")
   })
@@ -1685,10 +1693,32 @@ describe("a tool call belongs to the turn that made it", () => {
         },
       },
     })
-    const log = await h.run({ ...pipeline("root->a"), mode: "orchestration" }).done
+    const log = await h.run({ ...pipeline("root->a"), mode: "orchestration" }, "do the thing", { toolChannel: true }).done
 
     expect(h.promptLog.filter((entry) => entry.node === "root")).toHaveLength(2)
     expect(log.nodes.find((node) => node.id === "root")!.output).toBe("answered on the re-ask")
     expect(log.status).toBe("done")
+  })
+})
+
+describe("the tool channel is parked", () => {
+  test("by default a run never asks for tool calls at all", async () => {
+    // No MCP tool can reach a v2 session in this fork, so scanning for one
+    // would be a request per orchestrator turn that cannot find anything.
+    let asked = 0
+    const h = harness({
+      behavior: {
+        root: {
+          output: "```openflow\n" + JSON.stringify({ final: "the block decided" }) + "\n```",
+          calls: [{ id: "call-1", name: "openflow_finish", input: { answer: "the tool decided" } }],
+        },
+      },
+    })
+    const counting = { ...h.deps, api: { ...h.deps.api, sessionCalls: async (id: string) => (asked++, []) } }
+    const log = await start({ ...pipeline("root->a"), mode: "orchestration" }, "do the thing", h.hooks, {}, counting)
+      .done
+
+    expect(asked).toBe(0)
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("the block decided")
   })
 })

@@ -1,4 +1,4 @@
-import { fromToolCall, parseDispatch } from "../graph/dispatch"
+import { fromToolCall, MCP_REACHES_SESSIONS, parseDispatch } from "../graph/dispatch"
 import { orchestrationShape } from "../graph/orchestration"
 import {
   buildPrompt,
@@ -119,6 +119,16 @@ export type RunOptions = {
    * of this map and it runs normally, even if a previous run produced it.
    */
   resume?: Record<string, string>
+  /**
+   * Whether to look for the orchestrator's decision in a tool call before
+   * falling back to the fenced block.
+   *
+   * Defaults to `MCP_REACHES_SESSIONS`, which is `false`: the v2 session runner
+   * this fork drives has no MCP bridge, so the scan can only ever come back
+   * empty. Tests set it to exercise the channel, and it becomes the default the
+   * day upstream wires MCP into v2.
+   */
+  toolChannel?: boolean
 }
 
 export const DEFAULT_MAX_PARALLEL = 4
@@ -244,6 +254,7 @@ export function start(
   const catalogRetry = Math.max(0, options.catalogRetry ?? DEFAULT_CATALOG_RETRY)
   const runFiles = options.attachments ?? []
   const resume = options.resume ?? {}
+  const toolChannel = options.toolChannel ?? MCP_REACHES_SESSIONS
   // Preflight only covers what this run will dispatch: a reused node creates no
   // session, so a model or agent it names having gone missing cannot break it.
   const dispatching = pipeline.nodes.filter((node) => resume[node.id] === undefined)
@@ -813,7 +824,10 @@ export function start(
    * than killing a run over one flaky request.
    */
   async function decide(node: FlowNode, children: string[]) {
-    const calls = (await api.sessionCalls?.(nodeSession.get(node.id)!).catch(() => [])) ?? []
+    // Skipped entirely while the tool channel is parked: no MCP tool can reach
+    // a v2 session in this fork, so every scan would be a request per turn that
+    // cannot find anything. See `MCP_REACHES_SESSIONS`.
+    const calls = toolChannel ? ((await api.sessionCalls?.(nodeSession.get(node.id)!).catch(() => [])) ?? []) : []
     const seen = consumed.get(node.id) ?? new Set<string>()
     let decision: ReturnType<typeof parseDispatch> | undefined
     for (const call of calls) {
