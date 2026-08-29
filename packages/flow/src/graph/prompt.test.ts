@@ -349,3 +349,16 @@ describe("orchestration prompts", () => {
     expect(text).toContain("now do this instead")
   })
 })
+
+describe("no card is ever asked to ask", () => {
+  // Measured against a real provider: an orchestrator handed the `question`
+  // tool used it instead of dispatching, was skipped, and asked again — a loop
+  // that ends at the node timeout. The tool is off in the role preset; the
+  // prompt says why, for a card whose allowlist did not bind.
+  test("the orchestrator is told nobody is there to answer", () => {
+    const graph: Pipeline = { ...pipeline("boss->a"), mode: "orchestration" }
+    const text = orchestratorPrompt(graph, graph.nodes[0], "do it")
+    expect(text).toContain("do not use a question or ask tool")
+    expect(text).toContain("no answer is coming")
+  })
+})

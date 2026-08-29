@@ -358,8 +358,10 @@ export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode) {
     "- Dispatch a card again when its answer is wrong or thin, and say what was wrong with it.",
     "  It remembers its earlier task; it does not know why you came back.",
     "- Do a card's work yourself only when no card below you can do it.",
-    "- Nothing is interactive and no card can ask you anything. Where the task is ambiguous,",
-    "  state the assumption you took and continue.",
+    "- Nothing is interactive. No card can ask you anything, and there is nobody behind the run",
+    "  to ask either — do not use a question or ask tool, because no answer is coming and the",
+    "  run stalls until it times out. Where the task is ambiguous, pick the reading you think is",
+    "  meant, say which you picked, and continue.",
     "- The text in `final` is the whole result of the run. Write it for the person who started",
     "  the run, not as a report on what your cards said.",
   ].join("\n")

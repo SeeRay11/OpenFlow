@@ -104,3 +104,31 @@ describe("parseDispatch", () => {
     expect(result).toHaveProperty("reason", expect.stringContaining("final"))
   })
 })
+
+describe("parseDispatch without a fence", () => {
+  // Measured against a real provider: it produced a flawless dispatch object
+  // with correct card ids and good task text, and no fence around it. Refusing
+  // that cost a paid retry and then the whole run.
+  test("a message that is nothing but the JSON is accepted", () => {
+    const bare = '{ "dispatch": [ { "card": "n1", "task": "read the file" } ] }'
+    expect(parseDispatch(bare, children)).toEqual({
+      kind: "dispatch",
+      assignments: [{ card: "n1", task: "read the file" }],
+    })
+    expect(parseDispatch('  { "final": "done" }  ', children)).toEqual({ kind: "final", answer: "done" })
+  })
+
+  test("JSON buried in prose is still refused — that is an example, not an instruction", () => {
+    const chatty = 'I could send { "dispatch": [ { "card": "n1", "task": "x" } ] } but I will not.'
+    expect(parseDispatch(chatty, children).kind).toBe("error")
+  })
+
+  test("a fenced block still wins over anything around it", () => {
+    const both = '{ "final": "bare" }\n\n' + block('{ "final": "fenced" }')
+    expect(parseDispatch(both, children)).toEqual({ kind: "final", answer: "fenced" })
+  })
+
+  test("a bare object that is not the protocol is refused on its own terms", () => {
+    expect(parseDispatch('{ "notes": "hello" }', children).kind).toBe("error")
+  })
+})

@@ -32,13 +32,22 @@ export type Dispatch =
  */
 export function parseDispatch(text: string, children: string[]): Dispatch {
   const blocks = [...text.matchAll(new RegExp("```" + FENCE + "\\s*\\n([\\s\\S]*?)```", "g"))]
-  if (!blocks.length)
+  // A message that is *nothing but* the JSON needs no fence to be unambiguous,
+  // and models send it that way constantly — measured against a real provider,
+  // which produced a flawless dispatch object and no fence around it. The fence
+  // exists to separate reasoning from instruction; where there is no reasoning
+  // there is nothing to separate. Refusing this was costing a paid turn and
+  // then the run.
+  //
+  // Only the whole message counts. Fishing a JSON object out of prose would
+  // read an example the model was talking *about* as one it meant to send.
+  const body = blocks.length ? blocks[blocks.length - 1][1] : text.trim()
+  if (!blocks.length && !(body.startsWith("{") && body.endsWith("}")))
     return {
       kind: "error",
       reason: `Your message carried no \`\`\`${FENCE} block, so nothing could be dispatched and the run cannot continue.`,
     }
 
-  const body = blocks[blocks.length - 1][1]
   const parsed = parseJson(body)
   if (parsed === undefined) return { kind: "error", reason: `The \`\`\`${FENCE} block is not valid JSON.` }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))

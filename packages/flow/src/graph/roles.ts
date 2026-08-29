@@ -70,7 +70,10 @@ export const ROLES: Role[] = [
         "you by what each is for, and give each one a task it can finish alone. Read what they " +
         "return, dispatch again where the answer is not good enough, and write the final answer " +
         "yourself. Do a card's work yourself only when no card below you can do it.",
-      tools: { read: true, grep: true, glob: true, edit: false, bash: false },
+      // `question` is off because nobody is behind the run to answer it.
+      // Measured: a model handed the tool used it instead of dispatching, was
+      // skipped, and asked again — a loop that ends at the node timeout.
+      tools: { read: true, grep: true, glob: true, edit: false, bash: false, question: false },
     },
   },
   {

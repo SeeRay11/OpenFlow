@@ -892,9 +892,11 @@ ${serve.command}`
       else if (tree) await orchestrate(tree.root, input, true)
       else await runPipeline(validation.layers, limit, controller.signal, (id) => runNode(nodes.get(id)!))
       // A card nobody dispatched never ran, and "queued" would read as though
-      // the run had stopped short of it. It was simply not needed.
+      // the run had stopped short of it. It was simply not needed. Through
+      // `patch` rather than onto the log directly, or the canvas card keeps
+      // saying "queued" while the run log and statusbar say "skipped".
       if (tree)
-        for (const node of log.nodes) if (node.status === "queued") node.status = "skipped"
+        for (const node of log.nodes) if (node.status === "queued") patch(node.id, { status: "skipped" })
       log.status = controller.signal.aborted
         ? "stopped"
         : log.nodes.some((node) => node.status === "error")
