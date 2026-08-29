@@ -125,6 +125,19 @@ export const store = {
    */
   pickFolder: (start?: string) =>
     request<{ path: string | null }>("/pick-folder", { method: "POST", body: JSON.stringify({ path: start }) }),
+  /**
+   * Which OpenAI-compatible providers the *global* opencode config already
+   * repackages onto `@ai-sdk/openai-compatible`, and which ones it could. See
+   * [../../lib/repackage.ts]: without the override this engine's runner cannot
+   * dispatch an OpenRouter or Groq model however valid its key is.
+   */
+  repackageStatus: () => request<{ path: string; applied: string[]; available: string[]; error?: string }>("/repackage"),
+  /** Writes that override for `providers`. The engine must restart before it applies. */
+  repackage: (providers: string[]) =>
+    request<{ path: string; changed: string[]; applied: string[]; backup?: string; restart: boolean }>("/repackage", {
+      method: "POST",
+      body: JSON.stringify({ providers }),
+    }),
   /** State of the engine this host proxies. */
   serverStatus: () => request<ServeStatus>("/server"),
   /**

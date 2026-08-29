@@ -175,6 +175,16 @@ Two shapes that surprise, both learned the hard way:
   `src/server/usage.ts` from models.dev per-1M tiers. **An unpriced model must never render
   as zero** — show it as unknown.
 - Permissions set to `auto` reply `once` to every ask.
+- **The repackage lives in the app, not in a hand-edited file.** `lib/repackage.ts` holds
+  upstream's profile table (id to base URL) and writes the override into the *global*
+  `opencode.json`; `GET/POST /flow/api/repackage` drive it and the provider panel offers it
+  as a banner on any connected provider from that table. Only ids in the table are accepted,
+  so no request can name an arbitrary npm package. The write follows the file's own dialect:
+  one v1 key anywhere (`plugin`, `agent`, `provider`, ...) makes opencode migrate the whole
+  file, where `providers` is never read — so a v1 file gets `provider.<id> = {npm, api}` and a
+  v2 file gets `providers.<id>.api = {type, package, url}`. Config is read once at boot, so the
+  panel restarts the engine after writing. The manual equivalent below still applies to a host
+  OpenFlow does not own.
 - **A provider whose models the runner cannot route is fixed by repackaging it, in the *global*
   config.** The v2 runner routes three API packages only (`@ai-sdk/openai`, `@ai-sdk/anthropic`,
   `@ai-sdk/openai-compatible` + url); everything else — OpenRouter's `@openrouter/ai-sdk-provider`,

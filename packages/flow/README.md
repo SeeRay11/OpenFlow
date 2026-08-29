@@ -274,6 +274,20 @@ because they fail in completely different ways:
    `UnsupportedApiError` no matter how valid the key is. Those models are
    listed as **no runner** and their providers sink to the bottom; most of
    openrouter's catalog and all of groq's land there.
+
+   Nine of those providers speak OpenAI chat anyway — upstream's own
+   `llm/src/providers/openai-compatible-profile.ts` says so, and publishes the
+   base URL: baseten, cerebras, deepinfra, deepseek, fireworks, groq,
+   openrouter, togetherai, xai. **Repackage** in the provider panel rewrites
+   them as `@ai-sdk/openai-compatible` with that URL in opencode's *global*
+   config (`~/.config/opencode/opencode.json`), the only config a run reads — a
+   session's location is the engine's cwd, never `OPENFLOW_PROJECT`. The file
+   is backed up first, the override follows whichever config dialect the file
+   already uses, and the engine is restarted, because config is read once at
+   boot. Stored credentials still resolve: the provider id does not change.
+   What is lost is any provider plugin keyed to the old package — OpenRouter's
+   `HTTP-Referer`/`X-Title` headers, and its disabling of the broken
+   `gpt-5-chat` aliases.
 3. **A key that is actually accepted, for a model the account may use.**
    Nothing verifies a key when it is stored, and the catalog advertises models
    an account has no entitlement for. The **test** button beside a node's model
@@ -291,6 +305,8 @@ served to the browser.
 | `POST /flow/api/cli-keys/import` | connect those keys to the running server |
 | `GET /flow/api/env?names=A,B` | which of those variables the host has set — names only |
 | `GET /flow/api/zen-models` | model ids opencode zen really serves, or `null` if unreadable |
+| `GET /flow/api/repackage` | which OpenAI-compatible providers the global config already repackages |
+| `POST /flow/api/repackage` | repackage them there (fixed id list only, backed up, restart required) |
 
 `POST /api/session/{id}/wait` answers `503 Session wait is not available yet` on
 this server build, so idleness is derived from `/api/session/active` plus a

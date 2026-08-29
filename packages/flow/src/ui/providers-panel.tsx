@@ -34,6 +34,8 @@ export function ProvidersPanel(props: {
   onClose: () => void
   onChanged: () => Promise<void> | void
   onNotice: (kind: "info" | "error", text: string) => void
+  /** Restarts `opencode serve`, when this host owns it — a repackage needs one. */
+  onRestart?: () => Promise<void> | void
 }) {
   const [query, setQuery] = createSignal(props.initialQuery ?? "")
   const [picked, setPicked] = createSignal<string>()
@@ -41,6 +43,7 @@ export function ProvidersPanel(props: {
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string>()
   const [cli, setCli] = createSignal<{ path: string; providers: string[] }>()
+  const [repack, setRepack] = createSignal<{ path: string; applied: string[]; available: string[]; error?: string }>()
 
   const matched = createMemo(() => searchProviders(props.rows, query()))
   const connected = createMemo(() => matched().filter((row) => row.unlocked))
@@ -52,8 +55,23 @@ export function ProvidersPanel(props: {
     return found.filter((id) => !keyed.has(id))
   })
 
+  /**
+   * Connected providers whose models this engine cannot dispatch until the
+   * global config repackages them onto `@ai-sdk/openai-compatible`. Only the
+   * connected ones: repackaging a provider nobody has a key for fixes nothing
+   * and edits a file for no reason. See [../../lib/repackage.ts].
+   */
+  const repackageable = createMemo(() => {
+    const status = repack()
+    if (!status || status.error) return []
+    const applied = new Set(status.applied)
+    const offered = new Set(status.available)
+    return props.rows.filter((row) => row.unlocked && offered.has(row.id) && !applied.has(row.id)).map((row) => row.id)
+  })
+
   onMount(async () => {
     setCli(await store.cliKeys().catch(() => undefined))
+    setRepack(await store.repackageStatus().catch(() => undefined))
   })
 
   /**
@@ -133,6 +151,27 @@ export function ProvidersPanel(props: {
     }
   }
 
+  /**
+   * Writes the override and restarts the engine, because config is read once at
+   * boot — without the restart the models stay exactly as unroutable as before.
+   */
+  async function applyRepackage() {
+    setBusy(true)
+    try {
+      const result = await store.repackage(repackageable())
+      setRepack(await store.repackageStatus().catch(() => undefined))
+      props.onNotice("info", `repackaged ${result.changed.join(", ")} in ${result.path}`)
+      if (result.restart && props.onRestart) await props.onRestart()
+      await props.onChanged()
+      if (result.restart && !props.onRestart)
+        props.onNotice("info", "restart `opencode serve` for the repackaged providers to dispatch")
+    } catch (failure) {
+      props.onNotice("error", api.describe(failure))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div class="oc oc-backdrop" onClick={(event) => event.target === event.currentTarget && props.onClose()}>
       <section class="oc-dialog">
@@ -178,6 +217,18 @@ export function ProvidersPanel(props: {
             </span>
             <button type="button" class="oc-button" disabled={busy()} onClick={importCli}>
               Import
+            </button>
+          </div>
+        </Show>
+
+        <Show when={repackageable().length}>
+          <div class="oc-banner">
+            <span>
+              This engine cannot dispatch {repackageable().join(", ")} — its runner routes only OpenAI, Anthropic and
+              OpenAI-compatible APIs. Repackaging rewrites them as OpenAI-compatible in {repack()?.path}.
+            </span>
+            <button type="button" class="oc-button" disabled={busy()} onClick={applyRepackage}>
+              Repackage
             </button>
           </div>
         </Show>

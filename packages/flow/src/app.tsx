@@ -1135,6 +1135,7 @@ export function App() {
           onClose={() => setShowProviders(false)}
           onChanged={refreshProviders}
           onNotice={notice}
+          onRestart={engine()?.managed ? restartEngine : undefined}
         />
       </Show>
 

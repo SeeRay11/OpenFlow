@@ -5,6 +5,7 @@ import { allowsRemote } from "./guard"
 import { recallPipeline, rememberPipeline, rememberProject } from "./last-session"
 import { hasNativePicker, pickFolderNative } from "./native-picker"
 import type { Supervisor } from "./opencode-process"
+import { COMPATIBLE_PROFILES, globalConfigCandidates, repackage, repackaged } from "./repackage"
 import { zenModels } from "./zen"
 
 /**
@@ -42,6 +43,11 @@ import { zenModels } from "./zen"
  *                                             `null` when cancelled (loopback hosts only)
  *   POST   /flow/api/project               -> { path } — switch the live project directory,
  *                                             and remember it for the next launch
+ *   GET    /flow/api/repackage             -> { path, applied, available, error? } — which
+ *                                             OpenAI-compatible providers the global config
+ *                                             already repackages
+ *   POST   /flow/api/repackage             -> { providers: [...] } repackages them there, so the
+ *                                             runner can dispatch their models
  *   GET    /flow/api/server                -> { managed, running, url, command, pid, ... } — the
  *                                             `opencode serve` this host proxies
  *   POST   /flow/api/server/restart        -> restarts it, when this host owns it (loopback only)
@@ -294,6 +300,21 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
       return ok(await browseDirectory(target))
     } catch (error) {
       return { status: 400, body: { error: error instanceof Error ? error.message : String(error) } }
+    }
+  }
+
+  if (segments[0] === "repackage") {
+    if (method === "GET") return ok(await repackageStatus())
+    if (method === "POST") {
+      const body = await request.json().catch(() => ({}))
+      const asked = Array.isArray(body?.providers) ? body.providers.map(String) : []
+      // Only ids in the profile table are accepted, so no request can name an
+      // arbitrary npm package for the engine to load.
+      const ids = asked.filter((id: string) => COMPATIBLE_PROFILES[id])
+      if (!ids.length) return { status: 400, body: { error: "no repackageable provider named" } }
+      const result = await applyRepackage(ids)
+      if ("error" in result) return { status: 409, body: result }
+      return ok(result)
     }
   }
 
@@ -785,6 +806,64 @@ async function readProjectConfig(
   const value = jsonOrUndefined(stripped.text)
   if (value === undefined) return { error: "existing opencode.json is not valid JSON" }
   return { value, raw, comments: stripped.comments }
+}
+
+/**
+ * Reads opencode's *global* config — the one file that reaches a run.
+ *
+ * `.jsonc` is preferred when it is the file that exists, because opencode reads
+ * both and writing the override into the other one would leave it unread. A
+ * missing file is a machine that has never configured opencode, not an error.
+ */
+async function readGlobalConfig() {
+  const candidates = globalConfigCandidates()
+  for (const target of candidates) {
+    const raw = await fs.readFile(target, "utf8").catch(() => undefined)
+    if (raw === undefined) continue
+    const stripped = stripJsonc(raw)
+    const value = jsonOrUndefined(stripped.text)
+    if (value === undefined) return { target, error: `${target} is not valid JSON` }
+    return { target, value, raw, comments: stripped.comments }
+  }
+  return {
+    target: candidates[0],
+    value: { $schema: "https://opencode.ai/config.json" },
+    raw: undefined,
+    comments: false,
+  }
+}
+
+/** Which OpenAI-compatible providers the global config already repackages. */
+async function repackageStatus() {
+  const config = await readGlobalConfig()
+  const available = Object.keys(COMPATIBLE_PROFILES)
+  if ("error" in config) return { path: config.target, applied: [], available, error: config.error }
+  return { path: config.target, applied: repackaged(config.value), available }
+}
+
+/**
+ * Writes the override into the global config, backing the file up first.
+ *
+ * The engine reads config once at boot, so `restart: true` is not advice — the
+ * models stay unroutable until `opencode serve` is restarted.
+ */
+async function applyRepackage(ids: string[]) {
+  const config = await readGlobalConfig()
+  if ("error" in config) return { error: config.error, path: config.target }
+  const result = repackage(config.value, ids)
+  if (!result.changed.length)
+    return { path: config.target, changed: [], applied: repackaged(config.value), restart: false }
+  if (config.comments)
+    return {
+      error: `${config.target} has comments, and saving would strip them — remove the comments, or add the provider override there by hand`,
+      path: config.target,
+    }
+  return serialize(config.target, async () => {
+    const backup = config.raw === undefined ? undefined : await backupConfig(config.target, config.raw)
+    await fs.mkdir(path.dirname(config.target), { recursive: true })
+    await writeAtomic(config.target, JSON.stringify(result.value, null, 2) + "\n")
+    return { path: config.target, changed: result.changed, applied: repackaged(result.value), backup, restart: true }
+  })
 }
 
 const CONFIG_HAS_COMMENTS =

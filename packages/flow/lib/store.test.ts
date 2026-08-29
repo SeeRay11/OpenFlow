@@ -1083,3 +1083,81 @@ describe("custom roles", () => {
     expect([["first"], ["first", "second"]]).toContainEqual(ids)
   })
 })
+
+/**
+ * The one route that writes *outside* the project: repackaging a provider edits
+ * opencode's global config, because that is the only file a run reads (see
+ * `lib/repackage.ts`). `XDG_CONFIG_HOME` points at the temp directory here, so
+ * the suite cannot touch the developer's own config.
+ */
+describe("routes: repackaging a provider", () => {
+  let target: string
+
+  beforeEach(() => {
+    process.env.XDG_CONFIG_HOME = path.join(dir, "xdg")
+    target = path.join(dir, "xdg", "opencode", "opencode.json")
+  })
+
+  afterEach(() => {
+    delete process.env.XDG_CONFIG_HOME
+  })
+
+  test("reports what is available before any config exists", async () => {
+    const response = await call("GET", "/flow/api/repackage")
+    expect(response!.status).toBe(200)
+    expect(response!.body).toMatchObject({ path: target, applied: [] })
+    expect((response!.body as any).available).toContain("openrouter")
+  })
+
+  test("writes the override and asks for a restart", async () => {
+    const response = await call("POST", "/flow/api/repackage", { body: { providers: ["openrouter"] } })
+    expect(response!.body).toMatchObject({ changed: ["openrouter"], applied: ["openrouter"], restart: true })
+    expect(JSON.parse(await read(target)).providers.openrouter.api).toEqual({
+      type: "aisdk",
+      package: "@ai-sdk/openai-compatible",
+      url: "https://openrouter.ai/api/v1",
+    })
+    expect((await call("GET", "/flow/api/repackage"))!.body).toMatchObject({ applied: ["openrouter"] })
+  })
+
+  test("follows the dialect of an existing v1 config, and backs it up", async () => {
+    await fs.mkdir(path.dirname(target), { recursive: true })
+    await fs.writeFile(target, JSON.stringify({ plugin: ["./p.js"] }))
+    const response = await call("POST", "/flow/api/repackage", { body: { providers: ["groq"] } })
+    expect(response!.body).toMatchObject({ backup: `${target}.bak` })
+    expect(JSON.parse(await read(target)).provider.groq).toEqual({
+      npm: "@ai-sdk/openai-compatible",
+      api: "https://api.groq.com/openai/v1",
+    })
+    expect(JSON.parse(await read(`${target}.bak`))).toEqual({ plugin: ["./p.js"] })
+  })
+
+  test("a second call changes nothing and does not ask for a restart", async () => {
+    await call("POST", "/flow/api/repackage", { body: { providers: ["groq"] } })
+    const again = await call("POST", "/flow/api/repackage", { body: { providers: ["groq"] } })
+    expect(again!.body).toMatchObject({ changed: [], restart: false })
+  })
+
+  test("refuses a provider the runner has no profile for, so no npm package can be injected", async () => {
+    const response = await call("POST", "/flow/api/repackage", { body: { providers: ["evil"] } })
+    expect(response!.status).toBe(400)
+    await expect(read(target)).rejects.toThrow()
+  })
+
+  test("refuses rather than stripping comments out of a hand-written config", async () => {
+    await fs.mkdir(path.dirname(target), { recursive: true })
+    await fs.writeFile(target, '{\n  // mine\n  "model": "opencode/x"\n}')
+    const response = await call("POST", "/flow/api/repackage", { body: { providers: ["groq"] } })
+    expect(response!.status).toBe(409)
+    expect((response!.body as any).error).toContain("comments")
+    expect(await read(target)).toContain("// mine")
+  })
+
+  test("reads .jsonc when that is the file opencode would load", async () => {
+    await fs.mkdir(path.dirname(target), { recursive: true })
+    await fs.writeFile(`${target}c`, JSON.stringify({ model: "opencode/x" }))
+    const response = await call("POST", "/flow/api/repackage", { body: { providers: ["groq"] } })
+    expect(response!.body).toMatchObject({ path: `${target}c`, changed: ["groq"] })
+    await expect(read(target)).rejects.toThrow()
+  })
+})
