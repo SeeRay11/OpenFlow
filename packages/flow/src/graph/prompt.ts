@@ -1,7 +1,7 @@
 import { DISPATCH_TOOL, FENCE, FINISH_TOOL, MCP_REACHES_SESSIONS } from "./dispatch"
-import { orchestrationShape, subagentsOf } from "./orchestration"
+import { isCritic, orchestrationShape, subagentsOf } from "./orchestration"
 import { swarmShape } from "./swarm"
-import { dispatchesOf, roundsOf, type Attachment, type FlowNode, type Pipeline } from "./types"
+import { dispatchesOf, gauntletOf, roundsOf, type Attachment, type FlowNode, type Pipeline } from "./types"
 import { downstream, layer, upstream } from "./validate"
 
 /** `role (id)` — the one label every prompt in every mode uses for a card. */
@@ -303,6 +303,7 @@ export function orchestratorPrompt(
 export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode) {
   const children = subagentsOf(pipeline, node)
   const dispatches = dispatchesOf(pipeline)
+  const gauntlet = gauntletOf(pipeline)
   const root = orchestrationShape(pipeline).root
   const mine = children.map((child) => {
     const owns = subagentsOf(pipeline, child)
@@ -310,9 +311,11 @@ export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode) {
     return [
       `- \`${child.id}\` — ${child.role} · ${child.agent.model ?? "its agent's own model"}`,
       `  what it is for: ${role}`,
-      owns.length
-        ? `  it hands work to ${owns.length} card(s) of its own, so give it work worth splitting`
-        : "  it does the work itself",
+      gauntlet && isCritic(child)
+        ? "  it judges work against the bar — send it output to grade, never work to do"
+        : owns.length
+          ? `  it hands work to ${owns.length} card(s) of its own, so give it work worth splitting`
+          : "  it does the work itself",
     ].join("\n")
   })
 
@@ -366,10 +369,19 @@ export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode) {
     '{ "final": "the answer to the task" }',
     "```",
     "",
+    ...(gauntlet ? gauntletBriefing(pipeline, node) : []),
     "## Your part",
     "",
-    `- You may dispatch ${dispatches} time(s) before you have to answer. Spend them on work that`,
-    "  changes the answer, not on confirming what a card already told you.",
+    ...(gauntlet
+      ? [
+          "- You are not counting dispatches. You stop when the work clears the bar, or when you are",
+          "  told the run is out of money, out of time, or making no progress — and you will be told,",
+          "  in the message that carries your cards' answers.",
+        ]
+      : [
+          `- You may dispatch ${dispatches} time(s) before you have to answer. Spend them on work that`,
+          "  changes the answer, not on confirming what a card already told you.",
+        ]),
     "- A card only knows what you write in its task. It has not seen the run task, the other",
     "  cards' answers, or anything you dispatched before — write the task so it can be finished",
     "  by someone who has read nothing else.",
@@ -383,6 +395,124 @@ export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode) {
     "- The text in `final` is the whole result of the run. Write it for the person who started",
     "  the run, not as a report on what your cards said.",
   ].join("\n")
+}
+
+/**
+ * The loop an orchestrator runs when the canvas is a gauntlet.
+ *
+ * Everything here is the method's own hard-won shape rather than good advice:
+ * the critic reads the artifact instead of the builder's report because a
+ * builder grading itself passes; the bar is concrete because a critic with
+ * nothing to compare against invents a standard and the loop chases it; and
+ * coupled work stays with one builder because splitting it across cards that
+ * cannot see each other made the result worse, not better, in the run this
+ * pattern comes from.
+ */
+function gauntletBriefing(pipeline: Pipeline, node: FlowNode) {
+  const gauntlet = gauntletOf(pipeline)!
+  const critics = subagentsOf(pipeline, node).filter(isCritic)
+
+  return [
+    "## This run is a gauntlet",
+    "",
+    "You are not producing a first draft. You are running work through builders and critics over",
+    "and over until it clears a bar, and the run ends when it clears it or when you are stopped.",
+    '"Good enough for now" is not a place to stop.',
+    "",
+    ...(gauntlet.bar
+      ? ["### The bar", "", gauntlet.bar.trim(), ""]
+      : [
+          "### The bar",
+          "",
+          "No bar was set for this run. Your first job is to establish one: name something concrete",
+          "and inspectable — an existing product, a reference implementation, a test suite, a latency",
+          "number, a body of writing — that a critic can hold the work against and say which is",
+          "better. Write it into the first task you give every critic, in full, and do not change it",
+          "later. A bar you invented and then softened is no bar at all.",
+          "",
+        ]),
+    "### The loop",
+    "",
+    "1. Split the work into the smallest parts that can be improved and judged on their own.",
+    "2. Give a part to a builder.",
+    "3. Give the **result** to a critic, with the bar. Not your summary of it, not the builder's —",
+    "   tell the critic where the work is so it goes and looks at the real thing.",
+    "4. The critic says which is better, ours or the bar, and names the single largest gap.",
+    "5. If ours lost, hand that gap back to the builder that owns it and go round again.",
+    "6. When every part holds up, send the whole artifact through one last critic before you answer.",
+    "",
+    ...(critics.length
+      ? [
+          `Your critics: ${critics.map((critic) => `\`${critic.id}\``).join(", ")}. A critic never builds`,
+          "and a builder never grades its own work — that swap is the one thing that makes this loop",
+          "different from asking a card to try harder.",
+          "",
+        ]
+      : []),
+    "### What goes wrong",
+    "",
+    "- **Splitting work that is coupled.** Parts that only make sense together — how a thing looks",
+    "  and how it moves, a schema and the code that reads it — must go to **one** builder, in",
+    "  sequence. Cards cannot see each other's work, so two of them tuning halves of the same",
+    "  thing will each make their half worse to fit what they imagine the other did. Fan out only",
+    "  where the parts are genuinely independent.",
+    "- **A critic that is being kind.** A critic exists to find the gap. If one comes back with",
+    "  nothing but praise, dispatch it again and tell it to name the largest gap even if the work",
+    "  is good.",
+    "- **Passing on the second look.** Two rounds that change nothing are two rounds you have paid",
+    "  for. If a part stops improving, say so and move to one that has room.",
+    "",
+  ]
+}
+
+/**
+ * A critic's assignment.
+ *
+ * It is a leaf card and never sees the dispatch protocol, but it is not an
+ * ordinary subagent either: it is handed a bar, told to go and look at the real
+ * output, and required to come back with a side chosen and one gap named. A
+ * critic that returns an essay is a round nobody can act on.
+ */
+export function criticPrompt(
+  pipeline: Pipeline,
+  node: FlowNode,
+  parent: FlowNode,
+  task: string,
+  input: string,
+  skipped: Attachment[] = [],
+) {
+  const gauntlet = gauntletOf(pipeline)
+  const sections = [
+    [
+      "# OpenFlow",
+      "",
+      "You are the critic of an OpenFlow gauntlet: a separate `opencode` session with your own",
+      `model and tools. ${label(pipeline, parent.id)} dispatched you and is the only thing that`,
+      "reads your answer. You did not build any of this and you have no stake in it.",
+      "",
+      "## Your part",
+      "",
+      "- **Go and look at the real output.** Read the files, run the thing, run the tests, open what",
+      "  it produces. What you were told about the work is not the work; judge only what you saw",
+      "  yourself, and say so if you could not get to it.",
+      "- Hold it against the bar and decide **which is better** — the bar or ours. Say which, in one",
+      "  line, before anything else.",
+      "- Name **the single largest gap**: the one change that would close the most distance to the",
+      "  bar. One, not a list. Be specific enough that whoever fixes it does not have to guess.",
+      "- Then, if there are others worth knowing about, list them briefly below it.",
+      "- Do not be generous. Work that is impressive for its category and short of the bar is short",
+      "  of the bar, and saying so is the whole reason you were dispatched. If you genuinely cannot",
+      "  find a gap, say that plainly — it is a real answer, and it ends the loop.",
+      "- Do not fix anything. You judge; somebody else builds.",
+    ].join("\n"),
+  ]
+  if (node.agent.prompt.trim()) sections.push(node.agent.prompt.trim())
+  if (gauntlet?.bar) sections.push(`# The bar\n\n${gauntlet.bar.trim()}`)
+  if (input.trim()) sections.push(`# What the run is for\n\n${input.trim()}`)
+  const unreadable = withheld(skipped)
+  if (unreadable) sections.push(unreadable)
+  sections.push(`# What to judge\n\n${task.trim()}`)
+  return sections.join("\n\n")
 }
 
 /** One subagent's assignment: the run's context, then the job it was given. */
@@ -432,6 +562,13 @@ export function dispatchResultPrompt(
   pipeline: Pipeline,
   results: { card: string; text?: string; error?: string }[],
   remaining: number,
+  /**
+   * What is left, when a countdown is the wrong way to say it. A gauntlet has
+   * no dispatch budget to count down — telling it "you may dispatch 493 more
+   * times" would read as a target — so it is told what it has spent of the
+   * money and time instead.
+   */
+  status?: string,
 ) {
   const rows = results.map((result) =>
     result.error
@@ -441,9 +578,11 @@ export function dispatchResultPrompt(
   return [
     "# What your cards returned",
     "",
-    remaining > 0
-      ? `You may dispatch ${remaining} more time(s), or answer now. Same block as before: \`dispatch\` or \`final\`.`
-      : "You have no dispatches left. Answer now with a `final` block.",
+    status
+      ? `${status} Same block as before: \`dispatch\` to go round again, \`final\` when it clears the bar.`
+      : remaining > 0
+        ? `You may dispatch ${remaining} more time(s), or answer now. Same block as before: \`dispatch\` or \`final\`.`
+        : "You have no dispatches left. Answer now with a `final` block.",
     "",
     rows.join("\n\n"),
   ].join("\n")

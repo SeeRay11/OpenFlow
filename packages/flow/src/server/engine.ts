@@ -1,7 +1,8 @@
 import { fromToolCall, MCP_REACHES_SESSIONS, parseDispatch } from "../graph/dispatch"
-import { orchestrationShape } from "../graph/orchestration"
+import { isCritic, orchestrationShape } from "../graph/orchestration"
 import {
   buildPrompt,
+  criticPrompt,
   dispatchResultPrompt,
   forceFinalPrompt,
   orchestratorPrompt,
@@ -23,7 +24,7 @@ import type {
   Spend,
   StepUsage,
 } from "../graph/types"
-import { depthOf, dispatchesOf, modeOf, roundsOf } from "../graph/types"
+import { depthOf, dispatchesOf, GAUNTLET_DISPATCHES, gauntletOf, modeOf, roundsOf } from "../graph/types"
 import { ancestors, layer, upstream } from "../graph/validate"
 import { applyEvent, createActivity, persistable } from "./activity"
 import * as api from "./client"
@@ -272,6 +273,12 @@ export function start(
     if (tree.depth > depthOf(pipeline))
       throw new Error(`the subagent tree is ${tree.depth} level(s) deep and the limit is ${depthOf(pipeline)}`)
   }
+  // A gauntlet trades the dispatch budget for money-and-time bounds, so a
+  // canvas with nothing to judge the work would loop builders against nobody
+  // until one of those caps fired. Preflight says the same in the UI.
+  const gauntlet = tree ? gauntletOf(pipeline) : undefined
+  if (gauntlet && !pipeline.nodes.some((node) => isCritic(node) && !tree!.children(node.id).length))
+    throw new Error("a gauntlet has no reviewer card to judge the work against its bar")
   // Swarm reads no edges at all, so a leftover cycle from a graph that used to
   // be a pipeline is not a reason to refuse it. Orchestration does read them,
   // and `layer` is still what rejects a cycle before the recursion meets one.
@@ -709,7 +716,7 @@ export function start(
    */
   async function orchestrate(node: FlowNode, task: string, first: boolean): Promise<string | undefined> {
     const children = tree!.children(node.id)
-    const budget = dispatchesOf(pipeline)
+    const budget = gauntlet ? GAUNTLET_DISPATCHES : dispatchesOf(pipeline)
     // A card dispatched a second time is prompted into the session it already
     // holds, so it still has its briefing and its earlier task — only the job
     // is new.
@@ -728,6 +735,11 @@ export function start(
     // the protocol twice in a row will not produce it on the third ask, and
     // every ask is a paid turn.
     let retried = false
+    /** The last batch this card dispatched, and how many times in a row. */
+    let repeated = ""
+    let repeats = 0
+    /** Why the previous turn was told to answer, if it was. */
+    let forced: { reason: string; error: string } | undefined
 
     while (true) {
       // Always `reuse`: `runTurn` opens a session when the card has none, so
@@ -759,16 +771,26 @@ export function start(
         return decision.answer
       }
 
-      // The previous turn was the forced one — it was told it had no dispatches
-      // left and dispatched anyway. Without this the loop never ends, and a
-      // model that ignores the budget once will ignore it every time.
-      if (spent >= budget) {
+      // The previous turn was the forced one — it was told to answer and
+      // dispatched anyway. Without this the loop never ends, and a model that
+      // ignores the bound once will ignore it every time.
+      if (forced) {
         failed.add(node.id)
-        const reason = `the orchestrator kept dispatching after its ${budget} dispatch(es) were spent, instead of answering`
+        const reason = `the orchestrator kept dispatching after it was told to answer — ${forced.error}`
         activity.note(node.id, `budget:${node.id}`, "dispatched past its budget", reason, "error")
         patch(node.id, { status: "error", error: reason, activity: undefined, finished: Date.now() })
         return undefined
       }
+
+      // A gauntlet is stopped by no progress as well as by money and time, and
+      // the same batch handed out again is what no progress looks like from
+      // out here: the same cards, the same words, one more round of paying for
+      // them.
+      const batch = JSON.stringify(
+        [...decision.assignments].sort((a, b) => a.card.localeCompare(b.card)).map((entry) => [entry.card, entry.task]),
+      )
+      repeats = batch === repeated ? repeats + 1 : 0
+      repeated = batch
 
       spent++
       activity.note(
@@ -782,6 +804,16 @@ export function start(
       const results: { card: string; text?: string; error?: string }[] = []
       await pool(decision.assignments, limit, controller.signal, async (assignment) => {
         const child = nodes.get(assignment.card)!
+        // A critic judges from a session it has never used before. Reusing one
+        // would let it read its own earlier verdicts, and a critic that has
+        // watched the work improve grades the improvement rather than the
+        // work — which is the failure the separate critic exists to prevent.
+        // It costs the cached prefix and re-sends the reference files, and
+        // that is the price of the method.
+        if (gauntlet && isCritic(child)) {
+          nodeSession.delete(child.id)
+          consumed.delete(child.id)
+        }
         const answer = tree!.children(child.id).length
           ? await orchestrate(child, assignment.task, false)
           : await runSubagent(child, node, assignment.task)
@@ -800,12 +832,78 @@ export function start(
           decision.assignments.findIndex((entry) => entry.card === a.card) -
           decision.assignments.findIndex((entry) => entry.card === b.card),
       )
-      const remaining = budget - spent
+      const stop = exhausted(spent, repeats)
+      forced = stop
+      if (stop) activity.note(node.id, `bound:${node.id}:${spent}`, "told to answer", stop.error, "done")
+      const status = gauntlet ? spentSoFar() : undefined
       build = () =>
-        remaining > 0
-          ? dispatchResultPrompt(pipeline, results, remaining)
-          : `${dispatchResultPrompt(pipeline, results, 0)}\n\n${forceFinalPrompt("Your dispatch budget is spent.")}`
+        stop
+          ? `${dispatchResultPrompt(pipeline, results, 0, status)}\n\n${forceFinalPrompt(stop.reason)}`
+          : dispatchResultPrompt(pipeline, results, budget - spent, status)
     }
+  }
+
+  /**
+   * Why this orchestrator has to answer now, or undefined to keep going.
+   *
+   * Outside a gauntlet there is one bound and it is a count. Inside one there
+   * are four, and they are checked in the order a user would want to hear
+   * about them: an unenforceable cap first, because a spend limit nobody can
+   * measure is the one failure that would otherwise run for hours before
+   * anyone noticed.
+   */
+  function exhausted(spent: number, repeats: number) {
+    if (!gauntlet)
+      return spent >= dispatchesOf(pipeline)
+        ? {
+            reason: "Your dispatch budget is spent.",
+            error: `its ${dispatchesOf(pipeline)} dispatch(es) were spent`,
+          }
+        : undefined
+
+    // The cap the user set is the only thing bounding an hours-long run, and
+    // this build prices client-side from the model catalog: a model the
+    // catalog quotes no price for makes the cap unmeasurable, not generous.
+    const unpriced = log.usage?.unpriced ?? []
+    if (unpriced.length)
+      return {
+        reason: `This run cannot be priced, so its $${gauntlet.maxSpend} cap cannot be enforced. Answer with what you have.`,
+        error: `the run has a $${gauntlet.maxSpend} cap and ${unpriced.join(", ")} is unpriced, so nothing can enforce it`,
+      }
+
+    const cost = log.usage?.cost ?? 0
+    if (cost >= gauntlet.maxSpend)
+      return {
+        reason: `This run has spent its $${gauntlet.maxSpend} budget.`,
+        error: `the run reached its $${gauntlet.maxSpend} spend cap`,
+      }
+
+    const minutes = (Date.now() - log.started) / 60_000
+    if (minutes >= gauntlet.maxMinutes)
+      return {
+        reason: `This run has been going for ${gauntlet.maxMinutes} minutes, which is all the time it has.`,
+        error: `the run reached its ${gauntlet.maxMinutes} minute cap`,
+      }
+
+    if (repeats >= gauntlet.stall)
+      return {
+        reason: `You have handed out the same work ${repeats + 1} times in a row, so it is not improving. Answer with what you have.`,
+        error: `the same batch was dispatched ${repeats + 1} times in a row with nothing changing`,
+      }
+
+    return spent >= GAUNTLET_DISPATCHES
+      ? {
+          reason: `You have dispatched ${GAUNTLET_DISPATCHES} times, which is the hard ceiling on a gauntlet.`,
+          error: `the orchestrator reached the ${GAUNTLET_DISPATCHES} dispatch ceiling`,
+        }
+      : undefined
+  }
+
+  /** What a gauntlet's orchestrator is told it has left, in place of a countdown. */
+  function spentSoFar() {
+    const cost = log.usage?.cost ?? 0
+    const minutes = Math.round((Date.now() - log.started) / 60_000)
+    return `This run has spent $${cost.toFixed(2)} of $${gauntlet!.maxSpend} and ${minutes} of ${gauntlet!.maxMinutes} minutes.`
   }
 
   /**
@@ -846,9 +944,15 @@ export function start(
   /** A leaf card: one turn, one assignment, no protocol to speak. */
   async function runSubagent(node: FlowNode, parent: FlowNode, task: string) {
     const returning = nodeSession.has(node.id)
+    const critic = gauntlet && isCritic(node)
     await runTurn(
       node,
-      (skipped) => (returning ? reassignPrompt(task) : subagentPrompt(pipeline, node, parent, task, input, skipped)),
+      (skipped) =>
+        returning
+          ? reassignPrompt(task)
+          : critic
+            ? criticPrompt(pipeline, node, parent, task, input, skipped)
+            : subagentPrompt(pipeline, node, parent, task, input, skipped),
       true,
     )
     if (failed.has(node.id)) return undefined

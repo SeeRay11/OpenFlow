@@ -90,6 +90,39 @@ export type Pipeline = {
    */
   depth?: number
   dispatches?: number
+  /**
+   * Orchestration only: run the dispatch tree as a **gauntlet**.
+   *
+   * Present means on — the same shape as `mode` itself, so a canvas that has
+   * never been a gauntlet carries nothing and turning it off removes the key
+   * rather than leaving a dead flag behind. Read only through `gauntletOf`,
+   * which is what ties it to orchestration; a gauntlet is not a mode of its
+   * own, it is what an orchestration does with its dispatches.
+   */
+  gauntlet?: Gauntlet
+}
+
+/**
+ * The bounds of a gauntlet run.
+ *
+ * A gauntlet loops builders against critics until the work clears a bar, so
+ * unlike every other budget in this file there is no natural end to count down
+ * to — the loop stops because it ran out of money, out of time, or out of
+ * progress. All three are on at once, and the first to fire wins.
+ */
+export type Gauntlet = {
+  /**
+   * What the critics measure against, in the user's words. A gauntlet with no
+   * bar is refused: without something concrete to compare to, a critic invents
+   * a standard and the loop burns turns chasing a bar nobody set.
+   */
+  bar?: string
+  /** USD across the whole run. */
+  maxSpend?: number
+  /** Wall-clock minutes from the moment the run starts. */
+  maxMinutes?: number
+  /** How many identical dispatch batches in a row read as no progress. */
+  stall?: number
 }
 
 export type PermissionDecision = {
@@ -288,6 +321,41 @@ export function dispatchesOf(pipeline: Pipeline) {
 }
 
 /**
+ * How many times a gauntlet's orchestrator may dispatch.
+ *
+ * Deliberately not a bound the user tunes: a gauntlet's real bounds are money,
+ * time and progress, and a dispatch count sitting in front of them would end
+ * runs at an arbitrary round while the bar was still moving. It is here at all
+ * so that a run whose spend cannot be priced and whose clock somehow never
+ * advances still terminates.
+ */
+export const GAUNTLET_DISPATCHES = 500
+
+export const DEFAULT_MAX_SPEND = 5
+export const MAX_MAX_SPEND = 500
+export const DEFAULT_MAX_MINUTES = 60
+export const MAX_MAX_MINUTES = 720
+export const DEFAULT_STALL = 3
+export const MAX_STALL = 10
+
+/**
+ * A canvas's gauntlet settings, or `undefined` when it is not running one.
+ *
+ * Undefined for every mode but orchestration, so a pipeline or swarm that once
+ * carried gauntlet settings — or a hand-edited file that carries them now —
+ * cannot reach a scheduler that would not know what to do with them.
+ */
+export function gauntletOf(pipeline: Pipeline) {
+  if (modeOf(pipeline) !== "orchestration" || !pipeline.gauntlet) return undefined
+  return {
+    bar: pipeline.gauntlet.bar?.trim() ?? "",
+    maxSpend: money(pipeline.gauntlet.maxSpend, DEFAULT_MAX_SPEND, MAX_MAX_SPEND),
+    maxMinutes: clamp(pipeline.gauntlet.maxMinutes, DEFAULT_MAX_MINUTES, MAX_MAX_MINUTES),
+    stall: clamp(pipeline.gauntlet.stall, DEFAULT_STALL, MAX_STALL),
+  }
+}
+
+/**
  * A hand-edited store file must not be able to talk the engine into a bigger
  * run than the UI can ask for, so every budget is clamped where it is read
  * rather than trusted where it was written.
@@ -296,4 +364,11 @@ function clamp(value: number | undefined, fallback: number, max: number) {
   const rounded = Math.floor(value ?? fallback)
   if (!Number.isFinite(rounded)) return fallback
   return Math.min(max, Math.max(1, rounded))
+}
+
+/** `clamp` for a dollar amount, which is the one budget that is not a count. */
+function money(value: number | undefined, fallback: number, max: number) {
+  const amount = value ?? fallback
+  if (!Number.isFinite(amount)) return fallback
+  return Math.min(max, Math.max(0.01, amount))
 }

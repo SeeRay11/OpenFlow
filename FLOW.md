@@ -60,6 +60,32 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   re-prompt a session still working on the first orchestrator's task. There is deliberately no
   "no root" or "unreachable card" check: in a DAG something always has nothing pointing at it,
   and everything is downstream of some root, so those cases surface as a cycle or a second root.
+- **A gauntlet is an orchestration that stops on a bar instead of a count.** `Pipeline.gauntlet`
+  is a toggle on orchestration, not a fourth mode: same tree, same dispatch protocol, same
+  scheduler. Present means on (`gauntletOf()` returns nothing for any other mode, so settings
+  left in a file a user switched back cannot reach a scheduler with no critics in it). What
+  changes: the dispatch budget is replaced by `GAUNTLET_DISPATCHES` and the real bounds become
+  **spend, wall clock, and stall**, all three live at once, first to fire wins. Stall is
+  measured out here rather than asked of the model — the same batch (same cards, same task
+  text) dispatched N times running is what no progress looks like from outside. The
+  **unpriced-model check comes first**: this build prices client-side, so a model the catalog
+  does not quote makes the spend cap unmeasurable, and an unenforceable cap on a run designed
+  to go for hours is the one failure nobody would notice until the bill arrived — it stops the
+  run rather than warning.
+  **Critics are opencode's own `reviewer` role**, read off the role text like a swarm reads its
+  synthesizer, so designating one is renaming a card. A critic gets a **new session for every
+  verdict** (`nodeSession.delete` before dispatch): a critic that has watched the work improve
+  grades the improvement, not the work, which is the exact failure a separate critic exists to
+  prevent. It costs the cached prefix and re-sends the reference files every round; that is the
+  price of the method, not a bug to optimise away.
+  Two things the briefing must keep saying, both measured in the run this pattern comes from:
+  the critic inspects the **real output**, never the builder's summary, and **coupled work goes
+  to one builder in sequence** — fanning lighting, tone and sky out to cards that cannot see
+  each other made the result worse, not better. A missing bar **warns rather than blocks**,
+  because "make the orchestrator establish one first" is a real way to run this; a missing
+  critic blocks in both places that must stay in step (`shapeProblems` and the `start()` throw).
+  No vision: a critic reads source, runs builds, runs tests, hits the dev server. Visual A/B
+  waits for MCP to reach v2 sessions.
 - **No MCP tool can reach a card in this fork, so the dispatch tool is parked.** Proven
   2026-08-29, after it looked like a config bug for a long time. OpenFlow drives
   `client.v2.session.*`, so a card runs through the v2 session runner, and that runner has

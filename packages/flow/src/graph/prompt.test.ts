@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { DISPATCH_TOOL, FINISH_TOOL, MCP_REACHES_SESSIONS } from "./dispatch"
 import {
   buildPrompt,
+  criticPrompt,
   forceFinalPrompt,
   dispatchResultPrompt,
   orchestratorPrompt,
@@ -384,5 +385,76 @@ describe("the parked tool channel", () => {
     const text = forceFinalPrompt("Your dispatch budget is spent.")
     expect(text).not.toContain(FINISH_TOOL)
     expect(text).toContain("fenced block")
+  })
+})
+
+describe("gauntlet prompts", () => {
+  /** An orchestrator with one builder and one critic, running as a gauntlet. */
+  function gauntlet(bar = "the reference build, screenshot by screenshot"): Pipeline {
+    const graph = pipeline("boss->coder", "boss->reviewer")
+    for (const entry of graph.nodes) entry.agent.model = "opencode/x"
+    return { ...graph, mode: "orchestration", dispatches: 2, gauntlet: { bar } }
+  }
+  const at = (graph: Pipeline, id: string) => graph.nodes.find((entry) => entry.id === id)!
+
+  test("the orchestrator is told to loop against the bar, not to spend a budget", () => {
+    const graph = gauntlet()
+    const text = orchestratorPrompt(graph, at(graph, "boss"), "build the game")
+
+    expect(text).toContain("This run is a gauntlet")
+    expect(text).toContain("the reference build, screenshot by screenshot")
+    expect(text).toContain("Your critics: `reviewer`")
+    expect(text).toContain("it judges work against the bar")
+    // The countdown is the thing a gauntlet does not have.
+    expect(text).not.toContain("You may dispatch 2 time(s)")
+    expect(text).toContain("You are not counting dispatches")
+  })
+
+  test("the two failures this pattern actually has are named", () => {
+    const text = orchestratorPrompt(gauntlet(), at(gauntlet(), "boss"), "build the game")
+    // A builder grading itself passes, so the critic reads the artifact.
+    expect(text).toContain("Not your summary of it, not the builder's")
+    // Fan-out across coupled systems made the original run worse, not better.
+    expect(text).toContain("Splitting work that is coupled")
+  })
+
+  test("no bar makes finding one the orchestrator's first job", () => {
+    const text = orchestratorPrompt(gauntlet(""), at(gauntlet(""), "boss"), "build the game")
+    expect(text).toContain("No bar was set for this run")
+    expect(text).toContain("concrete")
+  })
+
+  test("a plain orchestration is untouched by any of it", () => {
+    const graph = { ...gauntlet(), gauntlet: undefined }
+    const text = orchestratorPrompt(graph, at(graph, "boss"), "build the game")
+    expect(text).not.toContain("gauntlet")
+    expect(text).toContain("You may dispatch 2 time(s)")
+  })
+
+  test("the critic is sent to the real output and made to pick a side", () => {
+    const graph = gauntlet()
+    const text = criticPrompt(graph, at(graph, "reviewer"), at(graph, "boss"), "judge the lighting", "build the game")
+
+    expect(text).toContain("You are the critic of an OpenFlow gauntlet")
+    expect(text).toContain("Go and look at the real output")
+    expect(text).toContain("which is better")
+    expect(text).toContain("the single largest gap")
+    expect(text).toContain("# The bar\n\nthe reference build, screenshot by screenshot")
+    expect(text).toContain("# What to judge\n\njudge the lighting")
+    // It judges; it does not fix.
+    expect(text).toContain("Do not fix anything")
+  })
+
+  test("the result prompt reports spend and time instead of a dispatch countdown", () => {
+    const graph = gauntlet()
+    const text = dispatchResultPrompt(
+      graph,
+      [{ card: "coder", text: "did the thing" }],
+      497,
+      "This run has spent $0.42 of $5 and 3 of 60 minutes.",
+    )
+    expect(text).toContain("This run has spent $0.42 of $5")
+    expect(text).not.toContain("497")
+    expect(text).toContain("`final` when it clears the bar")
   })
 })

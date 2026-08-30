@@ -1,7 +1,7 @@
 import { agentKey } from "../server/store"
-import { orchestrationShape } from "./orchestration"
+import { isCritic, orchestrationShape } from "./orchestration"
 import { swarmShape } from "./swarm"
-import { depthOf, dispatchesOf, modeOf, type Pipeline } from "./types"
+import { depthOf, dispatchesOf, gauntletOf, modeOf, type Pipeline } from "./types"
 
 export type Validation = { ok: true; layers: string[][] } | { ok: false; error: string }
 
@@ -268,6 +268,40 @@ function orchestrationProblems(pipeline: Pipeline): Preflight {
       kind: "no-subagents",
       message: `Card '${shape.root.role}' has nobody to dispatch to — connect the subagent cards it should assign work to`,
     })
+
+  const gauntlet = gauntletOf(pipeline)
+  if (gauntlet) {
+    // A gauntlet without a critic is an orchestration with no dispatch limit —
+    // the most expensive shape on the canvas, and nothing in it judging.
+    const critics = pipeline.nodes.filter(isCritic)
+    if (!critics.length)
+      blocking.push({
+        kind: "no-critic",
+        message:
+          "A gauntlet has no reviewer card, so nothing would judge the work against the bar — drop one on the canvas and wire it under an orchestrator",
+      })
+    else if (!critics.some((critic) => shape.children(critic.id).length === 0))
+      blocking.push({
+        kind: "orchestrating-critic",
+        message: "Every reviewer card here dispatches to cards of its own — a critic judges work, so at least one has to be a leaf",
+      })
+
+    // Not blocking: the briefing makes an orchestrator that was given no bar
+    // establish one before it builds anything. That is a real way to run this —
+    // it is just the expensive way, and worth saying out loud first.
+    if (!gauntlet.bar && !critics.some((critic) => critic.agent.attachments?.length))
+      warnings.push({
+        kind: "no-bar",
+        message:
+          "This gauntlet has no bar, so the orchestrator has to invent one before it can start — write what 'good' compares against, or pin reference files to a reviewer card",
+      })
+
+    warnings.push({
+      kind: "gauntlet-cost",
+      message: `A gauntlet runs until the work clears the bar — this one stops at $${gauntlet.maxSpend} or ${gauntlet.maxMinutes} minutes, whichever comes first`,
+    })
+    return { blocking, warnings }
+  }
 
   // Worst case, stated before a session exists. Every level multiplies, so the
   // number is the one thing a user cannot work out by looking at the canvas.

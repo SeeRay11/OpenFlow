@@ -422,3 +422,75 @@ describe("ancestors", () => {
     expect([...ancestors(graph, "c")].sort()).toEqual(["a", "b", "c"])
   })
 })
+
+describe("preflight: gauntlet", () => {
+  const withModel = (graph: Pipeline, model: string) => ({
+    ...graph,
+    nodes: graph.nodes.map((node) => ({ ...node, agent: { ...node.agent, model } })),
+  })
+  const unlocked = (...models: string[]) => ({ unlockedModels: new Set(models) })
+
+  function gauntlet(spec: string[], settings: Pipeline["gauntlet"] = { bar: "beat the reference build" }) {
+    return {
+      ...withModel(pipeline(...spec), "opencode/x"),
+      mode: "orchestration" as const,
+      gauntlet: settings,
+    }
+  }
+
+  const kinds = (graph: Pipeline) => ({
+    blocking: preflight(graph, unlocked("opencode/x")).blocking.map((problem) => problem.kind),
+    warnings: preflight(graph, unlocked("opencode/x")).warnings.map((problem) => problem.kind),
+  })
+
+  test("a builder and a critic under one orchestrator passes, with the caps stated", () => {
+    const result = kinds(gauntlet(["root->builder", "root->reviewer"]))
+    expect(result.blocking).toEqual([])
+    expect(result.warnings).toEqual(["gauntlet-cost"])
+    expect(preflight(gauntlet(["root->builder", "root->reviewer"]), unlocked("opencode/x")).warnings[0].message).toContain(
+      "$5",
+    )
+  })
+
+  test("no reviewer card blocks — the loop would run to a cap with nothing judging it", () => {
+    expect(kinds(gauntlet(["root->builder", "root->other"])).blocking).toEqual(["no-critic"])
+  })
+
+  test("a reviewer that dispatches to cards of its own is not a critic", () => {
+    expect(kinds(gauntlet(["root->reviewer", "reviewer->helper"])).blocking).toEqual(["orchestrating-critic"])
+  })
+
+  test("no bar warns rather than blocks — the orchestrator can be made to find one", () => {
+    expect(kinds(gauntlet(["root->builder", "root->reviewer"], {})).warnings).toEqual(["no-bar", "gauntlet-cost"])
+  })
+
+  test("reference files pinned to the critic count as a bar", () => {
+    const graph = gauntlet(["root->builder", "root->reviewer"], {})
+    const withFiles = {
+      ...graph,
+      nodes: graph.nodes.map((node) =>
+        node.id === "reviewer"
+          ? {
+              ...node,
+              agent: {
+                ...node.agent,
+                attachments: [{ id: "f1", name: "reference.png", mime: "image/png", url: "data:,", size: 1 }],
+              },
+            }
+          : node,
+      ),
+    }
+    expect(kinds(withFiles).warnings).toEqual(["gauntlet-cost"])
+  })
+
+  test("the fan-out session count is not quoted — a gauntlet is bounded by money and time", () => {
+    // Six subagents under a root would trip the >12-session warning in a plain
+    // orchestration. Here that number would be a fiction: nothing counts down.
+    const wide = gauntlet(["root->a", "root->b", "root->c", "root->d", "root->e", "root->reviewer"])
+    expect(kinds(wide).warnings).toEqual(["gauntlet-cost"])
+  })
+
+  test("the tree rules still apply", () => {
+    expect(kinds(gauntlet(["root->reviewer", "other->b"])).blocking).toContain("duplicate-orchestrator")
+  })
+})

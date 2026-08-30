@@ -4,6 +4,21 @@ import type { FlowNode, Pipeline } from "./types"
 export const ORCHESTRATOR_ROLE = "orchestrator"
 
 /**
+ * The role a card must carry to judge a gauntlet's work.
+ *
+ * It is opencode's own `reviewer`, not a new role: reviewing against a standard
+ * is what that card already is, and a gauntlet only changes what it is pointed
+ * at and how often. Read off the role text the same way a swarm reads its
+ * synthesizer, so designating a critic is renaming a card rather than setting a
+ * hidden flag.
+ */
+export const CRITIC_ROLE = "reviewer"
+
+export function isCritic(node: FlowNode) {
+  return node.role === CRITIC_ROLE
+}
+
+/**
  * An orchestration canvas read as a tree.
  *
  * The root is the card nothing points at; everything else is somebody's

@@ -1722,3 +1722,134 @@ describe("the tool channel is parked", () => {
     expect(log.nodes.find((node) => node.id === "root")!.output).toBe("the block decided")
   })
 })
+
+describe("gauntlet mode", () => {
+  const block = (body: string) => "```openflow\n" + body + "\n```"
+  const dispatch = (...cards: string[]) =>
+    block(JSON.stringify({ dispatch: cards.map((card) => ({ card, task: `do ${card}` })) }))
+  const final = (answer: string) => block(JSON.stringify({ final: answer }))
+
+  /** An orchestration running as a gauntlet, with a model on every card. */
+  function gauntlet(spec: string[], settings: Pipeline["gauntlet"] = { bar: "the reference build" }): Pipeline {
+    const graph = pipeline(...spec)
+    for (const node of graph.nodes) node.agent.model = "openai/gpt-x"
+    return { ...graph, mode: "orchestration", gauntlet: settings }
+  }
+
+  test("refuses a canvas with nothing to judge the work", () => {
+    const h = harness()
+    expect(() => h.run(gauntlet(["root->builder"]))).toThrow(/reviewer card/)
+    expect(h.dispatched).toEqual([])
+  })
+
+  test("the critic judges from a new session every time; the builder keeps its own", async () => {
+    const h = harness({
+      behavior: {
+        root: { output: dispatch("builder", "reviewer") },
+        builder: { output: "built it" },
+        reviewer: { output: "the bar still wins: the lighting is flat" },
+      },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+    })
+    // Two rounds: the same batch twice trips the stall bound, which is the
+    // cheapest way to get a second verdict out of a fake with fixed output.
+    await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "the reference build", stall: 1 })).done
+
+    const verdicts = h.promptLog.filter((entry) => entry.node === "reviewer")
+    expect(verdicts.length).toBeGreaterThan(1)
+    // Every verdict is a fresh session, so every one carries the full critic
+    // briefing rather than "your earlier assignment is finished with".
+    for (const verdict of verdicts) {
+      expect(verdict.text).toContain("You are the critic of an OpenFlow gauntlet")
+      expect(verdict.text).toContain("the reference build")
+    }
+    // The builder is the opposite: it remembers what it built.
+    const builds = h.promptLog.filter((entry) => entry.node === "builder")
+    expect(builds[0].text).toContain("You are one card in an OpenFlow run")
+    expect(builds[1].text).toContain("A new assignment")
+  })
+
+  test("the same batch handed out again and again stops the run", async () => {
+    const h = harness({
+      behavior: {
+        root: { output: dispatch("builder", "reviewer") },
+        builder: { output: "built it" },
+        reviewer: { output: "same gap as last time" },
+      },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 2 })).done
+
+    const root = log.nodes.find((node) => node.id === "root")!
+    expect(root.error).toContain("kept dispatching")
+    // Three identical batches, a turn to be told to answer, and it dispatched
+    // again — nowhere near the 500-dispatch ceiling.
+    expect(h.dispatched.filter((id) => id === "root").length).toBeLessThan(8)
+    expect(h.prompts.get("root")).toContain("same work")
+  })
+
+  test("the spend cap is what actually ends an hours-long run", async () => {
+    const h = harness({
+      behavior: {
+        root: { output: dispatch("builder", "reviewer") },
+        builder: { output: "built it" },
+        reviewer: { output: "not there yet" },
+      },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+      steps: {
+        builder: [
+          {
+            messageID: "m1",
+            model: "openai/gpt-x",
+            tokens: { input: 4_000_000, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+          },
+        ],
+      },
+    })
+    // $8 of input against a $3 cap, spent on the first round.
+    await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", maxSpend: 3 })).done
+
+    expect(h.prompts.get("root")).toContain("$3 budget")
+    expect(h.prompts.get("root")).toContain("Answer now")
+    expect(h.dispatched.filter((id) => id === "builder").length).toBe(1)
+  })
+
+  test("a model the catalog cannot price stops the run rather than running uncapped", async () => {
+    const h = harness({
+      behavior: {
+        root: { output: dispatch("builder", "reviewer") },
+        builder: { output: "built it" },
+        reviewer: { output: "not there yet" },
+      },
+      models: ["openai/gpt-x"],
+      steps: {
+        builder: [
+          {
+            messageID: "m1",
+            model: "openai/gpt-x",
+            tokens: { input: 10, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+          },
+        ],
+      },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", maxSpend: 3 })).done
+
+    expect(h.prompts.get("root")).toContain("cannot be priced")
+    expect(log.nodes.find((node) => node.id === "root")!.error).toContain("unpriced")
+  })
+
+  test("a gauntlet that clears the bar answers like any other orchestration", async () => {
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: { root: { output: final("it beats the reference now") } },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"])).done
+
+    expect(h.dispatched).toEqual(["root"])
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("it beats the reference now")
+    expect(log.status).toBe("done")
+  })
+})
