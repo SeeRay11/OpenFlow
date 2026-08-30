@@ -141,8 +141,17 @@ export const DEFAULT_MAX_PARALLEL = 4
  * Listed here rather than read off the agent's own `permission` block, because
  * that block is advisory once `auto` is answering: the reply this engine sends
  * is what actually decides, and it says "once" to everything.
+ *
+ * **`bash` is deliberately not here**, though it can obviously write. It is
+ * also the only way either of these cards can look at anything — an
+ * orchestrator listing the folder, a critic running `node --check` to prove
+ * the thing parses, which is exactly what a bar asks of it. Measured: with
+ * `bash` refused, an orchestrator spent both its turns being told it could not
+ * run `dir` and produced no control block at all, and the run died on the
+ * protocol. A card that edits through a shell command is a smaller problem
+ * than a critic that cannot run anything.
  */
-const MUTATING = new Set(["edit", "write", "patch", "bash"])
+const MUTATING = new Set(["edit", "write", "patch"])
 export const DEFAULT_NODE_TIMEOUT = 30 * 60_000
 export const DEFAULT_QUESTION_TIMEOUT = 5 * 60_000
 export const DEFAULT_CHECKPOINT_EVERY = 2_000

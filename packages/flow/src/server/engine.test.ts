@@ -1943,11 +1943,15 @@ describe("gauntlet mode", () => {
     // allowed to fix the thing it will later be asked to judge the fixing of.
     h.ask("root", { id: "p1", action: "edit", resources: ["game.js"] })
     h.ask("builder", { id: "p2", action: "edit", resources: ["game.js"] })
+    // Looking is not changing. Measured: refusing this left an orchestrator
+    // unable to run `dir`, and it produced no control block at all.
+    h.ask("root", { id: "p3", action: "bash", resources: ['dir "."'] })
     await flush()
     h.release("builder")
     await run.done
 
     expect(h.replies.find((reply) => reply.requestID === "p1")?.reply).toBe("reject")
     expect(h.replies.find((reply) => reply.requestID === "p2")?.reply).toBe("once")
+    expect(h.replies.find((reply) => reply.requestID === "p3")?.reply).toBe("once")
   })
 })
