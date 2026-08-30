@@ -3,9 +3,11 @@ import { setAvailableModels, setDefaultModel } from "./graph/default-model"
 import {
   DEFAULT_DEPTH,
   DEFAULT_DISPATCHES,
+  DEFAULT_MAX_SPEND,
   DEFAULT_ROUNDS,
   depthOf,
   dispatchesOf,
+  gauntletOf,
   modeOf,
   roundsOf,
 } from "./graph/types"
@@ -342,5 +344,66 @@ describe("orchestration budgets", () => {
     expect(depthOf(state.pipeline)).toBe(3)
     expect(dispatchesOf(state.pipeline)).toBe(1)
     expect(state.dirty).toBe(true)
+  })
+})
+
+describe("gauntlet settings", () => {
+  test("off until asked for, and on means the settings exist to edit", () => {
+    actions.setMode("orchestration")
+    expect(gauntletOf(state.pipeline)).toBeUndefined()
+
+    actions.setGauntlet(true)
+    expect(gauntletOf(state.pipeline)?.maxSpend).toBe(DEFAULT_MAX_SPEND)
+    expect(state.dirty).toBe(true)
+  })
+
+  test("turning it on is undoable — it changes what an existing graph does", () => {
+    graph("planner", "coder")
+    actions.setMode("orchestration")
+    actions.setGauntlet(true)
+
+    expect(actions.undo()).toBe(true)
+    expect(gauntletOf(state.pipeline)).toBeUndefined()
+    expect(state.pipeline.nodes).toHaveLength(2)
+  })
+
+  test("turning it off removes the key rather than leaving a dead flag", () => {
+    actions.setMode("orchestration")
+    actions.setGauntlet(true)
+    actions.setGauntletSetting({ bar: "the reference build" })
+    actions.setGauntlet(false)
+
+    expect(state.pipeline.gauntlet).toBeUndefined()
+    // The settings are not lost, though — turning it off is one undo step.
+    expect(actions.undo()).toBe(true)
+    expect(state.pipeline.gauntlet?.bar).toBe("the reference build")
+  })
+
+  test("re-picking the state it is already in costs no undo step", () => {
+    graph("planner")
+    actions.setMode("orchestration")
+    actions.setGauntlet(false)
+
+    // Two steps back: the mode, then the node. Not a third for a no-op.
+    expect(actions.undo()).toBe(true)
+    expect(actions.undo()).toBe(true)
+    expect(state.pipeline.nodes).toHaveLength(0)
+  })
+
+  test("a field edit is a field edit — the bar does not cost an undo step of the graph", () => {
+    actions.setMode("orchestration")
+    actions.setGauntlet(true)
+    actions.markSaved()
+    actions.setGauntletSetting({ maxSpend: 25 })
+    actions.setGauntletSetting({ maxMinutes: 240 })
+
+    expect(state.pipeline.gauntlet).toEqual({ maxSpend: 25, maxMinutes: 240 })
+    expect(state.dirty).toBe(true)
+  })
+
+  test("a field edit on a canvas with no gauntlet does nothing", () => {
+    actions.setMode("orchestration")
+    actions.setGauntletSetting({ bar: "beat this" })
+    expect(state.pipeline.gauntlet).toBeUndefined()
   })
 })

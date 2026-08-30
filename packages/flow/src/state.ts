@@ -13,7 +13,7 @@ import type {
 } from "./graph/types"
 import { applyEvent } from "./server/activity"
 import type { QuestionInfo } from "./server/client"
-import { emptyPipeline, modeOf, type FlowMode } from "./graph/types"
+import { emptyPipeline, modeOf, type FlowMode, type Gauntlet } from "./graph/types"
 import { wouldCycle } from "./graph/validate"
 
 export type NodeRuntime = {
@@ -253,6 +253,29 @@ export const actions = {
   setDispatches(dispatches: number) {
     setState("dirty", true)
     setState("pipeline", "dispatches", dispatches)
+  },
+
+  /**
+   * Turns the gauntlet on or off.
+   *
+   * Snapshotted like `setMode`, and for the same reason: it changes what the
+   * graph the user already drew will do — the dispatch budget stops applying
+   * and the run keeps going until it runs out of money or time — so undo has to
+   * reach it. Off removes the key rather than leaving a dead flag, but the
+   * settings survive the round trip in `history` if it is undone.
+   */
+  setGauntlet(on: boolean) {
+    if (!!state.pipeline.gauntlet === on) return
+    snapshot()
+    setState("dirty", true)
+    setState("pipeline", "gauntlet", on ? {} : undefined)
+  },
+
+  /** One gauntlet field. Clamped where it is read, not here. */
+  setGauntletSetting(patch: Partial<Gauntlet>) {
+    if (!state.pipeline.gauntlet) return
+    setState("dirty", true)
+    setState("pipeline", "gauntlet", (current) => ({ ...current, ...patch }))
   },
 
   /**

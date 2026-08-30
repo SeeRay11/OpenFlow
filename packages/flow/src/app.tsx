@@ -3,6 +3,7 @@ import { Canvas } from "./canvas/canvas"
 import {
   depthOf,
   dispatchesOf,
+  gauntletOf,
   MAX_DEPTH,
   MAX_DISPATCHES,
   MAX_ROUNDS,
@@ -77,6 +78,7 @@ import { SessionsPanel } from "./ui/sessions-panel"
 import { SkillsPanel } from "./ui/skills-panel"
 import { SpendPanel } from "./ui/spend-panel"
 import { EngineDialog } from "./ui/engine-dialog"
+import { GauntletDialog } from "./ui/gauntlet-dialog"
 import { costLabel } from "./server/usage"
 import { Select, type SelectOption } from "./ui/select"
 
@@ -108,6 +110,10 @@ const PIPE_OPTIONS: SelectOption[] = [
   { value: "ancestors", label: "ancestors", hint: "every upstream node" },
   { value: "direct", label: "direct", hint: "immediate parents only" },
 ]
+const GAUNTLET_OPTIONS: SelectOption[] = [
+  { value: "off", label: "off", hint: "dispatch, then answer" },
+  { value: "on", label: "on", hint: "loop against a bar until it holds" },
+]
 const POLICY_OPTIONS: SelectOption[] = [
   { value: "auto", label: "auto", hint: "answer for me" },
   { value: "manual", label: "ask me", hint: "prompt on the bar" },
@@ -123,6 +129,9 @@ const TIMEOUT_OPTIONS: SelectOption[] = [5, 15, 30, 60].map((minutes) => ({
 
 /** How often the statusbar re-checks the engine while nothing else is talking to it. */
 const HEALTH_INTERVAL = 15_000
+
+/** How often a running gauntlet's elapsed-minutes readout advances. */
+const CLOCK_INTERVAL = 10_000
 
 /**
  * Whether a failure is the engine's rather than the request's.
@@ -176,6 +185,8 @@ export function App() {
   const [showSkills, setShowSkills] = createSignal(false)
   const [showMcp, setShowMcp] = createSignal(false)
   const [showSpend, setShowSpend] = createSignal(false)
+  const [gauntletOpen, setGauntletOpen] = createSignal(false)
+  const [tick, setTick] = createSignal(Date.now())
   const [engine, setEngine] = createSignal<ServeStatus>()
   const [restarting, setRestarting] = createSignal(false)
   /** Set when the engine needs restarting — drives the restart/command dialog. */
@@ -383,6 +394,9 @@ export function App() {
       if (document.hidden || state.running || restarting()) return
       void probe()
     }, HEALTH_INTERVAL)
+    // The clock behind the gauntlet readout. It only has to be right to the
+    // minute, and it stops mattering the moment a run finishes.
+    const clock = setInterval(() => state.running && setTick(Date.now()), CLOCK_INTERVAL)
     // Coming back to a tab that sat hidden for an hour should not wait out the
     // interval before admitting the engine died meanwhile.
     const onVisibility = () => {
@@ -399,6 +413,7 @@ export function App() {
     window.addEventListener("beforeunload", onBeforeUnload)
     onCleanup(() => {
       clearInterval(timer)
+      clearInterval(clock)
       document.removeEventListener("visibilitychange", onVisibility)
       window.removeEventListener("beforeunload", onBeforeUnload)
     })
@@ -649,6 +664,24 @@ export function App() {
         .filter((node) => node.status === "done" && node.output !== undefined)
         .map((node) => [node.id, node.output as string]),
     )
+  }
+
+  /**
+   * How far a gauntlet is through the two bounds that will stop it.
+   *
+   * Undefined for every other canvas, which has a node count to read progress
+   * from instead. The clock is read off `tick` so it advances on its own — a
+   * gauntlet can sit on one long card for many minutes, and a readout that only
+   * moved when a node settled would look stopped.
+   */
+  function gauntletProgress(log: RunLog) {
+    const settings = gauntletOf(state.pipeline)
+    if (!settings) return undefined
+    const elapsed = Math.round(((log.finished ?? tick()) - log.started) / 60_000)
+    return {
+      spend: `$${(log.usage?.cost ?? 0).toFixed(2)} / $${settings.maxSpend}`,
+      time: `${elapsed} / ${settings.maxMinutes}m`,
+    }
   }
 
   /** A finished run with something left undone is the only time resuming means anything. */
@@ -1029,14 +1062,43 @@ export function App() {
               options={DEPTH_OPTIONS}
               onChange={(value) => actions.setDepth(Number(value))}
             />
+            {/* A gauntlet replaces the dispatch budget with money and time, so
+                offering both at once would show a countdown that no longer
+                counts. */}
+            <Show
+              when={gauntletOf(state.pipeline)}
+              fallback={
+                <Select
+                  variant="ghost"
+                  prefix="dispatches: "
+                  width={280}
+                  title="how many times one orchestrator may hand work out before it has to answer"
+                  value={String(dispatchesOf(state.pipeline))}
+                  options={DISPATCH_OPTIONS}
+                  onChange={(value) => actions.setDispatches(Number(value))}
+                />
+              }
+            >
+              {(settings) => (
+                <button
+                  class="btn btn-ghost"
+                  type="button"
+                  title="the bar this run is judged against, and the money, time and stall bounds that stop it"
+                  onClick={() => setGauntletOpen(true)}
+                >
+                  <IconSliders />
+                  {settings().bar ? `bar · $${settings().maxSpend} · ${settings().maxMinutes}m` : "set the bar"}
+                </button>
+              )}
+            </Show>
             <Select
               variant="ghost"
-              prefix="dispatches: "
-              width={280}
-              title="how many times one orchestrator may hand work out before it has to answer"
-              value={String(dispatchesOf(state.pipeline))}
-              options={DISPATCH_OPTIONS}
-              onChange={(value) => actions.setDispatches(Number(value))}
+              prefix="gauntlet: "
+              width={320}
+              title="keep looping builders against critics until the work clears a bar — the run can go for hours and is stopped by spend, time or no progress"
+              value={gauntletOf(state.pipeline) ? "on" : "off"}
+              options={GAUNTLET_OPTIONS}
+              onChange={(value) => actions.setGauntlet(value === "on")}
             />
           </Show>
           <Select
@@ -1305,6 +1367,17 @@ export function App() {
         <SpendPanel onClose={() => setShowSpend(false)} />
       </Show>
 
+      {/* Only reachable while the canvas is a gauntlet, and it closes itself if
+          the mode changes underneath it rather than editing settings nothing
+          would read. */}
+      <Show when={gauntletOpen() && gauntletOf(state.pipeline)}>
+        <GauntletDialog
+          pipeline={state.pipeline}
+          onChange={actions.setGauntletSetting}
+          onClose={() => setGauntletOpen(false)}
+        />
+      </Show>
+
       <footer class="statusbar">
         <div class="statusbar-left">
           <span
@@ -1321,6 +1394,16 @@ export function App() {
                 <span class="badge" data-status={log().status}>
                   {log().status}
                 </span>
+                {/* A gauntlet has no node count to read progress from — it ends
+                    on money or time, so those are what a run has to show while
+                    it is going. */}
+                <Show when={gauntletProgress(log())}>
+                  {(progress) => (
+                    <span class="mono" title="what this gauntlet has spent of the bounds that will stop it">
+                      {progress().spend} · {progress().time}
+                    </span>
+                  )}
+                </Show>
                 <span class="run-nodes">
                   <For each={log().nodes}>
                     {(node) => (
