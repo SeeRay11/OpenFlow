@@ -1073,7 +1073,7 @@ ${serve.command}`
           failed.add(node.id)
           patch(node.id, {
             status: "error",
-            error: `the server does not know an agent named "${node.agent.name}" — it loads a project's opencode.json once at boot, so a merged agent stays invisible until it restarts. ${how}`,
+            error: `the server does not know an agent named "${node.agent.name}" — it reads its config once at boot, so a merged agent stays invisible until it restarts. ${how}`,
             finished: Date.now(),
           })
         }

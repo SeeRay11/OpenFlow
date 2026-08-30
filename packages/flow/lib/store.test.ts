@@ -341,35 +341,54 @@ describe("runs", () => {
 describe("agents", () => {
   const agent = { agent: { "feature-build-planner": { mode: "primary", prompt: "plan" } } }
 
+  /**
+   * A merge lands in the *global* config, not the project's: a session's
+   * location is the engine's cwd, so agents written into the target project are
+   * not there when the run drains, and the run fails with "the server does not
+   * know an agent named …". `XDG_CONFIG_HOME` keeps that out of the developer's
+   * own config.
+   */
+  let global: string
+
+  beforeEach(async () => {
+    process.env.XDG_CONFIG_HOME = path.join(dir, "xdg")
+    global = path.join(dir, "xdg", "opencode", "opencode.json")
+    await fs.mkdir(path.dirname(global), { recursive: true })
+  })
+
+  afterEach(() => {
+    delete process.env.XDG_CONFIG_HOME
+  })
+
   test("writes only the generated block unless a merge is asked for", async () => {
     const result = await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent })
 
     expect(result!.body).toMatchObject({ merged: false })
     const written = JSON.parse(await read(path.join(paths.generated, "feature-build.opencode.json")))
     expect(written.agent).toEqual(agent.agent)
-    await expect(read(path.join(dir, "opencode.json"))).rejects.toThrow()
+    await expect(read(global)).rejects.toThrow()
   })
 
   test("merge creates the config when the project has none", async () => {
     const result = await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
 
     expect(result!.body).toMatchObject({ merged: true, backup: undefined })
-    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
+    const config = JSON.parse(await read(global))
     expect(config.agent).toEqual(agent.agent)
   })
 
   test("merge keeps what the project already had", async () => {
-    await fs.writeFile(path.join(dir, "opencode.json"), JSON.stringify({ model: "opencode/x", agent: { mine: {} } }))
+    await fs.writeFile(global, JSON.stringify({ model: "opencode/x", agent: { mine: {} } }))
 
     await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
 
-    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
+    const config = JSON.parse(await read(global))
     expect(config.model).toBe("opencode/x")
     expect(Object.keys(config.agent).sort()).toEqual(["feature-build-planner", "mine"])
   })
 
   test("a second merge does not overwrite the original backup", async () => {
-    const target = path.join(dir, "opencode.json")
+    const target = global
     await fs.writeFile(target, JSON.stringify({ agent: { mine: {} } }))
     const changed = { agent: { "feature-build-planner": { mode: "primary", prompt: "replan" } } }
 
@@ -381,7 +400,7 @@ describe("agents", () => {
   })
 
   test("a merge that changes nothing does not touch the config or leave a backup", async () => {
-    const target = path.join(dir, "opencode.json")
+    const target = global
     await fs.writeFile(target, JSON.stringify({ agent: { mine: {} } }))
 
     await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
@@ -400,7 +419,7 @@ describe("agents", () => {
       description: `OpenFlow node ${id} (${role}) of pipeline ${pipeline}`,
     })
     await fs.writeFile(
-      path.join(dir, "opencode.json"),
+      global,
       JSON.stringify({
         agent: {
           "feature-build-planner": marked("n1", "planner"),
@@ -418,7 +437,7 @@ describe("agents", () => {
       search: "merge=1",
     })
 
-    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
+    const config = JSON.parse(await read(global))
     expect(Object.keys(config.agent).sort()).toEqual([
       "feature-build-mine",
       "feature-build-planner",
@@ -436,16 +455,16 @@ describe("agents", () => {
       path: path.join(paths.generated, "feature-build.opencode.json"),
       unchanged: true,
     })
-    await expect(read(path.join(dir, "opencode.json"))).rejects.toThrow()
+    await expect(read(global)).rejects.toThrow()
   })
 
   test("refuses to merge into a config it cannot parse", async () => {
-    await fs.writeFile(path.join(dir, "opencode.json"), "{not json")
+    await fs.writeFile(global, "{not json")
 
     const result = await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
 
     expect(result!.body).toMatchObject({ merged: false, error: expect.stringContaining("not valid JSON") })
-    expect(await read(path.join(dir, "opencode.json"))).toBe("{not json")
+    expect(await read(global)).toBe("{not json")
   })
 
   test("cleans up after a pipeline whose name needed slugging", async () => {
@@ -456,7 +475,7 @@ describe("agents", () => {
       description: `OpenFlow node ${id} (${role}) of pipeline My Flow`,
     })
     await fs.writeFile(
-      path.join(dir, "opencode.json"),
+      global,
       JSON.stringify({ agent: { "my-flow-planner": marked("n1", "planner"), "my-flow-scout": marked("n0", "scout") } }),
     )
 
@@ -465,14 +484,14 @@ describe("agents", () => {
       search: "merge=1",
     })
 
-    expect(Object.keys(JSON.parse(await read(path.join(dir, "opencode.json"))).agent)).toEqual(["my-flow-planner"])
+    expect(Object.keys(JSON.parse(await read(global)).agent)).toEqual(["my-flow-planner"])
   })
 
   test("takes the raw name from the body when a caller sends one", async () => {
     // The block here carries no description to read the raw name back off, so
     // only `pipeline` in the body can supply it.
     await fs.writeFile(
-      path.join(dir, "opencode.json"),
+      global,
       JSON.stringify({ agent: { "my-flow-scout": { description: "OpenFlow node n0 (scout) of pipeline My Flow" } } }),
     )
 
@@ -481,7 +500,7 @@ describe("agents", () => {
       search: "merge=1",
     })
 
-    expect(Object.keys(JSON.parse(await read(path.join(dir, "opencode.json"))).agent)).toEqual(["my-flow-planner"])
+    expect(Object.keys(JSON.parse(await read(global)).agent)).toEqual(["my-flow-planner"])
   })
 })
 
@@ -570,17 +589,27 @@ describe("concurrent config writes", () => {
   })
 
   test("an agent merge and an mcp save do not discard each other", async () => {
-    await Promise.all([
-      call("POST", "/flow/api/pipelines/feature-build/agents", {
-        body: { agent: { "feature-build-planner": { mode: "primary" } } },
-        search: "merge=1",
-      }),
-      call("PUT", "/mcp/two", { body: { type: "local", command: ["b"] } }),
-    ])
+    // They no longer write the same file at all — agents go to the global
+    // config, because that is the only one a run reads, and MCP servers stay
+    // with the project. Both still have to land.
+    process.env.XDG_CONFIG_HOME = path.join(dir, "xdg")
+    await fs.mkdir(path.join(dir, "xdg", "opencode"), { recursive: true })
+    try {
+      await Promise.all([
+        call("POST", "/flow/api/pipelines/feature-build/agents", {
+          body: { agent: { "feature-build-planner": { mode: "primary" } } },
+          search: "merge=1",
+        }),
+        call("PUT", "/mcp/two", { body: { type: "local", command: ["b"] } }),
+      ])
 
-    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
-    expect(config.agent).toHaveProperty("feature-build-planner")
-    expect(config.mcp.two).toMatchObject({ type: "local" })
+      expect(JSON.parse(await read(path.join(dir, "xdg", "opencode", "opencode.json"))).agent).toHaveProperty(
+        "feature-build-planner",
+      )
+      expect(JSON.parse(await read(path.join(dir, "opencode.json"))).mcp.two).toMatchObject({ type: "local" })
+    } finally {
+      delete process.env.XDG_CONFIG_HOME
+    }
   })
 
   test("two mcp saves at once both survive", async () => {

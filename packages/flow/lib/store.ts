@@ -553,9 +553,18 @@ async function updateRunsIndex(paths: FlowPaths, id: string, body: any) {
 
 /**
  * Writes the generated `agent` block. By default it lands in
- * `.openflow/generated/<name>.opencode.json` so the project's own
- * `opencode.json` is never touched behind the user's back; `merge` folds the
- * block into the real config after copying it aside.
+ * `.openflow/generated/<name>.opencode.json` so nothing is touched behind the
+ * user's back; `merge` folds the block into the config that a run actually
+ * reads after copying it aside.
+ *
+ * That config is the **global** one, not the project's. A session's location is
+ * the engine's cwd, never `OPENFLOW_PROJECT`, so agents merged into the target
+ * project are not there at drain time: `AgentV2.select` returns
+ * `{ id, info: undefined }` for the unknown name and the card runs with no
+ * system prompt and the default tool set — or, once preflight checks the
+ * server's agent list, the run refuses outright with "the server does not know
+ * an agent named …". Measured on the first real gauntlet run, where all six
+ * cards failed that way one second after Run.
  */
 async function writeAgents(paths: FlowPaths, name: string, body: any, merge: boolean) {
   const block = { $schema: "https://opencode.ai/config.json", agent: body?.agent ?? {} }
@@ -564,11 +573,12 @@ async function writeAgents(paths: FlowPaths, name: string, body: any, merge: boo
   await writeAtomic(file, JSON.stringify(block, null, 2) + "\n")
   if (!merge) return { path: file, merged: false }
 
-  const target = path.join(paths.project, "opencode.json")
+  const global = await readGlobalConfig()
+  const target = global.target
   const pipeline = rawPipelineName(body, name)
   return serialize(target, async () => {
-    const config = await readProjectConfig(paths)
-    if ("error" in config) return { path: file, merged: false, error: config.error }
+    const config = await readGlobalConfig()
+    if ("error" in config && config.error) return { path: file, merged: false, error: config.error }
     // Fold the generated agents onto whatever is already there, dropping the ones
     // this pipeline generated last time that it no longer generates — a renamed
     // or deleted node would otherwise leave its agent behind forever, and a run
@@ -592,6 +602,9 @@ async function writeAgents(paths: FlowPaths, name: string, body: any, merge: boo
       return { path: config.raw === undefined ? file : target, merged: false, unchanged: true }
     if (config.comments) return { path: file, merged: false, error: CONFIG_HAS_COMMENTS }
     const backup = config.raw === undefined ? undefined : await backupConfig(target, config.raw)
+    // A machine that has never configured opencode has no `~/.config/opencode`
+    // to write into.
+    await fs.mkdir(path.dirname(target), { recursive: true })
     config.value.agent = nextAgent
     await writeAtomic(target, JSON.stringify(config.value, null, 2) + "\n")
     return { path: target, merged: true, backup }
