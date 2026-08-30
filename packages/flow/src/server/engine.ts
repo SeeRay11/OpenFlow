@@ -5,6 +5,7 @@ import {
   criticPrompt,
   dispatchResultPrompt,
   forceFinalPrompt,
+  judgeFirstPrompt,
   orchestratorPrompt,
   reassignPrompt,
   subOrchestratorPrompt,
@@ -133,6 +134,15 @@ export type RunOptions = {
 }
 
 export const DEFAULT_MAX_PARALLEL = 4
+
+/**
+ * Tool actions that change the work rather than read it.
+ *
+ * Listed here rather than read off the agent's own `permission` block, because
+ * that block is advisory once `auto` is answering: the reply this engine sends
+ * is what actually decides, and it says "once" to everything.
+ */
+const MUTATING = new Set(["edit", "write", "patch", "bash"])
 export const DEFAULT_NODE_TIMEOUT = 30 * 60_000
 export const DEFAULT_QUESTION_TIMEOUT = 5 * 60_000
 export const DEFAULT_CHECKPOINT_EVERY = 2_000
@@ -490,6 +500,13 @@ export function start(
     let reply: api.PermissionReply = "once"
     if (controller.signal.aborted) {
       reply = "reject"
+    } else if (gauntlet && node && (isCritic(node) || node.id === tree?.root?.id) && MUTATING.has(data.action)) {
+      // In a gauntlet these two cards judge and assign; neither may change the
+      // work. `auto` answers "once" to everything, so a card configured with
+      // `edit: deny` is still granted the tool when it asks — measured, and it
+      // is how an orchestrator ends up fixing the bug itself and then grading
+      // its own repair. The rule belongs here, where the answer is given.
+      reply = "reject"
     } else if (policy === "manual") {
       patch(nodeID, { activity: `awaiting permission: ${data.action}` })
       reply = hooks.onPermission
@@ -740,6 +757,19 @@ export function start(
     let repeats = 0
     /** Why the previous turn was told to answer, if it was. */
     let forced: { reason: string; error: string } | undefined
+    /** Whether the previous turn's `final` was already sent back for a verdict. */
+    let refused = false
+    /** Critic children of this card, and which of them have judged since the last build. */
+    const judges = children.filter((id) => isCritic(nodes.get(id)!))
+    const judged = new Set<string>()
+    /**
+     * Whether this card may answer yet.
+     *
+     * Only a card that actually has critics is held to this — a subtree
+     * orchestrator whose children are all builders has nobody to ask, and
+     * blocking it would deadlock the level above.
+     */
+    const unjudged = () => !!gauntlet && judges.length > 0 && judged.size === 0
 
     while (true) {
       // Always `reuse`: `runTurn` opens a session when the card has none, so
@@ -766,10 +796,25 @@ export function start(
       // A retry is spent on the malformed turn, not on the run's budget.
       retried = false
       if (decision.kind === "final") {
+        // A gauntlet ends when the work clears the bar, and the card that
+        // decides that is never the card that assigned the work. Measured: an
+        // orchestrator handed a broken build repaired it itself and then wrote
+        // a `final` certifying its own repair against every line of the bar,
+        // three minutes in, having dispatched nobody. So the answer is refused
+        // until a critic has judged the state the builders left — once each
+        // time, because a card that is asked twice and still will not have the
+        // work judged has stopped running a gauntlet.
+        if (unjudged() && !refused) {
+          refused = true
+          activity.note(node.id, `unjudged:${node.id}:${spent}`, "answered without a verdict", undefined, "done")
+          build = () => judgeFirstPrompt(pipeline, node)
+          continue
+        }
         outputs.set(node.id, decision.answer)
         patch(node.id, { output: decision.answer })
         return decision.answer
       }
+      refused = false
 
       // The previous turn was the forced one — it was told to answer and
       // dispatched anyway. Without this the loop never ends, and a model that
@@ -824,6 +869,17 @@ export function start(
         )
       })
       if (controller.signal.aborted) return undefined
+
+      // What this batch did to the standing verdict. A batch that built
+      // anything invalidates it — including a critic dispatched alongside a
+      // builder, which judged a folder the builder was writing to at the same
+      // time. Only a batch that is critics alone judges a state that holds
+      // still long enough to be judged.
+      if (gauntlet) {
+        if (decision.assignments.some((entry) => !isCritic(nodes.get(entry.card)!))) judged.clear()
+        else
+          for (const result of results) if (result.text !== undefined) judged.add(result.card)
+      }
 
       // `results` lands in pool completion order; the orchestrator asked in a
       // particular order and reads more easily in it.

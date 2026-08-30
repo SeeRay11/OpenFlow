@@ -23,6 +23,12 @@ import {
 type Behavior = {
   /** Text the node's session reports back. Defaults to "<id> output". */
   output?: string
+  /**
+   * One text per turn, for a card that says something different the second
+   * time — an orchestrator that dispatches and then answers. The last entry
+   * repeats once the list runs out, so a loop cannot run off the end.
+   */
+  outputs?: string[]
   /** Makes the node fail: the transcript comes back carrying this error. */
   error?: string
   /** Keeps the node running until the test calls `release(id)`. */
@@ -72,6 +78,8 @@ function harness(options: HarnessOptions = {}) {
   const sessionOf = new Map<string, string>() // nodeID -> sessionID
   const gates = new Map<string, ReturnType<typeof deferred>>()
   const dispatched: string[] = []
+  /** How many transcripts each node has produced, for per-turn `outputs`. */
+  const turns = new Map<string, number>()
   const prompts = new Map<string, string>()
   /** Every prompt in dispatch order — a card is prompted more than once in swarm mode. */
   const promptLog: { node: string; text: string }[] = []
@@ -146,6 +154,11 @@ function harness(options: HarnessOptions = {}) {
       const node = nodeOf.get(sessionID)!
       const spec = behavior[node] ?? {}
       if (spec.error) return { text: "", error: spec.error }
+      if (spec.outputs?.length) {
+        const turn = turns.get(node) ?? 0
+        turns.set(node, turn + 1)
+        return { text: spec.outputs[Math.min(turn, spec.outputs.length - 1)] }
+      }
       return { text: spec.output ?? `${node} output` }
     },
     async interrupt(sessionID: string) {
@@ -1841,15 +1854,100 @@ describe("gauntlet mode", () => {
     expect(log.nodes.find((node) => node.id === "root")!.error).toContain("unpriced")
   })
 
-  test("a gauntlet that clears the bar answers like any other orchestration", async () => {
+  test("an orchestrator cannot end a gauntlet on its own say-so", async () => {
+    // Measured against a real run: the orchestrator repaired a broken build
+    // itself, then wrote a `final` certifying its own repair against every line
+    // of the bar, three minutes in, having dispatched nobody.
     const h = harness({
       models: ["openai/gpt-x"],
       behavior: { root: { output: final("it beats the reference now") } },
     })
     const log = await h.run(gauntlet(["root->builder", "root->reviewer"])).done
 
-    expect(h.dispatched).toEqual(["root"])
+    // The first answer is sent back with the reason; the fake repeats itself,
+    // so the second one stands rather than looping forever on a card that will
+    // not dispatch.
+    expect(h.dispatched).toEqual(["root", "root"])
+    expect(h.prompts.get("root")).toContain("Not yet — nobody has judged this")
+    expect(h.prompts.get("root")).toContain("`reviewer`")
     expect(log.nodes.find((node) => node.id === "root")!.output).toBe("it beats the reference now")
+  })
+
+  test("a verdict from a critic lets the answer through", async () => {
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { output: dispatch("reviewer") },
+        reviewer: { output: "ours wins: nothing left worth fixing" },
+      },
+    })
+    // Round 1 dispatches the critic; the fake repeats the dispatch block, which
+    // trips the stall bound, and the forced answer is accepted with no refusal
+    // because a critic has judged this state.
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: 'b', stall: 1 })).done
+
+    expect(h.dispatched).toContain("reviewer")
+    expect(h.prompts.get("root")).not.toContain("Not yet — nobody has judged this")
+    expect(log.nodes.find((node) => node.id === "reviewer")!.status).toBe("done")
+  })
+
+  test("a critic dispatched alongside a builder has judged nothing", async () => {
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        // Both in one batch, then an answer on the strength of that verdict.
+        root: { outputs: [dispatch("builder", "reviewer"), final("shipped"), final("shipped")] },
+        builder: { output: "built it" },
+        reviewer: { output: "looks fine to me" },
+      },
+    })
+    // The critic read a folder the builder was writing to in the same batch, so
+    // its verdict does not count and the answer is still sent back.
+    await h.run(gauntlet(["root->builder", "root->reviewer"])).done
+
+    expect(h.promptLog.some((entry) => entry.node === "root" && entry.text.includes("Not yet"))).toBe(true)
+    expect(h.prompts.get("root")).toContain("no builder in the same batch")
+  })
+
+  test("a critic dispatched on its own does judge", async () => {
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { outputs: [dispatch("builder"), dispatch("reviewer"), final("shipped")] },
+        builder: { output: "built it" },
+        reviewer: { output: "ours wins" },
+      },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"])).done
+
+    // Built, then judged on its own, then answered — no refusal anywhere.
+    expect(h.dispatched.filter((id) => id !== "root")).toEqual(["builder", "reviewer"])
+    expect(h.promptLog.some((entry) => entry.node === "root" && entry.text.includes("Not yet"))).toBe(false)
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("shipped")
     expect(log.status).toBe("done")
+  })
+
+  test("the card that assigns the work may not change it", async () => {
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { outputs: [dispatch("builder"), dispatch("reviewer"), final("shipped")] },
+        builder: { hold: true },
+        reviewer: { output: "ours wins" },
+      },
+    })
+    const run = h.run(gauntlet(["root->builder", "root->reviewer"]))
+    await flush()
+    // `auto` answers "once" to everything, which is how a card configured with
+    // `edit: deny` still gets the tool. In a gauntlet the orchestrator is not
+    // allowed to fix the thing it will later be asked to judge the fixing of.
+    h.ask("root", { id: "p1", action: "edit", resources: ["game.js"] })
+    h.ask("builder", { id: "p2", action: "edit", resources: ["game.js"] })
+    await flush()
+    h.release("builder")
+    await run.done
+
+    expect(h.replies.find((reply) => reply.requestID === "p1")?.reply).toBe("reject")
+    expect(h.replies.find((reply) => reply.requestID === "p2")?.reply).toBe("once")
   })
 })

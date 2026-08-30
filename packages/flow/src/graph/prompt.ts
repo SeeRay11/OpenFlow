@@ -617,6 +617,41 @@ export function forceFinalPrompt(reason: string) {
 }
 
 /**
+ * What an orchestrator is told when it answers a gauntlet nobody judged.
+ *
+ * Measured: an orchestrator handed a broken build fixed it itself and then
+ * wrote a `final` certifying its own repair against every line of the bar,
+ * having dispatched nobody. The engine refuses that answer; this is the turn
+ * that tells it why, and it names the critics so the next block can be written
+ * without going back to the roster.
+ */
+export function judgeFirstPrompt(pipeline: Pipeline, node: FlowNode) {
+  const critics = subagentsOf(pipeline, node).filter(isCritic)
+  return [
+    "# Not yet — nobody has judged this",
+    "",
+    "You cannot end a gauntlet on your own assessment. The whole point of the loop is that the card",
+    "which decides the work is good is not the card that assigned it, and no critic has looked at what",
+    "the builders left.",
+    "",
+    `Dispatch ${critics.length === 1 ? "your critic" : "your critics"} — ${critics
+      .map((critic) => `\`${critic.id}\``)
+      .join(", ")} — and tell ${critics.length === 1 ? "it" : "them"} exactly what to open, what to run,`,
+    "and what the bar is. Send the critic to the work itself; a summary you wrote is not the work.",
+    "",
+    "Dispatch critics **alone**, with no builder in the same batch: a critic that judges a folder while",
+    "somebody else is writing to it has judged nothing.",
+    "",
+    "```" + FENCE,
+    '{ "dispatch": [ { "card": "<critic id>", "task": "what to open, what to run, and the bar" } ] }',
+    "```",
+    "",
+    "When the verdict comes back: if it says our work loses, hand the largest gap to the card that owns",
+    "it and go round again. Only once a critic has actually judged the current state may you answer.",
+  ].join("\n")
+}
+
+/**
  * A card dispatched again.
  *
  * It is prompted into the session it already holds, so it still has its

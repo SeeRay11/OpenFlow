@@ -677,7 +677,9 @@ export function App() {
   function gauntletProgress(log: RunLog) {
     const settings = gauntletOf(state.pipeline)
     if (!settings) return undefined
-    const elapsed = Math.round(((log.finished ?? tick()) - log.started) / 60_000)
+    // `tick` only advances every 10s, so a run started since the last one reads
+    // as negative minutes until it catches up.
+    const elapsed = Math.max(0, Math.round(((log.finished ?? tick()) - log.started) / 60_000))
     return {
       spend: `$${(log.usage?.cost ?? 0).toFixed(2)} / $${settings.maxSpend}`,
       time: `${elapsed} / ${settings.maxMinutes}m`,
