@@ -287,4 +287,40 @@ had followed it. The reader was wrong. Before blaming the card, check that what 
 actually read.
 
 
+---
+
+## 13. The write-hazard warning was inverted — *fixed*
+
+**Symptom.** Every run showed five warnings:
+
+```
+Node 'coder' can edit files or run commands but has no agent —
+it may write real files as the default build agent
+```
+
+while the cards beside them read `agent: flappy-3d-gauntlet-coder-world`. The panel contradicted
+the canvas, on every single run, which is how a warning stops being read at all.
+
+**Cause — wrong twice.**
+
+1. `syncAgents()` fills `node.agent.name` from `agentKey()` when a run **starts**. Preflight runs
+   *before* that, so the name is always empty there. The condition `!node.agent.name` was reading
+   a field that is populated one second later, so it fired for every node, always.
+2. The direction was backwards. `agentBlock` writes a `permission` block **only** from
+   `agent.tools`, so declaring tools is what *creates* the restriction. A node that declares no
+   tools gets an agent with no permission block and inherits the default — edit, write and bash
+   allowed. That is the node worth warning about, and it was the one saying nothing.
+
+So it fired when the user had done the right thing and stayed silent when they had not.
+
+**Fixed** (`fix(flow): warn about the nodes that actually run unrestricted`): the warning now
+fires when a node declares **no** tool permissions and names no existing agent —
+*"sets no tool permissions, so it runs with the default agent's — it can edit files and run
+commands"*. Declaring tools silences it, because that is what restricts the card.
+
+**Lesson.** A warning that fires on every run is worse than no warning: it trains the user to
+scroll past the panel that also carries the real ones. Worth a pass over the other preflight
+rules before release to check none of them read state that a run fills in later.
+
+
 *Appended as the run continues.*

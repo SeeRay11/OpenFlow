@@ -90,8 +90,17 @@ describe("layer", () => {
 describe("preflight", () => {
   // Every node the builder makes starts with no model, so a runnable graph has
   // to have one assigned; this helper does it in place for the whole pipeline.
+  /**
+   * A model on every node, and a tool set, so these graphs are about whatever
+   * each test is about. A node that declares no tools warns on its own account
+   * — it inherits the default agent's permissions — and that warning is its own
+   * test below.
+   */
   function withModel(graph: Pipeline, model: string) {
-    for (const node of graph.nodes) node.agent.model = model
+    for (const node of graph.nodes) {
+      node.agent.model = model
+      node.agent.tools = { read: true }
+    }
     return graph
   }
   const unlocked = (...models: string[]) => ({ unlockedModels: new Set(models) })
@@ -103,7 +112,7 @@ describe("preflight", () => {
       next.nodes.push({
         id: "verdict",
         role: "synthesizer",
-        agent: { prompt: "", model: graph.nodes[0]?.agent.model },
+        agent: { prompt: "", model: graph.nodes[0]?.agent.model, tools: { read: true } },
         position: { x: 0, y: 0 },
       })
     return next
@@ -264,17 +273,29 @@ describe("preflight", () => {
     expect(result.blocking).toEqual([])
   })
 
-  test("edit or bash without a restricted agent warns but does not block", () => {
+  test("a node that sets no tool permissions warns but does not block", () => {
+    // The generated agent gets a `permission` block only from `agent.tools`, so
+    // a node that declares none inherits the default agent's — edit, write and
+    // bash included.
     const graph = withModel(pipeline("a"), "opencode/x")
-    graph.nodes[0].agent.tools = { bash: true }
+    graph.nodes[0].agent.tools = undefined
     const result = preflight(graph, unlocked("opencode/x"))
     expect(result.blocking).toEqual([])
     expect(result.warnings.map((problem) => problem.kind)).toEqual(["unrestricted-write"])
   })
 
-  test("a named agent silences the write warning", () => {
+  test("declaring tools is what restricts a node, so it silences the warning", () => {
+    // This warned the other way round once: it fired for six cards that all ran
+    // under restricted generated agents, because `agent.name` is filled when the
+    // run starts and preflight reads it before that.
     const graph = withModel(pipeline("a"), "opencode/x")
-    graph.nodes[0].agent.tools = { edit: true }
+    graph.nodes[0].agent.tools = { bash: true }
+    expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
+  })
+
+  test("a named agent silences it too — that agent's own permissions apply", () => {
+    const graph = withModel(pipeline("a"), "opencode/x")
+    graph.nodes[0].agent.tools = undefined
     graph.nodes[0].agent.name = "coder"
     expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
   })
@@ -426,7 +447,7 @@ describe("ancestors", () => {
 describe("preflight: gauntlet", () => {
   const withModel = (graph: Pipeline, model: string) => ({
     ...graph,
-    nodes: graph.nodes.map((node) => ({ ...node, agent: { ...node.agent, model } })),
+    nodes: graph.nodes.map((node) => ({ ...node, agent: { ...node.agent, model, tools: { read: true } } })),
   })
   const unlocked = (...models: string[]) => ({ unlockedModels: new Set(models) })
 

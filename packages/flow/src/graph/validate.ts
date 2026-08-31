@@ -114,14 +114,24 @@ export function preflight(
       })
     }
 
-    // edit/bash without a restricted agent runs as the default `build` agent,
-    // which can write real files — the known hazard, named for the user.
-    const tools = node.agent.tools ?? {}
-    if ((tools.edit || tools.write || tools.bash) && !node.agent.name)
+    // A node that says nothing about tools runs unrestricted.
+    //
+    // This used to warn the other way round — "can edit files but has no agent"
+    // — and it was backwards twice over. Every node becomes a generated agent
+    // the moment a run starts (`syncAgents` fills `agent.name` from
+    // `agentKey`), so an empty name at preflight means nothing; it is filled a
+    // second later, which is why the warning fired for six cards that all ran
+    // under restricted agents. And declaring tools is what *creates* the
+    // restriction: `agentBlock` writes a `permission` block only from
+    // `agent.tools`, so a node that declares none inherits the default agent's
+    // permissions — edit, write and bash included. The hazard is silence, not
+    // toggles.
+    const tools = node.agent.tools
+    if (!node.agent.name && !(tools && Object.keys(tools).length))
       warnings.push({
         nodeId: node.id,
         kind: "unrestricted-write",
-        message: `Node '${node.role}' can edit files or run commands but has no agent — it may write real files as the default build agent`,
+        message: `Node '${node.role}' sets no tool permissions, so it runs with the default agent's — it can edit files and run commands`,
       })
   }
 
