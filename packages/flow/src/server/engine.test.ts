@@ -1474,17 +1474,36 @@ describe("orchestration mode", () => {
     await run.done
   })
 
-  test("a malformed block is handed back once, with the reason", async () => {
+  test("a malformed block is handed back, with the reason, and the ask gets terser", async () => {
     const h = harness({ behavior: { root: { output: "I will just answer in prose." } } })
     const log = await h.run(tree(["root->a"])).done
 
-    // Two turns: the original, and one re-ask. A model that cannot produce the
-    // protocol twice will not produce it on the third paid ask.
-    expect(h.promptLog.filter((turn) => turn.node === "root")).toHaveLength(2)
-    expect(h.promptLog[1].text).toContain("no ```openflow block")
+    // The original turn and three re-asks. One re-ask was the old rule and it
+    // threw away real runs: measured, a card was a single stray character from
+    // a correct dispatch it had spent twelve minutes reasoning towards.
+    const asks = h.promptLog.filter((turn) => turn.node === "root")
+    expect(asks).toHaveLength(4)
+    expect(asks[1].text).toContain("no ```openflow block")
+    expect(asks[1].text).toContain("`a`")
+    // Each ask is shorter than the last: a long explanation of why a card is
+    // writing prose is more prose.
+    expect(asks[2].text.length).toBeLessThan(asks[1].text.length)
+    expect(asks[3].text.length).toBeLessThan(asks[2].text.length)
+    expect(asks[3].text).toContain("and nothing else")
     expect(log.nodes.find((node) => node.id === "root")!.status).toBe("error")
     expect(log.nodes.find((node) => node.id === "root")!.error).toContain("control block")
     expect(log.status).toBe("error")
+  })
+
+  test("a turn that said nothing at all is told that, not that its block was malformed", async () => {
+    // Measured: a card that ends its turn on a tool call leaves no text, and
+    // being told its block was invalid when it sent no message reads as
+    // nonsense — it repeats the same empty turn.
+    const h = harness({ behavior: { root: { output: "" } } })
+    await h.run(tree(["root->a"])).done
+
+    expect(h.promptLog[1].text).toContain("no message at all")
+    expect(h.promptLog[1].text).toContain("ended it on a tool call")
   })
 
   test("dispatching a card that is not below you is refused before a session opens", async () => {

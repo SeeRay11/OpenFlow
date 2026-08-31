@@ -617,6 +617,65 @@ export function forceFinalPrompt(reason: string) {
 }
 
 /**
+ * The re-ask when a turn produced no usable control block.
+ *
+ * It gets shorter every time. The failure is almost never that the card does
+ * not understand the protocol — it is that the card is writing prose, or
+ * working, and the block never arrives. A long explanation of what went wrong
+ * is more of the thing that went wrong, so the last ask is barely a sentence
+ * and a shape to copy.
+ */
+export function protocolPrompt(
+  pipeline: Pipeline,
+  node: FlowNode,
+  reason: string,
+  attempt: number,
+  children: string[],
+) {
+  const example = children[0] ?? "<card id>"
+  if (attempt >= 3)
+    return [
+      "Reply with this and nothing else:",
+      "",
+      "```" + FENCE,
+      `{ "dispatch": [ { "card": "${example}", "task": "..." } ] }`,
+      "```",
+    ].join("\n")
+
+  if (attempt === 2)
+    return [
+      reason,
+      "",
+      "Do not work, do not explain, do not call a tool. Your entire next message is one block:",
+      "",
+      "```" + FENCE,
+      `{ "dispatch": [ { "card": "${example}", "task": "what it must do, in full" } ] }`,
+      "```",
+      "",
+      'or `{ "final": "the answer" }` if the work is done.',
+    ].join("\n")
+
+  return [
+    "# That turn decided nothing",
+    "",
+    reason,
+    "",
+    `The cards you can dispatch to are ${children.map((id) => `\`${id}\``).join(", ") || "(none)"}.`,
+    "End your next message with one fenced block and nothing after it:",
+    "",
+    "```" + FENCE,
+    `{ "dispatch": [ { "card": "${example}", "task": "what it must do, in full" } ] }`,
+    "```",
+    "",
+    "To finish instead:",
+    "",
+    "```" + FENCE,
+    '{ "final": "the answer to the task" }',
+    "```",
+  ].join("\n")
+}
+
+/**
  * What an orchestrator is told when it answers a gauntlet nobody judged.
  *
  * Measured: an orchestrator handed a broken build fixed it itself and then

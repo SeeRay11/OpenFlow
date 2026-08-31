@@ -7,6 +7,7 @@ import {
   forceFinalPrompt,
   judgeFirstPrompt,
   orchestratorPrompt,
+  protocolPrompt,
   reassignPrompt,
   subOrchestratorPrompt,
   subagentPrompt,
@@ -152,6 +153,13 @@ export const DEFAULT_MAX_PARALLEL = 4
  * than a critic that cannot run anything.
  */
 const MUTATING = new Set(["edit", "write", "patch"])
+
+/**
+ * How many times a card may be re-asked for a control block before its run
+ * fails. Protocol re-asks are not charged to the dispatch budget: they buy
+ * nothing, and the alternative to asking again is throwing away the run.
+ */
+const PROTOCOL_RETRIES = 3
 export const DEFAULT_NODE_TIMEOUT = 30 * 60_000
 export const DEFAULT_QUESTION_TIMEOUT = 5 * 60_000
 export const DEFAULT_CHECKPOINT_EVERY = 2_000
@@ -757,10 +765,19 @@ export function start(
             // itself speak the protocol.
             subOrchestratorPrompt(pipeline, node, parentOf(node.id)!, task, input, skipped)
     let spent = 0
-    // One retry, and only for a malformed block. A model that cannot produce
-    // the protocol twice in a row will not produce it on the third ask, and
-    // every ask is a paid turn.
-    let retried = false
+    /**
+     * Re-asks used on the protocol, not on the work.
+     *
+     * This was one, on the theory that a model which cannot produce the block
+     * twice will not produce it on the third ask. Measured against real runs,
+     * that theory cost more than it saved: three separate orchestration runs
+     * died here, and in one of them the card was a single stray character away
+     * from a correct dispatch it had spent twelve minutes reasoning towards.
+     * Killing an hours-long run over two bad turns is the expensive outcome, so
+     * the ask is repeated — and made terser each time, because the failure is
+     * usually that the card is writing an essay instead of a block.
+     */
+    let retries = 0
     /** The last batch this card dispatched, and how many times in a row. */
     let repeated = ""
     let repeats = 0
@@ -789,21 +806,27 @@ export function start(
       const decision = await decide(node, children)
 
       if (decision.kind === "error") {
-        if (retried) {
+        if (retries >= PROTOCOL_RETRIES) {
           failed.add(node.id)
           const reason = `the orchestrator never produced a usable control block — ${decision.reason}`
           activity.note(node.id, `protocol:${node.id}`, "unusable control block", decision.reason, "error")
           patch(node.id, { status: "error", error: reason, activity: undefined, finished: Date.now() })
           return undefined
         }
-        retried = true
-        activity.note(node.id, `protocol:retry:${node.id}`, "re-asked for a control block", decision.reason, "done")
-        build = () => forceFinalPrompt(`${decision.reason} Send the block again, correctly.`)
+        retries++
+        activity.note(
+          node.id,
+          `protocol:retry:${node.id}:${retries}`,
+          `re-asked for a control block (${retries} of ${PROTOCOL_RETRIES})`,
+          decision.reason,
+          "done",
+        )
+        build = () => protocolPrompt(pipeline, node, decision.reason, retries, children)
         continue
       }
 
       // A retry is spent on the malformed turn, not on the run's budget.
-      retried = false
+      retries = 0
       if (decision.kind === "final") {
         // A gauntlet ends when the work clears the bar, and the card that
         // decides that is never the card that assigned the work. Measured: an

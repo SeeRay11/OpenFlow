@@ -421,14 +421,45 @@ export async function transcript(sessionID: string): Promise<Transcript> {
   const { client } = await connect()
   const body = unwrap<any>((await client.v2.session.messages({ sessionID, order: "desc", limit: 30 })) as any)
   const messages: any[] = body.data ?? []
-  const assistant = messages.find((message) => message.type === "assistant")
-  if (!assistant) return { text: "" }
-  const text = (assistant.content ?? [])
-    .filter((part: any) => part.type === "text")
-    .map((part: any) => part.text)
-    .join("\n")
-    .trim()
-  return { text, error: assistant.error ? describe(assistant.error) : undefined }
+
+  const found = turnText(messages)
+  if (!found) return { text: "" }
+  return { text: found.text, error: found.error ? describe(found.error) : undefined }
+}
+
+/**
+ * What a card said on its most recent turn, from the message page newest first.
+ *
+ * A turn is a *run* of assistant messages and only some of them carry text: a
+ * card that ends on a tool call leaves `content: [tool]` as its newest message,
+ * with what it actually said one or two messages behind it. Reading only the
+ * newest returns "" for those turns — measured, that is what killed three
+ * orchestration runs with "your message carried no block" while the block sat
+ * in the same turn, two messages back.
+ *
+ * The scan stops at a user message carrying a top-level `text`, which is what a
+ * real prompt looks like. Tool output arrives as parts on an assistant message
+ * rather than as a prompt, so it cannot end the scan early — and stopping at the
+ * prompt is what keeps a *previous* turn's block from being read as this turn's
+ * answer, which would dispatch the same work twice.
+ *
+ * Errors belong to the newest message whether or not it said anything: a turn
+ * that failed after speaking is still a failed turn.
+ */
+export function turnText(messages: any[]) {
+  let newest: any
+  for (const message of messages) {
+    if (message.type === "user" && typeof message.text === "string" && message.text.trim()) break
+    if (message.type !== "assistant") continue
+    newest ??= message
+    const text = (message.content ?? [])
+      .filter((part: any) => part.type === "text")
+      .map((part: any) => part.text)
+      .join("\n")
+      .trim()
+    if (text) return { text, error: newest.error }
+  }
+  return newest ? { text: "", error: newest.error } : undefined
 }
 
 export type ToolCall = { id: string; name: string; input: unknown }

@@ -84,6 +84,16 @@ export function parseDispatch(text: string, children: string[]): Dispatch {
   // Only the whole message counts. Fishing a JSON object out of prose would
   // read an example the model was talking *about* as one it meant to send.
   const body = blocks.length ? blocks[blocks.length - 1][1] : text.trim()
+  // A turn that ended on a tool call and said nothing is a different mistake
+  // from a turn that wrote the wrong thing, and it needs a different thing said
+  // back: telling a card its block was malformed when it sent no message at all
+  // reads as nonsense and it repeats the same empty turn.
+  if (!text.trim())
+    return {
+      kind: "error",
+      reason:
+        "Your last turn produced no message at all — you ended it on a tool call. Tools do not decide anything here; the block does.",
+    }
   if (!blocks.length && !(body.startsWith("{") && body.endsWith("}")))
     return {
       kind: "error",

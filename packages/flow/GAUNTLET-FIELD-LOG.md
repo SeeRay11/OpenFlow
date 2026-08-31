@@ -238,4 +238,53 @@ so in its briefing, or have the engine sweep files no card claims between rounds
 cheaper and more honest.
 
 
+---
+
+## 12. "Your message carried no block" — the recurring one, and its actual cause — *fixed*
+
+**Symptom.** The most common failure of the whole exercise, hit on three separate runs and seen
+on other canvases too:
+
+```
+the orchestrator never produced a usable control block —
+Your message carried no ```openflow block, so nothing could be dispatched
+```
+
+**Cause — not formatting.** The run logs show `output length 0`. The card's final message was
+*empty*, and `transcript()` only ever read the **newest assistant message's text parts**. A card
+that ends its turn on a tool call leaves `content: [tool]` there, with what it actually said one
+or two messages behind it in the same turn:
+
+```
+assistant | parts:[tool]              ""
+assistant | parts:[tool]              ""
+assistant | parts:[text,tool]         "Now I have the full picture. Let me verify…"
+user      | topText: string           <- the prompt that started the turn
+```
+
+So the engine asked "where is your block", the card had written one, and nobody ever looked at
+the message holding it.
+
+**Fixed**, in three layers:
+
+1. **`turnText`** (extracted from `transcript`, pure, tested): walk the page newest-first and take
+   the newest assistant message that *has* text, stopping at the user message carrying a top-level
+   `text` — a real prompt. Tool output arrives as parts on an assistant message, so it cannot end
+   the scan early, and stopping at the prompt is what stops a previous turn's block being re-read
+   as this turn's answer, which would dispatch the same work twice.
+2. **An empty turn is its own failure**, with its own words: *"Your last turn produced no message
+   at all — you ended it on a tool call. Tools do not decide anything here; the block does."*
+   Telling a card its block was malformed when it sent no message reads as nonsense, and it
+   repeats the same empty turn.
+3. **Three protocol re-asks instead of one**, each terser than the last — the third is one
+   sentence and a shape to copy. Protocol re-asks are not charged to the dispatch budget. The old
+   one-retry rule was justified as "a model that cannot do it twice will not do it on the third
+   ask"; measured, that theory threw away a run where the card was one stray character from a
+   correct dispatch it had reasoned towards for twelve minutes.
+
+**Lesson.** Two of these three runs looked like a model too weak to follow a protocol. The model
+had followed it. The reader was wrong. Before blaming the card, check that what it said was ever
+actually read.
+
+
 *Appended as the run continues.*

@@ -1,5 +1,5 @@
 import { describe as suite, expect, test } from "bun:test"
-import { describe, parseModel, formatModel } from "./client"
+import { describe, parseModel, formatModel, turnText } from "./client"
 
 suite("describe", () => {
   test("prefers a message field over the raw body", () => {
@@ -102,5 +102,45 @@ suite("model refs", () => {
   test("round-trips", () => {
     expect(formatModel(parseModel("opencode/glm-5.2"))).toBe("opencode/glm-5.2")
     expect(formatModel(undefined)).toBe("")
+  })
+})
+
+suite("turnText", () => {
+  const assistant = (...parts: string[]) => ({
+    type: "assistant",
+    content: parts.map((part) => (part === "tool" ? { type: "tool" } : { type: "text", text: part })),
+  })
+  const prompt = (text: string) => ({ type: "user", text, content: [] })
+
+  test("reads the newest assistant message that actually said something", () => {
+    // Measured shape: a card that ends its turn on tool calls leaves the newest
+    // messages textless, and the block it wrote sits two messages back.
+    const page = [assistant("tool"), assistant("tool"), assistant("the block", "tool"), prompt("go")]
+    expect(turnText(page)?.text).toBe("the block")
+  })
+
+  test("stops at the prompt, so a previous turn's block is never re-read", () => {
+    // Reading past the prompt would dispatch the same work a second time.
+    const page = [assistant("tool"), prompt("go again"), assistant("last turn's block")]
+    expect(turnText(page)?.text).toBe("")
+  })
+
+  test("tool output does not end the scan", () => {
+    const page = [assistant("tool"), { type: "user", content: [{ type: "tool_result" }] }, assistant("said it")]
+    expect(turnText(page)?.text).toBe("said it")
+  })
+
+  test("joins every text part of the message it settles on", () => {
+    expect(turnText([assistant("one", "two")])?.text).toBe("one\ntwo")
+  })
+
+  test("an error on the newest message survives a textless turn", () => {
+    const page = [{ type: "assistant", content: [{ type: "tool" }], error: { message: "boom" } }]
+    expect(turnText(page)).toEqual({ text: "", error: { message: "boom" } })
+  })
+
+  test("nothing to read at all", () => {
+    expect(turnText([prompt("go")])).toBeUndefined()
+    expect(turnText([])).toBeUndefined()
   })
 })
