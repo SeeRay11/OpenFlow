@@ -158,4 +158,54 @@ theoretical: the orchestrator did eventually diagnose and fix it, but only after
 
 ---
 
+---
+
+## 9. An orchestrator that could not edit produced nothing at all — *environmental, model-shaped*
+
+**Symptom.** With the permission fix in place, the orchestrator ran 22 bash commands
+investigating, tried `edit` twice (refused, correctly), and then emitted an **empty message** —
+no control block — so the run died on the protocol again.
+
+**Cause.** OpenRouter's free router. Blocked from the tool it wanted, the model produced nothing
+rather than choosing the other path. Three of the first four runs died in the orchestrator seat
+for protocol reasons, never in a builder.
+
+**Done.** Moved the orchestrator to the cheapest DeepSeek with tool support
+(`deepseek/deepseek-v4-flash`, $0.079/M in). The four builders and the critic stayed free.
+
+**For release.** The control seat is not where to save money. Worth saying in the docs: a
+gauntlet's orchestrator writes control blocks, not code, so it is the cheapest card to upgrade
+and the one most likely to sink a run. First orchestrator turn on DeepSeek: 3 steps, 45k tokens,
+$0.0033.
+
+---
+
+## 10. One stray character after the closing brace killed a correct dispatch — *fixed*
+
+**Symptom.** `the orchestrator never produced a usable control block — The ```openflow block is
+not valid JSON`. 726 seconds and $0.0218 spent to get there.
+
+**Cause.** The block was *right*. It named the card, the file, the line, and the fix — the
+orchestrator had correctly diagnosed that `THREE.Color` has no custom `toString()`, so
+`topColor.toString()` hands `addColorStop` the string `"[object Object]"`, and prescribed
+`'#' + topColor.getHexString()`. It ended:
+
+```
+... one-line fix per call." } ] }"
+```
+
+One `"` after the final brace. `JSON.parse` rejects the entire string over trailing junk, and
+that was the run.
+
+**Fixed** (`fix(flow): read the control block up to its closing brace`): when a strict parse
+fails, the parser now reads the first *balanced* JSON object and ignores whatever follows.
+Braces inside strings do not count and escaped quotes do not end them, so a task that quotes code
+still parses. It can only ever end earlier than the raw text, so genuinely broken JSON is still
+refused.
+
+**Lesson.** Strictness at the protocol boundary reads as robustness right up until it throws away
+a correct answer over a character. The rule that survives: refuse what is *ambiguous*, repair what
+is merely *untidy*.
+
+
 *Appended as the run continues.*

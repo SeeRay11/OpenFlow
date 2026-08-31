@@ -174,3 +174,42 @@ describe("fromToolCall", () => {
     expect(fromToolCall(DISPATCH_TOOL, undefined, children)!.kind).toBe("error")
   })
 })
+
+describe("a block with something stuck to the end", () => {
+  const block = (body: string) => "```" + FENCE + "\n" + body + "\n```"
+
+  test("a stray character after the closing brace does not cost the run", () => {
+    // Measured: a correct dispatch — right card, a task naming the file, the
+    // line and the fix — arrived with one `"` after the final `}`.
+    const text = block('{ "dispatch": [ { "card": "look", "task": "fix the sky gradient" } ] }"')
+    expect(parseDispatch(text, ["look"])).toEqual({
+      kind: "dispatch",
+      assignments: [{ card: "look", task: "fix the sky gradient" }],
+    })
+  })
+
+  test("prose after the object is ignored too", () => {
+    const text = block('{ "final": "shipped" }\n\nLet me know if you want anything else.')
+    expect(parseDispatch(text, ["look"])).toEqual({ kind: "final", answer: "shipped" })
+  })
+
+  test("a brace inside a task string does not end the object early", () => {
+    const text = block('{ "dispatch": [ { "card": "look", "task": "replace `{ a: 1 }` with `{ a: 2 }`" } ] }')
+    expect(parseDispatch(text, ["look"])).toEqual({
+      kind: "dispatch",
+      assignments: [{ card: "look", task: "replace `{ a: 1 }` with `{ a: 2 }`" }],
+    })
+  })
+
+  test("an escaped quote inside a string does not end it", () => {
+    const text = block('{ "final": "it prints \\"[object Object]\\" instead of a colour" }')
+    expect(parseDispatch(text, ["look"])).toEqual({
+      kind: "final",
+      answer: 'it prints "[object Object]" instead of a colour',
+    })
+  })
+
+  test("genuinely broken JSON is still refused", () => {
+    expect(parseDispatch(block('{ "dispatch": [ { "card": "look" '), ["look"]).kind).toBe("error")
+  })
+})

@@ -181,6 +181,54 @@ function parseJson(text: string) {
   try {
     return JSON.parse(text) as unknown
   } catch {
+    // Fall through to the balanced-object read below.
+  }
+  const object = balanced(text)
+  if (object === undefined) return undefined
+  try {
+    return JSON.parse(object) as unknown
+  } catch {
     return undefined
   }
+}
+
+/**
+ * The first complete JSON object in `text`, ignoring whatever follows it.
+ *
+ * Models leave a character behind. Measured: a dispatch that was correct in
+ * every respect — right card, a task naming the file, the line and the fix —
+ * arrived with one stray `"` after the closing brace, and cost the run, because
+ * `JSON.parse` rejects the whole string over trailing junk. Reading to the
+ * matching brace and stopping recovers it.
+ *
+ * Braces inside strings do not count, and an escaped quote does not end one, so
+ * a task that talks about `{` or quotes something is still read correctly. This
+ * only ever *ends* earlier than the raw text: it cannot turn invalid JSON into
+ * a different valid object, and anything unbalanced still fails.
+ */
+function balanced(text: string) {
+  const start = text.indexOf("{")
+  if (start < 0) return undefined
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let index = start; index < text.length; index++) {
+    const character = text[index]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (character === "\\" && inString) {
+      escaped = true
+      continue
+    }
+    if (character === '"') {
+      inString = !inString
+      continue
+    }
+    if (inString) continue
+    if (character === "{") depth++
+    else if (character === "}" && --depth === 0) return text.slice(start, index + 1)
+  }
+  return undefined
 }
