@@ -208,4 +208,34 @@ a correct answer over a character. The rule that survives: refuse what is *ambig
 is merely *untidy*.
 
 
+---
+
+## 11. The write refusal is bypassable through a shell redirect — *known, and it left litter*
+
+**Symptom.** A file literally named `0` appeared in the deliverable folder, holding the
+orchestrator's own diagnostics:
+
+```
+REVISION ref found: true
+getStyle idx: 87318 87318
+toString idx: 1432
+```
+
+**Cause.** The orchestrator is refused `edit` and `write` (#3) but keeps `bash` (#4), and a
+redirect writes files. Here it was grepping the vendored `three.min.js` to check whether
+`THREE.Color` really has no `toString` — exactly the investigation it should be doing — and a
+`2>0` style redirect dropped the output into the folder as a file.
+
+**Not fixed, deliberately.** Refusing bash costs more than it saves (#4). But two consequences
+belong in the docs, because a user shipping the result will hit both:
+
+- the "these cards cannot change the work" guarantee is *soft*: it stops the tool, not the shell
+- a gauntlet's output folder accumulates investigation litter, and the bar's "nothing left
+  unfinished" line should say so explicitly, or the final tidy will never happen
+
+**For release.** Either give the orchestrator a scratch directory outside the deliverable and say
+so in its briefing, or have the engine sweep files no card claims between rounds. The first is
+cheaper and more honest.
+
+
 *Appended as the run continues.*
