@@ -323,4 +323,30 @@ scroll past the panel that also carries the real ones. Worth a pass over the oth
 rules before release to check none of them read state that a run fills in later.
 
 
+---
+
+## 14. A run dies with the browser tab — *open, and the sharpest edge here*
+
+**Symptom.** Mid-run, every card went `idle` at once and the task box emptied. Nothing had
+failed: the canvas had reloaded.
+
+**Cause.** The engine runs **in the page**. Editing any file in `packages/flow` triggers the dev
+server's HMR, the page reloads, and the run is gone — sessions orphaned, no log written, no
+resume. Here it was self-inflicted (fixing #13 while round seven was live), but a user only has
+to press F5, follow a link, or let a laptop sleep the tab.
+
+**Not fixed.** Two things would make this survivable, in increasing order of work:
+
+- **Warn before leaving during a run.** There is already a `beforeunload` guard for an unsaved
+  graph; a live run deserves the same, and does not have it.
+- **Resume from the run log.** Checkpoints are already written every couple of seconds, and
+  "Re-run failed" already reuses finished node outputs. What is missing is picking up a run that
+  was *interrupted* rather than one that finished badly — the sessions are still on the server and
+  addressable by id.
+
+**For release this is the one I would fix first.** Everything else in this log costs a round; this
+costs the whole run, silently, and the obvious user action (refresh when something looks stuck) is
+exactly the thing that triggers it.
+
+
 *Appended as the run continues.*
