@@ -349,4 +349,80 @@ costs the whole run, silently, and the obvious user action (refresh when somethi
 exactly the thing that triggers it.
 
 
+---
+
+## 15. A card reported success while every write was rejected — *fixed*
+
+**Symptom.** The card owning the largest file settled `done` after **1.36M tokens across 45
+steps** (839k input, 10k output). Its last activity line was
+`Invalid JSON input for openai-chat tool call write`. Nothing it claimed to write had been
+written, and the orchestrator was told the work was finished.
+
+**Cause.** `runTurn` decides a node's fate from the *transcript*: it fails a node only when the
+assistant message carries an `error`. A rejected tool call is not that — the message completes
+cleanly, the write simply never happened. Failed tool calls were already on the activity stream
+(`activity.ts` emits `kind: "tool", status: "error"`) but nothing read them for correctness.
+
+The trigger underneath: a whole-file `write` of an 11KB file through a model with an ~8k output
+cap. The content is inlined into the tool call's JSON arguments and truncated, so the arguments
+never parse.
+
+**Fixed** (`fix(flow): tell the orchestrator when a card's tools were rejected`): after a turn
+drains, the engine counts this turn's failed tool events, records `toolFailures` on the run log,
+and appends a note to the card's own answer — which is the only thing the orchestrator reads.
+Surfaced rather than auto-failed: one call can be rejected and the next succeed, so counting is
+honest where a hard fail would be wrong.
+
+---
+
+## 16. A 5.3KB dispatch ran out of room before its closing brace — *fixed*
+
+**Symptom.** `the orchestrator never produced a usable control block — The ```openflow block is
+not valid JSON`, again, after the trailing-junk repair (#10) was already in.
+
+**Cause.** This time the JSON really was broken. The orchestrator wrote a **5,381-character**
+dispatch with an entire verification script inlined in the `task`, and the message ended:
+
+```
+… "priority": "high" } ]
+```
+
+Every brace closed but the outermost. `balanced()` correctly refused it, because the object never
+closes.
+
+**Fixed, in two places.**
+
+- *The parser*: when the scan reaches the end with openers outstanding, close them in reverse —
+  and close an unterminated string too, after trimming the trailing whitespace that would
+  otherwise be a raw newline inside a JSON string. The repair only ever *appends closers*, so it
+  cannot invent a card or a key; a dispatch missing its `card` is still refused.
+- *The briefing*: the orchestrator is now told to keep a task to a few hundred words and never to
+  paste scripts or file contents into one — a card has its own tools and can write its own
+  checks. This is the real fix; the parser repair is the safety net.
+
+---
+
+## 17. Seven helper scripts in the deliverable — *fixed at the briefing*
+
+**Symptom.** By the end of one round the game folder held `check.js`, `verify.js`,
+`verify_final.js`, `verify_final2.js`, `fix_sync.js`, `apply_fix.js`, `test_dummy.txt` and a file
+named `[object Object]` — none of them part of the game.
+
+**Cause.** Two things at once. Cards write scratch files to verify their own work (reasonable),
+and the ones whose `write` calls were being rejected (#15) fell back to shelling out Node patch
+scripts (also reasonable). The bar says "nothing left unfinished" but nobody had told a card
+where scratch is allowed to live.
+
+**Fixed.** The subagent briefing now says it plainly: scripts a card writes to check or patch its
+own work go in `.scratch/`, and the deliverable holds only what ships.
+
+---
+
+## 18. A live run now survives a stray refresh — *fixed*
+
+Following #14: `beforeunload` guarded an unsaved graph but not a live run, though the run is the
+thing with no recovery at all. It now guards both. Resuming an *interrupted* run from its
+checkpoints is still open, and still the most valuable thing left on this list.
+
+
 *Appended as the run continues.*

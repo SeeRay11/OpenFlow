@@ -12,6 +12,7 @@ import {
   subOrchestratorPrompt,
   subagentPrompt,
   swarmPrompt,
+  toolFailureNote,
   synthesisPrompt,
 } from "../graph/prompt"
 import { swarmShape } from "../graph/swarm"
@@ -632,6 +633,9 @@ export function start(
    */
   async function runTurn(node: FlowNode, build: (skipped: Attachment[]) => string, reuse = false) {
     const opened = reuse ? nodeSession.get(node.id) : undefined
+    // Only this turn's tool failures count; a card is prompted into the session
+    // it already holds, so every earlier turn's are still on the stream.
+    const turnStarted = Date.now()
     patch(node.id, {
       status: "running",
       ...(opened ? {} : { started: Date.now() }),
@@ -674,8 +678,29 @@ export function start(
 
       const result = await api.transcript(sessionID)
       if (result.error) throw new Error(result.error)
-      outputs.set(node.id, result.text)
-      patch(node.id, { status: "done", output: result.text, activity: undefined, finished: Date.now() })
+      // A card whose tools were rejected still ends its turn cleanly: the
+      // assistant message carries no error, so the node settles `done` and the
+      // orchestrator is told the work is finished. Measured: a card burned
+      // 1.36M tokens with every `write` bounced as "Invalid JSON input for
+      // openai-chat tool call write", reported success, and was re-dispatched on
+      // a false premise. The failures are already on the activity stream; this
+      // is what makes the control loop see them.
+      const rejected = (events.get(node.id) ?? []).filter(
+        (event) => event.kind === "tool" && event.status === "error" && event.at >= turnStarted,
+      )
+      const answer = rejected.length ? `${result.text}\n\n${toolFailureNote(rejected)}` : result.text
+      if (rejected.length) {
+        entry(node.id).toolFailures = rejected.length
+        activity.note(
+          node.id,
+          `tools:${node.id}:${turnStarted}`,
+          `${rejected.length} tool call(s) rejected`,
+          rejected.map((event) => `${event.title}: ${event.body ?? "failed"}`).join("\n"),
+          "error",
+        )
+      }
+      outputs.set(node.id, answer)
+      patch(node.id, { status: "done", output: answer, activity: undefined, finished: Date.now() })
     } catch (error) {
       failed.add(node.id)
       if (error instanceof StopError || controller.signal.aborted) {

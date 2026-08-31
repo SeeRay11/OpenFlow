@@ -219,7 +219,8 @@ function parseJson(text: string) {
 function balanced(text: string) {
   const start = text.indexOf("{")
   if (start < 0) return undefined
-  let depth = 0
+  /** Openers still waiting to be closed, so a truncated block can be finished. */
+  const open: string[] = []
   let inString = false
   let escaped = false
   for (let index = start; index < text.length; index++) {
@@ -237,8 +238,30 @@ function balanced(text: string) {
       continue
     }
     if (inString) continue
-    if (character === "{") depth++
-    else if (character === "}" && --depth === 0) return text.slice(start, index + 1)
+    if (character === "{" || character === "[") open.push(character)
+    else if (character === "}" || character === "]") {
+      open.pop()
+      if (!open.length) return text.slice(start, index + 1)
+    }
   }
-  return undefined
+  // Ran out of text with the object still open: the model was cut off mid-block.
+  // Measured: an orchestrator wrote a 5.3KB dispatch with a whole verification
+  // script inlined in the task and ended `… "priority": "high" } ]` — every
+  // brace but the outermost closed. Closing what it left open is what a person
+  // reading it would do; the alternative is throwing away a run over a missing
+  // character. A string left open is closed too, which truncates that value
+  // rather than losing the dispatch.
+  if (!open.length) return undefined
+  // Trailing whitespace has to go before the quote does: the cut usually lands
+  // after a newline, and a raw newline inside a JSON string is invalid however
+  // the string is closed. A dangling backslash would escape the quote we add.
+  const body = inString ? text.slice(start).replace(/\s+$/, "").replace(/(?<!\\)\\$/, "") : text.slice(start)
+  return (
+    body +
+    (inString ? '"' : "") +
+    open
+      .reverse()
+      .map((character) => (character === "{" ? "}" : "]"))
+      .join("")
+  )
 }

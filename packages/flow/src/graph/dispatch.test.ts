@@ -213,3 +213,39 @@ describe("a block with something stuck to the end", () => {
     expect(parseDispatch(block('{ "dispatch": [ { "card": "look" '), ["look"]).kind).toBe("error")
   })
 })
+
+describe("a block the model was cut off mid-way through", () => {
+  const block = (body: string) => "```" + FENCE + "\n" + body + "\n```"
+
+  test("an object left open at the end is closed rather than thrown away", () => {
+    // Measured: an orchestrator wrote a 5.3KB dispatch with a whole verification
+    // script inlined in the task and ended `… "priority": "high" } ]` — every
+    // brace but the outermost closed. It had reasoned its way to the right card
+    // and the right fix; a missing character cost the run.
+    const text = block('{ "dispatch": [ { "card": "world", "task": "fix the pipe recycler", "priority": "high" } ]')
+    expect(parseDispatch(text, ["world"])).toEqual({
+      kind: "dispatch",
+      assignments: [{ card: "world", task: "fix the pipe recycler" }],
+    })
+  })
+
+  test("a string left open is closed too, truncating the value rather than losing the dispatch", () => {
+    const text = block('{ "dispatch": [ { "card": "world", "task": "fix the pipe recy')
+    expect(parseDispatch(text, ["world"])).toEqual({
+      kind: "dispatch",
+      assignments: [{ card: "world", task: "fix the pipe recy" }],
+    })
+  })
+
+  test("a final cut off mid-sentence still answers", () => {
+    expect(parseDispatch(block('{ "final": "it clears the bar because'), ["world"])).toEqual({
+      kind: "final",
+      answer: "it clears the bar because",
+    })
+  })
+
+  test("closing what was left open cannot invent a card", () => {
+    // The repair only ever appends closers; it can never fill in a missing key.
+    expect(parseDispatch(block('{ "dispatch": [ { "task": "no card named'), ["world"]).kind).toBe("error")
+  })
+})

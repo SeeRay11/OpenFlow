@@ -403,8 +403,13 @@ export function App() {
       if (!document.hidden) void probe()
     }
     // The one destructive path the app cannot guard with a dialog of its own.
+    //
+    // A live run counts as much as an unsaved graph, and for longer: the engine
+    // runs *in this page*, so a reload orphans every session mid-turn and there
+    // is no resume. Measured on a gauntlet — an hour of work, four cards
+    // dispatched, gone on a refresh nobody thought twice about.
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!state.dirty || !state.pipeline.nodes.length) return
+      if (!state.running && (!state.dirty || !state.pipeline.nodes.length)) return
       // Browsers show their own wording; `preventDefault` is what asks at all.
       event.preventDefault()
       event.returnValue = ""

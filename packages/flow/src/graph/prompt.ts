@@ -385,6 +385,13 @@ export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode) {
     "- A card only knows what you write in its task. It has not seen the run task, the other",
     "  cards' answers, or anything you dispatched before — write the task so it can be finished",
     "  by someone who has read nothing else.",
+    // Measured: an orchestrator wrote a 5.3KB task with a whole verification
+    // script inlined in it, ran out of room before the closing brace, and the
+    // block could not be parsed. Long tasks are also worse tasks — the card has
+    // its own tools and can write its own checks.
+    "- Keep a task short: a few hundred words at most. Say what must be true and how you will",
+    "  know; do not paste scripts or file contents into it. A card can read the files and write",
+    "  its own checks, and a task long enough to run out of room takes the whole block with it.",
     "- Dispatch a card again when its answer is wrong or thin, and say what was wrong with it.",
     "  It remembers its earlier task; it does not know why you came back.",
     "- Do a card's work yourself only when no card below you can do it.",
@@ -538,6 +545,12 @@ export function subagentPrompt(
       "- Do the assignment below and stop. If it is impossible or underspecified, say exactly what",
       "  is missing rather than guessing broadly — the card that dispatched you can fix it and",
       "  dispatch you again.",
+      // Measured: one round left seven helper scripts in the deliverable —
+      // check.js, verify.js, verify_final2.js, fix_sync.js, apply_fix.js and a
+      // file called `[object Object]`. Cards write scratch files whatever a bar
+      // says about tidiness, so they are given somewhere to put them.
+      "- Scripts you write to check or patch your own work are scratch, not deliverables. Put them",
+      "  in a `.scratch/` folder and leave the deliverable holding only what ships.",
       "- State any assumption you had to take.",
       "- Write for the card that reads you: what it needs to act, in the shortest form that",
       "  carries it. No preamble.",
@@ -613,6 +626,26 @@ export function forceFinalPrompt(reason: string) {
     "",
     "Do not dispatch. If what you have is not enough, say what is missing and answer with the",
     "best you can support.",
+  ].join("\n")
+}
+
+/**
+ * What a card's answer carries when the provider rejected its tools.
+ *
+ * Written into the card's own output rather than kept as engine metadata,
+ * because the orchestrator only ever reads the output — and what it must not do
+ * is treat a card that could not write as a card that finished the work.
+ */
+export function toolFailureNote(failures: { title: string; body?: string }[]) {
+  const first = failures[0]
+  return [
+    `> **${failures.length} tool call(s) from this card were rejected by the provider, so some of its`,
+    "> work may not have been written.**",
+    `> First failure: ${first.title}${first.body ? ` — ${first.body}` : ""}`,
+    ">",
+    "> Check the files before trusting what is written above. A whole-file write on a small model",
+    "> is the usual cause: the file is inlined into the tool call's arguments and truncated, so the",
+    "> call never parses. Dispatch smaller, targeted edits instead of a rewrite.",
   ].join("\n")
 }
 

@@ -221,6 +221,15 @@ export type NodeEvent = {
 export type RunNodeLog = {
   id: string
   role: string
+  /**
+   * Tool calls the provider rejected on this node's last turn.
+   *
+   * A rejected tool call is not a failed turn: the assistant message completes
+   * cleanly, so the node settles `done` while its edits never landed. Recorded
+   * here so a run that looks successful can still be read back as one where a
+   * card could not write.
+   */
+  toolFailures?: number
   status: NodeStatus
   sessionID?: string
   permissions?: PermissionDecision[]

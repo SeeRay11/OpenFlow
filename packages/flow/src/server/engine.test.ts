@@ -1974,3 +1974,49 @@ describe("gauntlet mode", () => {
     expect(h.replies.find((reply) => reply.requestID === "p3")?.reply).toBe("once")
   })
 })
+
+describe("a card whose tools were rejected", () => {
+  test("says so in its answer instead of reporting a clean success", async () => {
+    // Measured: a card burned 1.36M tokens with every `write` bounced as
+    // "Invalid JSON input for openai-chat tool call write", settled `done`, and
+    // the orchestrator re-dispatched on the strength of a success that never
+    // happened. A rejected tool call is not a failed turn — the assistant
+    // message completes cleanly — so nothing else catches this.
+    const h = harness({ behavior: { a: { hold: true, output: "all done, file written" } } })
+    const graph = pipeline("a")
+    const run = h.run(graph)
+    await flush()
+
+    h.emit({
+      type: "session.next.tool.called",
+      data: { sessionID: h.sessionOf.get("a"), callID: "call-1", tool: "write", input: { path: "game.js" } },
+    } as any)
+    h.emit({
+      type: "session.next.tool.failed",
+      data: {
+        sessionID: h.sessionOf.get("a"),
+        callID: "call-1",
+        error: { message: "Invalid JSON input for openai-chat tool call write" },
+      },
+    } as any)
+    await flush()
+    h.release("a")
+    const log = await run.done
+
+    const node = log.nodes.find((entry) => entry.id === "a")!
+    expect(node.toolFailures).toBe(1)
+    expect(node.output).toContain("all done, file written")
+    expect(node.output).toContain("rejected by the provider")
+    // It is surfaced, not treated as a failure: one call can fail and the next succeed.
+    expect(node.status).toBe("done")
+  })
+
+  test("a clean turn carries no note and no count", async () => {
+    const h = harness({ behavior: { a: { output: "wrote it" } } })
+    const log = await h.run(pipeline("a")).done
+
+    const node = log.nodes.find((entry) => entry.id === "a")!
+    expect(node.toolFailures).toBeUndefined()
+    expect(node.output).toBe("wrote it")
+  })
+})
