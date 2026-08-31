@@ -2020,3 +2020,39 @@ describe("a card whose tools were rejected", () => {
     expect(node.output).toBe("wrote it")
   })
 })
+
+describe("a card whose model cannot read images", () => {
+  const vision = ["openai/sees"]
+
+  test("is told so, because it can reach an image without anyone attaching one", async () => {
+    // Measured: a card screenshotted the running game, the orchestrator opened
+    // the capture, and the provider answered the whole request with
+    // "HTTP 404: No endpoints found that support image input". The attachment
+    // filter never sees a file a card opens with `read`.
+    const graph = pipeline("a")
+    graph.nodes[0].agent.model = "openai/blind"
+    const h = harness({ models: ["openai/blind", ...vision], vision })
+    await h.run(graph).done
+
+    expect(h.prompts.get("a")).toContain("You cannot read images")
+    expect(h.prompts.get("a")).toContain("fails your entire turn")
+  })
+
+  test("a model with vision is not lectured about it", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.model = "openai/sees"
+    const h = harness({ models: ["openai/blind", ...vision], vision })
+    await h.run(graph).done
+
+    expect(h.prompts.get("a")).not.toContain("You cannot read images")
+  })
+
+  test("a model the catalog does not know is left alone rather than guessed at", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.model = "openai/unknown"
+    const h = harness({ models: [], catalogRetry: 0 } as any)
+    await h.run(graph, "do the thing", { catalogRetry: 0 }).done
+
+    expect(h.prompts.get("a") ?? "").not.toContain("You cannot read images")
+  })
+})

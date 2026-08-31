@@ -630,6 +630,33 @@ export function forceFinalPrompt(reason: string) {
 }
 
 /**
+ * Appended to every prompt for a card whose model has no image input.
+ *
+ * The card does not need an attachment to hit this: it can screenshot the thing
+ * it is building and then open the file. `read` on a PNG returns an image part,
+ * and a text-only model answers the *whole request* with
+ * `HTTP 404: No endpoints found that support image input` — so the card dies
+ * rather than the tool call. Measured: a card captured the running game, the
+ * orchestrator opened the capture, and the run ended there.
+ *
+ * Written as a capability rather than a prohibition, because the useful move is
+ * usually available: another card can look, and the console says more than a
+ * picture does anyway.
+ */
+export function imageBlindNote() {
+  return [
+    "# You cannot read images",
+    "",
+    "The model you are running on takes text only. Opening a `.png`, `.jpg`, `.webp` or any other",
+    "image — with `read` or any other tool — fails your entire turn with a provider error, not just",
+    "that one call. Screenshots on disk are not readable by you.",
+    "",
+    "To judge something visual: read what the page logs, the DOM, computed styles, or the numbers a",
+    "script prints; or hand the looking to a card whose model has vision and read what it reports.",
+  ].join("\n")
+}
+
+/**
  * What a card's answer carries when the provider rejected its tools.
  *
  * Written into the card's own output rather than kept as engine metadata,

@@ -5,6 +5,7 @@ import {
   criticPrompt,
   dispatchResultPrompt,
   forceFinalPrompt,
+  imageBlindNote,
   judgeFirstPrompt,
   orchestratorPrompt,
   protocolPrompt,
@@ -667,7 +668,15 @@ export function start(
         }
       }
 
-      const text = build(skipped)
+      // A card can reach an image without anyone attaching one: it takes a
+      // screenshot, then opens it. `read` on a PNG comes back as an image part,
+      // and a model with no image modality answers the whole request with
+      // `HTTP 404: No endpoints found that support image input` — which fails
+      // the card, not the tool call. Measured on this fork's first gauntlet: a
+      // card captured the game, the orchestrator opened the capture, and the run
+      // died. The attachment filter above never sees this path, so the card is
+      // told what it cannot do instead.
+      const text = `${build(skipped)}${model && !api.accepts(model, "image/png") ? `\n\n${imageBlindNote()}` : ""}`
       patch(node.id, { prompt: text })
 
       await api.prompt(sessionID, text, sendable)

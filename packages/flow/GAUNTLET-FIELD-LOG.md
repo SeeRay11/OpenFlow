@@ -425,4 +425,61 @@ thing with no recovery at all. It now guards both. Resuming an *interrupted* run
 checkpoints is still open, and still the most valuable thing left on this list.
 
 
+---
+
+## 19. A card can see the screen after all — and that killed the run — *fixed*
+
+**Symptom.** `Provider request failed with HTTP 404: {"error":{"message":"No endpoints found that
+support image input","code":404}}` — on the **orchestrator**, which had dispatched nothing wrong.
+
+**Cause, and the good news inside it.** A builder had done something nobody designed for: it
+drove a headless browser through `bash`, screenshotted the running game, and saved `shot.png`.
+That is the capability this log twice called impossible (#5) — a card cannot reach MCP, but it can
+reach a shell, and a shell can reach a browser.
+
+Then the orchestrator opened the screenshot. `read` on a PNG returns an **image part**, and
+DeepSeek V4 Flash takes text only, so the provider rejected **the entire request** — not the one
+tool call. The card died, and with it the run.
+
+The existing modality guard (`api.accepts`) filters *attachments* — run files and node pins. It
+never sees a file a card opens with its own tools, which is now the common path.
+
+**Fixed** (`fix(flow): tell a text-only card it cannot open images`): when a node's model has no
+image input, every prompt it receives carries a short note saying that opening an image fails its
+whole turn, and pointing at what to do instead — read the console, the DOM, computed styles, the
+numbers a script prints, or hand the looking to a card whose model has vision. Written as a
+capability, not a scolding, because on this canvas the free-router cards *can* see and the paid
+orchestrator cannot.
+
+**What this changes for the design.** Entry #5 said visual verification had to wait for MCP. It
+does not. A card with `bash` can capture the artifact, and a vision-capable card can judge it.
+The remaining engine-side job is smaller than scoped: run the capture between rounds and hand the
+critic the image *and* the console log, rather than hoping a card thinks of it.
+
+---
+
+## 20. I verified a black screen with a method that always reads black — *my error*
+
+**Symptom.** I reported "pure black at all three sample points" for several rounds running, and
+twice called a critic's pass false partly on that evidence.
+
+**Cause.** `gl.readPixels` on a WebGL canvas returns black once the frame has been presented,
+unless the context was created with `preserveDrawingBuffer: true`. Reading it from outside the
+render loop measures nothing. A card's own screenshot, and then a plain browser screenshot,
+showed the game rendering — sky, textured ground, clouds, a bird casting a shadow — at a moment I
+had just called black.
+
+**What was still true.** The console errors were read from the console and were real. The 0×0
+canvas early on was real. The blackness claims were not.
+
+**Rules that come out of it**, and they apply to the critic as much as to me:
+
+- To claim something about a *rendered frame*, capture the frame. Screenshot, or read pixels
+  inside a `requestAnimationFrame` callback on a context that preserves its buffer.
+- State the method with the claim. "readPixels says black" is checkable; "it is black" is not.
+- I criticised a critic for inferring a runtime property from source while doing the same thing
+  with an unsound instrument. A bar that demands pasted evidence has to bind whoever is judging,
+  including the person who wrote the bar.
+
+
 *Appended as the run continues.*
