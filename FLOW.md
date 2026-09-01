@@ -84,8 +84,43 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   each other made the result worse, not better. A missing bar **warns rather than blocks**,
   because "make the orchestrator establish one first" is a real way to run this; a missing
   critic blocks in both places that must stay in step (`shapeProblems` and the `start()` throw).
+  **A gauntlet cannot end on an unjudged answer.** A `final` sent while no critic has judged the
+  state the builders left is refused once (`judgeFirstPrompt`); a second one **fails the card**.
+  Accepting it was measured doing real harm: with every critic dispatch rate limited, an
+  orchestrator nominated a *builder* as the independent inspector and wrote a PASS on all seven
+  bar lines, and the engine took it. `judged` is filled only from a critics-only batch, so the
+  builder's opinion never counted — the refusal policy let the answer through anyway. Both
+  endings stop the burn; only one tells the truth about what the run produced, and the error
+  says which case it was: `every critic dispatched failed (...)` when critics were sent and none
+  came back, `answered twice without sending the work to a critic` when none was ever sent.
+  **A 429 is "not now", not "this card is finished"** — `runTurn` re-sends a rate-limited turn
+  into the same session three times, waiting 20s, 40s, 80s. A gauntlet pays for this more than
+  any other mode: the critic gets a session it has never used before on every verdict, which is
+  exactly the traffic shape a per-model limit punishes, and it is the one card the run cannot
+  route around.
+  **A card's spend is the sum of every session it has held.** `reconcile` merges a session's
+  steps into the node's map rather than replacing it, keyed by message id so sessions add up
+  without double-counting. Replacing meant a re-dispatched card's earlier spend left the run
+  total — measured, a critic's own cost fell from $0.0204 to $0.0023 across a re-dispatch — so
+  `maxSpend`, the headline bound of a mode built to run for hours, was compared against a number
+  drifting below what had been spent.
   No vision: a critic reads source, runs builds, runs tests, hits the dev server. Visual A/B
-  waits for MCP to reach v2 sessions.
+  waits for MCP to reach v2 sessions — though a card with `bash` can drive a headless browser
+  and capture the artifact itself, which is how the runtime lines of a bar have actually been
+  judged here.
+- **An interrupted run is picked up, not started again.** The engine runs *in the page*, so a
+  reload, a crash or a closed tab ends a run with nothing alive to write `done`, `error` or
+  `stopped` — while the sessions are still on the server and still addressable. `RunOptions.sessions`
+  maps a node id to the session it was working in and is seeded before anything dispatches, so
+  the card's first turn is prompted into that session; `interruptedNote()` tells it once, on
+  that turn only, that the run around it stopped and nothing it produced was discarded, because
+  a card given no account of the silence re-answers what it already answered. A card in both
+  `resume` and `sessions` keeps its output and never runs — reopening a finished card only
+  bills. The UI finds the case itself: a run still marked `running` on disk for this canvas,
+  with nothing live, is one the page abandoned. **The carried session id must be written to the
+  run log** (`patch(node.id, { sessionID })`), because the create path that normally writes it
+  is skipped — without it a resumed run reports cards with no session while they answer in one,
+  and the *next* interruption has nothing left to carry.
 - **No MCP tool can reach a card in this fork, so the dispatch tool is parked.** Proven
   2026-08-29, after it looked like a config bug for a long time. OpenFlow drives
   `client.v2.session.*`, so a card runs through the v2 session runner, and that runner has

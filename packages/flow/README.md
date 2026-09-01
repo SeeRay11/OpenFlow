@@ -4,6 +4,12 @@ Visual builder for multi-agent workflows. Drag role cards onto a canvas, wire a
 pipeline (planner → architect → coder), save it, and run it with real parallel
 agents on top of a headless `opencode serve`.
 
+A canvas runs in one of three [modes](#modes): a **pipeline** in dependency order,
+a **swarm** of peers arguing over rounds until a synthesizer decides, or an
+**orchestration** where one card hands work to cards it can see. An orchestration
+can be run as a **gauntlet** — builders looped against fresh-context critics until
+the work clears a bar you wrote, bounded by money, wall clock and stall.
+
 OpenFlow is its own project, built on — and shipped as a fork of —
 [opencode](https://github.com/anomalyco/opencode), whose headless engine drives the
 agents underneath. Everything OpenFlow-specific lives in this package. No other
@@ -363,6 +369,147 @@ is unaffected — a layer still finishes before the next one starts.
 on it, 30 minutes by default. A node whose session never goes idle holds its
 whole layer, and everything behind it, for the full wait — worth turning down to
 5 minutes when a run should be quick.
+
+## Modes
+
+A canvas has a **mode**, and it belongs to the document rather than to a run: it
+is saved, exported and undoable, because switching it changes what the same graph
+does. Modes do not nest. Everything about running one session is shared — same
+briefing machinery, same permission handling, same live status, same run log —
+and only the **scheduler** differs: which cards run, in what order, and what
+their prompts carry.
+
+`pipeline` is the default, and what every canvas saved before modes existed reads
+as. A mode this build has no scheduler for is refused twice over, in preflight and
+again inside the engine, because the engine is callable without preflight and
+running a swarm's graph through the pipeline scheduler would spend real money
+producing an answer nobody designed.
+
+### Swarm
+
+Every non-synthesizer card is a peer of every other, and `edges` are never read —
+a swarm is a node list, not a wiring. The canvas draws the mesh itself and refuses
+to start a link, since an edge you dragged would be one the run ignores.
+
+Round 1 gives every agent the same run task; round R re-prompts each agent with
+every peer's round R−1 answer. The snapshot is taken **on the round boundary**, so
+a peer dispatched early cannot be read by a peer dispatched later in the same
+round — otherwise the debate would depend on pool scheduling order. Each peer keeps
+**one session** across all rounds, so it remembers its own reasoning and the
+provider can cache the prefix; that is why round 1 carries the briefing and later
+rounds carry only what changed.
+
+One `synthesizer` card reads the final round and writes the verdict. It is added
+when you switch to swarm, it can be deleted, and preflight blocks a swarm without
+one. A peer that fails is dropped rather than retried — a new session in round 3
+would answer with no memory of rounds 1 and 2 while every peer around it has both —
+and the synthesizer is told who is missing, so it does not write a confident
+verdict over the hole.
+
+**Rounds** (toolbar): 3 by default, 6 at most. A swarm costs `agents × rounds + 1`
+sessions, so rounds multiplies the whole bill: four agents at six rounds is 25
+sessions.
+
+### Orchestration
+
+The graph is a **tree**. One root — the card nothing points at — and every other
+card owed to exactly one parent. A card with children of its own orchestrates its
+subtree through the identical loop one level down, so "subagents deploying
+subagents" is bounded by the graph you drew, and every session is a card you can
+see, price and re-run. A diamond is refused: the second dispatch would re-prompt a
+session still working on the first parent's task.
+
+The orchestrator drives the loop by ending its message with a fenced block holding
+`{ "dispatch": [ { "card": "coder", "task": "what to do" } ] }`, or
+`{ "final": "the answer" }` when it is done. The **last** block in the message
+wins, because a model often quotes the protocol before using it. A malformed block
+is handed back with the exact reason and re-asked up to three times, each ask
+terser than the last; protocol re-asks are not charged to the dispatch budget,
+because they buy nothing and the alternative is throwing away the run. A card id
+outside the orchestrator's own children is refused, and so is the same card twice
+in one batch — one card is one session, and two assignments would race it.
+
+Leaf cards never see the protocol: they are briefed as subagents, and their final
+message is handed back to the parent. Cards nobody dispatched end the run
+`skipped` rather than `queued`.
+
+**Depth** (toolbar): 2 by default, 4 at most. **Dispatches** (toolbar): 3 per
+orchestrator by default, 6 at most — without a cap, "that was not quite right, try
+again" is an unbounded loop that reads as progress the whole way down. An
+orchestration costs `1 + Σ(children × dispatches)` sessions per level, and
+preflight prints the number before you spend it.
+
+### Gauntlet
+
+A toggle on orchestration, not a fourth mode: same tree, same protocol, same
+scheduler. What changes is how it stops — **a written bar instead of a count.**
+Builders work, critics judge the result against the bar, and the loop runs until
+the work clears it or a bound fires.
+
+The pattern is Matt Shumer's "Claude of Duty" run, and its two lessons are built
+in: without a concrete bar a critic invents arbitrary standards and burns tokens,
+and **coupled work belongs to one builder in sequence** — fanning lighting, tone
+and sky out to cards that could not see each other made the result worse.
+
+**Critics are cards with the `reviewer` role**, read off the role text the same way
+a swarm finds its synthesizer, so designating one is renaming a card. A critic gets
+a **new session for every verdict**: one that has watched the work improve grades
+the improvement rather than the work, which is the exact failure a separate critic
+exists to prevent. It costs the cached prefix every round — the price of the
+method, not a bug to optimise away.
+
+**The card that assigned the work cannot decide the work is done.** A `final` sent
+while no critic has judged the current state is refused once, with instructions on
+who to send and what to tell them; a second one **fails the run**. Only a
+critics-only batch counts as a verdict — a critic dispatched alongside a builder
+judged a folder somebody else was writing to. Both endings stop the burn; only one
+tells the truth about what the run produced, and the error says which case it was:
+`every critic dispatched failed` when critics were sent and none came back, or
+`answered twice without sending the work to a critic` when none was ever sent.
+
+Bounds, all live at once, first to fire wins:
+
+- **Spend** — $5 by default, $500 at most. Priced client-side from models.dev, and
+  a card's cost is the sum of every session it has held.
+- **Wall clock** — 60 minutes by default, 12 hours at most.
+- **Stall** — the same batch (same cards, same task text) dispatched 3 rounds
+  running. Measured out here rather than asked of the model, because that is what
+  no progress looks like from outside.
+
+A model the catalog cannot price **blocks the run** rather than warning: an
+unenforceable spend cap on something designed to run for hours is the one failure
+nobody notices until the bill arrives. A missing bar only warns — "make the
+orchestrator establish one first" is a real way to work. A missing critic blocks.
+
+A turn the provider refuses for rate limiting is re-sent into the same session
+three times, waiting 20s, 40s, then 80s. A gauntlet earns 429s more than any other
+mode, because its critic opens a brand-new session on every verdict and is the one
+card the run cannot route around.
+
+No vision: a critic reads source, runs builds and tests, and hits a dev server. A
+card with `bash` can drive a headless browser and capture the artifact itself,
+which is how the runtime lines of a bar have actually been judged here.
+
+### Resuming an interrupted run
+
+The engine runs **in the page**, so a reload, a crash or a closed tab ends a run
+with nothing alive to write `done`, `error` or `stopped` — while the sessions
+themselves are still on the server and still addressable. A live run is guarded by
+`beforeunload`, and whatever gets past that is recoverable: a run still marked
+`running` on disk for this canvas, with nothing live, is one the page abandoned,
+and **Resume** appears beside Run.
+
+Resuming splits that run log in two. Cards that finished keep their answers and
+never run again — reopening a finished card's session only bills. Cards that were
+still working are prompted back into the sessions they already hold, which is the
+difference between resuming and starting over wearing the old run's name: an
+orchestrator seven rounds into a gauntlet remembers every verdict it has read. A
+carried card is told once, on its first turn only, that the run around it stopped
+and that nothing it produced was discarded — a card given no account of the
+silence re-answers what it already answered.
+
+**Re-run failed** is the neighbouring, narrower tool: it reuses the outputs of
+everything that finished and re-runs only what did not, in fresh sessions.
 
 ## Files it writes
 
