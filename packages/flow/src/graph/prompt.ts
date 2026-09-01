@@ -643,6 +643,29 @@ export function forceFinalPrompt(reason: string) {
  * usually available: another card can look, and the console says more than a
  * picture does anyway.
  */
+/**
+ * What a card is told on the first turn of a run continuing an interrupted one.
+ *
+ * It is prompted into the same session, so its own history is intact. The point
+ * of the note is that the *silence* since its last message means the run around
+ * it stopped — not that its work was rejected or that nobody read it. A card
+ * given no account of the gap re-answers what it already answered, which is the
+ * cost this exists to avoid.
+ */
+export function interruptedNote() {
+  return [
+    "# The run was interrupted, and is being continued",
+    "",
+    "Nothing you did caused this and nothing you produced was thrown away — the run around you",
+    "stopped and has been restarted, so the gap since your last message is not a judgement on it.",
+    "You are in the same session, so everything you have already read, run and concluded still",
+    "stands and does not need doing again.",
+    "",
+    "Pick up from where you were. If your last turn finished a piece of work, say what it left in",
+    "place rather than doing it twice; if it was cut off part-way, carry on from that point.",
+  ].join("\n")
+}
+
 export function imageBlindNote() {
   return [
     "# You cannot read images",

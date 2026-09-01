@@ -697,7 +697,47 @@ export function App() {
     return !state.running && nodes.length > 0 && nodes.some((node) => node.status !== "done")
   }
 
-  async function run(resume?: Record<string, string>) {
+  /**
+   * The newest run of this canvas that never reached an end state.
+   *
+   * `running` on disk means the page went away mid-run: the engine lives in the
+   * page, so nothing was left to write `done`, `error` or `stopped`. The
+   * sessions themselves are still on the server, which is what makes the run
+   * recoverable rather than merely readable.
+   */
+  function interruptedRun() {
+    if (state.running) return undefined
+    return runs()
+      .filter((entry) => entry.status === "running" && entry.pipeline === state.pipeline.name)
+      .sort((a, b) => (b.started ?? 0) - (a.started ?? 0))[0]
+  }
+
+  /**
+   * Picks an interrupted run back up: finished cards keep their answers, and the
+   * ones that were still working are continued in the sessions they already hold.
+   */
+  async function resumeRun(id: string) {
+    try {
+      const log = await store.run(id)
+      const outputs: Record<string, string> = {}
+      const sessions: Record<string, string> = {}
+      for (const node of log.nodes) {
+        if (node.status === "done" && node.output !== undefined) outputs[node.id] = node.output
+        else if (node.sessionID) sessions[node.id] = node.sessionID
+      }
+      actions.setRun(log)
+      const carried = Object.keys(sessions).length
+      actions.notice(
+        "info",
+        `resuming ${id} — ${Object.keys(outputs).length} card(s) kept, ${carried} continued in session`,
+      )
+      await run(outputs, sessions)
+    } catch (error) {
+      actions.notice("error", api.describe(error))
+    }
+  }
+
+  async function run(resume?: Record<string, string>, sessions?: Record<string, string>) {
     // One place tells the user everything that is wrong before a session is
     // ever created. Blocking problems abort; warnings are shown but let the run
     // proceed. The list survives on screen so each problem can select its node.
@@ -745,7 +785,7 @@ export function App() {
         // A resumed run must re-send the task the reused outputs were produced
         // from: downstream prompts are built from both, so a task edited in the
         // meantime would pair new instructions with old answers.
-        resume ? (state.run?.input ?? state.input) : state.input,
+        resume || sessions ? (state.run?.input ?? state.input) : state.input,
         {
           onNode: (id, patch) => actions.patchRuntime(id, patch),
           onNodeEvent: (id, event) => actions.pushEvent(id, event),
@@ -780,6 +820,7 @@ export function App() {
           nodeTimeout: nodeTimeout(),
           attachments: [...state.attachments],
           resume,
+          sessions,
         },
       )
       const log = await current.done
@@ -1139,6 +1180,19 @@ export function App() {
             <IconPlay />
             Run
           </button>
+          <Show when={interruptedRun()}>
+            {(entry) => (
+              <button
+                class="btn"
+                type="button"
+                title="continue the run that was cut off — finished cards keep their answers, the rest carry on in the sessions they still hold"
+                onClick={() => void resumeRun(entry().id)}
+              >
+                <IconPlay />
+                Resume
+              </button>
+            )}
+          </Show>
           <Show when={canRerunFailed()}>
             <button
               class="btn"

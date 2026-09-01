@@ -418,11 +418,12 @@ own work go in `.scratch/`, and the deliverable holds only what ships.
 
 ---
 
-## 18. A live run now survives a stray refresh — *fixed*
+## 18. A live run now survives a stray refresh — *fixed; the resume that #14 asked for is now built too*
 
 Following #14: `beforeunload` guarded an unsaved graph but not a live run, though the run is the
-thing with no recovery at all. It now guards both. Resuming an *interrupted* run from its
-checkpoints is still open, and still the most valuable thing left on this list.
+thing with no recovery at all. It now guards both.
+
+The other half — resuming an *interrupted* run — is entry #25.
 
 
 ---
@@ -604,3 +605,45 @@ FLOW.md's hidden-pane section already warned that `screenshot` and `left_click_d
 the pane is hidden. This is the worse variant: a click that reports success and does nothing. It
 is now on that list, because the natural reading of a silent Run button is "preflight blocked it"
 and the next twenty minutes go into the wrong place.
+
+
+---
+
+## 25. Three runs died to a host that went away, so a run can now be picked up — *fixed*
+
+**Symptom.** Over one evening the canvas dev server exited three times with a run live. Each time
+every card went `idle`, the task box emptied, and the work was gone: the engine runs *in the page*,
+so nothing was left alive to write `done`, `error` or `stopped`. The engine at :4097 never dropped
+— only the host serving the page did — so the sessions were all still there, addressable by id, in
+a run log on disk that said `running` and always would.
+
+Recovering by hand worked but cost the same thing every time: read the checkpoint, find the last
+critic verdict, paste it into a fresh task, and pay for the orchestrator's opening turn again. Three
+times in one evening is a workflow, not an accident.
+
+**Fixed**, and it is the resume #14 called the most valuable thing on this list.
+
+- `RunOptions.sessions` — node id to the session it was working in. Seeded before anything
+  dispatches, so the card's first turn is prompted into the session it already holds rather than a
+  new one. That is the whole difference between resuming and starting again wearing the old run's
+  name: an orchestrator seven rounds into a gauntlet has read every verdict, and re-briefing it
+  from scratch throws exactly that away.
+- A carried card gets `interruptedNote()` on its first turn only, and it says plainly that nothing
+  it produced was thrown away and the gap was not a judgement on its work. A card given no account
+  of the silence re-answers what it already answered, which is the cost the note exists to avoid.
+  From the second turn on it is an ordinary reused session, and saying it twice would read as a
+  second interruption that never happened.
+- A card in *both* `resume` and `sessions` keeps its answer and never runs — reopening a finished
+  card's session only buys a bill.
+- The UI finds it on its own: a run still marked `running` on disk, for this canvas, with no run
+  live, is one the page abandoned. A **Resume** button beside "Re-run failed" splits that log into
+  answers to keep and sessions to continue.
+
+**One defect found by writing the tests, worth keeping.** The first version never wrote the carried
+session id to the run log — nothing else does, because the create path is skipped — so a resumed run
+reported cards with no session while they were answering in one, and a *second* interruption would
+have had nothing left to carry. The test caught it by asking the log what session the card was in.
+
+**Still open.** This recovers the run, not the host. Why the dev server exits is unknown: memory was
+flat at 107-110MB across twenty minutes of a live run, so the leak theory that fit the timing is not
+supported by the one measurement taken of it. Written here as unexplained rather than guessed at.

@@ -6,6 +6,7 @@ import {
   dispatchResultPrompt,
   forceFinalPrompt,
   imageBlindNote,
+  interruptedNote,
   judgeFirstPrompt,
   orchestratorPrompt,
   protocolPrompt,
@@ -131,6 +132,23 @@ export type RunOptions = {
    * of this map and it runs normally, even if a previous run produced it.
    */
   resume?: Record<string, string>
+  /**
+   * Sessions a previous run left open, keyed by node id — what a card was in
+   * the middle of when the run was interrupted.
+   *
+   * The engine runs *in the page*, so a reload, a crash or a closed tab ends a
+   * run with no way back, while the sessions themselves are still on the server
+   * and still addressable. Seeding them here lets a card be prompted into the
+   * session it already holds rather than a fresh one, which is the difference
+   * between resuming and starting again wearing the old run's name: an
+   * orchestrator seven rounds into a gauntlet remembers every verdict it has
+   * read, and re-briefing it from scratch throws exactly that away.
+   *
+   * A node listed here but not in `resume` is a card that was still working:
+   * it keeps its session and is told it was interrupted. A node in both is
+   * already finished and never runs, so its session is not reopened.
+   */
+  sessions?: Record<string, string>
   /**
    * Whether to look for the orchestrator's decision in a tool call before
    * falling back to the fenced block.
@@ -341,6 +359,21 @@ export function start(
   const sessions = new Map<string, string>() // sessionID -> nodeID
   /** nodeID -> the session it opened, so a later turn can prompt into it again. */
   const nodeSession = new Map<string, string>()
+  /**
+   * Cards carrying a session from the interrupted run this one continues.
+   *
+   * Seeded before anything dispatches so the first turn prompts into the open
+   * session instead of creating one. A card that already finished keeps its
+   * output through `resume` and never runs, so reopening its session would only
+   * buy a bill; those are dropped here.
+   */
+  const carried = new Set<string>()
+  for (const [id, sessionID] of Object.entries(options.sessions ?? {})) {
+    if (resume[id] !== undefined || !sessionID) continue
+    nodeSession.set(id, sessionID)
+    sessions.set(sessionID, id)
+    carried.add(id)
+  }
   /** Tool-call ids already read, so an old call cannot decide a new turn. */
   const consumed = new Map<string, Set<string>>()
   const active = new Set<string>() // sessionIDs still running
@@ -667,11 +700,25 @@ export function start(
    * the price.
    */
   async function runTurn(node: FlowNode, build: (skipped: Attachment[]) => string, reuse = false) {
-    let sessionID = reuse ? nodeSession.get(node.id) : undefined
+    // A card carried over from an interrupted run is prompted into the session
+    // it was already working in, whichever scheduler is asking. Consumed on the
+    // first turn: from the second one on it is an ordinary reused session, and
+    // the card should not be told it was interrupted twice.
+    const carrying = carried.delete(node.id)
+    if (carrying) {
+      const opening = build
+      build = (skipped) => `${interruptedNote()}\n\n${opening(skipped)}`
+    }
+    let sessionID = reuse || carrying ? nodeSession.get(node.id) : undefined
+    // The log has to name the session a carried card is in. Nothing else writes
+    // it — the create path is skipped — so without this the run reports a card
+    // with no session while it is answering in one, and the next interruption
+    // has nothing left to carry forward.
+    if (carrying && sessionID) patch(node.id, { sessionID })
     // Whether this card's files have already reached the session. A reused one
     // holds them; a retry after a refused prompt does not, so the attachments
     // ride the re-send rather than being lost with the turn that never landed.
-    let carried = !!sessionID
+    let delivered = !!sessionID
     for (let attempt = 0; ; attempt++) {
       const opened = sessionID
       // Only this turn's tool failures count; a card is prompted into the session
@@ -696,7 +743,7 @@ export function start(
         // Run-level files first, then the node's own pins. A file the node's
         // model has no modality for is withheld and named in the text instead,
         // so one blind model in the middle of a chain does not stop the run.
-        const files = carried ? [] : [...runFiles, ...(node.agent.attachments ?? [])]
+        const files = delivered ? [] : [...runFiles, ...(node.agent.attachments ?? [])]
         const model = node.agent.model ? catalog.get(node.agent.model) : undefined
         const sendable = files.filter((file) => !model || api.accepts(model, file.mime))
         const skipped = files.filter((file) => !sendable.includes(file))
@@ -719,7 +766,7 @@ export function start(
         patch(node.id, { prompt: text })
 
         await api.prompt(sessionID, text, sendable)
-        carried = true
+        delivered = true
         if (controller.signal.aborted) throw new StopError()
         await api.waitForIdle(sessionID, { signal: controller.signal, timeout: nodeTimeout })
         active.delete(sessionID)

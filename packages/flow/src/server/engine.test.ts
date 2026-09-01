@@ -255,6 +255,8 @@ function harness(options: HarnessOptions = {}) {
     activity,
     sessionOf,
     peak: () => peak,
+    /** How many sessions this run opened — 0 proves a carried one was continued. */
+    created: () => created,
     release(id: string) {
       gates.get(id)?.resolve()
     },
@@ -1229,6 +1231,64 @@ describe("resume", () => {
     expect(h.dispatched).toEqual(["d", "e"])
     expect(log.status).toBe("done")
     expect(h.prompts.get("d")).toContain("c from last time")
+  })
+
+  test("a carried session is continued rather than opened again", async () => {
+    // The engine runs in the page, so a reload ends a run while its sessions are
+    // still live on the server. Continuing means prompting back into the one the
+    // card was working in — an orchestrator seven rounds into a gauntlet has read
+    // every verdict, and a fresh session throws exactly that away.
+    const h = harness()
+
+    const log = await h.run(pipeline("a"), "do the thing", { sessions: { a: "s-from-before" } }).done
+
+    expect(log.nodes[0].sessionID).toBe("s-from-before")
+    expect(h.created()).toBe(0)
+    expect(h.prompts.get("a")).toContain("The run was interrupted, and is being continued")
+    expect(log.status).toBe("done")
+  })
+
+  test("a card is told it was interrupted once, not on every later turn", async () => {
+    const fence = (body: string) => ["```openflow", body, "```"].join(String.fromCharCode(10))
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: {
+          outputs: [
+            fence(JSON.stringify({ dispatch: [{ card: "a", task: "do a" }] })),
+            fence(JSON.stringify({ final: "done here" })),
+          ],
+        },
+        a: { output: "built it" },
+      },
+    })
+    const graph = { ...pipeline("root->a"), mode: "orchestration" as const }
+    for (const node of graph.nodes) node.agent.model = "openai/gpt-x"
+
+    await h.run(graph, "do the thing", { sessions: { root: "s-root" } }).done
+
+    const rootPrompts = h.promptLog.filter((entry) => entry.node === "root")
+    expect(rootPrompts.length).toBeGreaterThan(1)
+    expect(rootPrompts[0].text).toContain("The run was interrupted")
+    // The second turn is an ordinary reused session; saying it again would read
+    // as a second interruption that never happened.
+    expect(rootPrompts.slice(1).every((entry) => !entry.text.includes("The run was interrupted"))).toBe(true)
+  })
+
+  test("a finished card keeps its output instead of reopening its session", async () => {
+    const h = harness()
+
+    // Both offered, and they disagree on purpose: `resume` wins, because a card
+    // that already answered has nothing to continue and reopening it only bills.
+    const log = await h.run(pipeline("a->b"), "do the thing", {
+      resume: { a: "a from last time" },
+      sessions: { a: "s-finished", b: "s-working" },
+    }).done
+
+    expect(h.dispatched).toEqual(["b"])
+    expect(log.nodes[0].sessionID).toBeUndefined()
+    expect(log.nodes[0].output).toBe("a from last time")
+    expect(log.nodes[1].sessionID).toBe("s-working")
   })
 
   test("a node left out of the seed runs again even though it has an output", async () => {
