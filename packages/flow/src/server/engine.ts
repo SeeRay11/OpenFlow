@@ -1,3 +1,4 @@
+import { collisionNote, collisionsIn, writesOf } from "../graph/collisions"
 import { fromToolCall, MCP_REACHES_SESSIONS, parseDispatch } from "../graph/dispatch"
 import { isCritic, orchestrationShape } from "../graph/orchestration"
 import {
@@ -1064,6 +1065,7 @@ export function start(
       )
 
       const results: { card: string; text?: string; error?: string }[] = []
+      const batchStarted = Date.now()
       await pool(decision.assignments, limit, controller.signal, async (assignment) => {
         const child = nodes.get(assignment.card)!
         // A critic judges from a session it has never used before. Reusing one
@@ -1110,15 +1112,73 @@ export function start(
           decision.assignments.findIndex((entry) => entry.card === a.card) -
           decision.assignments.findIndex((entry) => entry.card === b.card),
       )
+      // Two cards in one batch writing one file. Nothing in this fork locks a
+      // file and the pool ran them at once, so the later write wins silently:
+      // the card whose work went under still reports success, and the
+      // orchestrator would build its next round on an answer describing a file
+      // that no longer says that. The engine cannot know which write was the
+      // one worth keeping, so it reports rather than reverts — but it reports
+      // before the orchestrator decides anything, which is the only moment the
+      // finding is still worth acting on.
+      const wrote = new Map<string, string[]>()
+      for (const assignment of decision.assignments) {
+        const paths = [assignment.card, ...descendants(assignment.card)].flatMap((id) =>
+          writesOf(events.get(id) ?? [], batchStarted),
+        )
+        if (paths.length) wrote.set(assignment.card, paths)
+      }
+      const collisions = collisionsIn(wrote)
+      // A card that can run shell commands can write a file with no write tool
+      // call behind it, so on those cards the list is a floor rather than the
+      // whole truth — and saying so is the difference between a finding the
+      // orchestrator can trust and one it over-trusts.
+      const collided = collisionNote(
+        collisions,
+        collisions
+          .flatMap((collision) => collision.cards)
+          .some((card) => {
+            const tools = nodes.get(card)?.agent.tools
+            return !tools || tools.bash === true
+          }),
+      )
+      if (collided)
+        activity.note(
+          node.id,
+          `collision:${node.id}:${spent}`,
+          `${collisions.length} file(s) written by more than one card`,
+          collisions.map((collision) => `${collision.path}: ${collision.cards.join(", ")}`).join("\n"),
+          "error",
+        )
+
       const stop = exhausted(spent, repeats)
       forced = stop
       if (stop) activity.note(node.id, `bound:${node.id}:${spent}`, "told to answer", stop.error, "done")
       const status = gauntlet ? spentSoFar() : undefined
       build = () =>
-        stop
-          ? `${dispatchResultPrompt(pipeline, results, 0, status)}\n\n${forceFinalPrompt(stop.reason)}`
-          : dispatchResultPrompt(pipeline, results, budget - spent, status)
+        [
+          dispatchResultPrompt(pipeline, results, stop ? 0 : budget - spent, status),
+          ...(collided ? [collided] : []),
+          ...(stop ? [forceFinalPrompt(stop.reason)] : []),
+        ].join("\n\n")
     }
+  }
+
+  /**
+   * Every card under this one, however deep.
+   *
+   * A dispatched card that is itself an orchestrator does its writing through
+   * the subtree below it, so attributing those writes to the leaf that held the
+   * pen would name a card this orchestrator cannot dispatch. The territory
+   * belongs to the card it handed the work to.
+   *
+   * Guarded because the engine is callable without preflight: a graph with a
+   * cycle in it is refused before a run normally starts, but a walk that
+   * assumed the tree was a tree would hang the run rather than report anything.
+   */
+  function descendants(id: string, seen = new Set<string>()): string[] {
+    if (seen.has(id)) return []
+    seen.add(id)
+    return (tree?.children(id) ?? []).flatMap((child) => [child, ...descendants(child, seen)])
   }
 
   /**

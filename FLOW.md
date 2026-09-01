@@ -183,6 +183,20 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   `reassignPrompt`, which says the old assignment is over — otherwise it reads the new task as
   more detail on the old one. After an orchestration run, cards nobody dispatched are marked
   `skipped`, not left `queued`.
+- **Two cards in one batch writing one file is reported, not prevented.** Nothing in this fork
+  locks a file and the pool runs a batch at once, so the later write wins and the card whose work
+  went under still reports success — the orchestrator would then build on an answer describing a
+  file that no longer says that. `graph/collisions.ts` reads each dispatched card's writes off
+  the tool calls the activity stream already keeps (`write`, `edit`, `apply_patch`; a failed call
+  is not a write), attributes a subtree's writes to the card that was **dispatched** rather than
+  the leaf that held the pen, and `collisionNote` tells the orchestrator before it decides
+  anything. It reports rather than reverts: the engine cannot know which of the two writes was
+  the one worth keeping, and a card told to undo the right half spends a round making the work
+  worse. Scope is **one batch** — the same file across two batches is ordinary iteration, and the
+  orchestrator ordered those itself. `bash` is deliberately not read as a writer: a shell line
+  cannot be parsed into paths honestly, so where a colliding card has it the note says the list is
+  a floor rather than the whole truth. The prevention half is a briefing line — one file, one
+  card — because a batch that never overlaps costs nothing to fix.
 - Cost is the standing hazard of both new modes. A swarm is `agents × rounds + 1` sessions; an
   orchestration is `1 + Σ(children × dispatches)` per level, and preflight warns with the actual
   number past a dozen. `MAX_ROUNDS`, `MAX_DEPTH` and `MAX_DISPATCHES` exist for that reason and

@@ -382,6 +382,13 @@ export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode) {
           `- You may dispatch ${dispatches} time(s) before you have to answer. Spend them on work that`,
           "  changes the answer, not on confirming what a card already told you.",
         ]),
+    // The engine reports these after the fact — it compares what each card in a
+    // batch wrote and names the files two of them both touched. Saying it here
+    // is the cheaper half: a batch that never overlaps costs nothing to fix.
+    "- Two cards in one batch must never write the same file. They run at the same time, nothing",
+    "  locks a file, and the later write silently replaces the earlier one — the card whose work",
+    "  was overwritten still reports success, so its answer describes a file that no longer says",
+    "  that. Give a file to one card, or dispatch the cards that need it in separate batches.",
     "- A card only knows what you write in its task. It has not seen the run task, the other",
     "  cards' answers, or anything you dispatched before — write the task so it can be finished",
     "  by someone who has read nothing else.",

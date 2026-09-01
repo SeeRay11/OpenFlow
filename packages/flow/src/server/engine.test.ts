@@ -1649,6 +1649,86 @@ describe("orchestration mode", () => {
     expect(second.indexOf("(b)")).toBeLessThan(second.indexOf("(a)"))
   })
 
+  /** A card's session reporting a write, the way the bus reports one. */
+  function wrote(h: ReturnType<typeof harness>, node: string, path: string) {
+    h.emit({
+      type: "session.next.tool.called",
+      data: { sessionID: h.sessionOf.get(node), callID: `${node}-${path}`, tool: "write", input: { path, content: "x" } },
+    } as any)
+  }
+
+  test("two cards writing one file in a batch is reported to the orchestrator", async () => {
+    // Nothing locks a file and the pool ran both at once, so the later write
+    // won and the earlier card still reported success. The orchestrator is the
+    // only card that can act on that, and only before it decides what to do next.
+    const h = harness({
+      behavior: {
+        root: { outputs: [dispatch("a", "b"), final("shipped")] },
+        a: { hold: true, output: "a rewrote the loop" },
+        b: { hold: true, output: "b tuned the physics" },
+      },
+    })
+    const run = h.run(tree(["root->a", "root->b"], { dispatches: 2 }))
+    await flush()
+    wrote(h, "a", "src/game.ts")
+    wrote(h, "b", "src/game.ts")
+    wrote(h, "b", "src/only-b.ts")
+    h.release("a")
+    h.release("b")
+    await run.done
+
+    const second = h.promptLog.filter((entry) => entry.node === "root")[1].text
+    expect(second).toContain("wrote over each other")
+    expect(second).toContain("`src/game.ts` — a, b")
+    // The file only one card touched is not a finding.
+    expect(second).not.toContain("only-b.ts")
+    // Reported after what the cards returned, so the orchestrator reads the
+    // answers and then what is wrong with them.
+    expect(second.indexOf("a rewrote the loop")).toBeLessThan(second.indexOf("wrote over each other"))
+  })
+
+  test("cards that stayed in their own files are told nothing", async () => {
+    const h = harness({
+      behavior: {
+        root: { outputs: [dispatch("a", "b"), final("shipped")] },
+        a: { hold: true, output: "a text" },
+        b: { hold: true, output: "b text" },
+      },
+    })
+    const run = h.run(tree(["root->a", "root->b"], { dispatches: 2 }))
+    await flush()
+    wrote(h, "a", "src/a.ts")
+    wrote(h, "b", "src/b.ts")
+    h.release("a")
+    h.release("b")
+    await run.done
+
+    expect(h.promptLog.filter((entry) => entry.node === "root")[1].text).not.toContain("wrote over each other")
+  })
+
+  test("the same file in two different batches is iteration, not a collision", async () => {
+    // The orchestrator dispatched these in sequence and knows which came
+    // second. Only a batch leaves writes unordered.
+    const h = harness({
+      behavior: {
+        root: { outputs: [dispatch("a"), dispatch("b"), final("shipped")] },
+        a: { hold: true, output: "a text" },
+        b: { hold: true, output: "b text" },
+      },
+    })
+    const run = h.run(tree(["root->a", "root->b"], { dispatches: 3 }))
+    await flush()
+    wrote(h, "a", "src/game.ts")
+    h.release("a")
+    await flush()
+    wrote(h, "b", "src/game.ts")
+    h.release("b")
+    await run.done
+
+    for (const entry of h.promptLog.filter((entry) => entry.node === "root"))
+      expect(entry.text).not.toContain("wrote over each other")
+  })
+
   test("a graph deeper than its cap refuses before anything is dispatched", () => {
     const h = harness()
     expect(() => h.run(tree(["root->a", "a->b", "b->c"], { depth: 2 }))).toThrow("deep")
