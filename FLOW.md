@@ -42,6 +42,17 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   the canvas, by the card's **role text** — designating the decider is renaming a card, not
   setting a hidden flag. The canvas draws the mesh from `meshPairs()` and refuses to start a
   link, because an edge the user dragged would be one the run never reads.
+- **Peers with nothing to tell them apart only warn.** The swarm briefing *orders* every agent
+  to disagree explicitly, because the measured failure of round 2 is everyone restating whoever
+  sounded most certain — but that assumes there is something real to disagree about. Same role,
+  same model and same instructions leaves no axis, so the mandate gets satisfied the only way
+  left: manufactured objections about phrasing, from cards whose errors are correlated anyway.
+  `identical-peers` in `graph/validate.ts` groups peers on all three fields — a different model
+  or different role instructions is a real reason to disagree, and warning about those would
+  train the user to ignore the warning. It warns rather than blocks because N identical drafts
+  judged by a synthesizer is best-of-N sampling, which is a real way to run a swarm — but only
+  at `rounds: 1`, where no peer text is quoted and the cards cannot reject each other, which is
+  why the message names that as the fix.
 - **Swarm rounds are barriers, and the peer snapshot is taken on the boundary.** Round R
   reads a frozen copy of round R−1 (`said = new Map(outputs)` before the pool is dispatched).
   Snapshotting per card instead would let a peer early in the pool be read by a peer later in

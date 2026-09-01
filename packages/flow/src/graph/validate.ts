@@ -222,6 +222,32 @@ function swarmProblems(pipeline: Pipeline): Preflight {
       message: `Only one card can write a swarm's verdict, and this canvas has ${shape.synthesizers.length} synthesizers — delete the extras or change their role`,
     })
 
+  // Peers with nothing to tell them apart. The briefing orders every agent to
+  // disagree explicitly, because the measured failure of round 2 is everyone
+  // restating whoever sounded most certain — but that assumes there is
+  // something real to disagree about. Same role, same model and same
+  // instructions leaves no axis to diverge on, so the mandate gets satisfied
+  // the only way left: manufactured objections about phrasing. Identical cards
+  // are also correlated in their errors, so the synthesizer gets five confident
+  // votes for one opinion and no signal to break the tie.
+  //
+  // A warning rather than a block: N identical drafts judged by a synthesizer
+  // is best-of-N sampling, which is a real way to run a swarm — but only at
+  // `rounds: 1`, where no peer text is ever quoted and the cards cannot reject
+  // each other.
+  const twins = new Map<string, typeof shape.agents>()
+  for (const agent of shape.agents) {
+    const key = JSON.stringify([agent.role, agent.agent.model ?? "", agent.agent.prompt.trim()])
+    twins.set(key, [...(twins.get(key) ?? []), agent])
+  }
+  for (const group of twins.values()) {
+    if (group.length < 2) continue
+    warnings.push({
+      kind: "identical-peers",
+      message: `${group.map((agent) => agent.role).join(", ")} are the same role on the same model with the same instructions, so they have nothing to disagree about — the swarm pays for ${group.length} sessions and gets one opinion. Give them different roles, models or instructions, or set rounds to 1 and let the synthesizer pick between independent drafts.`,
+    })
+  }
+
   // Switching a pipeline to swarm keeps its wiring, which now does nothing.
   // Silence would read as "the graph still works the way it looks".
   if (pipeline.edges.length)

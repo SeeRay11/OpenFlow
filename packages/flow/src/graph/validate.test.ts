@@ -180,6 +180,61 @@ describe("preflight", () => {
     ])
   })
 
+  test("peers with nothing to tell them apart warn — same role, model and instructions", () => {
+    const graph = swarm(withModel(pipeline("a", "b", "c"), "opencode/x"))
+    for (const node of graph.nodes.slice(0, 3)) node.role = "coder"
+
+    const result = preflight(graph, unlocked("opencode/x"))
+    expect(result.blocking).toEqual([])
+    expect(result.warnings.map((problem) => problem.kind)).toEqual(["identical-peers"])
+    expect(result.warnings[0].message).toContain("coder, coder, coder")
+    expect(result.warnings[0].message).toContain("3 sessions")
+  })
+
+  test("one difference is enough to make peers worth billing separately", () => {
+    // Role is the axis the palette hands the user, but it is not the only one:
+    // a different model or different instructions is a real reason to disagree,
+    // and warning about those would train the user to ignore the warning.
+    const byRole = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    expect(preflight(byRole, unlocked("opencode/x")).warnings).toEqual([])
+
+    const byModel = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    for (const node of byModel.nodes.slice(0, 2)) node.role = "coder"
+    byModel.nodes[1].agent.model = "opencode/y"
+    expect(preflight(byModel, unlocked("opencode/x", "opencode/y")).warnings).toEqual([])
+
+    const byPrompt = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    for (const node of byPrompt.nodes.slice(0, 2)) node.role = "coder"
+    byPrompt.nodes[1].agent.prompt = "argue for the simplest thing that works"
+    expect(preflight(byPrompt, unlocked("opencode/x")).warnings).toEqual([])
+  })
+
+  test("identical peers are grouped, so two twins and a third card warn once", () => {
+    const graph = swarm(withModel(pipeline("a", "b", "c"), "opencode/x"))
+    graph.nodes[0].role = "coder"
+    graph.nodes[1].role = "coder"
+    graph.nodes[2].role = "architect"
+
+    const warnings = preflight(graph, unlocked("opencode/x")).warnings
+    expect(warnings.map((problem) => problem.kind)).toEqual(["identical-peers"])
+    expect(warnings[0].message).toContain("coder, coder")
+    expect(warnings[0].message).not.toContain("architect")
+  })
+
+  test("the synthesizer is not counted among the twins it decides between", () => {
+    // `swarm()` gives the verdict card the agents' model on purpose — a decider
+    // running the same model as the debate is normal. Only the debating cards
+    // can fail to disagree with each other, so the count the user is asked to
+    // act on is the peers', not the whole canvas'.
+    const graph = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    graph.nodes[0].role = "coder"
+    graph.nodes[1].role = "coder"
+
+    const warnings = preflight(graph, unlocked("opencode/x")).warnings
+    expect(warnings.map((problem) => problem.kind)).toEqual(["identical-peers"])
+    expect(warnings[0].message).toContain("2 sessions")
+  })
+
   test("a cycle left behind by a pipeline does not block a swarm — swarm reads no edges", () => {
     const graph = swarm(withModel(pipeline("a->b", "b->a"), "opencode/x"))
     expect(preflight(graph, unlocked("opencode/x")).blocking).toEqual([])
