@@ -31,6 +31,12 @@ type Behavior = {
   outputs?: string[]
   /** Makes the node fail: the transcript comes back carrying this error. */
   error?: string
+  /**
+   * One error per turn, for a card that fails and then recovers — a provider
+   * that refuses a turn for rate limiting and answers the re-send. An empty
+   * string is a turn that succeeds; past the end of the list, nothing fails.
+   */
+  errors?: string[]
   /** Keeps the node running until the test calls `release(id)`. */
   hold?: boolean
   /**
@@ -57,6 +63,11 @@ type HarnessOptions = {
   prices?: Record<string, Array<{ input: number; output: number; cache: { read: number; write: number } }>>
   /** What `sessionSteps` reports per node. Omitted = the engine keeps bus data. */
   steps?: Record<string, StepUsage[]>
+  /**
+   * What `sessionSteps` reports per *session*, for a card that holds more than
+   * one across a run — a gauntlet's critic is given a new session every verdict.
+   */
+  stepsOf?: (sessionID: string, nodeID: string) => StepUsage[]
   onPermission?: (request: PermissionRequest) => Promise<PermissionReply>
   onQuestion?: (request: QuestionRequest) => Promise<string[][] | undefined>
 }
@@ -153,12 +164,11 @@ function harness(options: HarnessOptions = {}) {
     async transcript(sessionID: string) {
       const node = nodeOf.get(sessionID)!
       const spec = behavior[node] ?? {}
-      if (spec.error) return { text: "", error: spec.error }
-      if (spec.outputs?.length) {
-        const turn = turns.get(node) ?? 0
-        turns.set(node, turn + 1)
-        return { text: spec.outputs[Math.min(turn, spec.outputs.length - 1)] }
-      }
+      const turn = turns.get(node) ?? 0
+      turns.set(node, turn + 1)
+      const failure = spec.errors?.[turn] || spec.error
+      if (failure) return { text: "", error: failure }
+      if (spec.outputs?.length) return { text: spec.outputs[Math.min(turn, spec.outputs.length - 1)] }
       return { text: spec.output ?? `${node} output` }
     },
     async interrupt(sessionID: string) {
@@ -192,10 +202,12 @@ function harness(options: HarnessOptions = {}) {
     describe(error: unknown) {
       return error instanceof Error ? error.message : String(error)
     },
-    ...(options.steps
+    ...(options.steps || options.stepsOf
       ? {
           async sessionSteps(sessionID: string) {
-            return options.steps![nodeOf.get(sessionID)!] ?? []
+            const node = nodeOf.get(sessionID)!
+            if (options.stepsOf) return options.stepsOf(sessionID, node)
+            return options.steps![node] ?? []
           },
         }
       : {}),
@@ -1884,12 +1896,115 @@ describe("gauntlet mode", () => {
     const log = await h.run(gauntlet(["root->builder", "root->reviewer"])).done
 
     // The first answer is sent back with the reason; the fake repeats itself,
-    // so the second one stands rather than looping forever on a card that will
-    // not dispatch.
+    // and the second one fails the card rather than looping forever — an
+    // unjudged pass is the one output a gauntlet must never write.
     expect(h.dispatched).toEqual(["root", "root"])
     expect(h.prompts.get("root")).toContain("Not yet — nobody has judged this")
     expect(h.prompts.get("root")).toContain("`reviewer`")
-    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("it beats the reference now")
+    const root = log.nodes.find((node) => node.id === "root")!
+    expect(root.status).toBe("error")
+    expect(root.error).toContain("without sending the work to a critic")
+    expect(log.status).toBe("error")
+  })
+
+  test("a run whose critics all failed ends unjudged rather than certified", async () => {
+    // Measured 2026-09-01: the critic was rate limited on every dispatch, so
+    // the orchestrator nominated a *builder* as the independent inspector and
+    // wrote a PASS on all seven bar lines. `judged` ignored that opinion, but
+    // the one-refusal rule then let the answer through, and the run reported
+    // work as certified that nobody qualified had judged.
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { outputs: [dispatch("reviewer"), final("builder checked it, PASS"), final("PASS")] },
+        reviewer: { error: "Provider request failed with HTTP 429" },
+      },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"]), "do the thing", {
+      rateLimitBackoff: 0,
+    }).done
+
+    const root = log.nodes.find((node) => node.id === "root")!
+    expect(root.status).toBe("error")
+    // The reason separates "would not" from "could not" — different problems
+    // for whoever reads the log.
+    expect(root.error).toContain("every critic dispatched failed")
+    expect(root.error).toContain("429")
+    expect(log.status).toBe("error")
+  })
+
+  test("a critic refused for rate limiting is retried, not written off", async () => {
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { outputs: [dispatch("reviewer"), final("shipped")] },
+        // Refused twice, answers on the third ask — a card that would have been
+        // dead on the first 429 before.
+        reviewer: {
+          errors: ["Provider request failed with HTTP 429", "Provider request failed with HTTP 429"],
+          output: "ours wins",
+        },
+      },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"]), "do the thing", {
+      rateLimitBackoff: 1,
+    }).done
+
+    const reviewer = log.nodes.find((node) => node.id === "reviewer")!
+    expect(reviewer.status).toBe("done")
+    expect(reviewer.output).toBe("ours wins")
+    // The waits are on the stream, so a run that looks stalled says why.
+    expect(
+      h.activity.some((row) => row.node === "reviewer" && row.event.title.includes("rate limited")),
+    ).toBe(true)
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("shipped")
+    expect(log.status).toBe("done")
+  })
+
+  test("a card's spend adds up across the sessions it holds", async () => {
+    // Measured 2026-09-01: the critic's own cost fell from $0.0204 to $0.0023
+    // across a re-dispatch and the run total fell with it, because a node's
+    // usage was replaced by the newest session's rather than added to it. A
+    // gauntlet is bounded by spend, so the cap was being compared against a
+    // number well below what had been spent.
+    const seen: string[] = []
+    const h = harness({
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 3, output: 0, cache: { read: 0, write: 0 } }] },
+      behavior: {
+        // Two different tasks, so the second round is not the same batch again
+        // (that is the stall bound, and it would end the run before the second
+        // verdict this test is about).
+        root: {
+          outputs: [
+            block(JSON.stringify({ dispatch: [{ card: "reviewer", task: "judge round one" }] })),
+            block(JSON.stringify({ dispatch: [{ card: "reviewer", task: "judge round two" }] })),
+            final("shipped"),
+          ],
+        },
+        reviewer: { output: "ours wins" },
+      },
+      // Each session bills one step of its own, keyed by a message id unique to
+      // it — which is what a real server reports for a card given a new session.
+      stepsOf: (sessionID, nodeID) => {
+        if (nodeID === "reviewer" && !seen.includes(sessionID)) seen.push(sessionID)
+        return [
+          {
+            messageID: `${sessionID}-m1`,
+            model: "openai/gpt-x",
+            tokens: { input: 1_000, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+          },
+        ]
+      },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"])).done
+
+    const reviewer = log.nodes.find((node) => node.id === "reviewer")!
+    // Two verdicts, two sessions (a critic never reuses one), one billed step
+    // each — so the card's cost is the sum of both, not the newest one.
+    expect(h.dispatched.filter((id) => id === "reviewer").length).toBe(2)
+    expect(seen.length).toBe(2)
+    expect(reviewer.usage!.cost).toBeCloseTo(0.006, 6)
   })
 
   test("a verdict from a critic lets the answer through", async () => {

@@ -483,3 +483,124 @@ canvas early on was real. The blackness claims were not.
 
 
 *Appended as the run continues.*
+
+---
+
+## 21. A rate-limited critic is just a dead card — *fixed*
+
+**Symptom.** Second run (2026-09-01, continuation task against the existing game). The `critic`
+card errored `Provider request failed with HTTP 429` twice in sixteen minutes, on
+`openrouter/qwen/qwen3.7-flash`. Between the two it recovered on its own, because the
+orchestrator happened to re-dispatch it.
+
+**Cause.** `runTurn` treats a provider 429 like any other node failure: the card is finished for
+that dispatch, no retry, no backoff, and the orchestrator is handed "the card produced nothing".
+
+**Why it is worse here than anywhere else.** The gauntlet drops a critic's session before every
+verdict on purpose (#2, and the method's whole point). So every round opens a *brand-new*
+session on that model — the exact traffic shape a per-model rate limit punishes — while a
+builder keeps one session and is never charged that cost. The card most likely to be rate
+limited is the one card whose absence the run cannot route around, because a verdict is what
+lets the orchestrator legally stop.
+
+**Fixed** (`fix(flow): survive a rate limit, count what it cost, refuse to certify unjudged work`):
+`runTurn` now re-sends a turn the provider refused for rate limiting — three times, waiting 20s,
+40s, then 80s — into the same session, and says "rate limited — retrying in Ns" on the activity
+stream while it waits. The refused turn produced nothing, so the re-send is the same prompt, and
+attachments ride it rather than being lost with the turn that never landed. `rateLimitBackoff: 0`
+fails on the first 429, which is what a test measuring the failure wants.
+
+---
+
+## 22. Run spend goes *down*, so the money cap counts the wrong number — *fixed*
+
+**Symptom.** The statusbar read `$0.10 / $5` at twelve minutes and `$0.05 / $5` at twenty. Not a
+render glitch; the run log agreed.
+
+**Cause.** A node's `usage` is *replaced* when the card is dispatched again, not accumulated, and
+the run total is the sum of the nodes' current usage. Sampled every 15s from
+`/flow/api/runs/<id>`:
+
+```
+00:54  total=0.0961  critic done                (round 1 verdict delivered)
+01:03  total=0.0479  critic error  0.0010       (429 #1 — total fell $0.048)
+01:11  total=0.0867  critic running 0.0204      (re-dispatch recovered on its own)
+01:19  total=0.0809  critic error  0.0023       (429 #2 — 0.0204 overwritten by 0.0023)
+```
+
+The last two lines are the proof: one card's own cost falls across a re-dispatch.
+
+**Why this one matters most.** `maxSpend` is the headline bound of a mode designed to run for
+hours, and FLOW.md already calls an unenforceable spend cap "the one failure nobody would notice
+until the bill arrived" — that is why an unpriced model blocks a gauntlet outright. This reaches
+the same place through a different door: every model is priced, and the number the cap is
+compared against still drifts arbitrarily below what was actually spent, without a word to the
+user. Over enough rounds the cap simply never fires.
+
+**Fixed.** `reconcile` folded one session's steps into the node's map instead of replacing it.
+Steps are keyed by message id, unique per session, so sessions add up without double-counting and
+the server's copy of a step still overwrites the bus's. Pinned by a test where a critic judges
+twice, holds two sessions, and reports the sum of both.
+
+**Worth keeping.** Writing that test, the first version failed because the run stopped early —
+the spend cap had fired at $6 against a $5 ceiling. That is the bug's own shape from the other
+side: the cap works, and it had been reading a number that kept shrinking underneath it.
+
+---
+
+## 23. With the critic down, the orchestrator nominated a builder as the judge — and the engine took it — *fixed*
+
+**Symptom.** The run ended with the orchestrator certifying a PASS on all seven bar lines:
+
+```
+`look` — a card that did NOT build the fixed file — inspected final state and
+returned PASS on all 7 bar lines
+```
+
+`look` is a `coder`. No critic ever returned a verdict on that state — both attempts 429'd (#21).
+
+**Cause.** The judge-first rule is sound where it looks: `judged` is only ever filled from a
+critics-only batch, and `isCritic` gates it, so a builder's opinion never counts as a verdict.
+The hole is the refusal policy around it. A `final` sent while `unjudged()` is refused **once**;
+the next `final` is accepted whatever the state of `judged`. That rule was written for an
+orchestrator that *will not* have the work judged (#2) — asking a third time just burns turns.
+It reads very differently when the critic *cannot be reached*: the run cannot get a verdict, and
+one refusal later the engine accepts the unjudged answer and reports `done` work as certified.
+
+The orchestrator was not cheating, either. Told to have the work judged and holding a critic that
+kept failing, it did the reasonable human thing — found the most independent card left and asked
+that one. The engine had no way to say "that is not a verdict" other than refusing again, and it
+had already spent its one refusal.
+
+**What the run showed underneath it.** The build work was real and the claims held up: gap
+5.2 → 4.4 on disk, the stray `x[1]` file gone, `__dbg*` hooks removed, every file stamped that
+afternoon. Only the *judging* was unsound — which is precisely the thing this mode exists to
+guarantee.
+
+**Fixed.** A second `final` while nothing has been judged now **fails the card** instead of being
+accepted. Both endings stop the burn; only one of them tells the truth about what the run
+produced. The reason separates the two cases, because they are different problems for whoever
+reads the log:
+
+- `the bar was never judged — every critic dispatched failed (critic: …)` when critics were sent
+  and none came back, carrying the last failure's own words.
+- `the bar was never judged — the card answered twice without sending the work to a critic`
+  when none was ever sent.
+
+`judgeFirstPrompt` also now says what the engine will do — that only the named reviewer cards
+count, that a builder's report is not a verdict however thorough, that a failed critic is worth
+dispatching again because refused turns are retried now (#21), and that this is the last ask.
+Telling the card the rule is cheaper than enforcing it after the fact.
+
+---
+
+## 24. A synthetic click on Run reported success and started nothing — *documented*
+
+`computer{action:"left_click", ref}` on the enabled Run button returned success twice while the
+browser pane was hidden. The statusbar stayed `no run yet` and no console error was raised.
+`button.click()` through `javascript_tool` started the run immediately.
+
+FLOW.md's hidden-pane section already warned that `screenshot` and `left_click_drag` *error* when
+the pane is hidden. This is the worse variant: a click that reports success and does nothing. It
+is now on that list, because the natural reading of a silent Run button is "preflight blocked it"
+and the next twenty minutes go into the wrong place.

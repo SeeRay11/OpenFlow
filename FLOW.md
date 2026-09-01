@@ -174,8 +174,13 @@ file layout, and API-key/model behavior are documented there rather than re-deri
 ### Verification in a hidden browser pane
 
 `computer{action:"screenshot"}` and `left_click_drag` need a composited pane and error when
-it is hidden. `file://` also fails. Verify via `read_page` and `javascript_tool` computed
-styles instead. Working headless techniques:
+it is hidden. `file://` also fails. Worse than either, **`computer{action:"left_click"}` can
+report success and do nothing** — measured on the Run button, twice, with no console error,
+while `button.click()` through `javascript_tool` started the run immediately. A silent Run
+button reads as "preflight blocked it", so the next twenty minutes go into the wrong place;
+drive controls through `javascript_tool` and confirm the state changed rather than trusting
+the click's result. Verify via `read_page` and `javascript_tool` computed styles instead.
+Working headless techniques:
 
 - Wire ports by dispatching `PointerEvent` down/move/up with `clientX/Y` from `.port-out`
   to `.port-in`.

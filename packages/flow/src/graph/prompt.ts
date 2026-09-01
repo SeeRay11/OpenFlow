@@ -767,6 +767,15 @@ export function judgeFirstPrompt(pipeline: Pipeline, node: FlowNode) {
     "",
     "When the verdict comes back: if it says our work loses, hand the largest gap to the card that owns",
     "it and go round again. Only once a critic has actually judged the current state may you answer.",
+    "",
+    `Only ${critics.length === 1 ? "that card counts" : "those cards count"} as a judge. A report from a builder —`,
+    "even one that did not write the file it is inspecting, even a thorough one — is not a verdict, and",
+    "quoting it back here does not make it one. If a critic keeps failing, dispatch it again; a refused",
+    "turn is retried for you, so a card that failed twice may well answer on the third ask.",
+    "",
+    "This is the last time you are asked. Answering again with no critic verdict on the current state",
+    "ends the run as a failure, because a gauntlet that certifies work nobody qualified judged is worth",
+    "less than one that admits it never got a verdict.",
   ].join("\n")
 }
 

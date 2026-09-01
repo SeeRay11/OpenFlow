@@ -46,7 +46,7 @@ export type NodePatch = {
   finished?: number
   /** Carried over from an earlier run rather than produced by this one. */
   reused?: boolean
-  /** Priced usage for this node so far. Replaced, never added to. */
+  /** Priced usage for this node so far, across every session it has held. */
   usage?: Spend
 }
 
@@ -115,6 +115,13 @@ export type RunOptions = {
    */
   catalogRetry?: number
   /**
+   * How long to wait before re-sending a turn the provider refused for rate
+   * limiting, in milliseconds; each further retry waits twice as long. `0`
+   * fails the card on the first 429, which is what a test wants when it is
+   * measuring the failure rather than the recovery.
+   */
+  rateLimitBackoff?: number
+  /**
    * Outputs already known from a previous run, keyed by node id. A node listed
    * here is satisfied the moment its layer starts: no session, no prompt, no
    * tokens, no bill. Its text lands in the same `outputs` map a freshly
@@ -162,6 +169,20 @@ const MUTATING = new Set(["edit", "write", "patch"])
  * nothing, and the alternative to asking again is throwing away the run.
  */
 const PROTOCOL_RETRIES = 3
+
+/**
+ * How many times a turn refused for rate limiting is re-sent, and how long the
+ * first wait is — each retry waits twice as long as the one before it.
+ *
+ * A 429 says "not now", and everywhere else in the engine that reads as "this
+ * card is finished". It costs a gauntlet more than anything else: a critic is
+ * given a session it has never used before on every single verdict, which is
+ * the traffic shape a per-model limit punishes, and it is the one card whose
+ * absence the run cannot route around — no verdict, no legal way to stop.
+ * Measured on the 2026-09-01 run: two 429s in sixteen minutes ended it.
+ */
+const RATE_LIMIT_RETRIES = 3
+export const DEFAULT_RATE_LIMIT_BACKOFF = 20_000
 export const DEFAULT_NODE_TIMEOUT = 30 * 60_000
 export const DEFAULT_QUESTION_TIMEOUT = 5 * 60_000
 export const DEFAULT_CHECKPOINT_EVERY = 2_000
@@ -282,6 +303,7 @@ export function start(
   const questionTimeout = Math.max(100, options.questionTimeout ?? DEFAULT_QUESTION_TIMEOUT)
   const checkpointEvery = Math.max(1, options.checkpointEvery ?? DEFAULT_CHECKPOINT_EVERY)
   const catalogRetry = Math.max(0, options.catalogRetry ?? DEFAULT_CATALOG_RETRY)
+  const rateLimitBackoff = Math.max(0, options.rateLimitBackoff ?? DEFAULT_RATE_LIMIT_BACKOFF)
   const runFiles = options.attachments ?? []
   const resume = options.resume ?? {}
   const toolChannel = options.toolChannel ?? MCP_REACHES_SESSIONS
@@ -382,11 +404,21 @@ export function start(
   }
 
   /**
-   * Replaces a node's live usage with what the server persisted.
+   * Folds what the server persisted for one session into a node's live usage.
    *
    * The bus is best-effort — it reconnects, and events published while it was
    * down are gone — so a run that only trusted it could under-report. The
-   * message history is the record the server itself keeps, so it wins.
+   * message history is the record the server itself keeps, so it wins, and a
+   * step already seen on the bus is overwritten by the server's copy of it.
+   *
+   * Merged rather than replaced, because a card can hold more than one session
+   * across a run: a gauntlet drops a critic's session before every verdict, and
+   * an orchestrator re-dispatches the same builder round after round. Measured
+   * on the 2026-09-01 run — the critic's own cost fell from $0.0204 to $0.0023
+   * across a re-dispatch and the run total fell with it, so `maxSpend` was being
+   * compared against a number well below what had actually been spent. Steps are
+   * keyed by message id, which is unique per session, so folding sessions
+   * together adds them up without ever double-counting one.
    */
   async function reconcile(id: string, sessionID: string) {
     if (!api.sessionSteps) return
@@ -395,7 +427,9 @@ export function start(
       hooks.onNotice?.("error", `could not read usage for ${entry(id).role} — showing what the event stream saw`)
       return
     }
-    usage.set(id, new Map(steps.map((step) => [step.messageID, step])))
+    const spent = usage.get(id) ?? new Map<string, StepUsage>()
+    for (const step of steps) spent.set(step.messageID, step)
+    usage.set(id, spent)
     reprice(id)
   }
 
@@ -633,40 +667,45 @@ export function start(
    * the price.
    */
   async function runTurn(node: FlowNode, build: (skipped: Attachment[]) => string, reuse = false) {
-    const opened = reuse ? nodeSession.get(node.id) : undefined
-    // Only this turn's tool failures count; a card is prompted into the session
-    // it already holds, so every earlier turn's are still on the stream.
-    const turnStarted = Date.now()
-    patch(node.id, {
-      status: "running",
-      ...(opened ? {} : { started: Date.now() }),
-      activity: opened ? "continuing session" : "starting session",
-    })
-    let sessionID = opened
-    try {
-      if (!sessionID) {
-        const session = await api.createSession({ agent: node.agent.name, model: node.agent.model })
-        sessionID = session.id
-        nodeSession.set(node.id, session.id)
-        sessions.set(session.id, node.id)
-        patch(node.id, { sessionID: session.id })
-      }
-      active.add(sessionID)
-      patch(node.id, { activity: "queued" })
-
-      // Run-level files first, then the node's own pins. A file the node's
-      // model has no modality for is withheld and named in the text instead,
-      // so one blind model in the middle of a chain does not stop the run.
-      const files = opened ? [] : [...runFiles, ...(node.agent.attachments ?? [])]
-      const model = node.agent.model ? catalog.get(node.agent.model) : undefined
-      const sendable = files.filter((file) => !model || api.accepts(model, file.mime))
-      const skipped = files.filter((file) => !sendable.includes(file))
-      if (files.length) {
-        entry(node.id).attachments = {
-          sent: sendable.map((file) => file.name),
-          skipped: skipped.map((file) => file.name),
+    let sessionID = reuse ? nodeSession.get(node.id) : undefined
+    // Whether this card's files have already reached the session. A reused one
+    // holds them; a retry after a refused prompt does not, so the attachments
+    // ride the re-send rather than being lost with the turn that never landed.
+    let carried = !!sessionID
+    for (let attempt = 0; ; attempt++) {
+      const opened = sessionID
+      // Only this turn's tool failures count; a card is prompted into the session
+      // it already holds, so every earlier turn's are still on the stream.
+      const turnStarted = Date.now()
+      patch(node.id, {
+        status: "running",
+        ...(opened ? {} : { started: Date.now() }),
+        activity: opened ? "continuing session" : "starting session",
+      })
+      try {
+        if (!sessionID) {
+          const session = await api.createSession({ agent: node.agent.name, model: node.agent.model })
+          sessionID = session.id
+          nodeSession.set(node.id, session.id)
+          sessions.set(session.id, node.id)
+          patch(node.id, { sessionID: session.id })
         }
-      }
+        active.add(sessionID)
+        patch(node.id, { activity: "queued" })
+
+        // Run-level files first, then the node's own pins. A file the node's
+        // model has no modality for is withheld and named in the text instead,
+        // so one blind model in the middle of a chain does not stop the run.
+        const files = carried ? [] : [...runFiles, ...(node.agent.attachments ?? [])]
+        const model = node.agent.model ? catalog.get(node.agent.model) : undefined
+        const sendable = files.filter((file) => !model || api.accepts(model, file.mime))
+        const skipped = files.filter((file) => !sendable.includes(file))
+        if (files.length) {
+          entry(node.id).attachments = {
+            sent: sendable.map((file) => file.name),
+            skipped: skipped.map((file) => file.name),
+          }
+        }
 
       // A card can reach an image without anyone attaching one: it takes a
       // screenshot, then opens it. `read` on a PNG comes back as an image part,
@@ -676,17 +715,18 @@ export function start(
       // card captured the game, the orchestrator opened the capture, and the run
       // died. The attachment filter above never sees this path, so the card is
       // told what it cannot do instead.
-      const text = `${build(skipped)}${model && !api.accepts(model, "image/png") ? `\n\n${imageBlindNote()}` : ""}`
-      patch(node.id, { prompt: text })
+        const text = `${build(skipped)}${model && !api.accepts(model, "image/png") ? `\n\n${imageBlindNote()}` : ""}`
+        patch(node.id, { prompt: text })
 
-      await api.prompt(sessionID, text, sendable)
-      if (controller.signal.aborted) throw new StopError()
-      await api.waitForIdle(sessionID, { signal: controller.signal, timeout: nodeTimeout })
-      active.delete(sessionID)
-      if (controller.signal.aborted) throw new StopError()
+        await api.prompt(sessionID, text, sendable)
+        carried = true
+        if (controller.signal.aborted) throw new StopError()
+        await api.waitForIdle(sessionID, { signal: controller.signal, timeout: nodeTimeout })
+        active.delete(sessionID)
+        if (controller.signal.aborted) throw new StopError()
 
-      const result = await api.transcript(sessionID)
-      if (result.error) throw new Error(result.error)
+        const result = await api.transcript(sessionID)
+        if (result.error) throw new Error(result.error)
       // A card whose tools were rejected still ends its turn cleanly: the
       // assistant message carries no error, so the node settles `done` and the
       // orchestrator is told the work is finished. Measured: a card burned
@@ -694,41 +734,78 @@ export function start(
       // openai-chat tool call write", reported success, and was re-dispatched on
       // a false premise. The failures are already on the activity stream; this
       // is what makes the control loop see them.
-      const rejected = (events.get(node.id) ?? []).filter(
-        (event) => event.kind === "tool" && event.status === "error" && event.at >= turnStarted,
-      )
-      const answer = rejected.length ? `${result.text}\n\n${toolFailureNote(rejected)}` : result.text
-      if (rejected.length) {
-        entry(node.id).toolFailures = rejected.length
-        activity.note(
-          node.id,
-          `tools:${node.id}:${turnStarted}`,
-          `${rejected.length} tool call(s) rejected`,
-          rejected.map((event) => `${event.title}: ${event.body ?? "failed"}`).join("\n"),
-          "error",
+        const rejected = (events.get(node.id) ?? []).filter(
+          (event) => event.kind === "tool" && event.status === "error" && event.at >= turnStarted,
         )
+        const answer = rejected.length ? `${result.text}\n\n${toolFailureNote(rejected)}` : result.text
+        if (rejected.length) {
+          entry(node.id).toolFailures = rejected.length
+          activity.note(
+            node.id,
+            `tools:${node.id}:${turnStarted}`,
+            `${rejected.length} tool call(s) rejected`,
+            rejected.map((event) => `${event.title}: ${event.body ?? "failed"}`).join("\n"),
+            "error",
+          )
+        }
+        outputs.set(node.id, answer)
+        patch(node.id, { status: "done", output: answer, activity: undefined, finished: Date.now() })
+      } catch (error) {
+        if (error instanceof StopError || controller.signal.aborted) {
+          failed.add(node.id)
+          patch(node.id, { status: "stopped", activity: undefined, finished: Date.now() })
+          return
+        }
+        const reason = api.describe(error)
+        // "Not now" is not "this card is finished". The provider refused the
+        // turn before it produced anything, so the same prompt goes back into
+        // the same session after a wait rather than costing the run a card.
+        if (rateLimited(reason) && attempt < RATE_LIMIT_RETRIES && rateLimitBackoff > 0) {
+          const wait = rateLimitBackoff * 2 ** attempt
+          activity.note(
+            node.id,
+            `ratelimit:${node.id}:${turnStarted}`,
+            `rate limited — retrying in ${Math.round(wait / 1000)}s (${attempt + 1} of ${RATE_LIMIT_RETRIES})`,
+            reason,
+            "done",
+          )
+          patch(node.id, { activity: `rate limited — retrying in ${Math.round(wait / 1000)}s` })
+          if (sessionID) active.delete(sessionID)
+          await new Promise((resolve) => setTimeout(resolve, wait))
+          if (controller.signal.aborted) {
+            failed.add(node.id)
+            patch(node.id, { status: "stopped", activity: undefined, finished: Date.now() })
+            return
+          }
+          continue
+        }
+        failed.add(node.id)
+        activity.note(node.id, `failed:${node.id}`, "node failed", reason, "error")
+        patch(node.id, {
+          status: "error",
+          error: reason,
+          activity: undefined,
+          finished: Date.now(),
+        })
+      } finally {
+        // Tokens are spent whether the node finished, failed or was stopped, so
+        // the bill is read back in every case rather than only on success.
+        if (sessionID) await reconcile(node.id, sessionID)
       }
-      outputs.set(node.id, answer)
-      patch(node.id, { status: "done", output: answer, activity: undefined, finished: Date.now() })
-    } catch (error) {
-      failed.add(node.id)
-      if (error instanceof StopError || controller.signal.aborted) {
-        patch(node.id, { status: "stopped", activity: undefined, finished: Date.now() })
-        return
-      }
-      const reason = api.describe(error)
-      activity.note(node.id, `failed:${node.id}`, "node failed", reason, "error")
-      patch(node.id, {
-        status: "error",
-        error: reason,
-        activity: undefined,
-        finished: Date.now(),
-      })
-    } finally {
-      // Tokens are spent whether the node finished, failed or was stopped, so
-      // the bill is read back in every case rather than only on success.
-      if (sessionID) await reconcile(node.id, sessionID)
+      return
     }
+  }
+
+  /**
+   * Whether a provider refused a turn for rate limiting rather than for
+   * anything about the turn itself.
+   *
+   * Matched on the text because that is all the runner hands back — the status
+   * line it composes (`Provider request failed with HTTP 429`) and the phrase
+   * providers put in the body when they answer 200 with a refusal.
+   */
+  function rateLimited(reason: string) {
+    return /\b429\b|rate.?limit|too many requests/i.test(reason)
   }
 
   /** A card's one turn in `pipeline` mode, after its layer's predecessors settled. */
@@ -822,6 +899,9 @@ export function start(
     /** Critic children of this card, and which of them have judged since the last build. */
     const judges = children.filter((id) => isCritic(nodes.get(id)!))
     const judged = new Set<string>()
+    /** Critics this card sent that came back with nothing, and why the last one did. */
+    let criticsLost = 0
+    let criticLoss = ""
     /**
      * Whether this card may answer yet.
      *
@@ -875,6 +955,30 @@ export function start(
           activity.note(node.id, `unjudged:${node.id}:${spent}`, "answered without a verdict", undefined, "done")
           build = () => judgeFirstPrompt(pipeline, node)
           continue
+        }
+        // Asked twice and still no verdict. The old rule accepted the second
+        // answer — stop burning turns on a card that will not send the work to
+        // a critic. Measured 2026-09-01, that rule certified a build nobody
+        // qualified had judged: with the critic failing every dispatch, the
+        // orchestrator nominated a *builder* as the independent inspector and
+        // wrote a PASS on all seven bar lines, which the engine took. `judged`
+        // was right to ignore that opinion; the refusal policy then let the
+        // answer through anyway.
+        //
+        // Both endings stop the burn; only one of them tells the truth about
+        // what the run produced. An unjudged pass is the single output a
+        // gauntlet must never write, so the card fails instead — and the reason
+        // separates a card that *would not* have the work judged from a run
+        // whose critics could not be reached, because those are different
+        // problems for whoever reads the log.
+        if (unjudged()) {
+          failed.add(node.id)
+          const reason = criticsLost
+            ? `the bar was never judged — every critic dispatched failed (${criticLoss})`
+            : "the bar was never judged — the card answered twice without sending the work to a critic"
+          activity.note(node.id, `unjudged:${node.id}:final`, "answered with no verdict on the work", reason, "error")
+          patch(node.id, { status: "error", error: reason, activity: undefined, finished: Date.now() })
+          return undefined
         }
         outputs.set(node.id, decision.answer)
         patch(node.id, { output: decision.answer })
@@ -942,6 +1046,11 @@ export function start(
       // time. Only a batch that is critics alone judges a state that holds
       // still long enough to be judged.
       if (gauntlet) {
+        for (const result of results) {
+          if (result.text !== undefined || !isCritic(nodes.get(result.card)!)) continue
+          criticsLost++
+          criticLoss = `${result.card}: ${result.error}`
+        }
         if (decision.assignments.some((entry) => !isCritic(nodes.get(entry.card)!))) judged.clear()
         else
           for (const result of results) if (result.text !== undefined) judged.add(result.card)
