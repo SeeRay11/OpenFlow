@@ -99,7 +99,9 @@ describe("preflight", () => {
   function withModel(graph: Pipeline, model: string) {
     for (const node of graph.nodes) {
       node.agent.model = model
-      node.agent.tools = { read: true }
+      // Denied outright: a tool the map leaves unnamed inherits the default
+      // agent's allow, and a swarm peer that can write is its own warning.
+      node.agent.tools = { read: true, edit: false, bash: false }
     }
     return graph
   }
@@ -233,6 +235,40 @@ describe("preflight", () => {
     const warnings = preflight(graph, unlocked("opencode/x")).warnings
     expect(warnings.map((problem) => problem.kind)).toEqual(["identical-peers"])
     expect(warnings[0].message).toContain("2 sessions")
+  })
+
+  test("a peer that can write files warns — peers run at once in one directory", () => {
+    const graph = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    graph.nodes[0].role = "coder"
+    graph.nodes[0].agent.tools = { read: true, edit: true, bash: false }
+
+    const warnings = preflight(graph, unlocked("opencode/x")).warnings
+    expect(warnings.map((problem) => problem.kind)).toEqual(["swarm-writers"])
+    expect(warnings[0].message).toStartWith("coder can write files")
+  })
+
+  test("an unlisted tool inherits the default agent's allow, so `{ read: true }` is a writer", () => {
+    // `permissionBlock` writes a rule only for tools the map names; edit and
+    // bash left unnamed stay at the default agent's allow.
+    const graph = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    graph.nodes[1].agent.tools = { read: true }
+    expect(preflight(graph, unlocked("opencode/x")).warnings.map((problem) => problem.kind)).toEqual([
+      "swarm-writers",
+    ])
+  })
+
+  test("bash alone is enough to write, so denying edit does not clear the warning", () => {
+    const graph = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    graph.nodes[1].agent.tools = { read: true, edit: false, bash: true }
+    expect(preflight(graph, unlocked("opencode/x")).warnings.map((problem) => problem.kind)).toEqual([
+      "swarm-writers",
+    ])
+  })
+
+  test("the synthesizer may write — it runs alone, after every round", () => {
+    const graph = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    graph.nodes[2].agent.tools = { read: true, edit: true, bash: true }
+    expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
   })
 
   test("a cycle left behind by a pipeline does not block a swarm — swarm reads no edges", () => {

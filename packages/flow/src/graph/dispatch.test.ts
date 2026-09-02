@@ -94,6 +94,58 @@ describe("parseDispatch", () => {
     expect(result).toHaveProperty("reason", expect.stringContaining("twice"))
   })
 
+  test("declared files ride along, trimmed; an assignment that declares none carries no key", () => {
+    const result = parseDispatch(
+      block('{ "dispatch": [ { "card": "n1", "task": "a", "files": [" src/a.ts "] }, { "card": "n2", "task": "b" } ] }'),
+      children,
+    )
+    expect(result).toEqual({
+      kind: "dispatch",
+      assignments: [
+        { card: "n1", task: "a", files: ["src/a.ts"] },
+        { card: "n2", task: "b" },
+      ],
+    })
+  })
+
+  test("two cards declaring one file is refused before either runs", () => {
+    const result = parseDispatch(
+      block(
+        '{ "dispatch": [ { "card": "n1", "task": "a", "files": ["src/game.ts"] }, { "card": "n2", "task": "b", "files": ["docs.md", "src/game.ts"] } ] }',
+      ),
+      children,
+    )
+    expect(result.kind).toBe("error")
+    expect(result).toHaveProperty("reason", expect.stringContaining("`src/game.ts` is declared by both `n1` and `n2`"))
+  })
+
+  test("the same file spelt two ways is still one file", () => {
+    const result = parseDispatch(
+      block(
+        '{ "dispatch": [ { "card": "n1", "task": "a", "files": ["./src/Game.ts"] }, { "card": "n2", "task": "b", "files": ["src\\\\game.ts"] } ] }',
+      ),
+      children,
+    )
+    expect(result.kind).toBe("error")
+    expect(result).toHaveProperty("reason", expect.stringContaining("declared by both"))
+  })
+
+  test("one card declaring a file twice is not a collision with itself", () => {
+    const result = parseDispatch(
+      block('{ "dispatch": [ { "card": "n1", "task": "a", "files": ["x.ts", "./x.ts"] } ] }'),
+      children,
+    )
+    expect(result.kind).toBe("dispatch")
+  })
+
+  test("files that are not an array of paths are refused with the card named", () => {
+    for (const files of ['"src/a.ts"', "[1]", '[""]', "{}"]) {
+      const result = parseDispatch(block(`{ "dispatch": [ { "card": "n1", "task": "a", "files": ${files} } ] }`), children)
+      expect(result.kind).toBe("error")
+      expect(result).toHaveProperty("reason", expect.stringContaining("`files` on the assignment for `n1`"))
+    }
+  })
+
   test("an empty dispatch array is refused", () => {
     expect(parseDispatch(block('{ "dispatch": [] }'), children).kind).toBe("error")
   })

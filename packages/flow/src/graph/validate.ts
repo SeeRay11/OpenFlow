@@ -1,4 +1,4 @@
-import { agentKey } from "../server/store"
+import { agentKey, toolMap } from "../server/store"
 import { isCritic, orchestrationShape } from "./orchestration"
 import { swarmShape } from "./swarm"
 import { depthOf, dispatchesOf, gauntletOf, modeOf, type Pipeline } from "./types"
@@ -247,6 +247,28 @@ function swarmProblems(pipeline: Pipeline): Preflight {
       message: `${group.map((agent) => agent.role).join(", ")} are the same role on the same model with the same instructions, so they have nothing to disagree about — the swarm pays for ${group.length} sessions and gets one opinion. Give them different roles, models or instructions, or set rounds to 1 and let the synthesizer pick between independent drafts.`,
     })
   }
+
+  // Peers that can write files. Every peer in a round runs at once, in the one
+  // working directory this fork has, with no lock on anything — so two peers
+  // "implementing" the same task write the same file and the later one wins
+  // silently. Worse than an orchestration batch, where at least the engine
+  // reports it afterwards: here the synthesizer picks the best *text*, while
+  // the disk holds whichever peer wrote last, and the verdict describes a file
+  // that does not exist. A swarm is a debate; its output is the synthesizer's
+  // message, and nothing a peer writes to disk is part of it.
+  //
+  // Only tools switched off explicitly are denied — an unlisted tool inherits
+  // the default agent's permission, which is allow — so `{ read: true }` can
+  // write. The synthesizer is not checked: it runs alone, after the rounds.
+  const writers = shape.agents.filter((agent) => {
+    const tools = toolMap(agent.agent.tools)
+    return tools.edit !== false || tools.bash !== false
+  })
+  if (writers.length)
+    warnings.push({
+      kind: "swarm-writers",
+      message: `${writers.map((agent) => agent.role).join(", ")} can write files, and swarm peers all run at once in one working directory with no lock — the last write wins and the synthesizer never learns which. A swarm answers in text; switch off edit and bash on the peers, or use orchestration if the work has to land on disk.`,
+    })
 
   // Switching a pipeline to swarm keeps its wiring, which now does nothing.
   // Silence would read as "the graph still works the way it looks".

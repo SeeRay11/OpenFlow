@@ -201,6 +201,9 @@ describe("swarm prompts", () => {
     // The point of the mode: a swarm that agrees because nobody argued has
     // burned every session in it for one opinion.
     expect(text).toContain("Disagree explicitly")
+    // Peers share one working directory and run at once; the verdict reads
+    // messages, not the disk, so a peer that writes files only collides.
+    expect(text).toContain("Do not write files")
   })
 
   test("a one-round swarm says so rather than promising a debate that never comes", () => {
@@ -397,6 +400,16 @@ describe("gauntlet prompts", () => {
   }
   const at = (graph: Pipeline, id: string) => graph.nodes.find((entry) => entry.id === id)!
 
+  test("the orchestrator is taught `files` — the check that runs before a batch does", () => {
+    const graph = pipeline("boss->a", "boss->b")
+    graph.mode = "orchestration"
+    const text = orchestratorPrompt(graph, at(graph, "boss"), "build it")
+
+    expect(text).toContain('"files": ["paths it will write"]')
+    expect(text).toContain("two cards declare the same file is refused before either runs")
+    expect(text).toContain("declare it in `files`")
+  })
+
   test("the orchestrator is told to loop against the bar, not to spend a budget", () => {
     const graph = gauntlet()
     const text = orchestratorPrompt(graph, at(graph, "boss"), "build the game")
@@ -443,6 +456,10 @@ describe("gauntlet prompts", () => {
     expect(text).toContain("# What to judge\n\njudge the lighting")
     // It judges; it does not fix.
     expect(text).toContain("Do not fix anything")
+    // The write tools are refused to it, so the ways left are shell lines —
+    // and a verdict over a tree the critic altered is thrown away.
+    expect(text).toContain("no `sed -i`, no installing packages")
+    expect(text).toContain("thrown away unread")
   })
 
   test("the result prompt reports spend and time instead of a dispatch countdown", () => {

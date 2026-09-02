@@ -2201,6 +2201,90 @@ describe("gauntlet mode", () => {
     expect(log.status).toBe("done")
   })
 
+  test("two critics in one batch judge one after the other, not at once", async () => {
+    // Both run the build and the tests in the one working directory; at the
+    // same time they would grade each other's half-built output.
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { outputs: [dispatch("reviewer", "second"), final("shipped")] },
+        reviewer: { hold: true, output: "ours wins" },
+        second: { hold: true, output: "ours wins too" },
+      },
+    })
+    const graph = gauntlet(["root->reviewer", "root->second"])
+    graph.nodes.find((node) => node.id === "second")!.role = "reviewer"
+    const run = h.run(graph)
+    await flush()
+    await flush()
+
+    // Only one critic has been prompted; the other waits for it to finish.
+    expect(h.dispatched.filter((id) => id !== "root")).toEqual(["reviewer"])
+    h.release("reviewer")
+    await flush()
+    await flush()
+    expect(h.dispatched.filter((id) => id !== "root")).toEqual(["reviewer", "second"])
+    h.release("second")
+    const log = await run.done
+    expect(log.status).toBe("done")
+  })
+
+  test("a builder and a critic in one batch still run together — that batch judges nothing anyway", async () => {
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { outputs: [dispatch("builder", "reviewer"), dispatch("reviewer"), final("shipped")] },
+        builder: { hold: true, output: "built it" },
+        reviewer: { hold: true, output: "ours wins" },
+      },
+    })
+    const run = h.run(gauntlet(["root->builder", "root->reviewer"]))
+    await flush()
+    await flush()
+    expect(h.dispatched.filter((id) => id !== "root").sort()).toEqual(["builder", "reviewer"])
+    h.release("builder")
+    h.release("reviewer")
+    await flush()
+    await flush()
+    h.release("reviewer")
+    await run.done
+  })
+
+  test("a critic that changed the work has its verdict thrown away", async () => {
+    // Its write tools are refused, so the only way left is a shell line. A
+    // verdict written over a tree the critic itself altered grades its own
+    // repair, which is the failure a separate critic exists to prevent.
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { outputs: [dispatch("builder"), dispatch("reviewer"), final("shipped"), final("shipped")] },
+        builder: { output: "built it" },
+        reviewer: { hold: true, output: "ours wins, once I fixed the import" },
+      },
+    })
+    const run = h.run(gauntlet(["root->builder", "root->reviewer"]))
+    await flush()
+    await flush()
+    h.emit({
+      type: "session.next.tool.called",
+      data: {
+        sessionID: h.sessionOf.get("reviewer"),
+        callID: "reviewer-sed",
+        tool: "bash",
+        input: { command: "sed -i 's/foo/bar/' src/game.ts" },
+      },
+    } as any)
+    h.release("reviewer")
+    const log = await run.done
+
+    const reviewer = log.nodes.find((node) => node.id === "reviewer")!
+    expect(reviewer.status).toBe("error")
+    expect(reviewer.error).toContain("src/game.ts (probable)")
+    // The orchestrator is told, and its verdict-less answer is refused as unjudged.
+    expect(h.promptLog.some((entry) => entry.node === "root" && entry.text.includes("verdict is discarded"))).toBe(true)
+    expect(h.promptLog.some((entry) => entry.node === "root" && entry.text.includes("Not yet"))).toBe(true)
+  })
+
   test("the card that assigns the work may not change it", async () => {
     const h = harness({
       models: ["openai/gpt-x"],

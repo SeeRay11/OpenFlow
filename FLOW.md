@@ -53,6 +53,18 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   judged by a synthesizer is best-of-N sampling, which is a real way to run a swarm — but only
   at `rounds: 1`, where no peer text is quoted and the cards cannot reject each other, which is
   why the message names that as the fix.
+- **A swarm peer that can write files is warned about, and told not to.** Every peer in a round
+  runs at once, in the one working directory this fork has, with no lock on anything — so two
+  peers given the same task write the same file and the later one wins silently. Orchestration at
+  least reports that afterwards (`graph/collisions.ts`); a swarm cannot, because its output is the
+  synthesizer's *message* and the synthesizer never reads the disk — the verdict would describe a
+  file the last writer replaced. `swarm-writers` in `graph/validate.ts` names every peer whose
+  `edit` or `bash` is not switched **off**: an unlisted tool inherits the default agent's allow
+  (`permissionBlock` writes rules only for tools the map names), so `{ read: true }` is a writer.
+  The synthesizer is exempt — it runs alone, after the rounds. It warns rather than blocks because
+  a peer that only *reads and runs* the repo is legitimate and the toggle cannot tell the two
+  apart; the briefing carries the other half ("Do not write files"), which costs nothing. Work
+  that has to land on disk belongs in orchestration, and the message says so.
 - **Swarm rounds are barriers, and the peer snapshot is taken on the boundary.** Round R
   reads a frozen copy of round R−1 (`said = new Map(outputs)` before the pool is dispatched).
   Snapshotting per card instead would let a peer early in the pool be read by a peer later in
@@ -89,6 +101,22 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   grades the improvement, not the work, which is the exact failure a separate critic exists to
   prevent. It costs the cached prefix and re-sends the reference files every round; that is the
   price of the method, not a bug to optimise away.
+  **A critic that changed the work has no verdict.** Its `edit`/`write`/`patch` asks are refused
+  in `answer` (and `bash` deliberately is not — refusing it was measured to break the critic's
+  own verification), so what a critic can still change the tree with is a shell line, and after
+  every batch the engine reads its bash calls through `writesOf`. Any write — `sed -i`, an
+  install, a `git checkout` — turns the verdict into a card error naming the paths, the result
+  the orchestrator reads becomes that error, and `judged` stays empty, so the run cannot end on
+  it. Discarding after the fact rather than refusing the call keeps `bun test` and `bun run
+  build` available; the briefing tells the critic that a tree which does not run as it was left
+  is the verdict, not a blocker to clear first.
+  **A critics-only batch runs one critic at a time.** Critics judge by running the work — build,
+  tests, dev server — in the one working directory, so two at once race `dist/`, the port and
+  `node_modules` and each grades the other's half-built output. Only a critics-only batch fills
+  `judged`, so it is the one batch that must see a tree holding still; `orchestrate` drops the
+  pool limit to 1 for it. A mixed batch keeps the full pool — it judges nothing anyway. The cost
+  is wall clock, which `maxMinutes` already bounds, and the briefing tells the orchestrator so it
+  batches critics only when each has a different part to judge.
   Two things the briefing must keep saying, both measured in the run this pattern comes from:
   the critic inspects the **real output**, never the builder's summary, and **coupled work goes
   to one builder in sequence** — fanning lighting, tone and sky out to cards that cannot see
@@ -173,7 +201,13 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   quotes the protocol before using it. A malformed block is handed back **once** with the exact
   reason; a second failure fails the card, since every ask is a paid turn. A card id outside the
   orchestrator's own children is refused, and so is the same card twice in one batch — one card
-  is one session, and two assignments would race it.
+  is one session, and two assignments would race it. An assignment may carry `files`, the paths
+  the orchestrator expects that card to write; two assignments in one batch declaring the same
+  path (compared through `normalizePath`, so spelling does not hide one) are refused the same
+  way, **before** the batch runs — the one moment a collision is free to fix, where the
+  after-the-fact note in `graph/collisions.ts` can only report the loss. It is optional because
+  most assignments write nothing and a mandatory field is filled with guesses; an undeclared
+  overlap still surfaces through the post-batch check.
 - **A card that ignores its spent budget is stopped, not re-asked.** When the budget runs out
   the orchestrator gets one forced-answer turn; if it dispatches anyway the node fails. Without
   that check the loop never ends. A leaf goes through `runSubagent` and is never shown the
@@ -193,10 +227,18 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   anything. It reports rather than reverts: the engine cannot know which of the two writes was
   the one worth keeping, and a card told to undo the right half spends a round making the work
   worse. Scope is **one batch** — the same file across two batches is ordinary iteration, and the
-  orchestrator ordered those itself. `bash` is deliberately not read as a writer: a shell line
-  cannot be parsed into paths honestly, so where a colliding card has it the note says the list is
-  a floor rather than the whole truth. The prevention half is a briefing line — one file, one
-  card — because a batch that never overlaps costs nothing to fix.
+  orchestrator ordered those itself. `bash` is read as far as a shell line can honestly be read
+  and no further: `shellWrites` knows redirects, `tee`, `sed -i`, `mv`/`cp` destinations, `rm`,
+  `touch`, package installs (`package.json` + `node_modules`) and the git commands that rewrite
+  the working tree (`checkout`, `stash`, `reset`, ... recorded as `TREE`, which collides with
+  every file any other card wrote). Everything it returns is marked **probable** — `cat > a.ts`
+  and `cat > "$OUT"` look alike to it — and the note says which cards are there on a guess. What
+  it cannot read (a build script, a program writing on its own account, a heredoc into an
+  interpreter, a path relative to an earlier `cd`) is simply absent, which is why the note still
+  calls the list a floor on a shell-capable card. Do not grow the parser toward a real shell:
+  every construct it half-understands is a collision it reports wrongly in both directions. The
+  prevention half is a briefing line — one file, one card — and the optional `files` declaration
+  on a dispatch, because a batch that never overlaps costs nothing to fix.
 - Cost is the standing hazard of both new modes. A swarm is `agents × rounds + 1` sessions; an
   orchestration is `1 + Σ(children × dispatches)` per level, and preflight warns with the actual
   number past a dozen. `MAX_ROUNDS`, `MAX_DEPTH` and `MAX_DISPATCHES` exist for that reason and

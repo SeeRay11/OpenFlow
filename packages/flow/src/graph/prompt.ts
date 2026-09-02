@@ -212,6 +212,13 @@ export function swarmBriefing(pipeline: Pipeline, node: FlowNode) {
     "  Holding a position you no longer believe is the same waste from the other side.",
     "- No peer can answer a question and nothing is interactive. Where the task is ambiguous,",
     "  state the assumption you took and continue.",
+    // Every peer runs at once in the one working directory, and nothing locks a
+    // file. Two peers writing the same path leave whichever wrote last, and the
+    // synthesizer — which reads messages, not the disk — never learns which.
+    "- Do not write files. Every peer shares one working directory and runs at the same",
+    "  time as you, so a file you write is a file another peer may be overwriting as you",
+    "  write it, and the verdict is drawn from what you *say*, never from the disk. Read",
+    "  and run whatever you need; put your answer in your message.",
     "- Write for the card that weighs you: your position and the reason for it, short enough",
     "  to be read beside everyone else's. No preamble.",
   ].join("\n")
@@ -361,8 +368,12 @@ export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode) {
         ]),
     "",
     "```" + FENCE,
-    '{ "dispatch": [ { "card": "<id from the list above>", "task": "what it must do, in full" } ] }',
+    '{ "dispatch": [ { "card": "<id from the list above>", "task": "what it must do, in full", "files": ["paths it will write"] } ] }',
     "```",
+    "",
+    "`files` is optional: the files you expect that card to create or change. A batch in which",
+    "two cards declare the same file is refused before either runs, which is the one moment the",
+    "overlap costs nothing.",
     "",
     ...(MCP_REACHES_SESSIONS ? [] : ["To finish, when you can answer:", ""]),
     "```" + FENCE,
@@ -388,7 +399,8 @@ export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode) {
     "- Two cards in one batch must never write the same file. They run at the same time, nothing",
     "  locks a file, and the later write silently replaces the earlier one — the card whose work",
     "  was overwritten still reports success, so its answer describes a file that no longer says",
-    "  that. Give a file to one card, or dispatch the cards that need it in separate batches.",
+    "  that. Give a file to one card, or dispatch the cards that need it in separate batches,",
+    "  and declare it in `files` so the batch is checked before it runs.",
     "- A card only knows what you write in its task. It has not seen the run task, the other",
     "  cards' answers, or anything you dispatched before — write the task so it can be finished",
     "  by someone who has read nothing else.",
@@ -459,7 +471,9 @@ function gauntletBriefing(pipeline: Pipeline, node: FlowNode) {
       ? [
           `Your critics: ${critics.map((critic) => `\`${critic.id}\``).join(", ")}. A critic never builds`,
           "and a builder never grades its own work — that swap is the one thing that makes this loop",
-          "different from asking a card to try harder.",
+          "different from asking a card to try harder. A batch of critics alone runs them one at a",
+          "time, because they judge by running the work in one shared directory; batch several only",
+          "when each has a different part to judge.",
           "",
         ]
       : []),
@@ -517,7 +531,11 @@ export function criticPrompt(
       "- Do not be generous. Work that is impressive for its category and short of the bar is short",
       "  of the bar, and saying so is the whole reason you were dispatched. If you genuinely cannot",
       "  find a gap, say that plainly — it is a real answer, and it ends the loop.",
-      "- Do not fix anything. You judge; somebody else builds.",
+      "- Do not fix anything. You judge; somebody else builds. That includes the small things:",
+      "  no `sed -i`, no installing packages, no `git checkout` or `git stash`, nothing that moves",
+      "  or rewrites a file. A verdict from a critic that changed the tree is thrown away unread.",
+      "  If the work does not build or run as it was left, that is not a blocker — it is your",
+      "  verdict, and the largest gap.",
     ].join("\n"),
   ]
   if (node.agent.prompt.trim()) sections.push(node.agent.prompt.trim())

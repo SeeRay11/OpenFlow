@@ -1,4 +1,4 @@
-import { collisionNote, collisionsIn, writesOf } from "../graph/collisions"
+import { collisionNote, collisionsIn, writesOf, type Write } from "../graph/collisions"
 import { fromToolCall, MCP_REACHES_SESSIONS, parseDispatch } from "../graph/dispatch"
 import { isCritic, orchestrationShape } from "../graph/orchestration"
 import {
@@ -1066,7 +1066,16 @@ export function start(
 
       const results: { card: string; text?: string; error?: string }[] = []
       const batchStarted = Date.now()
-      await pool(decision.assignments, limit, controller.signal, async (assignment) => {
+      // Critics judge by running the work — the build, the tests, the dev
+      // server — in the one working directory this fork has. Two of them at
+      // once race the same `dist/`, the same port, the same `node_modules`,
+      // and each grades the other's half-built output. A critics-only batch is
+      // the only batch that judges anything (see `judged` below), so it is the
+      // one that has to see a tree holding still: one critic at a time. It
+      // costs wall clock, which a gauntlet already bounds.
+      const oneAtATime =
+        !!gauntlet && decision.assignments.length > 1 && decision.assignments.every((entry) => isCritic(nodes.get(entry.card)!))
+      await pool(decision.assignments, oneAtATime ? 1 : limit, controller.signal, async (assignment) => {
         const child = nodes.get(assignment.card)!
         // A critic judges from a session it has never used before. Reusing one
         // would let it read its own earlier verdicts, and a critic that has
@@ -1095,6 +1104,25 @@ export function start(
       // time. Only a batch that is critics alone judges a state that holds
       // still long enough to be judged.
       if (gauntlet) {
+        // A critic that changed the work has judged its own repair. The write
+        // tools are already refused to it (`answer` above), so what reaches here
+        // is a shell line — `sed -i`, an install, a `git checkout` — read by
+        // `writesOf` as far as a shell line can be read. The verdict is
+        // discarded rather than the call refused: refusing bash outright was
+        // measured to break the critic's own verification, and a verdict that
+        // came back over a changed tree is worth nothing whichever way the
+        // change went.
+        for (const [index, result] of results.entries()) {
+          const child = nodes.get(result.card)!
+          if (!isCritic(child) || result.text === undefined) continue
+          const wrote = [child.id, ...descendants(child.id)].flatMap((id) => writesOf(events.get(id) ?? [], batchStarted))
+          if (!wrote.length) continue
+          const listed = wrote.map((write) => (write.probable ? `${write.path} (probable)` : write.path)).join(", ")
+          const error = `its verdict is discarded: a critic may not change the work it judges, and it wrote ${listed}`
+          activity.note(child.id, `critic-wrote:${child.id}:${spent}`, "verdict discarded — the critic changed the work", listed, "error")
+          patch(child.id, { status: "error", error })
+          results[index] = { card: result.card, error }
+        }
         for (const result of results) {
           if (result.text !== undefined || !isCritic(nodes.get(result.card)!)) continue
           criticsLost++
@@ -1120,7 +1148,7 @@ export function start(
       // one worth keeping, so it reports rather than reverts — but it reports
       // before the orchestrator decides anything, which is the only moment the
       // finding is still worth acting on.
-      const wrote = new Map<string, string[]>()
+      const wrote = new Map<string, Write[]>()
       for (const assignment of decision.assignments) {
         const paths = [assignment.card, ...descendants(assignment.card)].flatMap((id) =>
           writesOf(events.get(id) ?? [], batchStarted),
@@ -1128,10 +1156,12 @@ export function start(
         if (paths.length) wrote.set(assignment.card, paths)
       }
       const collisions = collisionsIn(wrote)
-      // A card that can run shell commands can write a file with no write tool
-      // call behind it, so on those cards the list is a floor rather than the
-      // whole truth — and saying so is the difference between a finding the
-      // orchestrator can trust and one it over-trusts.
+      // A shell-capable card's writes are read as far as a shell line can be
+      // read — redirects, `sed -i`, installs, git — and marked probable. What a
+      // build script or a program wrote is not seen at all, so on those cards
+      // the list is a floor rather than the whole truth, and saying so is the
+      // difference between a finding the orchestrator can trust and one it
+      // over-trusts.
       const collided = collisionNote(
         collisions,
         collisions
@@ -1146,7 +1176,14 @@ export function start(
           node.id,
           `collision:${node.id}:${spent}`,
           `${collisions.length} file(s) written by more than one card`,
-          collisions.map((collision) => `${collision.path}: ${collision.cards.join(", ")}`).join("\n"),
+          collisions
+            .map(
+              (collision) =>
+                `${collision.path}: ${collision.cards
+                  .map((card) => (collision.probable.includes(card) ? `${card} (probable)` : card))
+                  .join(", ")}`,
+            )
+            .join("\n"),
           "error",
         )
 

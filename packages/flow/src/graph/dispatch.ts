@@ -13,6 +13,8 @@
  * something it can act on.
  */
 
+import { normalizePath } from "./collisions"
+
 export const FENCE = "openflow"
 
 /**
@@ -57,7 +59,14 @@ export const FINISH_TOOL = `${MCP_SERVER}_finish`
  */
 export const MCP_REACHES_SESSIONS = false
 
-export type Assignment = { card: string; task: string }
+/**
+ * `files` is what the orchestrator says the card will write, if it says. It is
+ * optional because most assignments do not write anything, and a declaration
+ * demanded of every one would be padded with guesses. When two assignments in
+ * a batch declare the same path the batch is refused before anything runs —
+ * the only moment a collision is free to fix.
+ */
+export type Assignment = { card: string; task: string; files?: string[] }
 
 export type Dispatch =
   | { kind: "dispatch"; assignments: Assignment[] }
@@ -163,6 +172,8 @@ function assignmentsFrom(value: unknown, children: string[]): Dispatch {
 
   const assignments: Assignment[] = []
   const claimed = new Set<string>()
+  /** Declared write targets, normalised, to the card that declared them first. */
+  const owners = new Map<string, string>()
   for (const entry of value) {
     if (typeof entry !== "object" || entry === null)
       return { kind: "error", reason: "Every assignment must be an object with a `card` and a `task`." }
@@ -182,9 +193,32 @@ function assignmentsFrom(value: unknown, children: string[]): Dispatch {
         reason: `\`${row.card}\` appears twice in one dispatch. Give a card one task per round, or dispatch it again next round.`,
       }
     claimed.add(row.card)
-    assignments.push({ card: row.card, task: row.task.trim() })
+    // The cards in a batch run at once in one directory with no lock, so a
+    // file two of them both write ends up as whichever wrote last. The engine
+    // reports that after the batch from the writes it actually saw; this is
+    // the half that costs nothing, because the batch has not run yet.
+    if (row.files !== undefined && !(Array.isArray(row.files) && row.files.every(isPath)))
+      return {
+        kind: "error",
+        reason: `\`files\` on the assignment for \`${row.card}\` must be an array of file paths, or left out.`,
+      }
+    const files = row.files === undefined ? undefined : (row.files as string[]).map((path) => path.trim())
+    for (const path of files ?? []) {
+      const owner = owners.get(normalizePath(path))
+      if (owner && owner !== row.card)
+        return {
+          kind: "error",
+          reason: `\`${path}\` is declared by both \`${owner}\` and \`${row.card}\` in one dispatch. The cards in a batch run at the same time and nothing locks a file, so the later write would silently replace the earlier one. Give the file to one card, or dispatch the other next round.`,
+        }
+      owners.set(normalizePath(path), row.card)
+    }
+    assignments.push({ card: row.card, task: row.task.trim(), ...(files?.length ? { files } : {}) })
   }
   return { kind: "dispatch", assignments }
+}
+
+function isPath(value: unknown): value is string {
+  return typeof value === "string" && !!value.trim()
 }
 
 function parseJson(text: string) {

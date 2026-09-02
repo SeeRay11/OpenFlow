@@ -48,6 +48,12 @@ const TOOLS = [
                 description:
                   "What that card must do, in full. It has not seen the run task, the other cards' answers, or anything you dispatched before.",
               },
+              files: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  "Optional: the files this card is expected to create or change. Cards in a batch run at once and nothing locks a file, so a batch in which two cards declare the same file is refused before either runs.",
+              },
             },
             required: ["card", "task"],
           },
