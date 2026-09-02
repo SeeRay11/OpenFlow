@@ -22,6 +22,10 @@ to npm — it is an app, run it from the repo.
 The plan it was built from, and the original build brief, are kept in
 [docs/](docs) for the reasoning; the code is the authority where they disagree.
 
+## Community
+
+Questions, workflows, and feedback: [r/OpenFlowAI](https://www.reddit.com/r/OpenFlowAI/).
+
 ## Install
 
 **Prerequisites:** [Bun](https://bun.sh) 1.3+ and [Git](https://git-scm.com).
