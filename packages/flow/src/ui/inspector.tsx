@@ -3,7 +3,7 @@ import { upstream } from "../graph/validate"
 import * as api from "../server/client"
 import type { ProviderRow } from "../server/providers"
 import { TOOLS, TOOL_HELP } from "../server/store"
-import { actions, runtimeOf, state } from "../state"
+import { actions, primary, runtimeOf, state } from "../state"
 import { Attachments, readFiles } from "./attachments"
 import { IconTrash } from "./icons"
 import { ModelPicker } from "./model-picker"
@@ -18,8 +18,11 @@ export function Inspector(props: {
   onManageKeys?: (query?: string) => void
   onManageMcp?: () => void
 }) {
-  const node = createMemo(() => state.pipeline.nodes.find((entry) => entry.id === state.selected))
-  const runtime = createMemo(() => (state.selected ? runtimeOf(state.selected) : undefined))
+  // With several cards selected the fields show the primary card's values —
+  // somebody's have to be shown — and an edit lands on all of them.
+  const node = createMemo(() => state.pipeline.nodes.find((entry) => entry.id === primary()))
+  const runtime = createMemo(() => (primary() ? runtimeOf(primary()) : undefined))
+  const many = () => state.selection.length > 1
   const [testing, setTesting] = createSignal(false)
 
   /**
@@ -54,6 +57,13 @@ export function Inspector(props: {
             <div class="panel-section">
               <h2 class="panel-title">node</h2>
 
+              <Show when={many()}>
+                <div class="hint">
+                  {state.selection.length} cards selected — role, model, agent, prompt and tools apply to
+                  all of them
+                </div>
+              </Show>
+
               {/*
                 native controls keep their wrapping <label> so clicking the caption
                 still focuses the input; the two pickers below are buttons, not form
@@ -66,7 +76,7 @@ export function Inspector(props: {
                 <input
                   class="field"
                   value={selected().role}
-                  onInput={(event) => actions.updateNode(selected().id, { role: event.currentTarget.value })}
+                  onInput={(event) => actions.updateSelected({ role: event.currentTarget.value })}
                 />
               </label>
 
@@ -77,7 +87,7 @@ export function Inspector(props: {
                 <ModelPicker
                   value={selected().agent.model ?? ""}
                   rows={props.providers}
-                  onChange={(value) => actions.updateAgent(selected().id, { model: value })}
+                  onChange={(value) => actions.updateSelectedAgent({ model: value })}
                   onManage={props.onManageKeys}
                 />
               </div>
@@ -103,7 +113,7 @@ export function Inspector(props: {
                     { value: "", label: "(server default)" },
                     ...props.agents.map((agent) => ({ value: agent, label: agent })),
                   ]}
-                  onChange={(value) => actions.updateAgent(selected().id, { name: value })}
+                  onChange={(value) => actions.updateSelectedAgent({ name: value })}
                 />
               </div>
 
@@ -115,7 +125,7 @@ export function Inspector(props: {
                   class="field"
                   rows="8"
                   value={selected().agent.prompt}
-                  onInput={(event) => actions.updateAgent(selected().id, { prompt: event.currentTarget.value })}
+                  onInput={(event) => actions.updateSelectedAgent({ prompt: event.currentTarget.value })}
                 />
               </label>
 
@@ -126,7 +136,7 @@ export function Inspector(props: {
                       <input
                         type="checkbox"
                         checked={selected().agent.tools?.[tool] ?? false}
-                        onChange={(event) => actions.toggleTool(selected().id, tool, event.currentTarget.checked)}
+                        onChange={(event) => actions.toggleSelectedTool(tool, event.currentTarget.checked)}
                       />
                       {tool}
                     </label>
@@ -193,9 +203,9 @@ export function Inspector(props: {
                 <span class="hint">
                   inputs: {upstream(state.pipeline, selected().id).length} · id {selected().id}
                 </span>
-                <button class="btn btn-danger" type="button" onClick={() => actions.removeNode(selected().id)}>
+                <button class="btn btn-danger" type="button" onClick={() => actions.removeSelected()}>
                   <IconTrash />
-                  delete
+                  {many() ? `delete ${state.selection.length}` : "delete"}
                 </button>
               </div>
             </div>

@@ -11,6 +11,8 @@ export function Canvas() {
   let surface!: HTMLDivElement
   const [view, setView] = createSignal<View>({ x: 60, y: 60, k: 1 })
   const [linking, setLinking] = createSignal<{ source: string; to: Point } | undefined>()
+  /** Live marquee rectangle, in client pixels — see `startMarquee`. */
+  const [marquee, setMarquee] = createSignal<{ x: number; y: number; w: number; h: number } | undefined>()
 
   const toGraph = (clientX: number, clientY: number): Point => {
     const rect = surface.getBoundingClientRect()
@@ -35,9 +37,55 @@ export function Canvas() {
     })
   }
 
+  /**
+   * Left drag on empty canvas is the marquee; panning moved to the middle
+   * button, or Alt with the left one for a mouse that has no middle button.
+   *
+   * A rectangle and a pan are the same gesture, so one of them had to give the
+   * plain drag up, and the rectangle is the one a card can be caught by.
+   */
+  function onSurfaceDown(event: PointerEvent) {
+    if (event.button === 1 || (event.button === 0 && event.altKey)) return startPan(event)
+    if (event.button === 0) return startMarquee(event)
+  }
+
+  function startMarquee(event: PointerEvent) {
+    const additive = event.ctrlKey || event.metaKey || event.shiftKey
+    if (!additive) actions.select(undefined)
+    const origin = { x: event.clientX, y: event.clientY }
+    const move = (moved: PointerEvent) =>
+      setMarquee({
+        x: Math.min(origin.x, moved.clientX),
+        y: Math.min(origin.y, moved.clientY),
+        w: Math.abs(moved.clientX - origin.x),
+        h: Math.abs(moved.clientY - origin.y),
+      })
+    const up = () => {
+      window.removeEventListener("pointermove", move)
+      window.removeEventListener("pointerup", up)
+      const box = marquee()
+      setMarquee(undefined)
+      // A press with no drag is a click on the background, which already
+      // cleared the selection above.
+      if (!box || (box.w < 4 && box.h < 4)) return
+      // Read the cards off the DOM rather than computing rectangles from
+      // positions: a card's height depends on what it is showing, and its
+      // client rect is already in the zoomed, panned frame the box is in.
+      const hits = [...surface.querySelectorAll<HTMLElement>("[data-node-id]")]
+        .filter((element) => {
+          const rect = element.getBoundingClientRect()
+          return (
+            rect.left < box.x + box.w && rect.right > box.x && rect.top < box.y + box.h && rect.bottom > box.y
+          )
+        })
+        .map((element) => element.dataset.nodeId!)
+      actions.selectMany(hits, additive)
+    }
+    window.addEventListener("pointermove", move)
+    window.addEventListener("pointerup", up)
+  }
+
   function startPan(event: PointerEvent) {
-    if (event.button !== 0 && event.button !== 1) return
-    actions.select(undefined)
     const start = { ...view() }
     const origin = { x: event.clientX, y: event.clientY }
     const move = (moved: PointerEvent) =>
@@ -55,14 +103,22 @@ export function Canvas() {
     if (event.button !== 0) return
     const target = node(id)
     if (!target) return
-    const start = { ...target.position }
+    // Dragging a card that is part of a selection moves the whole selection:
+    // the cards were picked out together, and moving them one at a time is the
+    // work multi-select exists to remove.
+    const moving = (state.selection.includes(id) ? state.selection : [id])
+      .map((entry) => node(entry))
+      .filter((entry) => !!entry)
+      .map((entry) => ({ id: entry.id, start: { ...entry.position } }))
     const origin = { x: event.clientX, y: event.clientY }
     const scale = view().k
-    const move = (moved: PointerEvent) =>
-      actions.moveNode(id, {
-        x: Math.round(start.x + (moved.clientX - origin.x) / scale),
-        y: Math.round(start.y + (moved.clientY - origin.y) / scale),
-      })
+    const move = (moved: PointerEvent) => {
+      for (const entry of moving)
+        actions.moveNode(entry.id, {
+          x: Math.round(entry.start.x + (moved.clientX - origin.x) / scale),
+          y: Math.round(entry.start.y + (moved.clientY - origin.y) / scale),
+        })
+    }
     const up = () => {
       window.removeEventListener("pointermove", move)
       window.removeEventListener("pointerup", up)
@@ -115,7 +171,7 @@ export function Canvas() {
       return
     }
     if (event.key !== "Delete" && event.key !== "Backspace") return
-    if (state.selected) actions.removeNode(state.selected)
+    if (state.selection.length) actions.removeSelected()
   }
   window.addEventListener("keydown", onKey)
   onCleanup(() => window.removeEventListener("keydown", onKey))
@@ -125,7 +181,7 @@ export function Canvas() {
       class="canvas"
       ref={surface}
       onWheel={onWheel}
-      onPointerDown={startPan}
+      onPointerDown={onSurfaceDown}
       onDragOver={(event) => event.preventDefault()}
       onDrop={onDrop}
     >
@@ -200,6 +256,22 @@ export function Canvas() {
           {(entry) => <NodeCard node={entry} onDragStart={startDrag} onPortDown={startLink} />}
         </For>
       </div>
+
+      {/* Drawn outside the viewport, in client pixels, so the rectangle keeps
+          its 1px edge at every zoom level. */}
+      <Show when={marquee()}>
+        {(box) => (
+          <div
+            class="marquee"
+            style={{
+              left: `${box().x}px`,
+              top: `${box().y}px`,
+              width: `${box().w}px`,
+              height: `${box().h}px`,
+            }}
+          />
+        )}
+      </Show>
 
       {/* The hud is a floating pill over the canvas, so its reset control uses
           the ghost button primitive rather than a bare browser button. */}

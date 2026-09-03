@@ -436,3 +436,26 @@ export function ancestors(pipeline: Pipeline, id: string) {
   }
   return found
 }
+
+/** Every node `id` can reach through the graph. Excludes `id` itself. */
+export function descendants(pipeline: Pipeline, id: string) {
+  const found = new Set<string>()
+  const stack = downstream(pipeline, id)
+  while (stack.length) {
+    const next = stack.pop()!
+    if (found.has(next)) continue
+    found.add(next)
+    stack.push(...downstream(pipeline, next))
+  }
+  return found
+}
+
+/**
+ * The chain a card sits on: everything that feeds it, everything it feeds, and
+ * the card itself. Not the weakly connected component — a sibling branch off a
+ * shared parent is not on this card's path, and selecting it would move work
+ * the user did not point at.
+ */
+export function pathThrough(pipeline: Pipeline, id: string) {
+  return [id, ...ancestors(pipeline, id), ...descendants(pipeline, id)]
+}
