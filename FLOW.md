@@ -244,7 +244,13 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   number past a dozen. `MAX_ROUNDS`, `MAX_DEPTH` and `MAX_DISPATCHES` exist for that reason and
   `roundsOf()` / `depthOf()` / `dispatchesOf()` clamp, so a hand-edited file cannot talk the
   engine into an unbounded run.
-- **An orchestration batch gets a working copy per card, when the project is a git repo.**
+- **An orchestration batch gets a working copy per card, when the canvas asks for it.**
+  `Pipeline.isolate` is a toggle on orchestration, read through `isolationOf` — a property of the
+  *document*, like `mode` and `gauntlet`, because it changes where an existing graph's writes
+  land, so it is persisted, exported and undoable. **Absent means off**, which is every canvas
+  saved before it existed: turning somebody's cards loose in separate trees is not a change to
+  make because they upgraded. The flag survives a mode switch so switching back does not lose
+  it, and does nothing while the canvas is not an orchestration.
   This is the prevention half of the rule above, and it is reachable because a session created
   with `location: { directory }` runs its tools *there* — measured 2026-09-03, against the
   older note in "Hazard: test runs write real files", which is about config resolution rather

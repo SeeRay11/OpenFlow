@@ -8,6 +8,7 @@ import {
   depthOf,
   dispatchesOf,
   gauntletOf,
+  isolationOf,
   modeOf,
   roundsOf,
 } from "./graph/types"
@@ -413,6 +414,44 @@ describe("orchestration budgets", () => {
     expect(depthOf(state.pipeline)).toBe(3)
     expect(dispatchesOf(state.pipeline)).toBe(1)
     expect(state.dirty).toBe(true)
+  })
+})
+
+describe("per-card working copies", () => {
+  test("off until asked for", () => {
+    actions.setMode("orchestration")
+    expect(isolationOf(state.pipeline)).toBe(false)
+
+    actions.setIsolate(true)
+    expect(isolationOf(state.pipeline)).toBe(true)
+    expect(state.dirty).toBe(true)
+  })
+
+  test("turning it on is undoable — it changes where a run's writes land", () => {
+    graph("planner", "coder")
+    actions.setMode("orchestration")
+    actions.setIsolate(true)
+
+    expect(actions.undo()).toBe(true)
+    expect(isolationOf(state.pipeline)).toBe(false)
+    expect(state.pipeline.nodes).toHaveLength(2)
+  })
+
+  test("turning it off removes the key rather than leaving a dead flag", () => {
+    actions.setMode("orchestration")
+    actions.setIsolate(true)
+    actions.setIsolate(false)
+    expect(state.pipeline.isolate).toBeUndefined()
+  })
+
+  // The flag survives a mode switch so switching back does not silently lose
+  // it, but it does nothing while the canvas is not an orchestration.
+  test("it takes no effect outside orchestration", () => {
+    actions.setMode("orchestration")
+    actions.setIsolate(true)
+    actions.setMode("swarm")
+    expect(isolationOf(state.pipeline)).toBe(false)
+    expect(state.pipeline.isolate).toBe(true)
   })
 })
 

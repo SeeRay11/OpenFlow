@@ -350,6 +350,17 @@ export const actions = {
     setState("pipeline", "gauntlet", on ? {} : undefined)
   },
 
+  /**
+   * Whether cards run in separate working copies. Undoable and dirtying like
+   * any other document change — it decides where a run's writes land.
+   */
+  setIsolate(on: boolean) {
+    if (!!state.pipeline.isolate === on) return
+    snapshot()
+    setState("dirty", true)
+    setState("pipeline", "isolate", on ? true : undefined)
+  },
+
   /** One gauntlet field. Clamped where it is read, not here. */
   setGauntletSetting(patch: Partial<Gauntlet>) {
     if (!state.pipeline.gauntlet) return

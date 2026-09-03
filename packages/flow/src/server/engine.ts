@@ -31,7 +31,7 @@ import type {
   Spend,
   StepUsage,
 } from "../graph/types"
-import { depthOf, dispatchesOf, GAUNTLET_DISPATCHES, gauntletOf, modeOf, roundsOf } from "../graph/types"
+import { depthOf, dispatchesOf, GAUNTLET_DISPATCHES, gauntletOf, isolationOf, modeOf, roundsOf } from "../graph/types"
 import { ancestors, layer, upstream } from "../graph/validate"
 import { applyEvent, createActivity, persistable } from "./activity"
 import * as api from "./client"
@@ -359,6 +359,8 @@ export function start(
   // canvas with nothing to judge the work would loop builders against nobody
   // until one of those caps fired. Preflight says the same in the UI.
   const gauntlet = tree ? gauntletOf(pipeline) : undefined
+  /** Off unless the canvas asked: separate working copies change where a run's writes land. */
+  const isolate = isolationOf(pipeline)
   if (gauntlet && !pipeline.nodes.some((node) => isCritic(node) && !tree!.children(node.id).length))
     throw new Error("a gauntlet has no reviewer card to judge the work against its bar")
   // Swarm reads no edges at all, so a leftover cycle from a graph that used to
@@ -1114,7 +1116,7 @@ export function start(
       // cards that can write get one — a reader isolated from the project would
       // read a copy of it for no benefit — and only cards that do not already
       // hold a session, because a session's location is fixed once it exists.
-      if (deps.worktrees && decision.assignments.length > 1) {
+      if (isolate && deps.worktrees && decision.assignments.length > 1) {
         // A card that already holds a session keeps the tree that session was
         // created in — the location cannot be changed afterwards — so only the
         // cards without one are opened here. They still merge below: a card's

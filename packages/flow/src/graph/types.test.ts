@@ -11,6 +11,7 @@ import {
   dispatchesOf,
   gauntletOf,
   emptyPipeline,
+  isolationOf,
   MAX_DEPTH,
   MAX_MAX_MINUTES,
   MAX_MAX_SPEND,
@@ -73,6 +74,28 @@ describe("orchestration budgets", () => {
     expect(depthOf({ ...pipeline("a"), depth: 0 })).toBe(1)
     expect(dispatchesOf({ ...pipeline("a"), dispatches: 99 })).toBe(MAX_DISPATCHES)
     expect(dispatchesOf({ ...pipeline("a"), dispatches: -1 })).toBe(1)
+  })
+})
+
+describe("isolationOf", () => {
+  test("off when the canvas has not asked", () => {
+    expect(isolationOf({ ...emptyPipeline(), mode: "orchestration" })).toBe(false)
+  })
+
+  test("on when it has", () => {
+    expect(isolationOf({ ...emptyPipeline(), mode: "orchestration", isolate: true })).toBe(true)
+  })
+
+  // The other modes have no orchestrator to hand a merge conflict to, which is
+  // what makes isolation worth its cost.
+  test("orchestration only, whatever the file says", () => {
+    expect(isolationOf({ ...emptyPipeline(), mode: "swarm", isolate: true })).toBe(false)
+    expect(isolationOf({ ...emptyPipeline(), isolate: true })).toBe(false)
+  })
+
+  // A hand-edited file must not talk the engine into it with a truthy value.
+  test("only a real true counts", () => {
+    expect(isolationOf({ ...emptyPipeline(), mode: "orchestration", isolate: "yes" as never })).toBe(false)
   })
 })
 

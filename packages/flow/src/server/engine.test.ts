@@ -1791,11 +1791,22 @@ describe("a working copy per card", () => {
   const dispatch = (...cards: string[]) =>
     block(JSON.stringify({ dispatch: cards.map((card) => ({ card, task: `do ${card}` })) }))
 
-  function tree(spec: string[], options: { dispatches?: number } = {}): Pipeline {
-    return { ...pipeline(...spec), mode: "orchestration", ...options }
+  function tree(spec: string[], options: { dispatches?: number; isolate?: boolean } = {}): Pipeline {
+    return { ...pipeline(...spec), mode: "orchestration", isolate: true, ...options }
   }
 
   const batch = { root: { output: dispatch("a", "b") }, a: { output: "a done" }, b: { output: "b done" } }
+
+  // Off unless the canvas asked: separate working copies change where a run's
+  // writes land, which is not a change to make because somebody upgraded.
+  test("a canvas that has not asked for it runs in one directory", async () => {
+    const h = harness({ behavior: batch, worktrees: "available" })
+    const log = await h.run(tree(["root->a", "root->b"], { dispatches: 1, isolate: false })).done
+
+    expect(h.worktreeCalls.open).toEqual([])
+    expect(h.worktreeCalls.merged).toBe(0)
+    for (const node of log.nodes) expect(h.sessionDirs.get(node.sessionID!)).toBeUndefined()
+  })
 
   test("each dispatched card's session is created in its own tree", async () => {
     const h = harness({ behavior: batch, worktrees: "available" })
