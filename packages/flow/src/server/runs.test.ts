@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { RUN_DELETE, RUN_PRUNE, runDuration, runMenuOptions, runOption, runOptions, runTime } from "./runs"
+import { findRun, RUN_DELETE, RUN_PRUNE, runDuration, runMenuOptions, runOption, runOptions, runTime } from "./runs"
 import type { RunEntry } from "./store"
 
 const at = new Date(2026, 8, 2, 14, 32).getTime()
@@ -47,7 +47,7 @@ describe("runOption", () => {
     expect(option.label).not.toBe("run-1")
   })
 
-  test("the hint carries canvas, cards, duration and cost", () => {
+  test("the hint carries cards, duration and cost", () => {
     const option = runOption(
       entry({
         nodes: 3,
@@ -56,7 +56,7 @@ describe("runOption", () => {
       "alpha",
       at,
     )
-    expect(option.hint).toBe("alpha · 3 cards · 2m 04s · $0.4200")
+    expect(option.hint).toBe("3 cards · 2m 04s · $0.4200")
   })
 
   test("one card is not pluralised", () => {
@@ -65,7 +65,7 @@ describe("runOption", () => {
 
   test("a run that measured nothing shows no money rather than $0", () => {
     const option = runOption(entry({ nodes: 2 }), "alpha", at)
-    expect(option.hint).toBe("alpha · 2 cards · 2m 04s")
+    expect(option.hint).toBe("2 cards · 2m 04s")
   })
 
   test("an unpriced model is reported as such, never as free", () => {
@@ -77,6 +77,13 @@ describe("runOption", () => {
       at,
     )
     expect(option.hint).toContain("unpriced")
+  })
+
+  // The group heading above the row already says which canvas it is, and the
+  // hint is ellipsised at half the row — a repeated name pushes the cost off.
+  test("the canvas name appears only on rows from another canvas", () => {
+    expect(runOption(entry({ nodes: 2 }), "alpha", at).hint).not.toContain("alpha")
+    expect(runOption(entry({ nodes: 2 }), "beta", at).hint).toBe("alpha · 2 cards · 2m 04s")
   })
 
   test("done is the expected ending and gets no pill", () => {
@@ -152,8 +159,30 @@ describe("runMenuOptions", () => {
     expect(prune?.disabled).toBe(true)
   })
 
+  // Measured against a real project: the log says `run-2026-09-01T02-22-46-829Z`
+  // while the file holding it — which is what the route addresses — is lower
+  // case. Matching exactly left the delete row disabled with a run open, and
+  // would have sent a DELETE to an id with no file behind it.
+  test("an open run finds itself however its id is cased", () => {
+    const rows = runMenuOptions([entry({ id: "run-2026-09-01t02-22-46-829z" })], "alpha", "run-2026-09-01T02-22-46-829Z", at)
+    expect(rows.find((row) => row.value === RUN_DELETE)?.disabled).toBe(false)
+  })
+
   test("action values cannot be mistaken for a run id", () => {
     expect(RUN_DELETE.startsWith("action:")).toBe(true)
     expect(RUN_PRUNE.startsWith("action:")).toBe(true)
+  })
+})
+
+describe("findRun", () => {
+  test("resolves a log id onto the listing row the route can address", () => {
+    expect(findRun([entry({ id: "run-2026-09-01t02-22-46-829z" })], "run-2026-09-01T02-22-46-829Z")?.id).toBe(
+      "run-2026-09-01t02-22-46-829z",
+    )
+  })
+
+  test("no id and no match both come back empty", () => {
+    expect(findRun([entry()], undefined)).toBeUndefined()
+    expect(findRun([entry()], "ghost")).toBeUndefined()
   })
 })

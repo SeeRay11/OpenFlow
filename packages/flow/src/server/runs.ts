@@ -18,14 +18,18 @@ import { costLabel } from "./usage"
  * because a run abandoned by a closed tab is not still running.
  */
 export function runOption(entry: RunEntry, current: string, now = Date.now()): SelectOption {
+  const mine = entry.pipeline === current
   return {
     value: entry.id,
     label: runTime(entry.started, now),
-    hint: runHint(entry),
+    // The canvas name is dropped from its own group's rows: the heading above
+    // them already says it, and the hint is ellipsised at half the row, so a
+    // repeated name is paid for by pushing the cost off the end.
+    hint: runHint(entry, mine),
     // `done` is the expected ending and every row would carry it. The pill is
     // spent on the endings worth picking out of the list instead.
     ...(entry.status && entry.status !== "done" ? { tag: entry.status } : {}),
-    group: entry.pipeline === current ? "This canvas" : "Other canvases",
+    group: mine ? "This canvas" : "Other canvases",
     title: entry.id,
   }
 }
@@ -44,7 +48,23 @@ export function runOptions(entries: RunEntry[], current: string, now = Date.now(
   ].map((entry) => runOption(entry, current, now))
 }
 
-/** Menu values that act rather than open a recording. Run ids are uuids, so neither can collide. */
+/**
+ * The listing row for a run id, matched the way the store matches it.
+ *
+ * A run is addressed by its *filename*, and the id inside the log is not
+ * always the same string: logs on disk carry `run-<ISO>` with the timestamp's
+ * `T` and `Z` in caps while the file that holds them is lower case, so
+ * `log.id === entry.id` is false for every run recorded that way. Comparing
+ * case-insensitively is what lets an open recording find itself in the list —
+ * and, more to the point, what makes a delete address a file that exists.
+ */
+export function findRun(entries: RunEntry[], id: string | undefined) {
+  if (!id) return undefined
+  const wanted = id.toLowerCase()
+  return entries.find((entry) => entry.id.toLowerCase() === wanted)
+}
+
+/** Menu values that act rather than open a recording. A run id always starts `run-`, so neither can collide. */
 export const RUN_DELETE = "action:delete"
 export const RUN_PRUNE = "action:prune"
 
@@ -66,7 +86,7 @@ export const PRUNE_DAYS = 30
  * nothing, so the menu does not change shape between openings.
  */
 export function runMenuOptions(entries: RunEntry[], current: string, open?: string, now = Date.now()): SelectOption[] {
-  const opened = open ? entries.find((entry) => entry.id === open) : undefined
+  const opened = findRun(entries, open)
   const stale = entries.filter(
     (entry) => entry.status !== "running" && (entry.started ?? 0) < now - PRUNE_DAYS * 86_400_000,
   ).length
@@ -91,9 +111,9 @@ export function runMenuOptions(entries: RunEntry[], current: string, open?: stri
   ]
 }
 
-function runHint(entry: RunEntry) {
+function runHint(entry: RunEntry, mine: boolean) {
   const parts: string[] = []
-  if (entry.pipeline) parts.push(entry.pipeline)
+  if (entry.pipeline && !mine) parts.push(entry.pipeline)
   if (entry.nodes) parts.push(`${entry.nodes} card${entry.nodes === 1 ? "" : "s"}`)
   const elapsed = runDuration(entry)
   if (elapsed) parts.push(elapsed)

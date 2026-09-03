@@ -35,7 +35,7 @@ import {
 } from "./server/providers"
 import { defaultModel, setAvailableModels, setDefaultModel } from "./graph/default-model"
 import { hydrateCustomRoles, onRolesSyncError } from "./graph/roles"
-import { PRUNE_DAYS, RUN_DELETE, RUN_PRUNE, runMenuOptions } from "./server/runs"
+import { findRun, PRUNE_DAYS, RUN_DELETE, RUN_PRUNE, runMenuOptions } from "./server/runs"
 import {
   agentBlock,
   agentKey,
@@ -875,7 +875,9 @@ export function App() {
    * the log reference goes, which is what makes the run no longer re-openable.
    */
   async function deleteOpenRun() {
-    const id = state.run?.id
+    // The listing's id, not the log's: a run is addressed by its filename and
+    // the two differ in case for every run recorded as `run-<ISO>`.
+    const id = findRun(runs(), state.run?.id)?.id
     if (!id) return
     if (!window.confirm(`Delete the recording of run ${id}?\n\nThis cannot be undone. The canvas keeps what it is showing.`))
       return
@@ -899,7 +901,8 @@ export function App() {
     try {
       const result = await store.pruneRuns({ days: PRUNE_DAYS })
       // A run open on screen may have just been deleted underneath it.
-      if (state.run && result.removed.includes(state.run.id)) actions.setRun(undefined)
+      const open = findRun(runs(), state.run?.id)?.id
+      if (open && result.removed.includes(open)) actions.setRun(undefined)
       actions.notice("info", `pruned ${result.removed.length} run(s), ${result.kept} kept`)
       await refresh()
     } catch (error) {
@@ -1569,7 +1572,9 @@ export function App() {
             variant="ghost"
             placement="top"
             align="end"
-            width={380}
+            // Wider than the 284px default: a row carries a timestamp, a
+            // duration and a price, and the hint is ellipsised at half the row.
+            width={460}
             title="reopen a recorded run"
             value=""
             search
