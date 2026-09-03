@@ -11,7 +11,7 @@ import {
   modeOf,
   roundsOf,
 } from "./graph/types"
-import { actions, runtimeOf, state } from "./state"
+import { actions, primary, runtimeOf, state } from "./state"
 
 /**
  * The store is a module singleton, so every test starts from a reset graph.
@@ -36,7 +36,7 @@ describe("nodes", () => {
     const [id] = graph("planner")
 
     expect(state.pipeline.nodes).toHaveLength(1)
-    expect(state.selected).toBe(id)
+    expect(state.selection).toEqual([id])
     expect(state.pipeline.nodes[0].role).toBeTruthy()
     expect(state.pipeline.nodes[0].agent.prompt).toBeTruthy()
   })
@@ -79,7 +79,7 @@ describe("nodes", () => {
     expect(state.pipeline.nodes.map((node) => node.id)).toEqual([b])
     expect(state.pipeline.edges).toEqual([])
     expect(runtimeOf(a).status).toBe("idle")
-    expect(state.selected).toBeUndefined()
+    expect(state.selection).toEqual([])
   })
 
   test("keeps the selection when a different node is removed", () => {
@@ -87,7 +87,7 @@ describe("nodes", () => {
     actions.select(a)
     actions.removeNode(b)
 
-    expect(state.selected).toBe(a)
+    expect(state.selection).toEqual([a])
   })
 
   test("moves and edits in place", () => {
@@ -166,7 +166,76 @@ describe("runtime", () => {
     expect(state.pipeline.name).toBe("other")
     expect(state.runtime).toEqual({})
     expect(state.run).toBeUndefined()
-    expect(state.selected).toBeUndefined()
+    expect(state.selection).toEqual([])
+  })
+})
+
+describe("selection", () => {
+  test("ctrl-click adds a card and clicking it again drops it", () => {
+    const [a, b] = graph("planner", "coder")
+    actions.select(a)
+    actions.toggleSelect(b)
+
+    expect(state.selection).toEqual([a, b])
+    expect(primary()).toBe(b)
+
+    actions.toggleSelect(b)
+    expect(state.selection).toEqual([a])
+  })
+
+  test("shift-click takes the chain through a card, not a sibling branch", () => {
+    const [a, b, c, sibling] = graph("planner", "coder", "reviewer", "coder")
+    actions.connect(a, b)
+    actions.connect(b, c)
+    actions.connect(a, sibling)
+
+    actions.selectPath(b)
+
+    expect([...state.selection].sort()).toEqual([a, b, c].sort())
+  })
+
+  test("a marquee selection replaces unless it is additive", () => {
+    const [a, b, c] = graph("planner", "coder", "reviewer")
+    actions.selectMany([a, b])
+    expect(state.selection).toEqual([a, b])
+
+    actions.selectMany([c], true)
+    expect(state.selection).toEqual([a, b, c])
+
+    actions.selectMany([c])
+    expect(state.selection).toEqual([c])
+  })
+
+  test("a field edit lands on every selected card", () => {
+    const [a, b] = graph("planner", "coder")
+    actions.selectMany([a, b])
+    actions.updateSelected({ role: "critic" })
+    actions.updateSelectedAgent({ model: "anthropic/claude-opus-4" })
+    actions.toggleSelectedTool("bash", false)
+
+    for (const id of [a, b]) {
+      const node = state.pipeline.nodes.find((entry) => entry.id === id)!
+      expect(node.role).toBe("critic")
+      expect(node.agent.model).toBe("anthropic/claude-opus-4")
+      expect(node.agent.tools?.bash).toBe(false)
+    }
+  })
+
+  test("deleting a selection takes every card and its edges in one undo step", () => {
+    const [a, b, c] = graph("planner", "coder", "reviewer")
+    actions.connect(a, b)
+    actions.connect(b, c)
+    actions.selectMany([a, b])
+
+    actions.removeSelected()
+
+    expect(state.pipeline.nodes.map((node) => node.id)).toEqual([c])
+    expect(state.pipeline.edges).toEqual([])
+    expect(state.selection).toEqual([])
+
+    actions.undo()
+    expect(state.pipeline.nodes).toHaveLength(3)
+    expect(state.pipeline.edges).toHaveLength(2)
   })
 })
 

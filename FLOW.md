@@ -345,6 +345,32 @@ components rather than approximating them, and do not add extra affordances alon
   hues the five leave free. Add a color here only for a role opencode genuinely has no
   counterpart for, and say so where it sits.
 
+## Selection is a list, and the canvas gestures follow from that
+
+- **`state.selection` is an ordered list of card ids; the last one is the primary.** There is
+  no `state.selected` any more. The inspector shows the primary card's values — with several
+  selected somebody's have to be shown, and the last card pointed at is the one the user was
+  looking at — and every field edit fans out over the whole list through
+  `updateSelected` / `updateSelectedAgent` / `toggleSelectedTool`. Renaming a multi-selection
+  renames every card in it, which in swarm mode is how the synthesizer is designated: role text
+  is the flag, so a bulk rename can take the decider with it.
+- **Left drag on the canvas draws the marquee, so panning is the middle button or Alt+left.**
+  A rectangle and a pan are the same gesture and one had to give the plain drag up; the
+  rectangle is the one a card can be caught by. The `.canvas` cursor is `default` rather than
+  `grab` for the same reason.
+- **The marquee hit-tests client rects off the DOM, not positions.** A card's height depends on
+  what it is showing (activity, error, output preview), and a client rect is already in the
+  zoomed, panned frame the box is drawn in. That is what `data-node-id` on `.node` is for, and
+  why `.marquee` is `position: fixed` outside the viewport transform.
+- **A press on a card that is already selected does not collapse the selection**, or dragging a
+  group by one of its cards would drop the rest before the drag started. Dragging any selected
+  card moves the whole selection; Ctrl/Cmd toggles one card, Shift takes `pathThrough` — the
+  chain that feeds the card plus everything it feeds, deliberately not the weakly connected
+  component, since a sibling branch off a shared parent is not on this card's path.
+- **Deleting a selection is one snapshot, not one per card.** Four cards deleted was one action
+  to the user, and four undos to get them back would also empty the bounded history of
+  everything before it.
+
 ## CSS and interaction traps
 
 Check these first when the UI misbehaves — each one cost a debugging session.

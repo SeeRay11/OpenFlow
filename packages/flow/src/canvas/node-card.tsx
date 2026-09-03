@@ -24,7 +24,7 @@ export function NodeCard(props: {
   onPortDown: (event: PointerEvent, id: string) => void
 }) {
   const runtime = () => runtimeOf(props.node.id)
-  const selected = () => state.selected === props.node.id
+  const selected = () => state.selection.includes(props.node.id)
   /** A card is worth expanding once it has a session — live or finished. */
   const hasActivity = () => !!runtime().events?.length || !!runtime().sessionID
   const expanded = () => state.expanded === props.node.id
@@ -58,14 +58,24 @@ export function NodeCard(props: {
         "--role-color": roleColor(props.node.role),
       }}
       tabindex={0}
+      data-node-id={props.node.id}
       onPointerDown={(event) => {
         event.stopPropagation()
+        // Ctrl/Cmd adds one card, Shift takes the whole chain, and a plain
+        // press on a card that is already selected leaves the selection alone
+        // — otherwise dragging a group by one of its cards would collapse the
+        // selection to that card before the drag started.
+        if (event.ctrlKey || event.metaKey) return actions.toggleSelect(props.node.id)
+        if (event.shiftKey) return actions.selectPath(props.node.id)
+        if (selected()) return
         actions.select(props.node.id)
       }}
       onClick={onClick}
       onKeyDown={(event) => {
         if (event.key !== "Enter") return
         event.preventDefault()
+        if (event.ctrlKey || event.metaKey) return actions.toggleSelect(props.node.id)
+        if (event.shiftKey) return actions.selectPath(props.node.id)
         actions.select(props.node.id)
         if (hasActivity()) actions.expand(expanded() ? undefined : props.node.id)
       }}

@@ -14,7 +14,7 @@ import type {
 import { applyEvent } from "./server/activity"
 import type { QuestionInfo } from "./server/client"
 import { emptyPipeline, modeOf, type FlowMode, type Gauntlet } from "./graph/types"
-import { wouldCycle } from "./graph/validate"
+import { pathThrough, wouldCycle } from "./graph/validate"
 
 export type NodeRuntime = {
   status: NodeStatus
@@ -48,7 +48,14 @@ export type PendingQuestion = {
 
 export type FlowState = {
   pipeline: Pipeline
-  selected?: string
+  /**
+   * Cards the user has selected, in the order they were added.
+   *
+   * The last entry is the primary: the inspector has to show somebody's current
+   * value while editing many cards at once, and the last card pointed at is the
+   * one the user was just looking at.
+   */
+  selection: string[]
   /** Node whose activity drawer is open. Independent of selection. */
   expanded?: string
   runtime: Record<string, NodeRuntime>
@@ -75,6 +82,7 @@ export type FlowState = {
 
 const [state, setState] = createStore<FlowState>({
   pipeline: emptyPipeline("untitled"),
+  selection: [],
   runtime: {},
   running: false,
   input: "",
@@ -86,6 +94,11 @@ const [state, setState] = createStore<FlowState>({
 })
 
 export { state }
+
+/** The card the inspector reads and single-card actions act on. */
+export function primary() {
+  return state.selection[state.selection.length - 1]
+}
 
 /** Resolvers live outside the store — they are callbacks, not state. */
 const waiting = new Map<string, (reply: PermissionReply) => void>()
@@ -143,7 +156,7 @@ export const actions = {
       position,
     }
     setState("pipeline", "nodes", (nodes) => [...nodes, node])
-    setState("selected", node.id)
+    setState("selection", [node.id])
     return node
   },
 
@@ -155,7 +168,7 @@ export const actions = {
         draft.pipeline.nodes = draft.pipeline.nodes.filter((node) => node.id !== id)
         draft.pipeline.edges = draft.pipeline.edges.filter((edge) => edge.source !== id && edge.target !== id)
         delete draft.runtime[id]
-        if (draft.selected === id) draft.selected = undefined
+        draft.selection = draft.selection.filter((entry) => entry !== id)
         if (draft.expanded === id) draft.expanded = undefined
       }),
     )
@@ -187,7 +200,73 @@ export const actions = {
   },
 
   select(id?: string) {
-    setState("selected", id)
+    setState("selection", id ? [id] : [])
+  },
+
+  /** Ctrl/Cmd-click: adds a card to the selection, or drops it if it is in it. */
+  toggleSelect(id: string) {
+    setState("selection", (selection) =>
+      selection.includes(id) ? selection.filter((entry) => entry !== id) : [...selection, id],
+    )
+  },
+
+  /** Shift-click: the whole chain this card sits on. See `pathThrough`. */
+  selectPath(id: string) {
+    setState("selection", pathThrough(state.pipeline, id))
+  },
+
+  /** Marquee drag. Additive keeps what was already selected. */
+  selectMany(ids: string[], additive = false) {
+    setState("selection", (selection) => {
+      const next = additive ? [...selection] : []
+      for (const id of ids) if (!next.includes(id)) next.push(id)
+      return next
+    })
+  },
+
+  /**
+   * Field edits fanned out over the selection.
+   *
+   * One card is the ordinary case and stays identical to it — the selection is
+   * `[id]`. With several selected the same value lands on all of them, which is
+   * the point: setting a model or a prompt card by card is the work this
+   * exists to remove. Like every other field edit these do not snapshot.
+   */
+  updateSelected(patch: Partial<FlowNode>) {
+    for (const id of state.selection) actions.updateNode(id, patch)
+  },
+
+  updateSelectedAgent(patch: Partial<FlowNode["agent"]>) {
+    for (const id of state.selection) actions.updateAgent(id, patch)
+  },
+
+  toggleSelectedTool(tool: string, enabled: boolean) {
+    for (const id of state.selection) actions.toggleTool(id, tool, enabled)
+  },
+
+  /**
+   * Delete, and the inspector's delete button: every selected card at once.
+   *
+   * One snapshot for the whole set, not one per card — deleting four cards was
+   * one action to the user, and four presses of undo to get them back would
+   * also empty the bounded history of everything before it.
+   */
+  removeSelected() {
+    const ids = new Set(state.selection)
+    if (!ids.size) return
+    snapshot()
+    setState("dirty", true)
+    setState(
+      produce((draft) => {
+        draft.pipeline.nodes = draft.pipeline.nodes.filter((node) => !ids.has(node.id))
+        draft.pipeline.edges = draft.pipeline.edges.filter(
+          (edge) => !ids.has(edge.source) && !ids.has(edge.target),
+        )
+        for (const id of ids) delete draft.runtime[id]
+        draft.selection = []
+        if (draft.expanded && ids.has(draft.expanded)) draft.expanded = undefined
+      }),
+    )
   },
 
   /** Opens (or closes, with no id) the activity drawer for one card. */
@@ -289,7 +368,7 @@ export const actions = {
       produce((draft) => {
         draft.pipeline = previous
         draft.dirty = true
-        draft.selected = undefined
+        draft.selection = []
         draft.expanded = undefined
       }),
     )
@@ -306,7 +385,7 @@ export const actions = {
         draft.pipeline = pipeline
         draft.runtime = {}
         draft.run = undefined
-        draft.selected = undefined
+        draft.selection = []
         draft.expanded = undefined
         draft.dirty = false
       }),

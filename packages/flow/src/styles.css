@@ -1622,11 +1622,9 @@ main {
     var(--v2-background-bg-base);
   overflow: hidden;
   touch-action: none;
-  cursor: grab;
-}
-
-.canvas:active {
-  cursor: grabbing;
+  /* Left drag draws a selection rectangle, so the grab hand would promise a
+     pan the gesture no longer does. Panning is the middle button, or Alt. */
+  cursor: default;
 }
 
 .viewport {
@@ -2948,4 +2946,15 @@ main {
 
 .node.expanded {
   border-color: var(--v2-border-border-focus);
+}
+
+/* The marquee is drawn in client pixels outside the zoomed viewport, so its
+   edge stays 1px at every zoom level and the fill never scales into a slab. */
+.marquee {
+  position: fixed;
+  z-index: 5;
+  pointer-events: none;
+  border: 1px solid var(--v2-border-border-focus);
+  border-radius: 2px;
+  background: var(--v2-alpha-light-6);
 }
