@@ -1,3 +1,4 @@
+import type { SelectOption } from "../ui/select"
 import type { RunEntry } from "./store"
 import { costLabel } from "./usage"
 
@@ -16,7 +17,7 @@ import { costLabel } from "./usage"
  * one with no `finished` shows no duration rather than counting up to now,
  * because a run abandoned by a closed tab is not still running.
  */
-export function runOption(entry: RunEntry, current: string, now = Date.now()) {
+export function runOption(entry: RunEntry, current: string, now = Date.now()): SelectOption {
   return {
     value: entry.id,
     label: runTime(entry.started, now),
@@ -36,11 +37,58 @@ export function runOption(entry: RunEntry, current: string, now = Date.now()) {
  * groups themselves are ordered by the order rows are first seen, so the
  * current canvas has to lead the array to lead the menu.
  */
-export function runOptions(entries: RunEntry[], current: string, now = Date.now()) {
+export function runOptions(entries: RunEntry[], current: string, now = Date.now()): SelectOption[] {
   return [
     ...entries.filter((entry) => entry.pipeline === current),
     ...entries.filter((entry) => entry.pipeline !== current),
   ].map((entry) => runOption(entry, current, now))
+}
+
+/** Menu values that act rather than open a recording. Run ids are uuids, so neither can collide. */
+export const RUN_DELETE = "action:delete"
+export const RUN_PRUNE = "action:prune"
+
+/**
+ * How old a run has to be before the prune row offers to delete it.
+ *
+ * A month is past the point where a log is being compared against anything and
+ * still long enough that a run someone meant to come back to is not swept up
+ * by a menu row they clicked once.
+ */
+export const PRUNE_DAYS = 30
+
+/**
+ * The whole Runs menu: the recordings, then what can be done to them.
+ *
+ * The actions live at the bottom of the same menu because that is the only
+ * place a run is already the subject — there is nowhere else in the UI a
+ * recording is named. Both are disabled rather than hidden when they would do
+ * nothing, so the menu does not change shape between openings.
+ */
+export function runMenuOptions(entries: RunEntry[], current: string, open?: string, now = Date.now()): SelectOption[] {
+  const opened = open ? entries.find((entry) => entry.id === open) : undefined
+  const stale = entries.filter(
+    (entry) => entry.status !== "running" && (entry.started ?? 0) < now - PRUNE_DAYS * 86_400_000,
+  ).length
+  return [
+    ...runOptions(entries, current, now),
+    {
+      value: RUN_DELETE,
+      label: "Delete this run",
+      hint: opened ? runTime(opened.started, now) : "no run open",
+      group: "Manage",
+      disabled: !opened,
+      title: opened ? `permanently delete ${opened.id}` : "open a run first",
+    },
+    {
+      value: RUN_PRUNE,
+      label: `Delete runs older than ${PRUNE_DAYS} days`,
+      hint: stale ? `${stale} run${stale === 1 ? "" : "s"}` : "nothing that old",
+      group: "Manage",
+      disabled: !stale,
+      title: "runs still marked running are never pruned — they are the ones that can be resumed",
+    },
+  ]
 }
 
 function runHint(entry: RunEntry) {

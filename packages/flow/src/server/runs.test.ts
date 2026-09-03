@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { runDuration, runOption, runOptions, runTime } from "./runs"
+import { RUN_DELETE, RUN_PRUNE, runDuration, runMenuOptions, runOption, runOptions, runTime } from "./runs"
 import type { RunEntry } from "./store"
 
 const at = new Date(2026, 8, 2, 14, 32).getTime()
@@ -108,5 +108,52 @@ describe("runOptions", () => {
   test("order inside a group is left as the listing gave it — newest first", () => {
     const rows = runOptions([entry({ id: "new" }), entry({ id: "old", started: at - 86_400_000 })], "alpha", at)
     expect(rows.map((row) => row.value)).toEqual(["new", "old"])
+  })
+})
+
+describe("runMenuOptions", () => {
+  const old = at - 40 * 86_400_000
+
+  test("both actions sit under Manage, after every recording", () => {
+    const rows = runMenuOptions([entry()], "alpha", undefined, at)
+    expect(rows.slice(-2).map((row) => row.value)).toEqual([RUN_DELETE, RUN_PRUNE])
+    expect(rows.slice(-2).every((row) => row.group === "Manage")).toBe(true)
+  })
+
+  test("delete is disabled until a run is open, and names it once one is", () => {
+    expect(runMenuOptions([entry()], "alpha", undefined, at).find((row) => row.value === RUN_DELETE)?.disabled).toBe(true)
+    const open = runMenuOptions([entry()], "alpha", "run-1", at).find((row) => row.value === RUN_DELETE)
+    expect(open?.disabled).toBe(false)
+    expect(open?.title).toContain("run-1")
+  })
+
+  test("prune counts what it would delete", () => {
+    const rows = runMenuOptions([entry(), entry({ id: "old", started: old })], "alpha", undefined, at)
+    const prune = rows.find((row) => row.value === RUN_PRUNE)
+    expect(prune?.hint).toBe("1 run")
+    expect(prune?.disabled).toBe(false)
+  })
+
+  test("prune is disabled when nothing is old enough", () => {
+    const prune = runMenuOptions([entry()], "alpha", undefined, at).find((row) => row.value === RUN_PRUNE)
+    expect(prune?.hint).toBe("nothing that old")
+    expect(prune?.disabled).toBe(true)
+  })
+
+  // An interrupted run is the one the resume banner offers to pick back up, and
+  // an old one is the most likely to have been forgotten about.
+  test("an old run still marked running is not counted as prunable", () => {
+    const prune = runMenuOptions(
+      [entry({ id: "old", started: old, finished: undefined, status: "running" })],
+      "alpha",
+      undefined,
+      at,
+    ).find((row) => row.value === RUN_PRUNE)
+    expect(prune?.disabled).toBe(true)
+  })
+
+  test("action values cannot be mistaken for a run id", () => {
+    expect(RUN_DELETE.startsWith("action:")).toBe(true)
+    expect(RUN_PRUNE.startsWith("action:")).toBe(true)
   })
 })
