@@ -116,7 +116,9 @@ describe("openWorktrees", () => {
 
   test("nothing is created inside the project", async () => {
     const opened = await open(["coder"])
-    expect(await fs.readdir(dir)).toEqual([".git", "a.txt", "b.txt"])
+    // Sorted: `readdir` order is the filesystem's, and it differs between
+    // Windows and Linux. What this asserts is the *set* of entries.
+    expect((await fs.readdir(dir)).sort()).toEqual([".git", "a.txt", "b.txt"])
     await cleanupWorktrees(dir, runID, opened.trees)
   })
 })
