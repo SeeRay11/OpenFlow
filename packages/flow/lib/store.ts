@@ -7,6 +7,7 @@ import { hasNativePicker, pickFolderNative } from "./native-picker"
 import type { Supervisor } from "./opencode-process"
 import { COMPATIBLE_PROFILES, globalConfigCandidates, repackage, repackaged } from "./repackage"
 import { install, installed, uninstall } from "./dispatch-tool"
+import { cleanupWorktrees, mergeWorktrees, openWorktrees } from "./worktree"
 import { zenModels } from "./zen"
 
 /**
@@ -34,6 +35,9 @@ import { zenModels } from "./zen"
  *   GET    /flow/api/runs                  -> [{ id, pipeline, status, started, finished }]
  *   GET    /flow/api/runs/:id              -> run log json
  *   PUT    /flow/api/runs/:id              -> write run log json
+ *   POST   /flow/api/worktrees             -> { run, cards } -> a git worktree per card
+ *   POST   /flow/api/worktrees/merge       -> { trees, base } -> what landed and what conflicted
+ *   POST   /flow/api/worktrees/cleanup     -> { run, trees } -> remove the trees and branches
  *   DELETE /flow/api/runs/:id              -> delete one run log
  *   POST   /flow/api/runs/prune            -> { keep?, days? } -> { removed: [id], kept }
  *   GET    /flow/api/cli-keys              -> { path, providers } from the CLI's auth.json
@@ -399,6 +403,17 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     // network on OpenFlow's behalf. `null` means "could not read" — the caller
     // must then leave the catalog alone rather than empty it.
     return ok({ ids: (await zenModels()) ?? null })
+  }
+
+  if (segments[0] === "worktrees" && method === "POST") {
+    const body = await request.json().catch(() => ({}) as any)
+    if (segments[1] === "merge") return ok(await mergeWorktrees(paths.project, body.trees ?? [], body.base ?? ""))
+    if (segments[1] === "cleanup") {
+      await cleanupWorktrees(paths.project, String(body.run ?? ""), body.trees ?? [])
+      return ok({ removed: true })
+    }
+    if (segments[1]) return { status: 404, body: { error: `unknown worktree route "${segments[1]}"` } }
+    return ok(await openWorktrees(paths.project, String(body.run ?? ""), body.cards ?? []))
   }
 
   if (segments[0] === "runs") {

@@ -190,13 +190,21 @@ export function formatModel(model?: ModelRef) {
   return model ? `${model.providerID}/${model.id}` : ""
 }
 
-export async function createSession(input: { agent?: string; model?: string }) {
+/**
+ * `directory` places the session somewhere other than the project — a card's
+ * own git worktree. Measured 2026-09-03: a session created with that location
+ * ran its `bash` tool there rather than in the engine's cwd, which is what
+ * makes per-card isolation possible at all. It is fixed for the life of the
+ * session, so a card re-dispatched into the session it already holds cannot be
+ * moved to a different tree.
+ */
+export async function createSession(input: { agent?: string; model?: string; directory?: string }) {
   const { client, context } = await connect()
   const body = unwrap<any>(
     (await client.v2.session.create({
       agent: input.agent || undefined,
       model: parseModel(input.model),
-      location: { directory: context.project },
+      location: { directory: input.directory || context.project },
     })) as any,
   )
   const session = body.data ?? body

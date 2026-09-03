@@ -244,6 +244,29 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   number past a dozen. `MAX_ROUNDS`, `MAX_DEPTH` and `MAX_DISPATCHES` exist for that reason and
   `roundsOf()` / `depthOf()` / `dispatchesOf()` clamp, so a hand-edited file cannot talk the
   engine into an unbounded run.
+- **An orchestration batch gets a working copy per card, when the project is a git repo.**
+  This is the prevention half of the rule above, and it is reachable because a session created
+  with `location: { directory }` runs its tools *there* — measured 2026-09-03, against the
+  older note in "Hazard: test runs write real files", which is about config resolution rather
+  than cwd. `lib/worktree.ts` opens one `git worktree` per dispatched card that can write,
+  branched from `git stash create` so the user's **uncommitted** work is in it — `HEAD` would
+  hand every card a tree unlike the one on screen. Trees live in the OS temp dir, never inside
+  the repo, and `node_modules` is linked in, because a critic that cannot run the tests judges
+  nothing; that link is a real hole in the isolation and the reason installs still collide.
+  Merging back is `git apply`, not `git merge`: the project's tree is usually dirty and merge
+  refuses to run over that. Every apply is **`--check` first** — `--3way` resolves more, but
+  when it fails it writes conflict markers into a file the user may have open and leaves it
+  staged, turning a report into damage. So a patch that will not apply changes nothing, and
+  the path is left alone and named. The whole diff is tried before the per-file retry, so one
+  bad path does not cost a card its eleven good ones. What conflicts reaches the orchestrator
+  through `mergeNote`, which must keep saying three things it otherwise infers wrongly: the
+  file on disk is whichever card merged **first**, the losing card's *other* files did land,
+  and re-dispatching the same task verbatim will conflict identically.
+  Only cards that can write are isolated, and only batches of more than one — a lone card
+  cannot collide with itself and a checkout is wall clock a gauntlet pays every round. A card
+  keeps its tree for the whole run because a session's location is fixed at creation, so a
+  re-dispatch opens nothing; it must still **merge**, or cleanup would delete that work.
+  Cleanup runs in `finally`, since an aborted run leaves the most trees behind.
 - **OpenFlow has no agent loop of its own.** The harness is identical to the OpenCode CLI
   harness, so a card inherits OpenCode's tools, permission ruleset, and subagents. Subagents
   work but are OpenCode-native and invisible to OpenFlow, which only sees the final
@@ -313,6 +336,13 @@ agent name `this-agent-does-not-exist-xyz` answered normally — no node system 
 tool set. `x-opencode-directory` only steers the *reads* (`/api/agent`, `/api/model`), not the
 drain. Anything that must reach a run — an agent, a permission ruleset, a provider override —
 therefore belongs in the global config or in the engine's own cwd, not in the target project.
+
+**That is about config, not about cwd — corrected 2026-09-03.** `session.create` takes
+`location: { directory }`, and a session created with one **runs its tools there**: a card
+given a `git worktree` path ran `bash` in that worktree, not in `packages/opencode`. So the
+paragraph above still holds for *which config a drain reads* — that is resolved from the
+engine's own cwd — but it is not true that a session's working directory cannot be steered.
+Per-card isolation is built on exactly that (see below).
 
 **Skills written through `PUT /flow/api/skills/:name` are subject to the same trap.** The file
 lands in `<project>/.openflow/skills/<name>/SKILL.md` and the path is registered in the project

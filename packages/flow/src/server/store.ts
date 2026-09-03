@@ -22,6 +22,13 @@ export type RunEntry = {
   /** Missing on runs recorded before usage was tracked — unknown, not free. */
   usage?: Spend
 }
+export type WorktreeRef = { card: string; directory: string; branch: string }
+export type OpenWorktrees = { enabled: true; base: string; trees: WorktreeRef[] } | { enabled: false; reason: string }
+export type MergeReport = {
+  merged: string[]
+  empty: string[]
+  conflicts: { card: string; paths: string[] }[]
+}
 export type BrowseEntry = { name: string; path: string }
 export type BrowseResult = { path: string | null; parent: string | null; entries: BrowseEntry[] }
 export type FlowPaths = {
@@ -96,6 +103,18 @@ export const store = {
   saveSkill: (skill: { name: string; description?: string; content: string }) =>
     request<SkillSave>(`/skills/${encodeURIComponent(skill.name)}`, { method: "PUT", body: JSON.stringify(skill) }),
   deleteSkill: (name: string) => request<{ name: string }>(`/skills/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  /**
+   * A git worktree per card, so a batch of cards cannot overwrite each other.
+   * `enabled: false` is the ordinary answer for a project that is not a git
+   * repository — the run proceeds in the one shared tree, as it always did.
+   */
+  openWorktrees: (run: string, cards: string[]) =>
+    request<OpenWorktrees>("/worktrees", { method: "POST", body: JSON.stringify({ run, cards }) }),
+  /** Folds each card's work back in. Paths that would not apply are named, never forced. */
+  mergeWorktrees: (base: string, trees: WorktreeRef[]) =>
+    request<MergeReport>("/worktrees/merge", { method: "POST", body: JSON.stringify({ base, trees }) }),
+  cleanupWorktrees: (run: string, trees: WorktreeRef[]) =>
+    request<{ removed: true }>("/worktrees/cleanup", { method: "POST", body: JSON.stringify({ run, trees }) }),
   runs: () => request<RunEntry[]>("/runs"),
   run: (id: string) => request<RunLog>(`/runs/${encodeURIComponent(id)}`),
   saveRun: (run: RunLog) =>
