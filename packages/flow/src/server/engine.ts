@@ -5,6 +5,7 @@ import { isCritic, orchestrationShape } from "../graph/orchestration"
 import {
   buildPrompt,
   criticPrompt,
+  dispatchFirstPrompt,
   dispatchResultPrompt,
   forceFinalPrompt,
   imageBlindNote,
@@ -978,6 +979,8 @@ export function start(
     let forced: { reason: string; error: string } | undefined
     /** Whether the previous turn's `final` was already sent back for a verdict. */
     let refused = false
+    /** Whether an answer has already been sent back for having dispatched nobody. */
+    let refusedEmpty = false
     /** Critic children of this card, and which of them have judged since the last build. */
     const judges = children.filter((id) => isCritic(nodes.get(id)!))
     const judged = new Set<string>()
@@ -1059,6 +1062,35 @@ export function start(
             ? `the bar was never judged — every critic dispatched failed (${criticLoss})`
             : "the bar was never judged — the card answered twice without sending the work to a critic"
           activity.note(node.id, `unjudged:${node.id}:final`, "answered with no verdict on the work", reason, "error")
+          patch(node.id, { status: "error", error: reason, activity: undefined, finished: Date.now() })
+          return undefined
+        }
+        // An orchestrator that answers having dispatched nobody has produced a
+        // run in which every card the user drew is `skipped` and one model's
+        // opinion is the output. Nothing about that looks like a failure — the
+        // canvas settles green in seconds — which is why it was reported from
+        // outside the project rather than caught by a check in it.
+        //
+        // The gauntlet refusal above is the same rule one level narrower, and
+        // it runs first: in a gauntlet with nothing dispatched both are true,
+        // and "send the work to a critic" is the more useful thing to be told
+        // than "dispatch somebody". A card with no children is not an
+        // orchestrator at all — it reached this loop as a subtree root that
+        // lost its children to an edit mid-run, and it has nobody to ask.
+        if (spent === 0 && children.length > 0) {
+          if (!refusedEmpty) {
+            refusedEmpty = true
+            activity.note(node.id, `undispatched:${node.id}`, "answered without dispatching", undefined, "done")
+            build = () => dispatchFirstPrompt(pipeline, node)
+            continue
+          }
+          // Asked once and still nothing dispatched. Fail rather than accept:
+          // the answer would be indistinguishable from a real run's, and the
+          // whole cost of this bug is that it reports success. The text is kept
+          // on the activity stream so the turn is not lost with the card.
+          failed.add(node.id)
+          const reason = "the orchestrator answered twice without dispatching any of its cards"
+          activity.note(node.id, `undispatched:${node.id}:final`, "answered with no card dispatched", decision.answer, "error")
           patch(node.id, { status: "error", error: reason, activity: undefined, finished: Date.now() })
           return undefined
         }

@@ -208,6 +208,19 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   after-the-fact note in `graph/collisions.ts` can only report the loss. It is optional because
   most assignments write nothing and a mandatory field is filled with guesses; an undeclared
   overlap still surfaces through the post-batch check.
+- **An orchestrator cannot answer for a run it dispatched nothing into.** A `final` from a card
+  with children and `spent === 0` is refused once with `dispatchFirstPrompt`; a second one fails
+  the card. Until 2026-09-03 it was accepted, and it is the cheapest way a run has to look
+  finished while nothing happened: every card the user drew marked `skipped`, one model's turn as
+  the output, the canvas green in seconds. Nothing about that reads as a failure, which is why it
+  was reported from outside the project rather than caught by a check inside it. The gauntlet's
+  `unjudged()` refusal is the same rule one level narrower — nobody *qualified* judged, rather
+  than nobody worked — and it is tested first, because "send the work to a critic" is more useful
+  than "dispatch somebody" to a card that has both problems. The second answer fails rather than
+  being accepted for the reason the gauntlet learned in its own case: an answer let through on the
+  second ask goes into the log indistinguishable from a real run's, and reporting success is the
+  entire cost of this bug. A card with no children never reaches the check — it is not an
+  orchestrator, and blocking it would deadlock the level above.
 - **A card that ignores its spent budget is stopped, not re-asked.** When the budget runs out
   the orchestrator gets one forced-answer turn; if it dispatches anyway the node fails. Without
   that check the loop never ends. A leaf goes through `runSubagent` and is never shown the

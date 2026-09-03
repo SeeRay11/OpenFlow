@@ -828,6 +828,48 @@ export function judgeFirstPrompt(pipeline: Pipeline, node: FlowNode) {
 }
 
 /**
+ * What an orchestrator is told when it answers without having dispatched anybody.
+ *
+ * The gauntlet refusal above is the same shape one level narrower: there, the
+ * answer is refused because nobody *qualified* judged the work; here, because
+ * nobody did the work at all. A card that answers on its first turn has
+ * produced a run in which every card the user drew was marked `skipped` and one
+ * model's opinion became the output — which reads as a completed run, so
+ * nothing about it looks wrong until the answer is acted on. Reported from the
+ * outside before it was found from the inside.
+ *
+ * It names the children because the block has to name one of them, and a card
+ * that never dispatched has usually not read the roster it was given.
+ */
+export function dispatchFirstPrompt(pipeline: Pipeline, node: FlowNode) {
+  const children = subagentsOf(pipeline, node)
+  return [
+    "# You answered without using any of your cards",
+    "",
+    `You are an orchestrator: the work goes to the ${children.length} card(s) below, and your answer is`,
+    "built out of what they send back. You have dispatched none of them, so there is nothing behind that",
+    "answer but your own turn — and a task that could be finished in one turn did not need this canvas.",
+    "",
+    ...children.map((child) => {
+      const role = child.agent.prompt.trim().split("\n")[0] || "no role instructions"
+      return `- \`${child.id}\` — ${child.role} · ${role}`
+    }),
+    "",
+    "Split the task and send it out:",
+    "",
+    "```" + FENCE,
+    `{ "dispatch": [ { "card": "${children[0]?.id ?? "<card id>"}", "task": "what it must do, in full" } ] }`,
+    "```",
+    "",
+    "If the work genuinely belongs to one card, dispatch that one card. Do not do the work yourself and",
+    "report it as theirs.",
+    "",
+    "This is the only time you are asked. Answering again without having dispatched anything ends the run",
+    "as a failure, because an answer no card contributed to is not the run that was designed.",
+  ].join("\n")
+}
+
+/**
  * A card dispatched again.
  *
  * It is prompted into the session it already holds, so it still has its
