@@ -17,6 +17,8 @@ export type RunEntry = {
   status?: string
   started?: number
   finished?: number
+  /** Cards in the run. Missing on runs indexed before the count was recorded. */
+  nodes?: number
   /** Missing on runs recorded before usage was tracked — unknown, not free. */
   usage?: Spend
 }
@@ -98,6 +100,15 @@ export const store = {
   run: (id: string) => request<RunLog>(`/runs/${encodeURIComponent(id)}`),
   saveRun: (run: RunLog) =>
     request<{ path: string }>(`/runs/${encodeURIComponent(run.id)}`, { method: "PUT", body: JSON.stringify(run) }),
+  deleteRun: (id: string) =>
+    request<{ id: string; removed: boolean }>(`/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  /**
+   * Deletes recorded runs that fail either rule — "at most `keep`, and nothing
+   * older than `days`". Runs still marked `running` are never pruned: that is
+   * the status the resume path looks for.
+   */
+  pruneRuns: (rules: { keep?: number; days?: number }) =>
+    request<{ removed: string[]; kept: number }>("/runs/prune", { method: "POST", body: JSON.stringify(rules) }),
   /** Providers the opencode CLI already holds keys for. Names only, no secrets. */
   cliKeys: () => request<{ path: string; providers: string[] }>("/cli-keys"),
   /**

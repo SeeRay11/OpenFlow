@@ -34,6 +34,8 @@ import { zenModels } from "./zen"
  *   GET    /flow/api/runs                  -> [{ id, pipeline, status, started, finished }]
  *   GET    /flow/api/runs/:id              -> run log json
  *   PUT    /flow/api/runs/:id              -> write run log json
+ *   DELETE /flow/api/runs/:id              -> delete one run log
+ *   POST   /flow/api/runs/prune            -> { keep?, days? } -> { removed: [id], kept }
  *   GET    /flow/api/cli-keys              -> { path, providers } from the CLI's auth.json
  *   POST   /flow/api/cli-keys/import       -> connect those keys to `opencode serve`
  *   GET    /flow/api/env?names=A,B         -> { present: ["A"] } — names only, never values
@@ -400,6 +402,12 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
   }
 
   if (segments[0] === "runs") {
+    // Checked before the id is read: a run id is a uuid, but the literal word
+    // would otherwise address a log file rather than the prune it names.
+    if (segments[1] === "prune" && method === "POST") {
+      const body = await request.json().catch(() => ({}))
+      return ok(await pruneRuns(paths, body))
+    }
     const id = segments[1] ? slug(decodeURIComponent(segments[1])) : undefined
     if (!id && method === "GET") return ok(await listRuns(paths))
     if (!id) return { status: 400, body: { error: "run id required" } }
@@ -415,6 +423,11 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
       await writeAtomic(file, JSON.stringify(body, null, 2) + "\n")
       await updateRunsIndex(paths, id, body)
       return ok({ id, path: file })
+    }
+    if (method === "DELETE") {
+      const removed = await removeRun(paths, id)
+      if (!removed) return { status: 404, body: { error: `run "${id}" not found` } }
+      return ok({ id, removed: true })
     }
   }
 
@@ -523,6 +536,11 @@ function runSummary(id: string, parsed: any) {
     status: parsed.status,
     started: parsed.started,
     finished: parsed.finished,
+    // How big the run was, so the listing can say it without opening the log.
+    // An index written before this existed is still a valid description of the
+    // files on disk, so it is not rebuilt for this — those rows simply carry no
+    // count, and every run recorded from here on does.
+    nodes: Array.isArray(parsed.nodes) ? parsed.nodes.length : undefined,
     // Carried in the listing so the spend view can total every run without
     // reading each log back. Absent on runs written before usage existed —
     // those count as unknown, not as zero.
@@ -539,6 +557,71 @@ async function readRunsIndex(paths: FlowPaths) {
   const parsed = raw === undefined ? undefined : jsonOrUndefined(raw)
   if (!Array.isArray(parsed)) return undefined
   return parsed.filter((entry) => entry && typeof entry.id === "string") as ReturnType<typeof runSummary>[]
+}
+
+/**
+ * Deletes one run log, and the index row describing it.
+ *
+ * The log goes first: an index that still lists a file nobody can read is
+ * repaired by the next listing, while a file left behind after its row was
+ * dropped comes *back* the next time the index is rebuilt — so a failed delete
+ * has to look like no delete at all rather than like a run that keeps
+ * reappearing.
+ */
+async function removeRun(paths: FlowPaths, id: string) {
+  const removed = await fs
+    .rm(path.join(paths.runs, `${id}.json`))
+    .then(() => true)
+    .catch(() => false)
+  if (removed) await removeFromRunsIndex(paths, [id])
+  return removed
+}
+
+/**
+ * Deletes recorded runs the retention rules no longer keep.
+ *
+ * A run is removed when it fails **any** rule that was given, which is how the
+ * two read together out loud: `{ keep: 20, days: 30 }` is "at most twenty, and
+ * nothing older than a month". Called with neither rule it deletes nothing —
+ * an empty body must not mean "everything" on a route that cannot be undone.
+ *
+ * A run still marked `running` is never pruned whatever its age. That status
+ * on disk is what the resume path looks for — the engine lives in the page, so
+ * a closed tab leaves the log saying `running` while its sessions are still
+ * alive on the server — and an old one is the *most* likely to be forgotten,
+ * so age is exactly the wrong reason to throw it away.
+ */
+async function pruneRuns(paths: FlowPaths, rules: { keep?: number; days?: number }) {
+  const keep = Number.isFinite(rules.keep) ? Math.max(0, Math.floor(rules.keep as number)) : undefined
+  const days = Number.isFinite(rules.days) ? Math.max(0, rules.days as number) : undefined
+  if (keep === undefined && days === undefined) return { removed: [] as string[], kept: (await listRuns(paths)).length }
+
+  const before = days === undefined ? undefined : Date.now() - days * 86_400_000
+  // Newest first, so rank is position in this list.
+  const entries = await listRuns(paths)
+  const doomed = entries.filter(
+    (entry, rank) =>
+      entry.status !== "running" &&
+      ((keep !== undefined && rank >= keep) || (before !== undefined && (entry.started ?? 0) < before)),
+  )
+  const removed: string[] = []
+  for (const entry of doomed) {
+    if (await fs.rm(path.join(paths.runs, `${entry.id}.json`)).then(() => true).catch(() => false))
+      removed.push(entry.id)
+  }
+  if (removed.length) await removeFromRunsIndex(paths, removed)
+  return { removed, kept: entries.length - removed.length }
+}
+
+/** Drops rows from the index. Best-effort: a failure costs the next listing a rebuild. */
+async function removeFromRunsIndex(paths: FlowPaths, ids: string[]) {
+  const file = path.join(paths.runs, RUNS_INDEX)
+  const gone = new Set(ids)
+  return serialize(file, async () => {
+    const current = await readRunsIndex(paths)
+    if (!current) return
+    await writeAtomic(file, JSON.stringify(current.filter((entry) => !gone.has(entry.id))) + "\n").catch(() => {})
+  })
 }
 
 /** Folds one run into the index, so the listing stays cheap without a rebuild. */

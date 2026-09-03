@@ -2022,6 +2022,13 @@ main {
   background: var(--oc-pressed);
 }
 
+/* A row that has nothing to do stays in place rather than vanishing, so the
+   menu keeps its shape between openings — it has to read as unavailable. */
+.oc-item:disabled {
+  color: var(--oc-text-muted);
+  cursor: default;
+}
+
 .oc-item[data-selected] .oc-item-label {
   font-weight: 560;
 }

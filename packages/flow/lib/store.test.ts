@@ -298,6 +298,89 @@ describe("runs", () => {
     expect((await call("GET", "/flow/api/runs/ghost"))!.status).toBe(404)
   })
 
+  test("records how many cards a run had, so the listing can say it", async () => {
+    await call("PUT", "/flow/api/runs/run-1", { body: { ...log, nodes: [{ id: "a" }, { id: "b" }] } })
+    const list = (await call("GET", "/flow/api/runs"))!.body as any[]
+    expect(list[0].nodes).toBe(2)
+  })
+
+  test("deletes a run log and drops it from the listing", async () => {
+    await call("PUT", "/flow/api/runs/run-1", { body: log })
+    await call("PUT", "/flow/api/runs/run-2", { body: { ...log, id: "run-2", started: 30 } })
+
+    expect((await call("DELETE", "/flow/api/runs/run-1"))!.body).toEqual({ id: "run-1", removed: true })
+    expect(await fs.readdir(paths.runs)).not.toContain("run-1.json")
+    const list = (await call("GET", "/flow/api/runs"))!.body as any[]
+    expect(list.map((entry) => entry.id)).toEqual(["run-2"])
+  })
+
+  test("404s deleting a run that is not there", async () => {
+    expect((await call("DELETE", "/flow/api/runs/ghost"))!.status).toBe(404)
+  })
+
+  // The index is rebuilt whenever it stops describing the files on disk, so a
+  // deleted log whose row survived would come straight back.
+  test("a deleted run does not reappear when the index is rebuilt", async () => {
+    await call("PUT", "/flow/api/runs/run-1", { body: log })
+    await call("DELETE", "/flow/api/runs/run-1")
+    await call("PUT", "/flow/api/runs/run-2", { body: { ...log, id: "run-2" } })
+    const list = (await call("GET", "/flow/api/runs"))!.body as any[]
+    expect(list.map((entry) => entry.id)).toEqual(["run-2"])
+  })
+
+  describe("prune", () => {
+    const day = 86_400_000
+    const old = () => Date.now() - 40 * day
+    const recent = () => Date.now() - day
+
+    test("deletes what is past the age rule and keeps the rest", async () => {
+      await call("PUT", "/flow/api/runs/old", { body: { ...log, id: "old", started: old() } })
+      await call("PUT", "/flow/api/runs/new", { body: { ...log, id: "new", started: recent() } })
+
+      expect((await call("POST", "/flow/api/runs/prune", { body: { days: 30 } }))!.body).toEqual({
+        removed: ["old"],
+        kept: 1,
+      })
+      expect(await fs.readdir(paths.runs)).toContain("new.json")
+    })
+
+    test("keeps only the newest when told a count", async () => {
+      for (const [id, started] of [["a", 10], ["b", 20], ["c", 30]] as const)
+        await call("PUT", `/flow/api/runs/${id}`, { body: { ...log, id, started } })
+
+      expect((await call("POST", "/flow/api/runs/prune", { body: { keep: 2 } }))!.body).toEqual({
+        removed: ["a"],
+        kept: 2,
+      })
+    })
+
+    // "At most twenty, and nothing older than a month" is how the two rules
+    // read together, so failing either one is enough to be deleted.
+    test("applies both rules, not just the stricter one", async () => {
+      await call("PUT", "/flow/api/runs/old", { body: { ...log, id: "old", started: old() } })
+      await call("PUT", "/flow/api/runs/new", { body: { ...log, id: "new", started: recent() } })
+      await call("PUT", "/flow/api/runs/newest", { body: { ...log, id: "newest", started: Date.now() } })
+
+      const body = (await call("POST", "/flow/api/runs/prune", { body: { keep: 2, days: 30 } }))!.body as any
+      expect(body.removed.sort()).toEqual(["old"])
+      expect(body.kept).toBe(2)
+    })
+
+    // The engine runs in the page, so a closed tab leaves a log saying
+    // `running` while its sessions are still alive — that is what resume finds.
+    test("never prunes a run still marked running, however old", async () => {
+      await call("PUT", "/flow/api/runs/live", {
+        body: { ...log, id: "live", status: "running", started: old(), finished: undefined },
+      })
+      expect((await call("POST", "/flow/api/runs/prune", { body: { days: 1 } }))!.body).toMatchObject({ removed: [] })
+    })
+
+    test("an empty body deletes nothing", async () => {
+      await call("PUT", "/flow/api/runs/old", { body: { ...log, id: "old", started: old() } })
+      expect((await call("POST", "/flow/api/runs/prune", { body: {} }))!.body).toEqual({ removed: [], kept: 1 })
+    })
+  })
+
   // `refresh()` lists runs at boot, after every run, and after every save. The
   // old shape read and parsed every log each time, so a few hundred runs made
   // boot stall on megabytes of JSON. These pin the index that replaced it.

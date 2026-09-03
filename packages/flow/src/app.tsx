@@ -35,6 +35,7 @@ import {
 } from "./server/providers"
 import { defaultModel, setAvailableModels, setDefaultModel } from "./graph/default-model"
 import { hydrateCustomRoles, onRolesSyncError } from "./graph/roles"
+import { findRun, PRUNE_DAYS, RUN_DELETE, RUN_PRUNE, runMenuOptions } from "./server/runs"
 import {
   agentBlock,
   agentKey,
@@ -858,6 +859,57 @@ export function App() {
     actions.notice("info", "stopping run…")
   }
 
+  /** The Runs menu both opens a recording and manages one, so its rows are routed here. */
+  async function chooseRun(value: string) {
+    if (value === RUN_DELETE) return deleteOpenRun()
+    if (value === RUN_PRUNE) return pruneRuns()
+    return openRun(value)
+  }
+
+  /**
+   * Deletes the recording that is currently open.
+   *
+   * The canvas is deliberately left showing what it was showing: deleting the
+   * record of a run is not the same as wanting the answers off the screen, and
+   * a menu row that blanked the whole canvas would be a nasty surprise. Only
+   * the log reference goes, which is what makes the run no longer re-openable.
+   */
+  async function deleteOpenRun() {
+    // The listing's id, not the log's: a run is addressed by its filename and
+    // the two differ in case for every run recorded as `run-<ISO>`.
+    const id = findRun(runs(), state.run?.id)?.id
+    if (!id) return
+    if (!window.confirm(`Delete the recording of run ${id}?\n\nThis cannot be undone. The canvas keeps what it is showing.`))
+      return
+    try {
+      await store.deleteRun(id)
+      actions.setRun(undefined)
+      actions.notice("info", `deleted run ${id}`)
+      await refresh()
+    } catch (error) {
+      actions.notice("error", api.describe(error))
+    }
+  }
+
+  async function pruneRuns() {
+    if (
+      !window.confirm(
+        `Delete every recorded run older than ${PRUNE_DAYS} days?\n\nThis cannot be undone. Runs still marked running are kept — those are the ones that can be resumed.`,
+      )
+    )
+      return
+    try {
+      const result = await store.pruneRuns({ days: PRUNE_DAYS })
+      // A run open on screen may have just been deleted underneath it.
+      const open = findRun(runs(), state.run?.id)?.id
+      if (open && result.removed.includes(open)) actions.setRun(undefined)
+      actions.notice("info", `pruned ${result.removed.length} run(s), ${result.kept} kept`)
+      await refresh()
+    } catch (error) {
+      actions.notice("error", api.describe(error))
+    }
+  }
+
   async function openRun(id: string) {
     try {
       const log = await store.run(id)
@@ -1509,21 +1561,25 @@ export function App() {
             <IconCoin />
             <span class="mono">{state.run?.usage?.steps ? costLabel(state.run.usage) : "—"}</span>
           </button>
+          {/*
+            `search` is forced on rather than left to the menu's 8-row
+            threshold: a row is a timestamp, so the run id, the canvas name and
+            the cost are only reachable by typing them.
+          */}
           <Select
             label="Runs"
             leading={<IconHistory />}
             variant="ghost"
             placement="top"
             align="end"
-            width={380}
+            // Wider than the 284px default: a row carries a timestamp, a
+            // duration and a price, and the hint is ellipsised at half the row.
+            width={460}
             title="reopen a recorded run"
             value=""
-            options={runs().map((entry) => ({
-              value: entry.id,
-              label: entry.id,
-              hint: `${entry.pipeline} · ${entry.status}`,
-            }))}
-            onChange={(id) => void openRun(id)}
+            search
+            options={runMenuOptions(runs(), state.pipeline.name, state.run?.id, tick())}
+            onChange={(value) => void chooseRun(value)}
             empty="No runs recorded yet."
           />
           <button
