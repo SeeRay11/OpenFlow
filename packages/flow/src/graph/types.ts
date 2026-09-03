@@ -100,6 +100,20 @@ export type Pipeline = {
    * own, it is what an orchestration does with its dispatches.
    */
   gauntlet?: Gauntlet
+  /**
+   * Whether each dispatched card gets its own git worktree.
+   *
+   * A property of the document rather than of a run, for the same reason `mode`
+   * and `gauntlet` are: it changes what an existing graph does to the user's
+   * files, so it is persisted, exported and undoable. Read only through
+   * `isolationOf`, which is what ties it to orchestration.
+   *
+   * Absent means off — every canvas saved before this existed, and every one
+   * saved since that has not asked. Turning a graph's cards loose in separate
+   * trees changes where their work lands and when, and that is not a change to
+   * make to somebody's canvas because they upgraded.
+   */
+  isolate?: boolean
 }
 
 /**
@@ -362,6 +376,18 @@ export function gauntletOf(pipeline: Pipeline) {
     maxMinutes: clamp(pipeline.gauntlet.maxMinutes, DEFAULT_MAX_MINUTES, MAX_MAX_MINUTES),
     stall: clamp(pipeline.gauntlet.stall, DEFAULT_STALL, MAX_STALL),
   }
+}
+
+/**
+ * Whether this canvas runs its cards in separate working copies.
+ *
+ * Orchestration only. The other modes have no batch: a pipeline's layer and a
+ * swarm's round do run at once, but a swarm answers in text and a pipeline's
+ * cards are wired in sequence — and neither has an orchestrator to hand a merge
+ * conflict to, which is the whole reason isolation is worth its cost here.
+ */
+export function isolationOf(pipeline: Pipeline) {
+  return modeOf(pipeline) === "orchestration" && pipeline.isolate === true
 }
 
 /**

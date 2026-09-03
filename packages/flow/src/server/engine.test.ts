@@ -70,6 +70,14 @@ type HarnessOptions = {
   stepsOf?: (sessionID: string, nodeID: string) => StepUsage[]
   onPermission?: (request: PermissionRequest) => Promise<PermissionReply>
   onQuestion?: (request: QuestionRequest) => Promise<string[][] | undefined>
+  /**
+   * Whether the host offers per-card worktrees, and whether the project can
+   * take them. Omitted means no host support at all — the engine must then run
+   * exactly as it did before isolation existed.
+   */
+  worktrees?: "available" | "unavailable"
+  /** What folding the batch back in reports. */
+  mergeReport?: { merged: string[]; empty: string[]; conflicts: { card: string; paths: string[] }[] }
 }
 
 function deferred() {
@@ -104,6 +112,9 @@ function harness(options: HarnessOptions = {}) {
   const notices: { kind: string; text: string }[] = []
   const saved: RunLog[] = []
   let deliver: (event: BusEvent) => void = () => {}
+  /** sessionID -> the directory it was created in, for the worktree tests. */
+  const sessionDirs = new Map<string, string | undefined>()
+  const worktreeCalls: { open: string[][]; merged: number; cleaned: number } = { open: [], merged: 0, cleaned: 0 }
   let catalogReads = 0
   let created = 0
   let inflight = 0
@@ -119,8 +130,10 @@ function harness(options: HarnessOptions = {}) {
         signal.addEventListener("abort", () => resolve(), { once: true })
       })
     },
-    async createSession() {
-      return { id: `s${++created}` }
+    async createSession(input: { directory?: string } = {}) {
+      const id = `s${++created}`
+      sessionDirs.set(id, input.directory)
+      return { id }
     },
     async prompt(sessionID: string, text: string, files: Attachment[] = []) {
       const node = nodeOf.get(sessionID)!
@@ -239,11 +252,36 @@ function harness(options: HarnessOptions = {}) {
       saved.push(structuredClone(log))
       return {}
     },
+    ...(options.worktrees
+      ? {
+          worktrees: {
+            async open(run: string, cards: string[]) {
+              worktreeCalls.open.push(cards)
+              if (options.worktrees === "unavailable") return { enabled: false as const, reason: "not a git repository" }
+              return {
+                enabled: true as const,
+                base: "base-commit",
+                trees: cards.map((card) => ({ card, directory: `/tmp/${run}/${card}`, branch: `openflow/${run}/${card}` })),
+              }
+            },
+            async merge() {
+              worktreeCalls.merged++
+              return options.mergeReport ?? { merged: [], empty: [], conflicts: [] }
+            },
+            async cleanup() {
+              worktreeCalls.cleaned++
+              return { removed: true as const }
+            },
+          },
+        }
+      : {}),
   }
 
   return {
     deps,
     hooks,
+    sessionDirs,
+    worktreeCalls,
     dispatched,
     prompts,
     promptLog,
@@ -1745,6 +1783,130 @@ describe("orchestration mode", () => {
     const h = harness()
     expect(() => h.run(tree(["root->a", "other->b"]))).toThrow("exactly one")
     expect(h.dispatched).toEqual([])
+  })
+})
+
+describe("a working copy per card", () => {
+  const block = (body: string) => "```openflow\n" + body + "\n```"
+  const dispatch = (...cards: string[]) =>
+    block(JSON.stringify({ dispatch: cards.map((card) => ({ card, task: `do ${card}` })) }))
+
+  function tree(spec: string[], options: { dispatches?: number; isolate?: boolean } = {}): Pipeline {
+    return { ...pipeline(...spec), mode: "orchestration", isolate: true, ...options }
+  }
+
+  const batch = { root: { output: dispatch("a", "b") }, a: { output: "a done" }, b: { output: "b done" } }
+
+  // Off unless the canvas asked: separate working copies change where a run's
+  // writes land, which is not a change to make because somebody upgraded.
+  test("a canvas that has not asked for it runs in one directory", async () => {
+    const h = harness({ behavior: batch, worktrees: "available" })
+    const log = await h.run(tree(["root->a", "root->b"], { dispatches: 1, isolate: false })).done
+
+    expect(h.worktreeCalls.open).toEqual([])
+    expect(h.worktreeCalls.merged).toBe(0)
+    for (const node of log.nodes) expect(h.sessionDirs.get(node.sessionID!)).toBeUndefined()
+  })
+
+  test("each dispatched card's session is created in its own tree", async () => {
+    const h = harness({ behavior: batch, worktrees: "available" })
+    const log = await h.run(tree(["root->a", "root->b"], { dispatches: 1 })).done
+
+    expect(h.worktreeCalls.open).toEqual([["a", "b"]])
+    const dirs = log.nodes
+      .filter((node) => node.id !== "root")
+      .map((node) => h.sessionDirs.get(node.sessionID!))
+    expect(dirs.every(Boolean)).toBe(true)
+    expect(new Set(dirs).size).toBe(2)
+  })
+
+  // The orchestrator itself is not isolated: it writes nothing, and a card
+  // reading a copy of the project would be reading the wrong thing.
+  test("the orchestrator stays in the project directory", async () => {
+    const h = harness({ behavior: batch, worktrees: "available" })
+    const log = await h.run(tree(["root->a", "root->b"], { dispatches: 1 })).done
+    const root = log.nodes.find((node) => node.id === "root")!
+    expect(h.sessionDirs.get(root.sessionID!)).toBeUndefined()
+  })
+
+  test("the batch's work is folded back in, and the trees taken down at the end", async () => {
+    const h = harness({ behavior: batch, worktrees: "available" })
+    await h.run(tree(["root->a", "root->b"], { dispatches: 1 })).done
+
+    expect(h.worktreeCalls.merged).toBe(1)
+    expect(h.worktreeCalls.cleaned).toBe(1)
+  })
+
+  // A conflict is work that is definitely not on disk. Left unsaid, the
+  // orchestrator builds its next round on a file that never changed.
+  test("a conflict is reported to the orchestrator in its own words", async () => {
+    const h = harness({
+      behavior: { ...batch, root: { output: dispatch("a", "b") } },
+      worktrees: "available",
+      mergeReport: { merged: ["a"], empty: [], conflicts: [{ card: "b", paths: ["src/x.ts"] }] },
+    })
+    await h.run(tree(["root->a", "root->b"], { dispatches: 2 })).done
+
+    // The note lands on the turn after the batch it describes, not on the last.
+    const second = h.promptLog.filter((entry) => entry.node === "root")[1]!.text
+    expect(second).toContain("src/x.ts")
+    expect(second).toContain("could not be folded back")
+    expect(second).toContain("conflict again")
+  })
+
+  test("a clean merge says nothing — the expected case is not narrated", async () => {
+    const h = harness({
+      behavior: batch,
+      worktrees: "available",
+      mergeReport: { merged: ["a", "b"], empty: [], conflicts: [] },
+    })
+    await h.run(tree(["root->a", "root->b"], { dispatches: 2 })).done
+
+    const second = h.promptLog.filter((entry) => entry.node === "root")[1]!.text
+    expect(second).not.toContain("folded back")
+  })
+
+  // A project that is not a repository is an ordinary way to work; the run has
+  // to proceed in the one tree exactly as it did before any of this existed.
+  test("a project that cannot take worktrees runs anyway, in one directory", async () => {
+    const h = harness({ behavior: batch, worktrees: "unavailable" })
+    const log = await h.run(tree(["root->a", "root->b"], { dispatches: 1 })).done
+
+    expect(h.dispatched).toContain("a")
+    expect(h.worktreeCalls.merged).toBe(0)
+    expect(h.worktreeCalls.cleaned).toBe(0)
+    for (const node of log.nodes) expect(h.sessionDirs.get(node.sessionID!)).toBeUndefined()
+  })
+
+  test("a host with no worktree support behaves exactly as before", async () => {
+    const h = harness({ behavior: batch })
+    const log = await h.run(tree(["root->a", "root->b"], { dispatches: 1 })).done
+
+    expect(h.dispatched).toContain("a")
+    expect(h.worktreeCalls.open).toEqual([])
+    for (const node of log.nodes) expect(h.sessionDirs.get(node.sessionID!)).toBeUndefined()
+  })
+
+  // A card re-dispatched keeps the tree its session was created in, so the
+  // second batch opens nothing — but its work still has to come back out, or
+  // cleanup would delete it.
+  test("a re-dispatched card's later work is merged too, from the tree it kept", async () => {
+    const h = harness({ behavior: batch, worktrees: "available" })
+    await h.run(tree(["root->a", "root->b"], { dispatches: 2 })).done
+
+    expect(h.worktreeCalls.open).toEqual([["a", "b"]])
+    expect(h.worktreeCalls.merged).toBe(2)
+  })
+
+  // One card cannot collide with itself, and a checkout it does not need is
+  // wall clock a gauntlet pays for every round.
+  test("a batch of one is not isolated", async () => {
+    const h = harness({
+      behavior: { root: { output: dispatch("a") }, a: { output: "a done" } },
+      worktrees: "available",
+    })
+    await h.run(tree(["root->a", "root->b"], { dispatches: 1 })).done
+    expect(h.worktreeCalls.open).toEqual([])
   })
 })
 

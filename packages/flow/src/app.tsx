@@ -7,6 +7,7 @@ import {
   MAX_DEPTH,
   MAX_DISPATCHES,
   MAX_ROUNDS,
+  isolationOf,
   modeOf,
   roundsOf,
   type FlowMode,
@@ -114,6 +115,10 @@ const PIPE_OPTIONS: SelectOption[] = [
 const GAUNTLET_OPTIONS: SelectOption[] = [
   { value: "off", label: "off", hint: "dispatch, then answer" },
   { value: "on", label: "on", hint: "loop against a bar until it holds" },
+]
+const ISOLATE_OPTIONS: SelectOption[] = [
+  { value: "off", label: "off", hint: "one shared working directory" },
+  { value: "on", label: "on", hint: "a git worktree per card, merged after each batch" },
 ]
 const POLICY_OPTIONS: SelectOption[] = [
   { value: "auto", label: "auto", hint: "answer for me" },
@@ -1199,6 +1204,15 @@ export function App() {
               value={gauntletOf(state.pipeline) ? "on" : "off"}
               options={GAUNTLET_OPTIONS}
               onChange={(value) => actions.setGauntlet(value === "on")}
+            />
+            <Select
+              variant="ghost"
+              prefix="isolate: "
+              width={360}
+              title="give each dispatched card its own git worktree, and fold its work back in after the batch — two cards told to touch one file then conflict on merge instead of overwriting each other silently. Needs a git repository."
+              value={isolationOf(state.pipeline) ? "on" : "off"}
+              options={ISOLATE_OPTIONS}
+              onChange={(value) => actions.setIsolate(value === "on")}
             />
           </Show>
           <Select

@@ -1,4 +1,5 @@
 import { collisionNote, collisionsIn, writesOf, type Write } from "../graph/collisions"
+import { isolates, mergeNote } from "../graph/worktree"
 import { fromToolCall, MCP_REACHES_SESSIONS, parseDispatch } from "../graph/dispatch"
 import { isCritic, orchestrationShape } from "../graph/orchestration"
 import {
@@ -30,11 +31,11 @@ import type {
   Spend,
   StepUsage,
 } from "../graph/types"
-import { depthOf, dispatchesOf, GAUNTLET_DISPATCHES, gauntletOf, modeOf, roundsOf } from "../graph/types"
+import { depthOf, dispatchesOf, GAUNTLET_DISPATCHES, gauntletOf, isolationOf, modeOf, roundsOf } from "../graph/types"
 import { ancestors, layer, upstream } from "../graph/validate"
 import { applyEvent, createActivity, persistable } from "./activity"
 import * as api from "./client"
-import { store, type ServeStatus } from "./store"
+import { store, type ServeStatus, type WorktreeRef } from "./store"
 import { mergeSpend, summarize, type PricedModel } from "./usage"
 
 export type NodePatch = {
@@ -251,6 +252,16 @@ export type EngineDeps = {
   }
   saveRun: (log: RunLog) => Promise<unknown>
   /**
+   * Per-card git worktrees, so an orchestration batch cannot overwrite itself.
+   * Optional: a host without it, or a project that is not a repository, runs
+   * every card in the one shared tree exactly as before.
+   */
+  worktrees?: {
+    open: typeof store.openWorktrees
+    merge: typeof store.mergeWorktrees
+    cleanup: typeof store.cleanupWorktrees
+  }
+  /**
    * The engine process this host proxies, used to print the exact restart
    * command in the one error that can only be fixed by restarting it.
    */
@@ -261,6 +272,7 @@ const live: EngineDeps = {
   api,
   saveRun: (log) => store.saveRun(log),
   serveStatus: () => store.serverStatus(),
+  worktrees: { open: store.openWorktrees, merge: store.mergeWorktrees, cleanup: store.cleanupWorktrees },
 }
 
 /**
@@ -347,6 +359,8 @@ export function start(
   // canvas with nothing to judge the work would loop builders against nobody
   // until one of those caps fired. Preflight says the same in the UI.
   const gauntlet = tree ? gauntletOf(pipeline) : undefined
+  /** Off unless the canvas asked: separate working copies change where a run's writes land. */
+  const isolate = isolationOf(pipeline)
   if (gauntlet && !pipeline.nodes.some((node) => isCritic(node) && !tree!.children(node.id).length))
     throw new Error("a gauntlet has no reviewer card to judge the work against its bar")
   // Swarm reads no edges at all, so a leftover cycle from a graph that used to
@@ -360,6 +374,20 @@ export function start(
   const sessions = new Map<string, string>() // sessionID -> nodeID
   /** nodeID -> the session it opened, so a later turn can prompt into it again. */
   const nodeSession = new Map<string, string>()
+  /**
+   * nodeID -> the git worktree its session runs in, when the batch was isolated.
+   *
+   * Read at session creation only. A card keeps its tree for the whole run
+   * because the session's location cannot be changed afterwards, and a
+   * re-dispatched card is deliberately prompted into the session it holds.
+   */
+  const nodeDir = new Map<string, string>()
+  /** Every tree opened this run, so the run can take them all down at the end. */
+  const opened = new Map<string, WorktreeRef>()
+  /** Said once per run — see the note where it is set. */
+  let isolationWarned = false
+  /** The commit every tree was branched from, and every merge is measured against. */
+  let isolationBase = ""
   /**
    * Cards carrying a session from the interrupted run this one continues.
    *
@@ -732,7 +760,13 @@ export function start(
       })
       try {
         if (!sessionID) {
-          const session = await api.createSession({ agent: node.agent.name, model: node.agent.model })
+          const session = await api.createSession({
+            agent: node.agent.name,
+            model: node.agent.model,
+            // Fixed for the life of the session, which is why a card keeps the
+            // tree it was first given rather than moving between batches.
+            directory: nodeDir.get(node.id),
+          })
           sessionID = session.id
           nodeSession.set(node.id, session.id)
           sessions.set(session.id, node.id)
@@ -1065,6 +1099,8 @@ export function start(
       )
 
       const results: { card: string; text?: string; error?: string }[] = []
+      /** Set when folding the batch's work back in left something unapplied. */
+      let mergeNotice = ""
       const batchStarted = Date.now()
       // Critics judge by running the work — the build, the tests, the dev
       // server — in the one working directory this fork has. Two of them at
@@ -1075,6 +1111,36 @@ export function start(
       // costs wall clock, which a gauntlet already bounds.
       const oneAtATime =
         !!gauntlet && decision.assignments.length > 1 && decision.assignments.every((entry) => isCritic(nodes.get(entry.card)!))
+
+      // A working copy per card, so the batch cannot overwrite itself. Only
+      // cards that can write get one — a reader isolated from the project would
+      // read a copy of it for no benefit — and only cards that do not already
+      // hold a session, because a session's location is fixed once it exists.
+      if (isolate && deps.worktrees && decision.assignments.length > 1) {
+        // A card that already holds a session keeps the tree that session was
+        // created in — the location cannot be changed afterwards — so only the
+        // cards without one are opened here. They still merge below: a card's
+        // second batch of work is as easy to lose as its first.
+        const wanted = decision.assignments
+          .map((entry) => entry.card)
+          .filter((card) => isolates(nodes.get(card)!) && !nodeSession.has(card))
+        if (wanted.length > 1) {
+          const result = await deps.worktrees.open(log.id, wanted).catch(() => undefined)
+          if (result?.enabled) {
+            isolationBase = result.base
+            for (const tree of result.trees) {
+              nodeDir.set(tree.card, tree.directory)
+              opened.set(tree.card, tree)
+            }
+          } else if (result && !isolationWarned) {
+            // Said once per run: an orchestration in a folder that is not a
+            // repository is a normal way to work, and repeating it every batch
+            // would bury the batch's real findings.
+            isolationWarned = true
+            activity.note(node.id, `isolation:${log.id}`, `cards share one working directory — ${result.reason}`, undefined, "done")
+          }
+        }
+      }
       await pool(decision.assignments, oneAtATime ? 1 : limit, controller.signal, async (assignment) => {
         const child = nodes.get(assignment.card)!
         // A critic judges from a session it has never used before. Reusing one
@@ -1097,6 +1163,33 @@ export function start(
         )
       })
       if (controller.signal.aborted) return undefined
+
+      // Fold the isolated cards' work back into the project. A path that will
+      // not apply over what is already there is left alone and named, so the
+      // conflicting version is discarded rather than layered on top of the
+      // card that merged first — and the orchestrator is told, because a card
+      // re-dispatched with the same task would conflict the same way.
+      // Every dispatched card that has a tree, not only the ones opened for this
+      // batch: a card re-dispatched into the session it already holds keeps its
+      // original tree, and its later work has to come back out of it too.
+      const isolated = decision.assignments
+        .map((entry) => opened.get(entry.card))
+        .filter((tree): tree is WorktreeRef => !!tree)
+      if (isolated.length) {
+        const report = await deps
+          .worktrees!.merge(isolationBase, isolated)
+          .catch(() => ({ merged: [], empty: [], conflicts: [] }))
+        const note = mergeNote(report)
+        if (note)
+          activity.note(
+            node.id,
+            `merge:${node.id}:${spent}`,
+            `${report.conflicts.length} card(s) conflicted on merge`,
+            report.conflicts.map((conflict) => `${conflict.card}: ${conflict.paths.join(", ")}`).join("\n"),
+            "error",
+          )
+        mergeNotice = note
+      }
 
       // What this batch did to the standing verdict. A batch that built
       // anything invalidates it — including a critic dispatched alongside a
@@ -1194,6 +1287,10 @@ export function start(
       build = () =>
         [
           dispatchResultPrompt(pipeline, results, stop ? 0 : budget - spent, status),
+          // Before the collision note: a conflict is work that is definitely
+          // not on disk, while a collision is work that may have been
+          // overwritten. The certain finding leads.
+          ...(mergeNotice ? [mergeNotice] : []),
           ...(collided ? [collided] : []),
           ...(stop ? [forceFinalPrompt(stop.reason)] : []),
         ].join("\n\n")
@@ -1443,6 +1540,12 @@ ${serve.command}`
         if (node.status === "queued" || node.status === "running") node.status = "stopped"
       log.finished = Date.now()
       log.usage = mergeSpend(log.nodes.map((node) => node.usage))
+      // Every card's work was folded back in after its own batch, so what is
+      // left here is empty checkouts and `openflow/*` branches nobody reads.
+      // Done in `finally` because an aborted or failed run leaves the most of
+      // them, and a stack of stale worktrees in the user's repository is the
+      // thing that would make this feature not worth having.
+      if (opened.size && deps.worktrees) await deps.worktrees.cleanup(log.id, [...opened.values()]).catch(() => {})
       controller.abort()
       void bus
       hooks.onRun?.(log)
