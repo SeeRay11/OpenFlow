@@ -17,6 +17,8 @@ export type RunEntry = {
   status?: string
   started?: number
   finished?: number
+  /** Cards in the run. Missing on runs indexed before the count was recorded. */
+  nodes?: number
   /** Missing on runs recorded before usage was tracked — unknown, not free. */
   usage?: Spend
 }

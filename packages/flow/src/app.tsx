@@ -35,6 +35,7 @@ import {
 } from "./server/providers"
 import { defaultModel, setAvailableModels, setDefaultModel } from "./graph/default-model"
 import { hydrateCustomRoles, onRolesSyncError } from "./graph/roles"
+import { runOptions } from "./server/runs"
 import {
   agentBlock,
   agentKey,
@@ -1518,11 +1519,7 @@ export function App() {
             width={380}
             title="reopen a recorded run"
             value=""
-            options={runs().map((entry) => ({
-              value: entry.id,
-              label: entry.id,
-              hint: `${entry.pipeline} · ${entry.status}`,
-            }))}
+            options={runOptions(runs(), state.pipeline.name, tick())}
             onChange={(id) => void openRun(id)}
             empty="No runs recorded yet."
           />

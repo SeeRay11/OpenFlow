@@ -523,6 +523,11 @@ function runSummary(id: string, parsed: any) {
     status: parsed.status,
     started: parsed.started,
     finished: parsed.finished,
+    // How big the run was, so the listing can say it without opening the log.
+    // An index written before this existed is still a valid description of the
+    // files on disk, so it is not rebuilt for this — those rows simply carry no
+    // count, and every run recorded from here on does.
+    nodes: Array.isArray(parsed.nodes) ? parsed.nodes.length : undefined,
     // Carried in the listing so the spend view can total every run without
     // reading each log back. Absent on runs written before usage existed —
     // those count as unknown, not as zero.
