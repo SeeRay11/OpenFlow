@@ -725,6 +725,52 @@ export function toolFailureNote(failures: { title: string; body?: string }[]) {
 }
 
 /**
+ * What a card's answer carries when it was expected to write and did not.
+ *
+ * A card is `done` when its session goes idle, which is also what a card that
+ * answered in prose and touched nothing looks like — so an assignment that was
+ * meant to land on disk reads downstream exactly like one that did. Nothing
+ * here decides the card failed: a card given `edit` that concludes there is
+ * nothing to change is legitimate, and the engine cannot tell the two apart.
+ * What it can do is stop the *reader* from assuming.
+ *
+ * `declared` is the paths a dispatch said this card would write, when it said.
+ * That is a claim the orchestrator made and can check; write tools merely
+ * switched on are a much weaker signal, so the two get different words.
+ */
+export function noWritesNote(declared: string[]) {
+  if (declared.length)
+    return [
+      `> **This card was assigned ${declared.length === 1 ? "a file" : "files"} to write and wrote nothing:**`,
+      `> ${declared.map((path) => `\`${path}\``).join(", ")}`,
+      ">",
+      "> Whatever it says above, those paths are as they were. Open them before building on this,",
+      "> and re-dispatch with what is actually missing rather than repeating the assignment.",
+    ].join("\n")
+  return [
+    "> **This card could write files and did not — its turn changed nothing on disk.**",
+    ">",
+    "> That is legitimate if the work was to read, judge or plan. If it was to make a change,",
+    "> what is above is a description of one that was never made.",
+  ].join("\n")
+}
+
+/**
+ * The answer for a card that wrote files and said nothing.
+ *
+ * An empty transcript downstream is worse than useless — the next card is
+ * handed a blank where its input should be and answers about nothing. The work
+ * is real, so it is the writes that become the answer.
+ */
+export function silentWriterNote(paths: string[]) {
+  return [
+    "This card produced no message. What it wrote, read off its tool calls:",
+    "",
+    ...paths.map((path) => `- \`${path}\``),
+  ].join("\n")
+}
+
+/**
  * The re-ask when a turn produced no usable control block.
  *
  * It gets shorter every time. The failure is almost never that the card does

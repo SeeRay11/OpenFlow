@@ -11,10 +11,12 @@ import {
   imageBlindNote,
   interruptedNote,
   judgeFirstPrompt,
+  noWritesNote,
   orchestratorPrompt,
   protocolPrompt,
   reassignPrompt,
   subOrchestratorPrompt,
+  silentWriterNote,
   subagentPrompt,
   swarmPrompt,
   toolFailureNote,
@@ -36,7 +38,7 @@ import { depthOf, dispatchesOf, GAUNTLET_DISPATCHES, gauntletOf, isolationOf, mo
 import { ancestors, layer, upstream } from "../graph/validate"
 import { applyEvent, createActivity, persistable } from "./activity"
 import * as api from "./client"
-import { store, type ServeStatus, type WorktreeRef } from "./store"
+import { store, toolMap, type ServeStatus, type WorktreeRef } from "./store"
 import { mergeSpend, summarize, type PricedModel } from "./usage"
 
 export type NodePatch = {
@@ -406,6 +408,15 @@ export function start(
   }
   /** Tool-call ids already read, so an old call cannot decide a new turn. */
   const consumed = new Map<string, Set<string>>()
+  /**
+   * The paths the current assignment said a card would write, when it said.
+   *
+   * Optional on a dispatch and empty for every other mode, so its absence
+   * proves nothing — but when it is there it is the orchestrator's own claim
+   * about what should change, which is the only expectation the engine has that
+   * did not come from a default.
+   */
+  const declared = new Map<string, string[]>()
   const active = new Set<string>() // sessionIDs still running
   const answered = new Set<string>() // permission requests already replied to
   const asked = new Set<string>() // question requests already handled
@@ -820,7 +831,50 @@ export function start(
         const rejected = (events.get(node.id) ?? []).filter(
           (event) => event.kind === "tool" && event.status === "error" && event.at >= turnStarted,
         )
-        const answer = rejected.length ? `${result.text}\n\n${toolFailureNote(rejected)}` : result.text
+        // What this turn actually changed on disk, read off the same tool calls
+        // the collision check reads. A card is `done` when its session goes
+        // idle, so "answered in prose and touched nothing" and "did the work"
+        // are the same event out here unless somebody looks.
+        const wrote = writesOf(events.get(node.id) ?? [], turnStarted)
+        const owed = declared.get(node.id) ?? []
+        const expected = owed.length > 0 || writerByChoice(node)
+        // A card that says nothing hands the next card a blank where its input
+        // should be, and the next card answers about nothing. If it wrote, the
+        // writes are the answer; if it did neither, there is nothing to pass on
+        // and nothing to have built — so the card failed, whatever the session
+        // reported.
+        //
+        // Except for an orchestrator, which is asked again instead. A turn that
+        // ended on a tool call and said nothing is a normal thing for one to do
+        // and `parseDispatch` has a re-ask written for exactly it; failing the
+        // card here would take the run down over a turn that only needed the
+        // block. Nothing can re-ask any other card, which is why they are held
+        // to the stricter rule.
+        const orchestrating = !!tree && tree.children(node.id).length > 0
+        if (!result.text.trim() && !wrote.length && !orchestrating)
+          throw new Error("the card finished without producing any output")
+
+        const notes = [
+          ...(rejected.length ? [toolFailureNote(rejected)] : []),
+          // Not an error: a card given `edit` that finds nothing to change is
+          // legitimate, and no signal here separates that from a card that
+          // described work it never did. The reader is told, and decides.
+          ...(expected && !wrote.length ? [noWritesNote(owed)] : []),
+        ]
+        // Only a card that wrote something gets its writes read out as its
+        // answer. An orchestrator's empty turn stays empty, because `decide`
+        // reads that emptiness and has its own thing to say about it.
+        const body =
+          !result.text.trim() && wrote.length ? silentWriterNote(wrote.map((write) => write.path)) : result.text
+        const answer = notes.length ? `${body}\n\n${notes.join("\n\n")}` : body
+        if (expected && !wrote.length)
+          activity.note(
+            node.id,
+            `nowrites:${node.id}:${turnStarted}`,
+            owed.length ? `wrote none of its ${owed.length} assigned file(s)` : "wrote no files",
+            owed.join("\n"),
+            "error",
+          )
         if (rejected.length) {
           entry(node.id).toolFailures = rejected.length
           activity.note(
@@ -889,6 +943,26 @@ export function start(
    */
   function rateLimited(reason: string) {
     return /\b429\b|rate.?limit|too many requests/i.test(reason)
+  }
+
+  /**
+   * Whether a card writing nothing is worth remarking on.
+   *
+   * Deliberately **not** the reading `swarm-writers` uses in preflight. There,
+   * the question is what a card *can* do, so an unlisted tool counts as allowed
+   * — which is right for a hazard warning and useless here, since it makes
+   * almost every card an expected writer and a note on almost every card is a
+   * note nobody reads. `edit === true` is the box the user ticked (`write` and
+   * `patch` alias onto it), so it is the closest thing to a stated intent.
+   *
+   * Two exemptions, both cards whose job is explicitly not to write: a swarm
+   * peer, told in its briefing not to, and a gauntlet critic, whose whole value
+   * is that it only inspects.
+   */
+  function writerByChoice(node: FlowNode) {
+    if (mode === "swarm") return false
+    if (gauntlet && isCritic(node)) return false
+    return toolMap(node.agent.tools).edit === true
   }
 
   /** A card's one turn in `pipeline` mode, after its layer's predecessors settled. */
@@ -1185,6 +1259,7 @@ export function start(
           nodeSession.delete(child.id)
           consumed.delete(child.id)
         }
+        declared.set(child.id, assignment.files ?? [])
         const answer = tree!.children(child.id).length
           ? await orchestrate(child, assignment.task, false)
           : await runSubagent(child, node, assignment.task)

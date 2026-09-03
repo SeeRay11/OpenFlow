@@ -2608,6 +2608,125 @@ describe("a card whose tools were rejected", () => {
   })
 })
 
+describe("a card that was expected to write", () => {
+  /** A pipeline of one card with the write toggle deliberately ticked. */
+  function writer(...ids: string[]) {
+    const graph = pipeline(...ids)
+    for (const node of graph.nodes) node.agent.tools = { edit: true }
+    return graph
+  }
+
+  /** The two events a successful `write` call puts on the activity stream. */
+  async function wrote(h: ReturnType<typeof harness>, node: string, path: string) {
+    h.emit({
+      type: "session.next.tool.called",
+      data: { sessionID: h.sessionOf.get(node), callID: `c-${path}`, tool: "write", input: { path } },
+    } as any)
+    h.emit({ type: "session.next.tool.success", data: { sessionID: h.sessionOf.get(node), callID: `c-${path}` } } as any)
+    await flush()
+  }
+
+  test("says so when it wrote nothing at all", async () => {
+    // The reported failure: a card answers in prose, touches no file, and is
+    // `done` — which downstream is indistinguishable from a card that did the
+    // work, because idle is the only thing "done" has ever meant.
+    const h = harness({ behavior: { a: { output: "I have added the retry loop." } } })
+    const log = await h.run(writer("a")).done
+
+    const node = log.nodes.find((entry) => entry.id === "a")!
+    expect(node.output).toContain("I have added the retry loop.")
+    expect(node.output).toContain("changed nothing on disk")
+    // Not a failure: a card given `edit` that finds nothing to change is real,
+    // and nothing here separates that from a card describing work it never did.
+    expect(node.status).toBe("done")
+  })
+
+  test("carries no note once it has actually written", async () => {
+    const h = harness({ behavior: { a: { hold: true, output: "added the retry loop" } } })
+    const run = h.run(writer("a"))
+    await flush()
+    await wrote(h, "a", "client.ts")
+    h.release("a")
+    const log = await run.done
+
+    expect(log.nodes.find((entry) => entry.id === "a")!.output).toBe("added the retry loop")
+  })
+
+  test("a card with the toggle off is not remarked on", async () => {
+    // `edit` unticked is the common case, and a note on every reader would be a
+    // note nobody reads.
+    const h = harness({ behavior: { a: { output: "here is what I found" } } })
+    const log = await h.run(pipeline("a")).done
+
+    expect(log.nodes.find((entry) => entry.id === "a")!.output).toBe("here is what I found")
+  })
+
+  test("a swarm peer is exempt, because it is told not to write", async () => {
+    const graph = { ...writer("a", "b"), mode: "swarm" as const, rounds: 1 }
+    graph.nodes[1].role = "synthesizer"
+    const h = harness({ behavior: { a: { output: "my view" }, b: { output: "the verdict" } } })
+    const log = await h.run(graph).done
+
+    expect(log.nodes.find((entry) => entry.id === "a")!.output).toBe("my view")
+  })
+
+  test("an assignment that named files says which ones did not change", async () => {
+    const h = harness({
+      behavior: {
+        root: {
+          outputs: [
+            "```openflow\n" +
+              JSON.stringify({ dispatch: [{ card: "a", task: "do it", files: ["src/client.ts"] }] }) +
+              "\n```",
+            "```openflow\n" + JSON.stringify({ final: "done" }) + "\n```",
+          ],
+        },
+        a: { output: "the retry loop is in" },
+      },
+    })
+    const log = await h.run({ ...pipeline("root->a"), mode: "orchestration", dispatches: 1 }).done
+
+    const node = log.nodes.find((entry) => entry.id === "a")!
+    expect(node.output).toContain("assigned a file to write and wrote nothing")
+    expect(node.output).toContain("src/client.ts")
+    // The orchestrator reads the note, since it reads the card's output.
+    expect(h.prompts.get("root")).toContain("src/client.ts")
+  })
+})
+
+describe("a card that produced no output at all", () => {
+  test("fails rather than passing a blank downstream", async () => {
+    const h = harness({ behavior: { a: { output: "" } } })
+    const log = await h.run(pipeline("a->b")).done
+
+    const node = log.nodes.find((entry) => entry.id === "a")!
+    expect(node.status).toBe("error")
+    expect(node.error).toContain("without producing any output")
+    // Nothing was passed on, so the card below never ran on a blank.
+    expect(log.nodes.find((entry) => entry.id === "b")!.status).toBe("skipped")
+  })
+
+  test("but a card that wrote files answers with what it wrote", async () => {
+    // Silence plus real work is not a failure — it is a card that did the job
+    // and said nothing. The writes stand in, so the next card has an input.
+    const h = harness({ behavior: { a: { hold: true, output: "" } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+    h.emit({
+      type: "session.next.tool.called",
+      data: { sessionID: h.sessionOf.get("a"), callID: "c1", tool: "write", input: { path: "game.js" } },
+    } as any)
+    h.emit({ type: "session.next.tool.success", data: { sessionID: h.sessionOf.get("a"), callID: "c1" } } as any)
+    await flush()
+    h.release("a")
+    const log = await run.done
+
+    const node = log.nodes.find((entry) => entry.id === "a")!
+    expect(node.status).toBe("done")
+    expect(node.output).toContain("game.js")
+  })
+})
+
 describe("a card whose model cannot read images", () => {
   const vision = ["openai/sees"]
 

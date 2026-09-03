@@ -208,6 +208,26 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   after-the-fact note in `graph/collisions.ts` can only report the loss. It is optional because
   most assignments write nothing and a mandatory field is filled with guesses; an undeclared
   overlap still surfaces through the post-batch check.
+- **A card is `done` when its session goes idle, so what it did is checked separately.** Idle is
+  all "finished" has ever meant here — `POST /api/session/:id/wait` answers 503 on this build, so
+  `waitForIdle` derives it from `/api/session/active` plus a finished assistant turn — and a model
+  that replies "I'll start on that" and calls nothing satisfies it in one turn. Two checks stand
+  between that and `done`, both in `runTurn` so every mode gets them. **No text and no writes
+  fails the card**: there is nothing to pass downstream and nothing to have built, and a blank
+  input makes the next card answer about nothing. An orchestrator is exempt — a turn that ended on
+  a tool call and said nothing is normal for one, and `parseDispatch` has a re-ask written for
+  exactly it, so failing here would take a run down over a turn that only needed the block; no
+  other card has anything that can re-ask it. **No writes from a card that was expected to write**
+  appends `noWritesNote` to its own answer, because the orchestrator reads the output and nothing
+  else. Expected means the dispatch declared `files` (the orchestrator's own claim, and the engine's
+  only expectation that did not come from a default) or `edit === true` — the box the user ticked,
+  deliberately *not* `swarm-writers`' reading, where an unlisted tool counts as allowed: right for a
+  hazard warning, useless as intent, since it makes almost every card a writer and a note on almost
+  every card is a note nobody reads. Swarm peers and gauntlet critics are exempt, both being cards
+  told not to write. It notes rather than fails because a card given `edit` that finds nothing to
+  change is legitimate and no signal separates it from one describing work it never did. A card
+  that wrote but said nothing answers with `silentWriterNote` — the paths it touched — rather than
+  a blank.
 - **An orchestrator cannot answer for a run it dispatched nothing into.** A `final` from a card
   with children and `spent === 0` is refused once with `dispatchFirstPrompt`; a second one fails
   the card. Until 2026-09-03 it was accepted, and it is the cheapest way a run has to look
