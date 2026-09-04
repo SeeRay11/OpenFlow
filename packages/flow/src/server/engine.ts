@@ -969,13 +969,15 @@ export function start(
    * note nobody reads. `edit === true` is the box the user ticked (`write` and
    * `patch` alias onto it), so it is the closest thing to a stated intent.
    *
-   * Two exemptions, both cards whose job is explicitly not to write: a swarm
-   * peer, told in its briefing not to, and a gauntlet critic, whose whole value
-   * is that it only inspects.
+   * Three exemptions, all cards whose job is explicitly not to write: a swarm
+   * peer, told in its briefing not to, a gauntlet critic, whose whole value is
+   * that it only inspects, and a card in a verified run, which will be asked to
+   * judge one — a note telling a verifier it changed no files is both wrong and
+   * stapled to the verdict it just wrote.
    */
   function writerByChoice(node: FlowNode) {
     if (mode === "swarm") return false
-    if (gauntlet && isCritic(node)) return false
+    if ((gauntlet || verify) && isCritic(node)) return false
     return toolMap(node.agent.tools).edit === true
   }
 

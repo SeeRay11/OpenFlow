@@ -15,9 +15,13 @@ describe("verdictIn", () => {
   test("the last marker wins, because a critic quotes both before choosing", () => {
     // Measured shape, not hypothetical: the briefing shows the two lines, and a
     // model that repeats its instructions before following them is ordinary.
-    const text = ["I must end with VERDICT: PASS or VERDICT: FAIL.", "", "The bar is not met.", "", "VERDICT: FAIL"].join(
-      "\n",
-    )
+    const text = [
+      "I must end with VERDICT: PASS or VERDICT: FAIL.",
+      "",
+      "The bar is not met.",
+      "",
+      "VERDICT: FAIL",
+    ].join("\n")
     expect(verdictIn(text)).toMatchObject({ kind: "fail" })
   })
 

@@ -2795,6 +2795,22 @@ describe("a run that ends on a verdict", () => {
     expect(log.status).toBe("done")
   })
 
+  test("a verifier is never told it wrote no files", async () => {
+    // It is a reviewer with `edit` left on, which is the ordinary case. Without
+    // the exemption the write check staples "changed nothing on disk" onto the
+    // verdict itself and marks the card's activity as an error for having done
+    // exactly its job.
+    const target = verified()
+    for (const node of target.nodes) node.agent.tools = { edit: true }
+    const h = harness({
+      behavior: { a: { output: "built it" }, reviewer: { outputs: ["fine", "VERDICT: PASS"] } },
+    })
+    const log = await h.run(target).done
+
+    expect(log.verdict).toMatchObject({ kind: "pass" })
+    expect(log.nodes.find((node) => node.id === "reviewer")!.output).not.toContain("changed nothing on disk")
+  })
+
   test("the verifier judges what the run produced, not every card's output", async () => {
     // A pipeline's result is the card nothing reads. Handing the verifier the
     // middle of the chain would have it grade working notes.

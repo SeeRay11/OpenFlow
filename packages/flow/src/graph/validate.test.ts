@@ -629,8 +629,10 @@ describe("preflight: verification", () => {
   })
 
   test("names what the extra session costs once a reviewer is there", () => {
-    const target = graph(["a->reviewer"], {})
-    target.nodes[1].role = "reviewer"
+    // The reviewer feeds a card rather than ending the run, or `verify-self`
+    // would fire instead — see the describe below.
+    const target = graph(["reviewer->b"], {})
+    target.nodes[0].role = "reviewer"
     const result = kinds(target)
     expect(result.blocking).toEqual([])
     expect(result.warnings).toContain("verify-cost")
@@ -646,5 +648,30 @@ describe("preflight: verification", () => {
 
   test("says nothing at all when verification is off", () => {
     expect(kinds(graph(["a->b"], undefined)).blocking).not.toContain("no-verifier")
+  })
+})
+
+describe("preflight: a verifier judging its own answer", () => {
+  const unlocked = { unlockedModels: new Set(["opencode/x"]) }
+  const withModel = (graph: Pipeline) => ({
+    ...graph,
+    nodes: graph.nodes.map((node) => ({ ...node, agent: { ...node.agent, model: "opencode/x", tools: { read: true } } })),
+  })
+
+  test("warns when the only reviewer is also the card whose output ends the run", () => {
+    // A new session gives clean eyes; it does not make the card somebody else.
+    const graph = pipeline("a->reviewer")
+    graph.nodes[1].role = "reviewer"
+    const kinds = preflight({ ...withModel(graph), verify: {} }, unlocked).warnings.map((problem) => problem.kind)
+    expect(kinds).toContain("verify-self")
+    expect(kinds).not.toContain("verify-cost")
+  })
+
+  test("says nothing when the reviewer sits off the result path", () => {
+    const graph = pipeline("a->b", "reviewer->b")
+    graph.nodes[2].role = "reviewer"
+    const kinds = preflight({ ...withModel(graph), verify: {} }, unlocked).warnings.map((problem) => problem.kind)
+    expect(kinds).toContain("verify-cost")
+    expect(kinds).not.toContain("verify-self")
   })
 })
