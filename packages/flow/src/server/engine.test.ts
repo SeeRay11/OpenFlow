@@ -2694,6 +2694,127 @@ describe("a card that was expected to write", () => {
   })
 })
 
+describe("a run that ends on a verdict", () => {
+  /** A pipeline whose second card is the reviewer, with verification on. */
+  function verified(bar?: string): Pipeline {
+    const graph = pipeline("a->reviewer")
+    graph.nodes[1].role = "reviewer"
+    return { ...graph, verify: bar ? { bar } : {} }
+  }
+
+  test("the reviewer runs again at the end, in a session it has not used", async () => {
+    const h = harness({
+      behavior: {
+        a: { output: "built it" },
+        reviewer: { outputs: ["looks fine to me", "I ran the tests and they pass.\n\nVERDICT: PASS"] },
+      },
+    })
+    const log = await h.run(verified("the tests pass")).done
+
+    // Twice: once as a card in its layer, once as the verifier.
+    expect(h.dispatched).toEqual(["a", "reviewer", "reviewer"])
+    // A new session, so it grades the work rather than its memory of writing it.
+    expect(h.sessionOf.get("reviewer")).not.toBe(h.sessionOf.get("a"))
+    expect(h.promptLog[2].text).toContain("What the run claims it did")
+    expect(h.promptLog[2].text).toContain("the tests pass")
+    expect(log.verdict).toMatchObject({ card: "reviewer", kind: "pass" })
+    expect(log.status).toBe("done")
+    // Its answer as a card is what the log keeps — the cards downstream were
+    // given that, and the verdict has its own field.
+    expect(log.nodes.find((node) => node.id === "reviewer")!.output).toBe("looks fine to me")
+  })
+
+  test("a failed verdict makes the run report error, with the reason", async () => {
+    // The whole point: every card succeeded, and the run still did not do what
+    // it was asked for.
+    const h = harness({
+      behavior: {
+        a: { output: "built it" },
+        reviewer: { outputs: ["fine", "The retry loop is not there.\n\nVERDICT: FAIL"] },
+      },
+    })
+    const log = await h.run(verified()).done
+
+    expect(log.verdict).toMatchObject({ kind: "fail", reason: "The retry loop is not there." })
+    expect(log.status).toBe("error")
+    // The cards themselves did not fail, and the log does not pretend they did.
+    expect(log.nodes.every((node) => node.status === "done")).toBe(true)
+  })
+
+  test("a verifier that wrote no verdict line is asked once for the line alone", async () => {
+    const h = harness({
+      behavior: { a: { output: "built it" }, reviewer: { outputs: ["fine", "Looks good, ship it", "VERDICT: PASS"] } },
+    })
+    const log = await h.run(verified()).done
+
+    expect(h.promptLog[3].text).toContain("carried no verdict line")
+    expect(h.promptLog[3].text).not.toContain("What the run claims it did")
+    expect(log.verdict).toMatchObject({ kind: "pass" })
+  })
+
+  test("a verifier that still writes no verdict fails the run rather than passing it", async () => {
+    // The dangerous default, if it were one: a glowing review with no line is
+    // not a pass, it is an unanswered question.
+    const h = harness({ behavior: { a: { output: "built it" }, reviewer: { output: "Looks good, ship it" } } })
+    const log = await h.run(verified()).done
+
+    expect(log.verdict).toMatchObject({ kind: "unreadable" })
+    expect(log.status).toBe("error")
+  })
+
+  test("nothing is verified when a card already failed", async () => {
+    // The run has reported the truth about itself; paying a critic to confirm
+    // it is the one verdict nobody needs.
+    const h = harness({ behavior: { a: { error: "boom" }, reviewer: { output: "VERDICT: PASS" } } })
+    const log = await h.run(verified()).done
+
+    expect(h.dispatched).toEqual(["a"])
+    expect(log.verdict).toBeUndefined()
+    expect(log.status).toBe("error")
+  })
+
+  test("a canvas with verification on and no reviewer never starts", async () => {
+    const h = harness()
+    expect(() => h.run({ ...pipeline("a->b"), verify: {} })).toThrow(/reviewer role/)
+    expect(h.dispatched).toEqual([])
+  })
+
+  test("a gauntlet ignores it, because its own loop already ends on a verdict", async () => {
+    const graph = pipeline("root->builder", "root->reviewer")
+    for (const node of graph.nodes) node.agent.model = "openai/gpt-x"
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { outputs: ['```openflow\n{"dispatch":[{"card":"reviewer","task":"judge"}]}\n```', '```openflow\n{"final":"shipped"}\n```'] },
+        reviewer: { output: "ours wins" },
+      },
+    })
+    const log = await h.run({ ...graph, mode: "orchestration", gauntlet: { bar: "b" }, verify: {} }).done
+
+    expect(log.verdict).toBeUndefined()
+    expect(log.status).toBe("done")
+  })
+
+  test("the verifier judges what the run produced, not every card's output", async () => {
+    // A pipeline's result is the card nothing reads. Handing the verifier the
+    // middle of the chain would have it grade working notes.
+    const graph = pipeline("a->b", "b->reviewer")
+    graph.nodes[2].role = "reviewer"
+    const h = harness({
+      behavior: {
+        a: { output: "working notes nobody should grade" },
+        b: { output: "the deliverable" },
+        reviewer: { outputs: ["fine", "VERDICT: PASS"] },
+      },
+    })
+    await h.run({ ...graph, verify: {} }).done
+
+    // The reviewer is the terminal card here, so its own answer is the result.
+    expect(h.promptLog[3].text).toContain("fine")
+    expect(h.promptLog[3].text).not.toContain("working notes nobody should grade")
+  })
+})
+
 describe("a card that produced no output at all", () => {
   test("fails rather than passing a blank downstream", async () => {
     const h = harness({ behavior: { a: { output: "" } } })

@@ -208,6 +208,35 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   after-the-fact note in `graph/collisions.ts` can only report the loss. It is optional because
   most assignments write nothing and a mandatory field is filled with guesses; an undeclared
   overlap still surfaces through the post-batch check.
+- **A verified run ends on a critic's verdict, in any mode.** `Pipeline.verify` is a document
+  property like `mode`, `gauntlet` and `isolate` — absent means off, so no canvas saved before it
+  existed starts spending a session it did not ask for — read through `verifyOf`, and it carries
+  only an optional `bar`. There is no verifier id in it: the critic is picked by **role text**, the
+  way a swarm picks its synthesizer and a gauntlet picks its critics, so designating one is
+  renaming a card and a stored id cannot drift out of step with the canvas. `verifyRun()` runs
+  after the scheduler and knows nothing about which one ran — only what the run produced, which is
+  the cards nothing reads: a pipeline's terminal layer, a swarm's synthesizer, an orchestration's
+  root. It is skipped when a card already failed, because that run has already told the truth about
+  itself and a verdict confirming it is the one nobody needs.
+  Three rules are carried over from the gauntlet, each because dropping it was measured to break
+  the method there: a **new session** per verdict (in a pipeline the reviewer card has usually just
+  run, and a critic that watched the work appear grades the appearing), **one critic at a time**
+  (judging means running the build in the one working directory this fork has), and **inspect the
+  real output, never the summary** — the run's answer is shown to the verifier as a *claim*, and
+  the briefing says so twice. The first card to withhold a pass ends the pass; paying the rest to
+  agree changes nothing.
+  A verdict is one marker line, `VERDICT: PASS` or `VERDICT: FAIL`, parsed by `graph/verdict.ts`,
+  **not** the ` ```openflow ` block: that block is a control instruction with a schema, taught over
+  paragraphs to a card whose job is dispatching, and asking a critic writing prose for JSON buys a
+  parse failure on the one turn that matters. Last marker wins, for the same reason the last
+  dispatch block does. A message with **no** marker is `unreadable`, which fails the run — a
+  glowing review with no line is an unanswered question, and reading it as a pass would rebuild the
+  bug verification exists to kill. It is re-asked once for the line alone first, since the critic
+  has already done the looking. The card's own answer is **put back** afterwards and the verdict
+  goes on `RunLog.verdict`: in a pipeline the reviewer's message was read by the cards downstream
+  during the run, and the log is the only record of what they were given. A gauntlet ignores the
+  setting entirely (`verifyOf` returns nothing) and preflight says so, because its loop already
+  cannot finish without a verdict and a second opinion there would have no owner.
 - **A card is `done` when its session goes idle, so what it did is checked separately.** Idle is
   all "finished" has ever meant here — `POST /api/session/:id/wait` answers 503 on this build, so
   `waitForIdle` derives it from `/api/session/active` plus a finished assistant turn — and a model

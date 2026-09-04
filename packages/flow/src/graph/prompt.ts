@@ -1,7 +1,8 @@
 import { DISPATCH_TOOL, FENCE, FINISH_TOOL, MCP_REACHES_SESSIONS } from "./dispatch"
 import { isCritic, orchestrationShape, subagentsOf } from "./orchestration"
 import { swarmShape } from "./swarm"
-import { dispatchesOf, gauntletOf, roundsOf, type Attachment, type FlowNode, type Pipeline } from "./types"
+import { dispatchesOf, gauntletOf, roundsOf, verifyOf, type Attachment, type FlowNode, type Pipeline } from "./types"
+import { FAIL, PASS } from "./verdict"
 import { downstream, layer, upstream } from "./validate"
 
 /** `role (id)` — the one label every prompt in every mode uses for a card. */
@@ -491,6 +492,74 @@ function gauntletBriefing(pipeline: Pipeline, node: FlowNode) {
     "  for. If a part stops improving, say so and move to one that has room.",
     "",
   ]
+}
+
+/**
+ * The verification pass: a critic judging a finished run.
+ *
+ * The gauntlet's critic one level out. Everything that makes that one work is
+ * kept — inspect the real output, never the summary; a fresh session, so it is
+ * grading the work rather than its own memory of it improving; do not fix
+ * anything — and one thing is added, because there is no orchestrator here to
+ * read prose and decide: it must end on a marker the engine can read.
+ *
+ * `result` is what the run produced, which is the *claim*, not the evidence.
+ * The briefing says so twice, because a critic handed a confident summary and a
+ * repository will read the summary unless told plainly which one it is judging.
+ */
+export function verifyPrompt(pipeline: Pipeline, node: FlowNode, result: string, skipped: Attachment[] = []) {
+  const verify = verifyOf(pipeline)
+  const sections = [
+    [
+      "# OpenFlow",
+      "",
+      "You are the verifier of an OpenFlow run: a separate `opencode` session with your own model",
+      "and tools. The cards have finished. Nothing else will run after you, and no model reads your",
+      "answer — the run is reported as passing or failing on the line you end with.",
+      "",
+      "## Your part",
+      "",
+      "- **Go and look at the real output.** Read the files, run the thing, run the tests, open what",
+      "  it produces. What the run says it did is below; that is a claim, and you are here to check",
+      "  it. If you could not get to the work, say so and fail it — an unverifiable result is not a",
+      "  passing one.",
+      "- Judge what is there now, not the effort that went into it, and not whether the cards were",
+      "  reasonable. Work that is impressive and short of what was asked for is short of it.",
+      "- Name what is missing, specifically enough to act on. One clear gap beats a list of six.",
+      "- Do not fix anything, including the small things. You are the last card to run; a repair you",
+      "  make is one nobody will ever check.",
+      "",
+      "## How to end",
+      "",
+      `Your last line must be exactly \`${PASS}\` or \`${FAIL}\`, and nothing else on it. Everything`,
+      "above it is yours — one sentence or ten paragraphs, whichever the work deserves. A message",
+      "with no such line is read as no verdict at all, and the run reports that it could not be",
+      "verified.",
+    ].join("\n"),
+  ]
+  if (node.agent.prompt.trim()) sections.push(node.agent.prompt.trim())
+  if (verify?.bar) sections.push(`# The bar\n\n${verify.bar}`)
+  const unreadable = withheld(skipped)
+  if (unreadable) sections.push(unreadable)
+  sections.push(`# What the run claims it did\n\n${result.trim() || "(the run produced no text)"}`)
+  return sections.join("\n\n")
+}
+
+/**
+ * The one re-ask when a critic wrote no verdict line.
+ *
+ * Kept to almost nothing on purpose, like `protocolPrompt`'s last attempt: the
+ * critic has already done the looking and written the reasoning, and repeating
+ * the briefing invites it to do the whole job again. All that is missing is the
+ * line.
+ */
+export function verdictPrompt() {
+  return [
+    "Your message carried no verdict line, so the run has nothing to report.",
+    "",
+    `Reply with \`${PASS}\` or \`${FAIL}\` and nothing else. Judge what you already looked at; do not`,
+    "start again.",
+  ].join("\n")
 }
 
 /**

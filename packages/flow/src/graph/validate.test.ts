@@ -606,3 +606,45 @@ describe("preflight: gauntlet", () => {
     expect(kinds(gauntlet(["root->reviewer", "other->b"])).blocking).toContain("duplicate-orchestrator")
   })
 })
+
+describe("preflight: verification", () => {
+  const graph = (spec: string[], verify: Pipeline["verify"]) => ({
+    ...pipeline(...spec),
+    nodes: pipeline(...spec).nodes.map((node) => ({
+      ...node,
+      agent: { ...node.agent, model: "opencode/x", tools: { read: true } },
+    })),
+    verify,
+  })
+  const kinds = (target: Pipeline) => ({
+    blocking: preflight(target, { unlockedModels: new Set(["opencode/x"]) }).blocking.map((problem) => problem.kind),
+    warnings: preflight(target, { unlockedModels: new Set(["opencode/x"]) }).warnings.map((problem) => problem.kind),
+  })
+
+  test("blocks when nothing on the canvas has the reviewer role", () => {
+    // The same rule as the engine's throw, which is why both exist: preflight
+    // says it in words the user can act on, the throw stops a run started
+    // without one.
+    expect(kinds(graph(["a->b"], {})).blocking).toContain("no-verifier")
+  })
+
+  test("names what the extra session costs once a reviewer is there", () => {
+    const target = graph(["a->reviewer"], {})
+    target.nodes[1].role = "reviewer"
+    const result = kinds(target)
+    expect(result.blocking).toEqual([])
+    expect(result.warnings).toContain("verify-cost")
+  })
+
+  test("says so when a gauntlet would ignore it", () => {
+    // `verifyOf` returns nothing here, so the toggle does nothing — and a
+    // setting that silently does nothing is worse than one that is refused.
+    const target = { ...graph(["root->reviewer"], {}), mode: "orchestration" as const, gauntlet: { bar: "b" } }
+    target.nodes[1].role = "reviewer"
+    expect(kinds(target).warnings).toContain("verify-redundant")
+  })
+
+  test("says nothing at all when verification is off", () => {
+    expect(kinds(graph(["a->b"], undefined)).blocking).not.toContain("no-verifier")
+  })
+})

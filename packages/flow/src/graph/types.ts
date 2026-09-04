@@ -114,6 +114,39 @@ export type Pipeline = {
    * make to somebody's canvas because they upgraded.
    */
   isolate?: boolean
+  /**
+   * Whether the run ends on a critic's verdict rather than on its last card
+   * going idle.
+   *
+   * A property of the document, like `mode`, `gauntlet` and `isolate`: it
+   * changes what an existing graph reports, and costs a session every run, so
+   * it is persisted, exported and undoable. Absent means off — every canvas
+   * saved before it existed. Read only through `verifyOf`.
+   *
+   * This is the gauntlet's critic generalised. A gauntlet already cannot end
+   * without a verdict, so `verifyOf` returns nothing there rather than judging
+   * an answer that has been judged.
+   */
+  verify?: Verify
+}
+
+/**
+ * How a run's result is judged, when the canvas asks for it at all.
+ *
+ * Deliberately thin. The critic is a card the user drew, picked by its role
+ * text the way a swarm's synthesizer is, so there is nothing here naming one —
+ * designating a verifier is renaming a card, and a hidden id would drift out of
+ * step with the canvas the moment somebody deleted it.
+ */
+export type Verify = {
+  /**
+   * What the critic measures against, in the user's words. Optional, unlike a
+   * gauntlet's bar: a gauntlet loops until the bar is met, so a missing one
+   * burns turns chasing a standard nobody set, while a single verification pass
+   * with no bar still answers a real question — does this do what the run was
+   * asked for.
+   */
+  bar?: string
 }
 
 /**
@@ -287,6 +320,16 @@ export type RunLog = {
   nodes: RunNodeLog[]
   /** Every node's usage, summed. */
   usage?: Spend
+  /**
+   * What the verifier decided, when the canvas asked for one.
+   *
+   * Separate from `status` because they answer different questions: `status`
+   * says whether the run executed, and this says whether what it produced was
+   * any good. A failed verdict does set `status` to `error` — a run that did
+   * not do what it was asked for has not succeeded, whatever its cards
+   * reported — but only this says why, and which card said so.
+   */
+  verdict?: { card: string; kind: "pass" | "fail" | "unreadable"; reason?: string }
 }
 
 export function emptyPipeline(name = "untitled"): Pipeline {
@@ -388,6 +431,22 @@ export function gauntletOf(pipeline: Pipeline) {
  */
 export function isolationOf(pipeline: Pipeline) {
   return modeOf(pipeline) === "orchestration" && pipeline.isolate === true
+}
+
+/**
+ * A canvas's verification settings, or `undefined` when the run ends the way it
+ * always did.
+ *
+ * Works in every mode — the scheduler decides what the cards do, and this
+ * decides what happens to the result afterwards, so there is nothing mode-shaped
+ * about it. The one exclusion is a gauntlet, whose whole loop already ends on a
+ * critic's verdict: running a second pass there would pay for an answer to a
+ * question the run has already answered, and a disagreement between the two
+ * would have no owner.
+ */
+export function verifyOf(pipeline: Pipeline) {
+  if (!pipeline.verify || gauntletOf(pipeline)) return undefined
+  return { bar: pipeline.verify.bar?.trim() ?? "" }
 }
 
 /**
