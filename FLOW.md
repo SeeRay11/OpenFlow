@@ -244,6 +244,21 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   number past a dozen. `MAX_ROUNDS`, `MAX_DEPTH` and `MAX_DISPATCHES` exist for that reason and
   `roundsOf()` / `depthOf()` / `dispatchesOf()` clamp, so a hand-edited file cannot talk the
   engine into an unbounded run.
+- **A router in a dispatching seat is warned about, and only there.** `routed-orchestrator` in
+  `graph/validate.ts` fires on any card with children whose model is `openrouter/auto`,
+  `openrouter/free`, or a `:free` variant. Measured on the `orchestrated build` template with
+  every card free-routed: the orchestrator called a tool named `openflow` (`Unknown tool` — MCP
+  reaches no card here), ended its turn on that call so there was no message and no control
+  block, was re-asked, then answered `final` with the whole deliverable inline; its three
+  subagents never ran and reported `skipped`, which is the only part the user sees. Every other
+  seat can be weak and still be useful — this one emits a schema every turn, and a router means
+  "which model failed the protocol" is not knowable afterwards. It is a fixed list, not a
+  cheap-model heuristic: a small model the user picked by name is their decision, and warning
+  about that would train them to ignore the warning. It warns rather than blocks because trying
+  the canvas out on a free router is legitimate. Two corollaries when one of these runs fails:
+  **the orchestrator's own account of it is not evidence** (this one reported being "confused
+  with agent ids and names" — no card id was ever rejected, and the one dispatch it did emit was
+  accepted), and the run log's `events` are, in `<project>/.openflow/runs/`.
 - **An orchestration batch gets a working copy per card, when the canvas asks for it.**
   `Pipeline.isolate` is a toggle on orchestration, read through `isolationOf` — a property of the
   *document*, like `mode` and `gauntlet`, because it changes where an existing graph's writes
