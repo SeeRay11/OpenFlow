@@ -100,7 +100,6 @@ differs per shell, so pick the line for the terminal you are in.
 PowerShell (the Windows default):
 
 ```powershell
-cd OpenFlow
 $env:FLOW_MANAGE_SERVER=1; bun openflow.ts
 ```
 
