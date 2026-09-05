@@ -327,6 +327,26 @@ function orchestrationProblems(pipeline: Pipeline): Preflight {
       message: `Card '${shape.root.role}' has nobody to dispatch to — connect the subagent cards it should assign work to`,
     })
 
+  // Measured 2026-09-04, on the `orchestrated build` template with every card
+  // on `openrouter/openrouter/free`: the orchestrator called a tool named
+  // `openflow` (`Unknown tool` — MCP cannot reach a card in this fork), ended
+  // its turn on that call so there was no message and no control block, was
+  // re-asked, and then answered `final` with the whole deliverable written out
+  // inline. Its three subagents never ran and came back `skipped`, which is
+  // what the user sees. Every other seat can be weak and still be useful; this
+  // one has to emit a schema on every turn, and a router picks the model that
+  // answers, so "which model failed the protocol" is not even knowable after
+  // the fact. It warns rather than blocks — a free router is a legitimate way
+  // to try the canvas out, and the run does produce *something*.
+  for (const node of pipeline.nodes) {
+    if (!shape.children(node.id).length || !routed(node.agent.model)) continue
+    warnings.push({
+      nodeId: node.id,
+      kind: "routed-orchestrator",
+      message: `Card '${node.role}' dispatches, and it runs on ${node.agent.model} — a router picks whichever model answers each turn. Measured: a free router calls a dispatch tool that does not exist, never writes the control block, and answers with the work inline while every card below it is skipped. Pick a model for this card by name.`,
+    })
+  }
+
   const gauntlet = gauntletOf(pipeline)
   if (gauntlet) {
     // A gauntlet without a critic is an orchestration with no dispatch limit —
@@ -371,6 +391,26 @@ function orchestrationProblems(pipeline: Pipeline): Preflight {
     })
 
   return { blocking, warnings }
+}
+
+/**
+ * Whether a `providerID/modelID` names a router rather than a model.
+ *
+ * OpenRouter's `auto` and `free` endpoints choose the model per request, and a
+ * `:free` variant is the free tier of one — small, and output-capped low enough
+ * that a card writing a whole file runs off the end of its own turn. The model
+ * id is everything after the *first* slash, because a modelID carries slashes
+ * of its own (`openrouter/openrouter/free` is the provider `openrouter` and the
+ * model `openrouter/free`).
+ *
+ * Deliberately a fixed list rather than a "cheap model" heuristic: a small model
+ * a user picked by name is their decision, and warning about it would train them
+ * to ignore the warning.
+ */
+function routed(model: string | undefined) {
+  if (!model) return false
+  const id = model.slice(model.indexOf("/") + 1).toLowerCase()
+  return id === "openrouter/auto" || id === "openrouter/free" || id.endsWith(":free")
 }
 
 /**
