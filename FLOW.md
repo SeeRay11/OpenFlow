@@ -136,7 +136,16 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   into the same session three times, waiting 20s, 40s, 80s. A gauntlet pays for this more than
   any other mode: the critic gets a session it has never used before on every verdict, which is
   exactly the traffic shape a per-model limit punishes, and it is the one card the run cannot
-  route around.
+  route around. **A 502, a dropped socket and a `fetch failed` say the same thing**, and
+  `transient()` retries them on a budget of their own — separate from the rate-limit budget, so
+  a card being throttled and a card whose connection keeps dropping do not spend each other's.
+  The terminal list stays narrow on purpose: a 401, a 404 from a model id that does not exist,
+  an `UnsupportedApiError` — re-sending those buys three waits and the identical error. The
+  engine's **own** refusals are never transient, because they are conclusions rather than
+  transport. And a **lost session is replaced, not re-sent into** (`sessionLost`): every turn
+  prompted into a handle the server has forgotten fails identically, so the id is dropped, a new
+  session is opened on the next attempt, and only the model's memory of the turn is lost — a
+  card's prompt is rebuilt from the graph, never from the session.
   **A card's spend is the sum of every session it has held.** `reconcile` merges a session's
   steps into the node's map rather than replacing it, keyed by message id so sessions add up
   without double-counting. Replacing meant a re-dispatched card's earlier spend left the run

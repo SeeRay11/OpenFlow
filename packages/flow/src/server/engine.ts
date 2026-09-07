@@ -210,8 +210,8 @@ const MUTATING = new Set(["edit", "write", "patch"])
 const PROTOCOL_RETRIES = 3
 
 /**
- * How many times a turn refused for rate limiting is re-sent, and how long the
- * first wait is — each retry waits twice as long as the one before it.
+ * How many times a turn the provider could not take right now is re-sent, and
+ * how long the first wait is — each retry waits twice as long as the one before.
  *
  * A 429 says "not now", and everywhere else in the engine that reads as "this
  * card is finished". It costs a gauntlet more than anything else: a critic is
@@ -219,8 +219,16 @@ const PROTOCOL_RETRIES = 3
  * the traffic shape a per-model limit punishes, and it is the one card whose
  * absence the run cannot route around — no verdict, no legal way to stop.
  * Measured on the 2026-09-01 run: two 429s in sixteen minutes ended it.
+ *
+ * A gateway that answered 502, a socket that dropped, a `fetch failed` — all of
+ * them say the same thing and all of them were nevertheless terminal, which is
+ * the difference between a run that lasts an afternoon and one that needs
+ * somebody watching it. `transient()` classifies those together with the 429;
+ * the counts are separate so a card being rate limited and a card whose
+ * connection keeps dropping do not spend each other's budget.
  */
 const RATE_LIMIT_RETRIES = 3
+const TRANSIENT_RETRIES = 3
 export const DEFAULT_RATE_LIMIT_BACKOFF = 20_000
 export const DEFAULT_NODE_TIMEOUT = 30 * 60_000
 export const DEFAULT_QUESTION_TIMEOUT = 5 * 60_000
@@ -841,7 +849,11 @@ export function start(
     // holds them; a retry after a refused prompt does not, so the attachments
     // ride the re-send rather than being lost with the turn that never landed.
     let delivered = !!sessionID
-    for (let attempt = 0; ; attempt++) {
+    // Counted apart: a card being rate limited and a card whose connection keeps
+    // dropping are different problems, and one must not spend the other's budget.
+    let refusals = 0
+    let drops = 0
+    for (;;) {
       const opened = sessionID
       // Only this turn's tool failures count; a card is prompted into the session
       // it already holds, so every earlier turn's are still on the stream.
@@ -975,19 +987,54 @@ export function start(
           return
         }
         const reason = api.describe(error)
-        // "Not now" is not "this card is finished". The provider refused the
-        // turn before it produced anything, so the same prompt goes back into
-        // the same session after a wait rather than costing the run a card.
-        if (rateLimited(reason) && attempt < RATE_LIMIT_RETRIES && rateLimitBackoff > 0) {
-          const wait = rateLimitBackoff * 2 ** attempt
+        // A session the server has lost fails every turn prompted into it, so
+        // it is forgotten before the retry decision: the next attempt creates a
+        // new one instead of re-sending into a dead handle. The card keeps its
+        // place in the run either way — only its memory of the turn is gone.
+        const lost = sessionLost(reason)
+        if (sessionID && lost) {
+          nodeSession.delete(node.id)
+          sessions.delete(sessionID)
+          active.delete(sessionID)
           activity.note(
             node.id,
-            `ratelimit:${node.id}:${turnStarted}`,
-            `rate limited — retrying in ${Math.round(wait / 1000)}s (${attempt + 1} of ${RATE_LIMIT_RETRIES})`,
+            `session:${node.id}:${turnStarted}`,
+            "its session was lost — starting a new one",
+            reason,
+            "error",
+          )
+          sessionID = undefined
+          delivered = false
+        }
+        // "Not now" is not "this card is finished". The provider refused the
+        // turn, or the connection to it dropped, before it produced anything —
+        // so the same prompt goes back into the same session after a wait
+        // rather than costing the run a card.
+        const refused = rateLimited(reason)
+        // A replaced session is retried on the transport budget: opening a new
+        // one is only a recovery if something is then sent into it, and the
+        // count bounds the case where every new session is lost as fast as it
+        // is made.
+        const dropped = !refused && (lost || transient(reason))
+        const attempt = refused ? refusals : drops
+        const allowed = refused ? RATE_LIMIT_RETRIES : TRANSIENT_RETRIES
+        if ((refused || dropped) && attempt < allowed && rateLimitBackoff > 0) {
+          const wait = rateLimitBackoff * 2 ** attempt
+          const what = refused
+            ? "rate limited"
+            : lost
+              ? "its session was replaced"
+              : "the provider could not be reached"
+          if (refused) refusals++
+          else drops++
+          activity.note(
+            node.id,
+            `${refused ? "ratelimit" : "transport"}:${node.id}:${turnStarted}`,
+            `${what} — retrying in ${Math.round(wait / 1000)}s (${attempt + 1} of ${allowed})`,
             reason,
             "done",
           )
-          patch(node.id, { activity: `rate limited — retrying in ${Math.round(wait / 1000)}s` })
+          patch(node.id, { activity: `${what} — retrying in ${Math.round(wait / 1000)}s` })
           if (sessionID) active.delete(sessionID)
           await new Promise((resolve) => setTimeout(resolve, wait))
           if (controller.signal.aborted) {
@@ -1024,6 +1071,53 @@ export function start(
    */
   function rateLimited(reason: string) {
     return /\b429\b|rate.?limit|too many requests/i.test(reason)
+  }
+
+  /**
+   * Whether a failure means "not right now" rather than "this card is finished".
+   *
+   * The distinction is the whole of whether a run can be left alone. A 429, a
+   * gateway error, a dropped socket and a DNS blip are all the provider or the
+   * network being briefly unavailable: the same prompt into the same session a
+   * few seconds later is the correct response, and failing the card instead
+   * costs the run a card — or, for a gauntlet critic, the run itself, since
+   * there is no legal ending without a verdict.
+   *
+   * Everything else is terminal on purpose, and the list is deliberately narrow
+   * rather than "anything that is not obviously fatal". A 401, a 404 from a
+   * model id that does not exist, an `UnsupportedApiError` from a provider the
+   * runner cannot route: re-sending those is three more waits and the identical
+   * error, and the run reports a card that took a minute to fail rather than a
+   * second. The engine's *own* refusals — a card that finished without
+   * producing anything, a critic that changed the work — never reach here as a
+   * transient either, because they are conclusions rather than transport.
+   */
+  function transient(reason: string) {
+    if (rateLimited(reason)) return false
+    if (/\b4(0[0-9]|1[0-9]|2[0-9])\b/.test(reason)) return false
+    return (
+      /\b5[0-9]{2}\b/.test(reason) ||
+      /bad gateway|service unavailable|gateway time-?out|internal server error/i.test(reason) ||
+      /econnreset|econnrefused|etimedout|enotfound|eai_again|epipe|socket hang ?up/i.test(reason) ||
+      /fetch failed|network ?error|connection (closed|reset|refused|error)|premature close/i.test(reason)
+    )
+  }
+
+  /**
+   * Whether the session this card holds is the thing that broke.
+   *
+   * A session the server has lost is not a card that failed: every later turn
+   * prompted into it fails the same way, and a swarm peer or a re-dispatched
+   * builder would keep being fed the same dead handle. Forgetting it lets the
+   * next turn create a new one — which is the whole recovery, since a card's
+   * prompt is rebuilt from the graph rather than from the session.
+   *
+   * The cost is the model's memory of its own reasoning, so this is only done
+   * when the session is named as the problem. A card whose session is fine and
+   * whose *work* failed keeps it.
+   */
+  function sessionLost(reason: string) {
+    return /session (not found|does not exist|expired|closed|invalid)|unknown session|no such session/i.test(reason)
   }
 
   /**
