@@ -7,6 +7,7 @@ import { hasNativePicker, pickFolderNative } from "./native-picker"
 import type { Supervisor } from "./opencode-process"
 import { COMPATIBLE_PROFILES, globalConfigCandidates, repackage, repackaged } from "./repackage"
 import { install, installed, uninstall } from "./dispatch-tool"
+import { checkpoint, dropCheckpoints } from "./checkpoint"
 import { treeStat } from "./diffstat"
 import { cleanupWorktrees, mergeWorktrees, openWorktrees } from "./worktree"
 import { zenModels } from "./zen"
@@ -416,6 +417,13 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     return ok({ files: files ?? null })
   }
 
+  // A commit of the working tree as this round left it, under a ref of our
+  // own. Nothing is restored from here — see `lib/checkpoint.ts`.
+  if (segments[0] === "checkpoint" && method === "POST") {
+    const body = await request.json().catch(() => ({}) as any)
+    return ok((await checkpoint(paths.project, String(body.run ?? ""), Number(body.round ?? 0))) ?? null)
+  }
+
   if (segments[0] === "worktrees" && method === "POST") {
     const body = await request.json().catch(() => ({}) as any)
     if (segments[1] === "merge") return ok(await mergeWorktrees(paths.project, body.trees ?? [], body.base ?? ""))
@@ -600,6 +608,10 @@ async function removeRun(paths: FlowPaths, id: string) {
     .then(() => true)
     .catch(() => false)
   if (removed) await removeFromRunsIndex(paths, [id])
+  // Deleting the recording is the moment the user has said they are finished
+  // with the run, and it is the only moment: a checkpoint outliving its run is
+  // the whole point of taking one, so nothing drops these when a run ends.
+  if (removed) await dropCheckpoints(paths.project, id).catch(() => 0)
   return removed
 }
 
@@ -632,6 +644,7 @@ async function pruneRuns(paths: FlowPaths, rules: { keep?: number; days?: number
   )
   const removed: string[] = []
   for (const entry of doomed) {
+    await dropCheckpoints(paths.project, entry.id).catch(() => 0)
     if (
       await fs
         .rm(path.join(paths.runs, `${entry.id}.json`))

@@ -303,6 +303,25 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   `reassignPrompt`, which says the old assignment is over — otherwise it reads the new task as
   more detail on the old one. After an orchestration run, cards nobody dispatched are marked
   `skipped`, not left `queued`.
+- **Every round is committed, and nothing is restored automatically.** `lib/checkpoint.ts`
+  commits the working tree after each dispatch batch under `refs/openflow/<run>/round-<n>`, and
+  the ref lands on the round in the ledger. A gauntlet ends on whatever round a bound stopped it
+  in, and that round is not reliably its best — a builder given one more turn than the work
+  needed will use it, and the critic that would have caught that is the card the run stopped
+  short of asking. `RunLog.best` names the **last round a critic passed**; nothing weaker
+  qualifies, because a round nobody judged has not been judged and preferring "more lines" or
+  "fewer failures" would be the engine inventing a bar when a bar exists and a card was paid to
+  apply it. The UI says so only when the run did not end on that round, and says it as the `git
+  restore --source <ref> --worktree .` the user can run.
+  **The commit is built through a temporary index** (`GIT_INDEX_FILE` + `add -A` + `write-tree`
+  + `commit-tree`), not `git stash create`: stash omits untracked files, and new files are most
+  of what a builder produces, so a checkpoint missing them would restore the edits without the
+  new modules. The user's index, `HEAD` and working tree are untouched — the only visible change
+  is the new ref. **Restoring is deliberately not automatic**: the project's tree is usually
+  dirty and often open in an editor, and an engine that rewrites it because a number moved is a
+  worse failure than the one it is fixing — the same rule the merge path follows in refusing
+  `--3way`. Checkpoints are dropped when the **run's recording is deleted or pruned**, never
+  when the run ends: outliving the run is the whole point of taking one.
 - **A round is recorded, and the record is what "no progress" is measured against.**
   `graph/ledger.ts` writes one `LedgerRound` per dispatch batch — the cards, whether each came
   back, a critic's verdict, the lines the batch moved, the files two cards both wrote — onto

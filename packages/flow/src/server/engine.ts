@@ -1,6 +1,6 @@
 import { collisionNote, collisionsIn, writesOf, type Write } from "../graph/collisions"
 import { addDiff, attribute, deltaOf } from "../graph/diff"
-import { ledgerNote, stalledRounds, verdictSummary, type LedgerRound } from "../graph/ledger"
+import { bestRound, ledgerNote, stalledRounds, verdictSummary, type LedgerRound } from "../graph/ledger"
 import { isolates, mergeNote } from "../graph/worktree"
 import { fromToolCall, MCP_REACHES_SESSIONS, parseDispatch } from "../graph/dispatch"
 import { isCritic, orchestrationShape } from "../graph/orchestration"
@@ -299,6 +299,12 @@ export type EngineDeps = {
    */
   treeStat?: typeof store.treeStat
   /**
+   * Commits the working tree as a round left it, under a ref of OpenFlow's own.
+   * Optional: a host without it, or a project that is not a repository, runs
+   * with no way back, exactly as it did before checkpoints existed.
+   */
+  checkpoint?: typeof store.checkpoint
+  /**
    * The engine process this host proxies, used to print the exact restart
    * command in the one error that can only be fixed by restarting it.
    */
@@ -311,6 +317,7 @@ const live: EngineDeps = {
   serveStatus: () => store.serverStatus(),
   worktrees: { open: store.openWorktrees, merge: store.mergeWorktrees, cleanup: store.cleanupWorktrees },
   treeStat: () => store.treeStat(),
+  checkpoint: (run, round) => store.checkpoint(run, round),
 }
 
 /**
@@ -1625,8 +1632,19 @@ export function start(
         ),
         ...(collisions.length ? { collisions: collisions.map((collision) => collision.path) } : {}),
       }
+      // Committed after the ledger entry is built, so the ref is recorded on
+      // the round it belongs to. Numbered by the run's rounds rather than this
+      // orchestrator's: two orchestrators both dispatching a third time would
+      // otherwise write the same ref.
+      const saved = await deps.checkpoint?.(log.id, rounds.length + 1).catch(() => null)
+      if (saved) round.ref = saved.ref
       rounds.push(round)
       log.rounds = rounds
+      // The last round a critic passed. Recorded as the run goes, because the
+      // state it names is what the tree looked like then and the ref is the
+      // only thing that still knows.
+      const best = bestRound(rounds)
+      log.best = best ? { round: best.round, card: best.card, ref: best.ref } : undefined
 
       const stop = exhausted(spent, stalledRounds(rounds, node.id))
       forced = stop

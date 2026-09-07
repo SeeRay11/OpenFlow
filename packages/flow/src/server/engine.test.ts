@@ -97,6 +97,8 @@ type HarnessOptions = {
    * all, which is what a run recorded before this existed looks like.
    */
   treeStats?: ({ path: string; added: number; removed: number }[] | null)[]
+  /** Whether the host can commit a round's tree under a ref of its own. */
+  checkpoints?: boolean
 }
 
 function deferred() {
@@ -136,6 +138,7 @@ function harness(options: HarnessOptions = {}) {
   const worktreeCalls: { open: string[][]; merged: number; cleaned: number } = { open: [], merged: 0, cleaned: 0 }
   let catalogReads = 0
   let treeReads = 0
+  const checkpointed: number[] = []
   let created = 0
   let inflight = 0
   let peak = 0
@@ -282,6 +285,14 @@ function harness(options: HarnessOptions = {}) {
       saved.push(structuredClone(log))
       return {}
     },
+    ...(options.checkpoints
+      ? {
+          async checkpoint(_run: string, round: number) {
+            checkpointed.push(round)
+            return { ref: `refs/openflow/test/round-${round}`, commit: `c${round}` }
+          },
+        }
+      : {}),
     ...(options.treeStats
       ? {
           async treeStat() {
@@ -335,6 +346,7 @@ function harness(options: HarnessOptions = {}) {
     saved,
     activity,
     sessionOf,
+    checkpointed,
     peak: () => peak,
     /** How many sessions this run opened — 0 proves a carried one was continued. */
     created: () => created,
@@ -2349,6 +2361,75 @@ describe("gauntlet mode", () => {
     const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 5 })).done
 
     expect(log.rounds?.[0].cards[0].verdict).toBeUndefined()
+  })
+
+  test("every round is committed, and the ref lands on the round", async () => {
+    const h = harness({
+      behavior: {
+        root: { outputs: [dispatch("builder"), dispatch("reviewer"), final("done")] },
+        builder: { output: "built it" },
+        reviewer: { output: "looks right\n\nVERDICT: PASS" },
+      },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+      checkpoints: true,
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 5 })).done
+
+    expect(h.checkpointed).toEqual([1, 2])
+    expect(log.rounds?.map((round) => round.ref)).toEqual(["refs/openflow/test/round-1", "refs/openflow/test/round-2"])
+  })
+
+  test("the run remembers the last round a critic passed", async () => {
+    // A gauntlet ends on whatever round a bound stopped it in, and that round
+    // is not reliably its best — so the state that was passed has to still be
+    // nameable afterwards.
+    const h = harness({
+      behavior: {
+        root: { outputs: [dispatch("reviewer"), dispatch("builder"), final("done")] },
+        builder: { output: "one more change" },
+        reviewer: { output: "all seven lines hold\n\nVERDICT: PASS" },
+      },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+      checkpoints: true,
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 5 })).done
+
+    expect(log.best).toEqual({ round: 1, card: "root", ref: "refs/openflow/test/round-1" })
+    // And it is not the state the run ended on, which is the case worth telling
+    // the user about.
+    expect(log.rounds?.[log.rounds.length - 1].ref).not.toBe(log.best?.ref)
+  })
+
+  test("a run nobody passed has no best round to go back to", async () => {
+    // Deliberately not "the round with the most lines" or "the fewest
+    // failures": a round no critic judged has not been judged, and inventing a
+    // bar when a bar exists and a card was paid to apply it is the wrong fix.
+    const h = harness({
+      behavior: {
+        root: { outputs: [dispatch("reviewer"), final("done")] },
+        reviewer: { output: "still broken\n\nVERDICT: FAIL" },
+      },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+      checkpoints: true,
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 5 })).done
+
+    expect(log.best).toBeUndefined()
+  })
+
+  test("a host that cannot commit a round runs exactly as before", async () => {
+    const h = harness({
+      behavior: { root: { outputs: [dispatch("builder"), final("done")] }, builder: { output: "built it" } },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 5 })).done
+
+    expect(log.rounds?.[0].ref).toBeUndefined()
+    expect(log.best).toBeUndefined()
   })
 
   test("the spend cap is what actually ends an hours-long run", async () => {
