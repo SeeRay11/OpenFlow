@@ -538,6 +538,11 @@ samp,
   letter-spacing: 0.05px;
 }
 
+/* A hint that is telling the reader something is wrong with what they typed. */
+.hint.danger {
+  color: var(--v2-state-fg-danger);
+}
+
 ::selection {
   background: color-mix(in srgb, var(--v2-background-bg-accent) 35%, transparent);
 }

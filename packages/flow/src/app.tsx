@@ -82,6 +82,8 @@ import { SpendPanel } from "./ui/spend-panel"
 import { EngineDialog } from "./ui/engine-dialog"
 import { GauntletDialog } from "./ui/gauntlet-dialog"
 import { VerifyDialog } from "./ui/verify-dialog"
+import { alertsOn, announce, askDesktop, setAlerts, webhook } from "./alerts"
+import { AlertsDialog } from "./ui/alerts-dialog"
 import { costLabel } from "./server/usage"
 import { Select, type SelectOption } from "./ui/select"
 
@@ -124,6 +126,10 @@ const ISOLATE_OPTIONS: SelectOption[] = [
 const VERIFY_OPTIONS: SelectOption[] = [
   { value: "off", label: "off", hint: "the run ends when its cards do" },
   { value: "on", label: "on", hint: "a reviewer card judges the result and the run reports its verdict" },
+]
+const ALERT_OPTIONS: SelectOption[] = [
+  { value: "off", label: "off", hint: "the canvas is the only place an ending is reported" },
+  { value: "on", label: "on", hint: "tell me when the run ends, even if I have walked away" },
 ]
 const POLICY_OPTIONS: SelectOption[] = [
   { value: "auto", label: "auto", hint: "answer for me" },
@@ -198,6 +204,7 @@ export function App() {
   const [showSpend, setShowSpend] = createSignal(false)
   const [gauntletOpen, setGauntletOpen] = createSignal(false)
   const [verifyOpen, setVerifyOpen] = createSignal(false)
+  const [alertsOpen, setAlertsOpen] = createSignal(false)
   const [tick, setTick] = createSignal(Date.now())
   const [engine, setEngine] = createSignal<ServeStatus>()
   const [restarting, setRestarting] = createSignal(false)
@@ -838,6 +845,12 @@ export function App() {
         },
       )
       const log = await current.done
+      // Whoever asked for this is not necessarily here — a gauntlet is bounded
+      // in hours, and the ending worth knowing about is exactly the one the
+      // canvas cannot report to somebody who walked away. Failing to tell them
+      // must not fail the run, so nothing here is awaited into the run's own
+      // result path.
+      void announce(log)
       const failure = log.nodes.find((node) => node.status === "error")
       notice(
         log.status === "error" ? "error" : "info",
@@ -870,6 +883,23 @@ export function App() {
     actions.rejectQuestions()
     await current?.stop()
     actions.notice("info", "stopping run…")
+  }
+
+  /**
+   * Switches the ending alerts on, asking the browser for permission from the
+   * click that did it — a notification prompt needs a gesture behind it, and
+   * asking at load would be a permission dialog nobody had asked for.
+   *
+   * A refused prompt does not switch the setting off: the webhook is the other
+   * half of this, works without any permission at all, and a user who has just
+   * denied notifications has more reason to want it, not less. The notice says
+   * so rather than leaving a toggle that looks on and does nothing.
+   */
+  async function enableAlerts(on: boolean) {
+    setAlerts(on)
+    if (!on) return
+    if (!(await askDesktop()))
+      notice("info", "this browser will not show desktop notifications — endings can still be sent to a webhook")
   }
 
   /** The Runs menu both opens a recording and manages one, so its rows are routed here. */
@@ -1277,6 +1307,28 @@ export function App() {
             options={TIMEOUT_OPTIONS}
             onChange={(value) => setNodeTimeout(Number(value))}
           />
+          {/* A preference rather than a document property, so it sits with the
+              run settings and not with mode, verify and isolate. */}
+          <Select
+            variant="ghost"
+            prefix="alerts: "
+            width={340}
+            title="tell me when the run ends — a desktop notification while this page is not the one you are looking at, and a webhook if you set one"
+            value={alertsOn() ? "on" : "off"}
+            options={ALERT_OPTIONS}
+            onChange={(value) => void enableAlerts(value === "on")}
+          />
+          <Show when={alertsOn()}>
+            <button
+              class="btn btn-ghost"
+              type="button"
+              title="where an ending is sent"
+              onClick={() => setAlertsOpen(true)}
+            >
+              <IconSliders />
+              {webhook().trim() ? "webhook set" : "add a webhook"}
+            </button>
+          </Show>
         </div>
         <div class="runbar-actions">
           <button class="btn btn-primary" type="button" disabled={state.running} onClick={() => void run()}>
@@ -1557,6 +1609,12 @@ export function App() {
           onChange={actions.setVerifySetting}
           onClose={() => setVerifyOpen(false)}
         />
+      </Show>
+
+      {/* Closes itself if the alerts are switched off underneath it — the
+          webhook field would then be editing a channel nothing sends on. */}
+      <Show when={alertsOpen() && alertsOn()}>
+        <AlertsDialog onClose={() => setAlertsOpen(false)} />
       </Show>
 
       <footer class="statusbar">
