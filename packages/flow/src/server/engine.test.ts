@@ -2262,7 +2262,7 @@ describe("gauntlet mode", () => {
     expect(builds[1].text).toContain("A new assignment")
   })
 
-  test("the same batch handed out again and again stops the run", async () => {
+  test("rounds that change nothing stop the run", async () => {
     const h = harness({
       behavior: {
         root: { output: dispatch("builder", "reviewer") },
@@ -2276,10 +2276,79 @@ describe("gauntlet mode", () => {
 
     const root = log.nodes.find((node) => node.id === "root")!
     expect(root.error).toContain("kept dispatching")
-    // Three identical batches, a turn to be told to answer, and it dispatched
-    // again — nowhere near the 500-dispatch ceiling.
+    // Three rounds that produced nothing, a turn to be told to answer, and it
+    // dispatched again — nowhere near the 500-dispatch ceiling.
     expect(h.dispatched.filter((id) => id === "root").length).toBeLessThan(8)
-    expect(h.prompts.get("root")).toContain("same work")
+    expect(h.prompts.get("root")).toContain("changed nothing measurable")
+  })
+
+  test("rewording the same work does not buy another round", async () => {
+    // The hole in the check this replaces: it compared consecutive batches as
+    // strings, so one different word read as fresh work and a run could hand
+    // out the same job indefinitely as long as it kept renaming it.
+    const h = harness({
+      behavior: {
+        root: {
+          outputs: [
+            dispatch("builder", "reviewer"),
+            block(JSON.stringify({ dispatch: [{ card: "builder", task: "fix the ground plane" }] })),
+            block(JSON.stringify({ dispatch: [{ card: "builder", task: "correct the ground plane position" }] })),
+            block(JSON.stringify({ dispatch: [{ card: "builder", task: "adjust where the ground plane sits" }] })),
+            block(JSON.stringify({ dispatch: [{ card: "builder", task: "sort out the ground plane" }] })),
+          ],
+        },
+        builder: { output: "had a look" },
+        reviewer: { output: "same gap as last time" },
+      },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 2 })).done
+
+    expect(h.prompts.get("root")).toContain("changed nothing measurable")
+    expect(h.dispatched.filter((id) => id === "root").length).toBeLessThan(8)
+    expect(log.rounds?.length).toBeGreaterThan(2)
+  })
+
+  test("the ledger tells the next round what the last ones produced", async () => {
+    const h = harness({
+      behavior: {
+        root: { outputs: [dispatch("builder"), dispatch("reviewer"), final("done")] },
+        builder: { output: "built it" },
+        reviewer: { output: "The ground plane is still wrong.\n\nVERDICT: FAIL" },
+      },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 5 })).done
+
+    const asked = h.promptLog.filter((entry) => entry.node === "root")
+    const last = asked[asked.length - 1].text
+    expect(last).toContain("What your rounds have produced so far")
+    expect(last).toContain("round 1: builder")
+    // A critic's verdict is carried across rounds, which is what stops the
+    // orchestrator re-dispatching an approach that was already rejected.
+    expect(last).toContain("reviewer: FAIL — The ground plane is still wrong.")
+    // And it is on the run log, so the rounds can be read next to each other
+    // afterwards rather than only inside one prompt.
+    expect(log.rounds?.map((round) => round.round)).toEqual([1, 2])
+    expect(log.rounds?.[0].cards).toEqual([{ card: "builder", ok: true }])
+  })
+
+  test("only a critic's answer is read as a verdict", async () => {
+    // Every card's first line is a status report. Quoting a builder's as a
+    // verdict would put an opinion in the ledger nobody asked for.
+    const h = harness({
+      behavior: {
+        root: { outputs: [dispatch("builder"), final("done")] },
+        builder: { output: "All seven bar lines pass.\n\nVERDICT: PASS" },
+      },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 5 })).done
+
+    expect(log.rounds?.[0].cards[0].verdict).toBeUndefined()
   })
 
   test("the spend cap is what actually ends an hours-long run", async () => {

@@ -1,3 +1,5 @@
+import type { LedgerRound } from "./ledger"
+
 export type NodeStatus = "idle" | "queued" | "running" | "done" | "error" | "skipped" | "stopped"
 
 /**
@@ -352,6 +354,14 @@ export type RunLog = {
    * reported — but only this says why, and which card said so.
    */
   verdict?: { card: string; kind: "pass" | "fail" | "unreadable"; reason?: string }
+  /**
+   * What each orchestration round produced — see `graph/ledger.ts`.
+   *
+   * Recorded for the run rather than for one card, because a subtree
+   * orchestrator keeps its own rounds and the whole point of the record is
+   * being able to read them next to each other afterwards.
+   */
+  rounds?: LedgerRound[]
 }
 
 export function emptyPipeline(name = "untitled"): Pipeline {

@@ -1,5 +1,6 @@
 import { collisionNote, collisionsIn, writesOf, type Write } from "../graph/collisions"
 import { addDiff, attribute, deltaOf } from "../graph/diff"
+import { ledgerNote, stalledRounds, verdictSummary, type LedgerRound } from "../graph/ledger"
 import { isolates, mergeNote } from "../graph/worktree"
 import { fromToolCall, MCP_REACHES_SESSIONS, parseDispatch } from "../graph/dispatch"
 import { isCritic, orchestrationShape } from "../graph/orchestration"
@@ -434,6 +435,15 @@ export function start(
   const nodeDir = new Map<string, string>()
   /** Every tree opened this run, so the run can take them all down at the end. */
   const opened = new Map<string, WorktreeRef>()
+  /**
+   * What every orchestration round produced, across the whole run.
+   *
+   * Run-scoped rather than per-orchestrator: a subtree keeps its own rounds
+   * (`stalledRounds` and `ledgerNote` both filter by card), but they are read
+   * back afterwards next to each other, which is the point of writing them
+   * down at all.
+   */
+  const rounds: LedgerRound[] = []
   /** Said once per run — see the note where it is set. */
   let isolationWarned = false
   /** The commit every tree was branched from, and every merge is measured against. */
@@ -1223,9 +1233,6 @@ export function start(
      * usually that the card is writing an essay instead of a block.
      */
     let retries = 0
-    /** The last batch this card dispatched, and how many times in a row. */
-    let repeated = ""
-    let repeats = 0
     /** Why the previous turn was told to answer, if it was. */
     let forced: { reason: string; error: string } | undefined
     /** Whether the previous turn's `final` was already sent back for a verdict. */
@@ -1368,16 +1375,6 @@ export function start(
         return undefined
       }
 
-      // A gauntlet is stopped by no progress as well as by money and time, and
-      // the same batch handed out again is what no progress looks like from
-      // out here: the same cards, the same words, one more round of paying for
-      // them.
-      const batch = JSON.stringify(
-        [...decision.assignments].sort((a, b) => a.card.localeCompare(b.card)).map((entry) => [entry.card, entry.task]),
-      )
-      repeats = batch === repeated ? repeats + 1 : 0
-      repeated = batch
-
       spent++
       activity.note(
         node.id,
@@ -1391,6 +1388,13 @@ export function start(
       /** Set when folding the batch's work back in left something unapplied. */
       let mergeNotice = ""
       const batchStarted = Date.now()
+      // What each card had already changed before this batch, so the round's
+      // own line counts are the difference rather than the card's running
+      // total — a card dispatched three times would otherwise report its whole
+      // history as the work of every round it appeared in.
+      const linesBefore = new Map(
+        decision.assignments.map((assignment) => [assignment.card, entry(assignment.card).diff]),
+      )
       // Critics judge by running the work — the build, the tests, the dev
       // server — in the one working directory this fork has. Two of them at
       // once race the same `dist/`, the same port, the same `node_modules`,
@@ -1595,10 +1599,40 @@ export function start(
           "error",
         )
 
-      const stop = exhausted(spent, repeats)
+      // The round, as something other than the model's account of it. Built
+      // after the merge and the collision check so it carries what those found,
+      // and before the stall decision, which is now measured off it.
+      const round: LedgerRound = {
+        card: node.id,
+        round: spent,
+        at: batchStarted,
+        cards: decision.assignments.map((assignment) => {
+          const answer = results.find((result) => result.card === assignment.card)
+          return {
+            card: assignment.card,
+            ok: answer?.text !== undefined,
+            // Only a card whose job was judging has a verdict. Every other
+            // card's first line is a status report, and quoting one as a
+            // verdict would put an opinion in the ledger nobody asked for.
+            ...(answer?.text !== undefined && isCritic(nodes.get(assignment.card)!)
+              ? { verdict: verdictSummary(answer.text) }
+              : {}),
+          }
+        }),
+        ...batchLines(
+          decision.assignments.map((assignment) => assignment.card),
+          linesBefore,
+        ),
+        ...(collisions.length ? { collisions: collisions.map((collision) => collision.path) } : {}),
+      }
+      rounds.push(round)
+      log.rounds = rounds
+
+      const stop = exhausted(spent, stalledRounds(rounds, node.id))
       forced = stop
       if (stop) activity.note(node.id, `bound:${node.id}:${spent}`, "told to answer", stop.error, "done")
       const status = gauntlet ? spentSoFar() : undefined
+      const history = ledgerNote(rounds, node.id)
       build = () =>
         [
           dispatchResultPrompt(pipeline, results, stop ? 0 : budget - spent, status),
@@ -1607,6 +1641,10 @@ export function start(
           // overwritten. The certain finding leads.
           ...(mergeNotice ? [mergeNotice] : []),
           ...(collided ? [collided] : []),
+          // What its own rounds have produced. After the findings about this
+          // batch, because it is context for the next decision rather than
+          // something that happened just now.
+          ...(history ? [history] : []),
           ...(stop ? [forceFinalPrompt(stop.reason)] : []),
         ].join("\n\n")
     }
@@ -1624,6 +1662,27 @@ export function start(
    * cycle in it is refused before a run normally starts, but a walk that
    * assumed the tree was a tree would hang the run rather than report anything.
    */
+  /**
+   * Lines this batch changed: each card's total now, less what it had before.
+   *
+   * A card dispatched three times carries its running total on `diff`, so the
+   * subtraction is what makes a round's number the round's own. Undefined when
+   * nothing was measured — a project off git, or a host with no measurement —
+   * because a round that changed nothing and a round nobody could measure are
+   * different facts, and the ledger reads them differently.
+   */
+  function batchLines(cards: string[], before: Map<string, CardDiff | undefined>) {
+    const now = cards.map((card) => entry(card).diff)
+    if (now.every((diff) => !diff) && [...before.values()].every((diff) => !diff)) return {}
+    const sum = (pick: (diff: CardDiff) => number) =>
+      cards.reduce((total, card) => {
+        const after = entry(card).diff
+        const was = before.get(card)
+        return total + (after ? pick(after) : 0) - (was ? pick(was) : 0)
+      }, 0)
+    return { added: sum((diff) => diff.added), removed: sum((diff) => diff.removed), files: sum((diff) => diff.files) }
+  }
+
   function descendants(id: string, seen = new Set<string>()): string[] {
     if (seen.has(id)) return []
     seen.add(id)
@@ -1639,7 +1698,7 @@ export function start(
    * measure is the one failure that would otherwise run for hours before
    * anyone noticed.
    */
-  function exhausted(spent: number, repeats: number) {
+  function exhausted(spent: number, stalled: number) {
     if (!gauntlet)
       return spent >= dispatchesOf(pipeline)
         ? {
@@ -1672,10 +1731,14 @@ export function start(
         error: `the run reached its ${gauntlet.maxMinutes} minute cap`,
       }
 
-    if (repeats >= gauntlet.stall)
+    // Measured off the ledger rather than off the batch text: the check this
+    // replaces compared consecutive dispatches as strings, so a task reworded
+    // by one word read as fresh work and a run could hand out the same job for
+    // as long as it kept renaming it.
+    if (stalled >= gauntlet.stall)
       return {
-        reason: `You have handed out the same work ${repeats + 1} times in a row, so it is not improving. Answer with what you have.`,
-        error: `the same batch was dispatched ${repeats + 1} times in a row with nothing changing`,
+        reason: `Your last ${stalled + 1} rounds changed nothing measurable — no lines, the same cards, the same outcomes. Answer with what you have.`,
+        error: `${stalled + 1} rounds in a row changed nothing measurable`,
       }
 
     return spent >= GAUNTLET_DISPATCHES

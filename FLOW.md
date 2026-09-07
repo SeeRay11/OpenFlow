@@ -303,6 +303,28 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   `reassignPrompt`, which says the old assignment is over — otherwise it reads the new task as
   more detail on the old one. After an orchestration run, cards nobody dispatched are marked
   `skipped`, not left `queued`.
+- **A round is recorded, and the record is what "no progress" is measured against.**
+  `graph/ledger.ts` writes one `LedgerRound` per dispatch batch — the cards, whether each came
+  back, a critic's verdict, the lines the batch moved, the files two cards both wrote — onto
+  `RunLog.rounds`, and `ledgerNote` rides the next dispatch prompt. It exists because two
+  failures shared one cause: an orchestrator re-dispatching an approach a critic already
+  rejected (the cards' answers are in the prompt; the *outcome* of the round was not), and a
+  stall check that compared consecutive batches as **strings**, so a task reworded by one word
+  read as fresh work and a run could hand out the same job for as long as it kept renaming it.
+  **So progress is never read off the task text.** `progressed()` consults only evidence outside
+  the model's control: the tree moved (lines in either direction), a different set of cards ran,
+  a card that was failing came back or one that was working stopped, or a verdict changed —
+  including a critic judging for the first time. `exhausted()` now takes `stalledRounds()` in
+  place of the string counter, and a round of pure investigation counts as no progress on
+  purpose: three of those in a row is a run going in circles, and the orchestrator is asked to
+  answer rather than killed, so a card with something to say still says it.
+  The note is **facts and no instruction** — the engine does not know which approach was right,
+  and "do not try X again" is wrong the moment X was rejected for a reason since fixed. Six
+  rounds are shown and older ones counted, because this is paid for in every prompt. Only a
+  **critic's** answer is read as a verdict; every card's first line is a status report, and
+  quoting a builder's would put an opinion in the ledger nobody asked for. Line counts are the
+  card's total *less what it had before the batch* — a card dispatched three times would
+  otherwise report its whole history as the work of every round it appeared in.
 - **Two cards in one batch writing one file is reported, not prevented.** Nothing in this fork
   locks a file and the pool runs a batch at once, so the later write wins and the card whose work
   went under still reports success — the orchestrator would then build on an answer describing a
