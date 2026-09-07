@@ -99,6 +99,8 @@ type HarnessOptions = {
   treeStats?: ({ path: string; added: number; removed: number }[] | null)[]
   /** Whether the host can commit a round's tree under a ref of its own. */
   checkpoints?: boolean
+  /** The scratch directory the host offers, if it offers one. */
+  scratch?: string
 }
 
 function deferred() {
@@ -285,6 +287,13 @@ function harness(options: HarnessOptions = {}) {
       saved.push(structuredClone(log))
       return {}
     },
+    ...(options.scratch
+      ? {
+          async scratch() {
+            return { path: options.scratch! }
+          },
+        }
+      : {}),
     ...(options.checkpoints
       ? {
           async checkpoint(_run: string, round: number) {
@@ -2432,6 +2441,60 @@ describe("gauntlet mode", () => {
     expect(log.best).toBeUndefined()
   })
 
+  test("a verdict reached without running anything says so", async () => {
+    // Measured on this fork's first gauntlet: with the deliverable a black
+    // screen and every script failing to parse, the critic opened "the bar is
+    // better — the single largest gap is the ground plane position". It had
+    // read the source and critiqued what it read.
+    const h = harness({
+      behavior: {
+        root: { outputs: [dispatch("reviewer"), final("done")] },
+        reviewer: { output: "the ground plane is off\n\nVERDICT: FAIL" },
+      },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 5 })).done
+
+    expect(log.nodes.find((node) => node.id === "reviewer")!.output).toContain("without running anything")
+  })
+
+  test("a critic that ran the work is not second-guessed", async () => {
+    const h = harness({
+      behavior: {
+        root: { outputs: [dispatch("reviewer"), final("done")] },
+        reviewer: { hold: true, output: "the tests pass\n\nVERDICT: PASS" },
+      },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+    })
+    const run = h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 5 }))
+    await flush()
+    h.emit({
+      type: "session.next.tool.called",
+      data: { sessionID: h.sessionOf.get("reviewer"), callID: "b1", tool: "bash", input: { command: "bun test" } },
+    } as any)
+    h.emit({ type: "session.next.tool.success", data: { sessionID: h.sessionOf.get("reviewer"), callID: "b1" } } as any)
+    await flush()
+    h.release("reviewer")
+    const log = await run.done
+
+    expect(log.nodes.find((node) => node.id === "reviewer")!.output).not.toContain("without running anything")
+  })
+
+  test("a builder that ran nothing is not remarked on", async () => {
+    // Only a card whose job was judging. Every other card's turn is its own
+    // business, and a note on all of them is a note nobody reads.
+    const h = harness({
+      behavior: { root: { outputs: [dispatch("builder"), final("done")] }, builder: { output: "wrote the module" } },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 5 })).done
+
+    expect(log.nodes.find((node) => node.id === "builder")!.output).not.toContain("without running anything")
+  })
+
   test("the spend cap is what actually ends an hours-long run", async () => {
     const h = harness({
       behavior: {
@@ -2550,7 +2613,7 @@ describe("gauntlet mode", () => {
 
     const reviewer = log.nodes.find((node) => node.id === "reviewer")!
     expect(reviewer.status).toBe("done")
-    expect(reviewer.output).toBe("ours wins")
+    expect(reviewer.output).toContain("ours wins")
     // The waits are on the stream, so a run that looks stalled says why.
     expect(h.activity.some((row) => row.node === "reviewer" && row.event.title.includes("rate limited"))).toBe(true)
     expect(log.nodes.find((node) => node.id === "root")!.output).toBe("shipped")
@@ -2932,7 +2995,11 @@ describe("a run that ends on a verdict", () => {
     expect(log.status).toBe("done")
     // Its answer as a card is what the log keeps — the cards downstream were
     // given that, and the verdict has its own field.
-    expect(log.nodes.find((node) => node.id === "reviewer")!.output).toBe("looks fine to me")
+    // The verdict itself, plus the note saying it was reached without running
+    // anything — the marker is still the last one in the message, so nothing
+    // downstream reads the note as a second verdict.
+    expect(log.nodes.find((node) => node.id === "reviewer")!.output).toContain("looks fine to me")
+    expect(log.nodes.find((node) => node.id === "reviewer")!.output).toContain("without running anything")
   })
 
   test("a failed verdict makes the run report error, with the reason", async () => {
@@ -3279,5 +3346,53 @@ describe("a turn the provider could not take", () => {
     expect(h.created()).toBe(2)
     expect(node.sessionID).toBe("s2")
     expect(h.activity.some((row) => row.node === "a" && row.event.title.includes("session was lost"))).toBe(true)
+  })
+})
+
+describe("scratch output", () => {
+  test("a card that can run a shell is told where to put what is not the work", async () => {
+    // Measured: a file named `0` holding an orchestrator's grep diagnostics was
+    // left in the deliverable. Its write tools were refused; a redirect writes
+    // a file anyway.
+    const h = harness({ behavior: { a: {} }, scratch: "/tmp/openflow-scratch/run-1" })
+    const graph = pipeline("a")
+    graph.nodes[0].agent.tools = { bash: true }
+    await h.run(graph).done
+
+    expect(h.prompts.get("a")).toContain("/tmp/openflow-scratch/run-1")
+    expect(h.prompts.get("a")).toContain("Scratch output goes outside the project")
+  })
+
+  test("a card with no shell has nothing to redirect and is not told", async () => {
+    const h = harness({ behavior: { a: {} }, scratch: "/tmp/openflow-scratch/run-1" })
+    const graph = pipeline("a")
+    graph.nodes[0].agent.tools = { bash: false }
+    await h.run(graph).done
+
+    expect(h.prompts.get("a")).not.toContain("Scratch output")
+  })
+
+  test("said once, not on every turn", async () => {
+    // A briefing repeated every round is a briefing nobody reads, and in a
+    // swarm every peer is prompted once per round.
+    const h = harness({ behavior: { a: {}, b: {}, s: {} }, scratch: "/tmp/scratch" })
+    const graph = pipeline("a", "b", "s")
+    for (const node of graph.nodes) node.agent.tools = { bash: true }
+    graph.mode = "swarm"
+    graph.rounds = 2
+    graph.nodes[2].role = "synthesizer"
+    await h.run(graph).done
+
+    const said = h.promptLog.filter((entry) => entry.node === "a" && entry.text.includes("Scratch output"))
+    expect(said).toHaveLength(1)
+  })
+
+  test("a host with no scratch directory says nothing about one", async () => {
+    const h = harness({ behavior: { a: {} } })
+    const graph = pipeline("a")
+    graph.nodes[0].agent.tools = { bash: true }
+    await h.run(graph).done
+
+    expect(h.prompts.get("a")).not.toContain("Scratch output")
   })
 })

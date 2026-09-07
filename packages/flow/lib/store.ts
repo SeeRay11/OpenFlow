@@ -8,6 +8,7 @@ import type { Supervisor } from "./opencode-process"
 import { COMPATIBLE_PROFILES, globalConfigCandidates, repackage, repackaged } from "./repackage"
 import { install, installed, uninstall } from "./dispatch-tool"
 import { checkpoint, dropCheckpoints } from "./checkpoint"
+import { dropScratch, openScratch } from "./scratch"
 import { treeStat } from "./diffstat"
 import { cleanupWorktrees, mergeWorktrees, openWorktrees } from "./worktree"
 import { zenModels } from "./zen"
@@ -424,6 +425,13 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     return ok((await checkpoint(paths.project, String(body.run ?? ""), Number(body.round ?? 0))) ?? null)
   }
 
+  // A directory outside the project for output that is not the work. See
+  // `lib/scratch.ts` — the write refusal stops the tools, not the shell.
+  if (segments[0] === "scratch" && method === "POST") {
+    const body = await request.json().catch(() => ({}) as any)
+    return ok({ path: (await openScratch(String(body.run ?? ""))) ?? null })
+  }
+
   if (segments[0] === "worktrees" && method === "POST") {
     const body = await request.json().catch(() => ({}) as any)
     if (segments[1] === "merge") return ok(await mergeWorktrees(paths.project, body.trees ?? [], body.base ?? ""))
@@ -612,6 +620,7 @@ async function removeRun(paths: FlowPaths, id: string) {
   // with the run, and it is the only moment: a checkpoint outliving its run is
   // the whole point of taking one, so nothing drops these when a run ends.
   if (removed) await dropCheckpoints(paths.project, id).catch(() => 0)
+  if (removed) await dropScratch(id)
   return removed
 }
 
@@ -645,6 +654,7 @@ async function pruneRuns(paths: FlowPaths, rules: { keep?: number; days?: number
   const removed: string[] = []
   for (const entry of doomed) {
     await dropCheckpoints(paths.project, entry.id).catch(() => 0)
+    await dropScratch(entry.id)
     if (
       await fs
         .rm(path.join(paths.runs, `${entry.id}.json`))

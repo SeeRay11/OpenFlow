@@ -130,6 +130,13 @@ export const store = {
    * own. `null` when the project is not a git repository — the run proceeds
    * with no way back, exactly as it did before checkpoints existed.
    */
+  /**
+   * A directory outside the project for output that is not the work — greps,
+   * diagnostics, anything a shell redirect would otherwise drop into the
+   * deliverable. `null` when the host could not make one.
+   */
+  scratch: (run: string) =>
+    request<{ path: string | null }>("/scratch", { method: "POST", body: JSON.stringify({ run }) }),
   checkpoint: (run: string, round: number) =>
     request<{ ref: string; commit: string } | null>("/checkpoint", {
       method: "POST",

@@ -145,9 +145,7 @@ export function swarmPrompt(
     return sections.join("\n\n")
   }
 
-  const said = [...peers]
-    .filter(([id]) => id !== node.id)
-    .map(([id, text]) => `## ${label(pipeline, id)}\n\n${text}`)
+  const said = [...peers].filter(([id]) => id !== node.id).map(([id, text]) => `## ${label(pipeline, id)}\n\n${text}`)
   return [
     `# Round ${round} of ${rounds}`,
     "",
@@ -155,7 +153,10 @@ export function swarmPrompt(
       ? `Every other agent's round ${round - 1} answer follows. Read them, then give your position for this round — revised where they changed your mind, held where they did not, and say which.`
       : `No other agent produced an answer in round ${round - 1}. Continue on your own reasoning and say that you had nothing to weigh against.`,
     ...(round === rounds
-      ? ["", "This is the final round. What you say now is what the synthesizer weighs; nothing you leave out gets another chance."]
+      ? [
+          "",
+          "This is the final round. What you say now is what the synthesizer weighs; nothing you leave out gets another chance.",
+        ]
       : []),
     ...(said.length ? ["", said.join("\n\n")] : []),
   ].join("\n")
@@ -189,7 +190,9 @@ export function swarmBriefing(pipeline: Pipeline, node: FlowNode) {
     `## Swarm "${pipeline.name}" — ${shape.agents.length} agent(s), ${rounds} round(s)`,
     "",
     ...shape.agents.map(row),
-    ...(verdict ? [`- verdict: ${label(pipeline, verdict.id)} · ${verdict.agent.model ?? "its agent's own model"}`] : []),
+    ...(verdict
+      ? [`- verdict: ${label(pipeline, verdict.id)} · ${verdict.agent.model ?? "its agent's own model"}`]
+      : []),
     "",
     "## How this runs",
     "",
@@ -294,12 +297,7 @@ export function synthesisPrompt(
  * an orchestrator that cannot see what a card is for assigns by guessing at the
  * label, which is how the reviewer gets asked to write code.
  */
-export function orchestratorPrompt(
-  pipeline: Pipeline,
-  node: FlowNode,
-  input: string,
-  skipped: Attachment[] = [],
-) {
+export function orchestratorPrompt(pipeline: Pipeline, node: FlowNode, input: string, skipped: Attachment[] = []) {
   const sections = [orchestratorBriefing(pipeline, node)]
   if (node.agent.prompt.trim()) sections.push(node.agent.prompt.trim())
   if (input.trim()) sections.push(`# Task\n\n${input.trim()}`)
@@ -760,6 +758,34 @@ export function interruptedNote() {
   ].join("\n")
 }
 
+/**
+ * Where to put output that is not the work.
+ *
+ * Told to every card that can run a shell, once, on its first turn. The write
+ * refusal that a critic and an orchestrator run under stops the write tools and
+ * not the shell — a redirect writes a file whatever the allowlist says — and
+ * the measured consequence was a file named `0` sitting in the deliverable
+ * holding an orchestrator's grep output.
+ *
+ * It says what the directory is for rather than forbidding anything, because
+ * nothing here can enforce it: a card that wants to redirect into the project
+ * still can. What it removes is the *reason* to — a card investigating
+ * something has to put the output somewhere, and until now the only somewhere
+ * it had been given was the folder holding the deliverable.
+ */
+export function scratchNote(directory: string) {
+  return [
+    "# Scratch output goes outside the project",
+    "",
+    `Use \`${directory}\` for anything that is not the work itself: grep output, diagnostics,`,
+    "intermediate files, notes to yourself. It is outside the project and is deleted with the run.",
+    "",
+    "This matters because a redirect writes a file even where the write tools are refused to you.",
+    "A stray `> out.txt` in the project is left behind in the deliverable, and somebody has to find",
+    "it later and work out whether it was part of the work.",
+  ].join("\n")
+}
+
 export function imageBlindNote() {
   return [
     "# You cannot read images",
@@ -821,6 +847,38 @@ export function noWritesNote(declared: string[]) {
     ">",
     "> That is legitimate if the work was to read, judge or plan. If it was to make a change,",
     "> what is above is a description of one that was never made.",
+  ].join("\n")
+}
+
+/**
+ * What a verdict is worth when the critic ran nothing to reach it.
+ *
+ * Measured on this fork's first gauntlet: with the deliverable a black screen
+ * and every script failing to parse, the critic's verdict opened "the bar is
+ * better — the single largest gap is the ground plane position", a geometry
+ * note about a program that does not start. It had read the source and
+ * critiqued what it read, which is the only thing a card without eyes can do
+ * unless it runs something.
+ *
+ * The engine cannot supply the eyes — no MCP tool reaches a v2 session here,
+ * and it has no idea how an arbitrary project boots. What it can see is whether
+ * the critic ran **any** command at all, and say so, so the orchestrator knows
+ * it is holding a review of the source rather than of the behaviour.
+ *
+ * A note rather than a failure, for the same reason `noWritesNote` is one: a
+ * critic asked to review prose, a design, or a diff has nothing to run, and no
+ * signal here separates that from a critic that should have run the tests and
+ * did not.
+ */
+export function unverifiedNote() {
+  return [
+    "> **This verdict was reached without running anything.**",
+    ">",
+    "> The card read the work and judged what it read. Nothing here was built, started or",
+    "> tested, so a failure that only shows at runtime — it does not parse, it does not boot,",
+    "> the tests are red — would be invisible to this verdict.",
+    ">",
+    "> If the bar has a runtime line, the next dispatch should say which command proves it.",
   ].join("\n")
 }
 
