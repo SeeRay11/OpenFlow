@@ -37,3 +37,7 @@ tsconfig.tsbuildinfo
 # is both noise and a place secrets end up. Pipelines and the agent blocks they
 # generate are deliberately tracked.
 .openflow/runs/
+
+# Scratch project a run was pointed at with OPENFLOW_PROJECT. Its own .openflow
+# lands inside it, so it is run state at one more level of nesting.
+FlappyBird/

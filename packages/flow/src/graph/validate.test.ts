@@ -340,6 +340,42 @@ describe("preflight", () => {
     expect(result.warnings[0].message).toContain("13 sessions")
   })
 
+  test("a router in the orchestrator seat warns, naming the card", () => {
+    // Measured: every card on `openrouter/openrouter/free`, and the
+    // orchestrator answered with the work inline while all three subagents
+    // came back skipped.
+    const graph = orchestrated(withModel(pipeline("root->a", "root->b"), "openrouter/openrouter/free"))
+    const result = preflight(graph, unlocked("openrouter/openrouter/free"))
+    expect(result.blocking).toEqual([])
+    expect(result.warnings.map((problem) => [problem.kind, problem.nodeId])).toEqual([
+      ["routed-orchestrator", "root"],
+    ])
+    expect(result.warnings[0].message).toContain("openrouter/openrouter/free")
+  })
+
+  test("only the seats that dispatch are warned about — a leaf on a router is its own choice", () => {
+    const graph = orchestrated(withModel(pipeline("root->a", "a->b"), "openrouter/deepseek/deepseek-r1:free"))
+    // root and a both have children; b is a leaf and does not emit a block.
+    expect(preflight(graph, unlocked("openrouter/deepseek/deepseek-r1:free")).warnings.map((p) => p.nodeId)).toEqual([
+      "root",
+      "a",
+    ])
+  })
+
+  test("a model picked by name is never warned about, however small it is", () => {
+    const graph = orchestrated(withModel(pipeline("root->a"), "openrouter/qwen/qwen3-4b"))
+    expect(preflight(graph, unlocked("openrouter/qwen/qwen3-4b")).warnings).toEqual([])
+  })
+
+  test("a gauntlet warns about its router too — the seat is the same one", () => {
+    const graph = {
+      ...orchestrated(withModel(pipeline("root->builder", "root->reviewer"), "openrouter/openrouter/auto")),
+      gauntlet: { bar: "beat the reference build" },
+    }
+    const result = preflight(graph, unlocked("openrouter/openrouter/auto"))
+    expect(result.warnings.map((problem) => problem.kind)).toEqual(["routed-orchestrator", "gauntlet-cost"])
+  })
+
   test("a node with no model and no agent blocks, naming the node", () => {
     const result = preflight(pipeline("a"), unlocked())
     expect(result.blocking.map((problem) => [problem.kind, problem.nodeId])).toEqual([["no-model", "a"]])
