@@ -14,13 +14,13 @@ a user sees.
 
 ---
 
-## 1. Generated agents are invisible to the engine — *fixed*
+## 1. Generated agents are invisible to the engine — _fixed_
 
 **Symptom.** Every one of six cards errored within a second of pressing Run:
 `the server does not know an agent named "flappy-3d-gauntlet-coder-world"`.
 
-**Cause.** OpenFlow writes generated agents into the *project's* `opencode.json`, and a session's
-location is the *engine's* cwd — so the engine never reads them. `FLOW.md` documents this
+**Cause.** OpenFlow writes generated agents into the _project's_ `opencode.json`, and a session's
+location is the _engine's_ cwd — so the engine never reads them. `FLOW.md` documents this
 exactly; it is still the first thing a new canvas walks into, because the merge affordance
 writes to the place that does not work.
 
@@ -32,12 +32,12 @@ and restarted the engine. Worked around, not fixed.
 agent with the pipeline that produced it so a renamed or deleted node's agent is dropped rather
 than accumulating. The generated block still lands in `.openflow/generated/` as the preview
 artifact it always was. Preflight also refuses a run whose agents the server does not know, with
-the restart command for *this* host in the message — the engine reads its config once at boot,
+the restart command for _this_ host in the message — the engine reads its config once at boot,
 so a freshly merged agent is invisible until it restarts.
 
 ---
 
-## 2. The orchestrator graded its own work and ended the run — *fixed*
+## 2. The orchestrator graded its own work and ended the run — _fixed_
 
 **Symptom.** Run reported `done` after three minutes. All five children `skipped`. The game did
 not boot. The orchestrator's final answer certified the build against every line of the bar,
@@ -50,16 +50,17 @@ accepted. The entire point of a gauntlet — the card that decides the work is g
 card that produced it — was unenforced.
 
 **Fixed** (`fix(flow): a gauntlet cannot be ended by the card that did the work`):
+
 - a `final` is refused once while no critic has judged the state the builders left, and the
   orchestrator is told which critics to send and what to tell them (`judgeFirstPrompt`)
 - a verdict from a batch that also contained a builder does not count — the critic read a folder
   somebody else was writing to
-- refused only *once* per answer: a card asked twice that still will not have the work judged has
+- refused only _once_ per answer: a card asked twice that still will not have the work judged has
   stopped running a gauntlet, and forcing it further just burns turns
 
 ---
 
-## 3. `edit: deny` in an agent config does nothing — *fixed*
+## 3. `edit: deny` in an agent config does nothing — _fixed_
 
 **Symptom.** The orchestrator, configured `edit: deny` / `bash: deny`, edited `game.js`.
 
@@ -76,7 +77,7 @@ user reading their own config would not guess it.
 
 ---
 
-## 4. Refusing `bash` bricked the run — *fixed, self-inflicted, one commit old*
+## 4. Refusing `bash` bricked the run — _fixed, self-inflicted, one commit old_
 
 **Symptom.** Next run died in 30 seconds: orchestrator `error`, everything `skipped`,
 `the orchestrator never produced a usable control block`. Run log:
@@ -87,7 +88,7 @@ action: bash · dir "C:\...\FlappyBird3D" · reply: reject
 ```
 
 **Cause.** Fix #3 put `bash` on the refused list beside `edit` and `write`. But bash is the only
-way either card can *look* at anything, and the hardened bar (#5) orders the critic to run
+way either card can _look_ at anything, and the hardened bar (#5) orders the critic to run
 `node --check`. The rule contradicted the bar it existed to serve. The orchestrator spent both
 its turns being told it could not list a directory and emitted an empty message.
 
@@ -95,29 +96,29 @@ its turns being told it could not list a directory and emitted an empty message.
 `edit`, `write`, `patch`. A card that edits through a shell command is a smaller problem than a
 critic that cannot run anything.
 
-**Lesson worth keeping.** A permission rule that blocks *observation* does not make a card
+**Lesson worth keeping.** A permission rule that blocks _observation_ does not make a card
 behave; it makes it produce nothing, and the failure surfaces three layers away as a protocol
 error.
 
 ---
 
-## 5. The critic judged code it never ran — *the engine half is fixed; eyes are still missing*
+## 5. The critic judged code it never ran — _the engine half is fixed; eyes are still missing_
 
 **Symptom.** With the game a black screen and every script failing to parse, the critic's verdict
-opened: *"The bar is better. The single largest gap is the ground plane position being incorrect
-relative…"* — a geometry note about a game that does not start.
+opened: _"The bar is better. The single largest gap is the ground plane position being incorrect
+relative…"_ — a geometry note about a game that does not start.
 
 **Cause.** The v1 gauntlet is code-and-runtime only: a card cannot open a browser, so a boot
 failure is invisible to it. It read the source and critiqued what it read.
 
-**Worked around.** Added line 0 to the bar: *it parses and it boots*, checked first, nothing below
+**Worked around.** Added line 0 to the bar: _it parses and it boots_, checked first, nothing below
 counts until it passes — with the exact shell commands that stand in for eyes (`node --check` on
 every loaded file, one declaration per top-level name, each script loaded once) and an
 instruction to fail the round if those commands were not run.
 
 **Fixed, as far as it can be here.** The engine cannot supply the eyes — no MCP tool reaches a v2
 session in this fork, and it has no idea how an arbitrary project boots, so an engine-run "boot
-check" would be guessing. What it *can* see is whether the critic ran anything at all: a verdict
+check" would be guessing. What it _can_ see is whether the critic ran anything at all: a verdict
 from a critic that made no `bash` call in its turn now carries `unverifiedNote()`, which tells
 the orchestrator it is holding a review of the source rather than of the behaviour, and that a
 runtime failure would have been invisible to it. A note rather than a failure, for the reason
@@ -130,7 +131,7 @@ headless browser and capturing the artifact itself.
 
 ---
 
-## 6. Statusbar showed negative minutes — *fixed*
+## 6. Statusbar showed negative minutes — _fixed_
 
 **Symptom.** `$0.00 / $5 · -2 / 180m` immediately after starting a run.
 
@@ -141,7 +142,7 @@ after the last tick reads as negative until the next one.
 
 ---
 
-## 7. Free-router output cap truncated a file mid-write — *environmental, shapes the design*
+## 7. Free-router output cap truncated a file mid-write — _environmental, shapes the design_
 
 **Symptom.** `game.js` arrived 4.5KB with `SyntaxError: Unexpected token ')'` — cut off mid
 statement.
@@ -155,7 +156,7 @@ it when it doesn't.
 
 ---
 
-## 8. Parallel fan-out produced two of everything — *the upstream lesson, reproduced exactly*
+## 8. Parallel fan-out produced two of everything — _the upstream lesson, reproduced exactly_
 
 **Symptom.** `Bird`, `World` and `Look` were each declared in two files. The browser stops at the
 second declaration; screen stays black.
@@ -172,7 +173,7 @@ theoretical: the orchestrator did eventually diagnose and fix it, but only after
 
 ---
 
-## 9. An orchestrator that could not edit produced nothing at all — *environmental, model-shaped*
+## 9. An orchestrator that could not edit produced nothing at all — _environmental, model-shaped_
 
 **Symptom.** With the permission fix in place, the orchestrator ran 22 bash commands
 investigating, tried `edit` twice (refused, correctly), and then emitted an **empty message** —
@@ -192,12 +193,12 @@ $0.0033.
 
 ---
 
-## 10. One stray character after the closing brace killed a correct dispatch — *fixed*
+## 10. One stray character after the closing brace killed a correct dispatch — _fixed_
 
 **Symptom.** `the orchestrator never produced a usable control block — The ```openflow block is
 not valid JSON`. 726 seconds and $0.0218 spent to get there.
 
-**Cause.** The block was *right*. It named the card, the file, the line, and the fix — the
+**Cause.** The block was _right_. It named the card, the file, the line, and the fix — the
 orchestrator had correctly diagnosed that `THREE.Color` has no custom `toString()`, so
 `topColor.toString()` hands `addColorStop` the string `"[object Object]"`, and prescribed
 `'#' + topColor.getHexString()`. It ended:
@@ -210,19 +211,18 @@ One `"` after the final brace. `JSON.parse` rejects the entire string over trail
 that was the run.
 
 **Fixed** (`fix(flow): read the control block up to its closing brace`): when a strict parse
-fails, the parser now reads the first *balanced* JSON object and ignores whatever follows.
+fails, the parser now reads the first _balanced_ JSON object and ignores whatever follows.
 Braces inside strings do not count and escaped quotes do not end them, so a task that quotes code
 still parses. It can only ever end earlier than the raw text, so genuinely broken JSON is still
 refused.
 
 **Lesson.** Strictness at the protocol boundary reads as robustness right up until it throws away
-a correct answer over a character. The rule that survives: refuse what is *ambiguous*, repair what
-is merely *untidy*.
-
+a correct answer over a character. The rule that survives: refuse what is _ambiguous_, repair what
+is merely _untidy_.
 
 ---
 
-## 11. The write refusal is bypassable through a shell redirect — *mitigated; the refusal is still soft*
+## 11. The write refusal is bypassable through a shell redirect — _mitigated; the refusal is still soft_
 
 **Symptom.** A file literally named `0` appeared in the deliverable folder, holding the
 orchestrator's own diagnostics:
@@ -241,7 +241,7 @@ redirect writes files. Here it was grepping the vendored `three.min.js` to check
 **Not fixed, deliberately.** Refusing bash costs more than it saves (#4). But two consequences
 belong in the docs, because a user shipping the result will hit both:
 
-- the "these cards cannot change the work" guarantee is *soft*: it stops the tool, not the shell
+- the "these cards cannot change the work" guarantee is _soft_: it stops the tool, not the shell
 - a gauntlet's output folder accumulates investigation litter, and the bar's "nothing left
   unfinished" line should say so explicitly, or the final tidy will never happen
 
@@ -249,7 +249,7 @@ belong in the docs, because a user shipping the result will hit both:
 that opens its session, about a scratch directory outside the project (`lib/scratch.ts`, made
 per run under the OS temp directory and deleted with the run's recording). The note says what it
 is for and why — a redirect writes a file even where the write tools are refused — rather than
-forbidding anything, because nothing here can enforce it. What it removes is the *reason* to
+forbidding anything, because nothing here can enforce it. What it removes is the _reason_ to
 redirect into the project: a card investigating something has to put the output somewhere, and
 until now the only somewhere it had been given was the folder holding the deliverable.
 
@@ -257,21 +257,20 @@ until now the only somewhere it had been given was the folder holding the delive
 tool, not the shell. That is why a critic's shell writes are read back with `writesOf` after
 every batch and its verdict discarded if it changed the tree.
 
-
 ---
 
-## 12. "Your message carried no block" — the recurring one, and its actual cause — *fixed*
+## 12. "Your message carried no block" — the recurring one, and its actual cause — _fixed_
 
 **Symptom.** The most common failure of the whole exercise, hit on three separate runs and seen
 on other canvases too:
 
-```
+````
 the orchestrator never produced a usable control block —
 Your message carried no ```openflow block, so nothing could be dispatched
-```
+````
 
 **Cause — not formatting.** The run logs show `output length 0`. The card's final message was
-*empty*, and `transcript()` only ever read the **newest assistant message's text parts**. A card
+_empty_, and `transcript()` only ever read the **newest assistant message's text parts**. A card
 that ends its turn on a tool call leaves `content: [tool]` there, with what it actually said one
 or two messages behind it in the same turn:
 
@@ -288,12 +287,12 @@ the message holding it.
 **Fixed**, in three layers:
 
 1. **`turnText`** (extracted from `transcript`, pure, tested): walk the page newest-first and take
-   the newest assistant message that *has* text, stopping at the user message carrying a top-level
+   the newest assistant message that _has_ text, stopping at the user message carrying a top-level
    `text` — a real prompt. Tool output arrives as parts on an assistant message, so it cannot end
    the scan early, and stopping at the prompt is what stops a previous turn's block being re-read
    as this turn's answer, which would dispatch the same work twice.
-2. **An empty turn is its own failure**, with its own words: *"Your last turn produced no message
-   at all — you ended it on a tool call. Tools do not decide anything here; the block does."*
+2. **An empty turn is its own failure**, with its own words: _"Your last turn produced no message
+   at all — you ended it on a tool call. Tools do not decide anything here; the block does."_
    Telling a card its block was malformed when it sent no message reads as nonsense, and it
    repeats the same empty turn.
 3. **Three protocol re-asks instead of one**, each terser than the last — the third is one
@@ -306,10 +305,9 @@ the message holding it.
 had followed it. The reader was wrong. Before blaming the card, check that what it said was ever
 actually read.
 
-
 ---
 
-## 13. The write-hazard warning was inverted — *fixed*
+## 13. The write-hazard warning was inverted — _fixed_
 
 **Symptom.** Every run showed five warnings:
 
@@ -324,10 +322,10 @@ the canvas, on every single run, which is how a warning stops being read at all.
 **Cause — wrong twice.**
 
 1. `syncAgents()` fills `node.agent.name` from `agentKey()` when a run **starts**. Preflight runs
-   *before* that, so the name is always empty there. The condition `!node.agent.name` was reading
+   _before_ that, so the name is always empty there. The condition `!node.agent.name` was reading
    a field that is populated one second later, so it fired for every node, always.
 2. The direction was backwards. `agentBlock` writes a `permission` block **only** from
-   `agent.tools`, so declaring tools is what *creates* the restriction. A node that declares no
+   `agent.tools`, so declaring tools is what _creates_ the restriction. A node that declares no
    tools gets an agent with no permission block and inherits the default — edit, write and bash
    allowed. That is the node worth warning about, and it was the one saying nothing.
 
@@ -335,17 +333,16 @@ So it fired when the user had done the right thing and stayed silent when they h
 
 **Fixed** (`fix(flow): warn about the nodes that actually run unrestricted`): the warning now
 fires when a node declares **no** tool permissions and names no existing agent —
-*"sets no tool permissions, so it runs with the default agent's — it can edit files and run
-commands"*. Declaring tools silences it, because that is what restricts the card.
+_"sets no tool permissions, so it runs with the default agent's — it can edit files and run
+commands"_. Declaring tools silences it, because that is what restricts the card.
 
 **Lesson.** A warning that fires on every run is worse than no warning: it trains the user to
 scroll past the panel that also carries the real ones. Worth a pass over the other preflight
 rules before release to check none of them read state that a run fills in later.
 
-
 ---
 
-## 14. A run dies with the browser tab — *open, and the sharpest edge here*
+## 14. A run dies with the browser tab — _open, and the sharpest edge here_
 
 **Symptom.** Mid-run, every card went `idle` at once and the task box emptied. Nothing had
 failed: the canvas had reloaded.
@@ -361,24 +358,23 @@ to press F5, follow a link, or let a laptop sleep the tab.
   graph; a live run deserves the same, and does not have it.
 - **Resume from the run log.** Checkpoints are already written every couple of seconds, and
   "Re-run failed" already reuses finished node outputs. What is missing is picking up a run that
-  was *interrupted* rather than one that finished badly — the sessions are still on the server and
+  was _interrupted_ rather than one that finished badly — the sessions are still on the server and
   addressable by id.
 
 **For release this is the one I would fix first.** Everything else in this log costs a round; this
 costs the whole run, silently, and the obvious user action (refresh when something looks stuck) is
 exactly the thing that triggers it.
 
-
 ---
 
-## 15. A card reported success while every write was rejected — *fixed*
+## 15. A card reported success while every write was rejected — _fixed_
 
 **Symptom.** The card owning the largest file settled `done` after **1.36M tokens across 45
 steps** (839k input, 10k output). Its last activity line was
 `Invalid JSON input for openai-chat tool call write`. Nothing it claimed to write had been
 written, and the orchestrator was told the work was finished.
 
-**Cause.** `runTurn` decides a node's fate from the *transcript*: it fails a node only when the
+**Cause.** `runTurn` decides a node's fate from the _transcript_: it fails a node only when the
 assistant message carries an `error`. A rejected tool call is not that — the message completes
 cleanly, the write simply never happened. Failed tool calls were already on the activity stream
 (`activity.ts` emits `kind: "tool", status: "error"`) but nothing read them for correctness.
@@ -395,7 +391,7 @@ honest where a hard fail would be wrong.
 
 ---
 
-## 16. A 5.3KB dispatch ran out of room before its closing brace — *fixed*
+## 16. A 5.3KB dispatch ran out of room before its closing brace — _fixed_
 
 **Symptom.** `the orchestrator never produced a usable control block — The ```openflow block is
 not valid JSON`, again, after the trailing-junk repair (#10) was already in.
@@ -412,17 +408,17 @@ closes.
 
 **Fixed, in two places.**
 
-- *The parser*: when the scan reaches the end with openers outstanding, close them in reverse —
+- _The parser_: when the scan reaches the end with openers outstanding, close them in reverse —
   and close an unterminated string too, after trimming the trailing whitespace that would
-  otherwise be a raw newline inside a JSON string. The repair only ever *appends closers*, so it
+  otherwise be a raw newline inside a JSON string. The repair only ever _appends closers_, so it
   cannot invent a card or a key; a dispatch missing its `card` is still refused.
-- *The briefing*: the orchestrator is now told to keep a task to a few hundred words and never to
+- _The briefing_: the orchestrator is now told to keep a task to a few hundred words and never to
   paste scripts or file contents into one — a card has its own tools and can write its own
   checks. This is the real fix; the parser repair is the safety net.
 
 ---
 
-## 17. Seven helper scripts in the deliverable — *fixed at the briefing*
+## 17. Seven helper scripts in the deliverable — _fixed at the briefing_
 
 **Symptom.** By the end of one round the game folder held `check.js`, `verify.js`,
 `verify_final.js`, `verify_final2.js`, `fix_sync.js`, `apply_fix.js`, `test_dummy.txt` and a file
@@ -438,17 +434,16 @@ own work go in `.scratch/`, and the deliverable holds only what ships.
 
 ---
 
-## 18. A live run now survives a stray refresh — *fixed; the resume that #14 asked for is now built too*
+## 18. A live run now survives a stray refresh — _fixed; the resume that #14 asked for is now built too_
 
 Following #14: `beforeunload` guarded an unsaved graph but not a live run, though the run is the
 thing with no recovery at all. It now guards both.
 
-The other half — resuming an *interrupted* run — is entry #25.
-
+The other half — resuming an _interrupted_ run — is entry #25.
 
 ---
 
-## 19. A card can see the screen after all — and that killed the run — *fixed*
+## 19. A card can see the screen after all — and that killed the run — _fixed_
 
 **Symptom.** `Provider request failed with HTTP 404: {"error":{"message":"No endpoints found that
 support image input","code":404}}` — on the **orchestrator**, which had dispatched nothing wrong.
@@ -462,24 +457,24 @@ Then the orchestrator opened the screenshot. `read` on a PNG returns an **image 
 DeepSeek V4 Flash takes text only, so the provider rejected **the entire request** — not the one
 tool call. The card died, and with it the run.
 
-The existing modality guard (`api.accepts`) filters *attachments* — run files and node pins. It
+The existing modality guard (`api.accepts`) filters _attachments_ — run files and node pins. It
 never sees a file a card opens with its own tools, which is now the common path.
 
 **Fixed** (`fix(flow): tell a text-only card it cannot open images`): when a node's model has no
 image input, every prompt it receives carries a short note saying that opening an image fails its
 whole turn, and pointing at what to do instead — read the console, the DOM, computed styles, the
 numbers a script prints, or hand the looking to a card whose model has vision. Written as a
-capability, not a scolding, because on this canvas the free-router cards *can* see and the paid
+capability, not a scolding, because on this canvas the free-router cards _can_ see and the paid
 orchestrator cannot.
 
 **What this changes for the design.** Entry #5 said visual verification had to wait for MCP. It
 does not. A card with `bash` can capture the artifact, and a vision-capable card can judge it.
 The remaining engine-side job is smaller than scoped: run the capture between rounds and hand the
-critic the image *and* the console log, rather than hoping a card thinks of it.
+critic the image _and_ the console log, rather than hoping a card thinks of it.
 
 ---
 
-## 20. I verified a black screen with a method that always reads black — *my error*
+## 20. I verified a black screen with a method that always reads black — _my error_
 
 **Symptom.** I reported "pure black at all three sample points" for several rounds running, and
 twice called a critic's pass false partly on that evidence.
@@ -495,19 +490,18 @@ canvas early on was real. The blackness claims were not.
 
 **Rules that come out of it**, and they apply to the critic as much as to me:
 
-- To claim something about a *rendered frame*, capture the frame. Screenshot, or read pixels
+- To claim something about a _rendered frame_, capture the frame. Screenshot, or read pixels
   inside a `requestAnimationFrame` callback on a context that preserves its buffer.
 - State the method with the claim. "readPixels says black" is checkable; "it is black" is not.
 - I criticised a critic for inferring a runtime property from source while doing the same thing
   with an unsound instrument. A bar that demands pasted evidence has to bind whoever is judging,
   including the person who wrote the bar.
 
-
-*Appended as the run continues.*
+_Appended as the run continues._
 
 ---
 
-## 21. A rate-limited critic is just a dead card — *fixed*
+## 21. A rate-limited critic is just a dead card — _fixed_
 
 **Symptom.** Second run (2026-09-01, continuation task against the existing game). The `critic`
 card errored `Provider request failed with HTTP 429` twice in sixteen minutes, on
@@ -518,7 +512,7 @@ orchestrator happened to re-dispatch it.
 that dispatch, no retry, no backoff, and the orchestrator is handed "the card produced nothing".
 
 **Why it is worse here than anywhere else.** The gauntlet drops a critic's session before every
-verdict on purpose (#2, and the method's whole point). So every round opens a *brand-new*
+verdict on purpose (#2, and the method's whole point). So every round opens a _brand-new_
 session on that model — the exact traffic shape a per-model rate limit punishes — while a
 builder keeps one session and is never charged that cost. The card most likely to be rate
 limited is the one card whose absence the run cannot route around, because a verdict is what
@@ -533,12 +527,12 @@ fails on the first 429, which is what a test measuring the failure wants.
 
 ---
 
-## 22. Run spend goes *down*, so the money cap counts the wrong number — *fixed*
+## 22. Run spend goes _down_, so the money cap counts the wrong number — _fixed_
 
 **Symptom.** The statusbar read `$0.10 / $5` at twelve minutes and `$0.05 / $5` at twenty. Not a
 render glitch; the run log agreed.
 
-**Cause.** A node's `usage` is *replaced* when the card is dispatched again, not accumulated, and
+**Cause.** A node's `usage` is _replaced_ when the card is dispatched again, not accumulated, and
 the run total is the sum of the nodes' current usage. Sampled every 15s from
 `/flow/api/runs/<id>`:
 
@@ -569,7 +563,7 @@ side: the cap works, and it had been reading a number that kept shrinking undern
 
 ---
 
-## 23. With the critic down, the orchestrator nominated a builder as the judge — and the engine took it — *fixed*
+## 23. With the critic down, the orchestrator nominated a builder as the judge — and the engine took it — _fixed_
 
 **Symptom.** The run ended with the orchestrator certifying a PASS on all seven bar lines:
 
@@ -584,8 +578,8 @@ returned PASS on all 7 bar lines
 critics-only batch, and `isCritic` gates it, so a builder's opinion never counts as a verdict.
 The hole is the refusal policy around it. A `final` sent while `unjudged()` is refused **once**;
 the next `final` is accepted whatever the state of `judged`. That rule was written for an
-orchestrator that *will not* have the work judged (#2) — asking a third time just burns turns.
-It reads very differently when the critic *cannot be reached*: the run cannot get a verdict, and
+orchestrator that _will not_ have the work judged (#2) — asking a third time just burns turns.
+It reads very differently when the critic _cannot be reached_: the run cannot get a verdict, and
 one refusal later the engine accepts the unjudged answer and reports `done` work as certified.
 
 The orchestrator was not cheating, either. Told to have the work judged and holding a critic that
@@ -595,7 +589,7 @@ had already spent its one refusal.
 
 **What the run showed underneath it.** The build work was real and the claims held up: gap
 5.2 → 4.4 on disk, the stray `x[1]` file gone, `__dbg*` hooks removed, every file stamped that
-afternoon. Only the *judging* was unsound — which is precisely the thing this mode exists to
+afternoon. Only the _judging_ was unsound — which is precisely the thing this mode exists to
 guarantee.
 
 **Fixed.** A second `final` while nothing has been judged now **fails the card** instead of being
@@ -615,24 +609,23 @@ Telling the card the rule is cheaper than enforcing it after the fact.
 
 ---
 
-## 24. A synthetic click on Run reported success and started nothing — *documented*
+## 24. A synthetic click on Run reported success and started nothing — _documented_
 
 `computer{action:"left_click", ref}` on the enabled Run button returned success twice while the
 browser pane was hidden. The statusbar stayed `no run yet` and no console error was raised.
 `button.click()` through `javascript_tool` started the run immediately.
 
-FLOW.md's hidden-pane section already warned that `screenshot` and `left_click_drag` *error* when
+FLOW.md's hidden-pane section already warned that `screenshot` and `left_click_drag` _error_ when
 the pane is hidden. This is the worse variant: a click that reports success and does nothing. It
 is now on that list, because the natural reading of a silent Run button is "preflight blocked it"
 and the next twenty minutes go into the wrong place.
 
-
 ---
 
-## 25. Three runs died to a host that went away, so a run can now be picked up — *fixed*
+## 25. Three runs died to a host that went away, so a run can now be picked up — _fixed_
 
 **Symptom.** Over one evening the canvas dev server exited three times with a run live. Each time
-every card went `idle`, the task box emptied, and the work was gone: the engine runs *in the page*,
+every card went `idle`, the task box emptied, and the work was gone: the engine runs _in the page_,
 so nothing was left alive to write `done`, `error` or `stopped`. The engine at :4097 never dropped
 — only the host serving the page did — so the sessions were all still there, addressable by id, in
 a run log on disk that said `running` and always would.
@@ -653,7 +646,7 @@ times in one evening is a workflow, not an accident.
   of the silence re-answers what it already answered, which is the cost the note exists to avoid.
   From the second turn on it is an ordinary reused session, and saying it twice would read as a
   second interruption that never happened.
-- A card in *both* `resume` and `sessions` keeps its answer and never runs — reopening a finished
+- A card in _both_ `resume` and `sessions` keeps its answer and never runs — reopening a finished
   card's session only buys a bill.
 - The UI finds it on its own: a run still marked `running` on disk, for this canvas, with no run
   live, is one the page abandoned. A **Resume** button beside "Re-run failed" splits that log into
@@ -661,9 +654,40 @@ times in one evening is a workflow, not an accident.
 
 **One defect found by writing the tests, worth keeping.** The first version never wrote the carried
 session id to the run log — nothing else does, because the create path is skipped — so a resumed run
-reported cards with no session while they were answering in one, and a *second* interruption would
+reported cards with no session while they were answering in one, and a _second_ interruption would
 have had nothing left to carry. The test caught it by asking the log what session the card was in.
 
 **Still open.** This recovers the run, not the host. Why the dev server exits is unknown: memory was
 flat at 107-110MB across twenty minutes of a live run, so the leak theory that fit the timing is not
 supported by the one measurement taken of it. Written here as unexplained rather than guessed at.
+
+## 26. The critic cleared the bar and nothing could read it — _fixed_
+
+**Symptom.** First live gauntlet after the round ledger and checkpoints landed. The run finished
+`done` in 166s for $0.0048, the critic ran seven commands against the real work and cleared every
+line of the bar — and the run recorded **no passed round**. `RunLog.best` was empty, so the
+checkpoint that could have been rolled back to was never named, and the ledger line the next round
+would have read said `critic: CLEAR**`.
+
+**Cause.** Two of mine, one on top of the other.
+
+The gauntlet's critic briefing asks for prose and only prose — "say which is better, name the
+single largest gap" — because its reader is the orchestrator, which is a model. `verdictIn` looks
+for `VERDICT: PASS` / `VERDICT: FAIL`, a protocol that belongs to the _verification_ pass. So
+`bestRound`, which requires the literal `PASS`, could never fire in the mode it was built for.
+Every gauntlet would have shipped with a dead best-round.
+
+And the fallback made it worse rather than better: with no marker, `verdictSummary` quoted the
+critic's first line. The critic wrote `**CLEAR**`, `firstLine` stripped leading emphasis and not
+trailing, and `CLEAR**` went into the ledger as a verdict — a string that is not a decision,
+cannot be compared against the next round's, and reads as a typo in every prompt it appears in.
+
+**Fixed.** The critic is now asked for the marker as well as the prose: one line, exactly
+`VERDICT: PASS` or `VERDICT: FAIL`, at the end of the message, stated as what the _run_ records
+rather than what the orchestrator reads. Asking for both costs a line. And a message with no
+marker is now reported as `no verdict line — <first line>` instead of being dressed up as a
+decision; guessing was worse than admitting.
+
+**The lesson worth keeping.** Both bugs passed every unit test, because both tests were written
+against the string the test itself supplied. What found them was one $0.005 run against a real
+model — which is the argument for the eval corpus in one line.

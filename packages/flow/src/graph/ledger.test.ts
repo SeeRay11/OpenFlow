@@ -148,11 +148,25 @@ describe("verdictSummary", () => {
     expect(verdictSummary("The build fails.\nVERDICT: FAIL")).toBe("FAIL — The build fails.")
   })
 
-  test("prose without a marker falls back to its first sentence", () => {
-    // A gauntlet critic is briefed for prose, not for markers, so most verdicts
-    // arrive this way.
-    expect(verdictSummary("## Review\n\nThe ground plane is still wrong.\n\nMore detail follows.")).toBe(
-      "The ground plane is still wrong.",
+  test("a message with no marker is unreadable, not guessed at", () => {
+    // Measured 2026-09-07 on a live gauntlet: the critic cleared the bar and
+    // opened `**CLEAR**`. Reading its first line as a verdict recorded the
+    // string `CLEAR**` — not a verdict, not comparable against the next
+    // round's, and worth nothing to `bestRound`.
+    const summary = verdictSummary("**CLEAR**\n\nAll 7 bar items pass.")
+    expect(summary).toContain("no verdict line")
+    expect(summary).toContain("CLEAR")
+    expect(summary).not.toContain("CLEAR**")
+  })
+
+  test("emphasis comes off both ends of the quoted line", () => {
+    expect(verdictSummary("Nope.\nVERDICT: FAIL")).toBe("FAIL — Nope.")
+    expect(verdictSummary("**the ground plane is wrong**\nVERDICT: FAIL")).toBe("FAIL — the ground plane is wrong")
+  })
+
+  test("a heading is skipped rather than quoted as the verdict", () => {
+    expect(verdictSummary("## Review\n\nThe ground plane is still wrong.\nVERDICT: FAIL")).toBe(
+      "FAIL — The ground plane is still wrong.",
     )
   })
 
