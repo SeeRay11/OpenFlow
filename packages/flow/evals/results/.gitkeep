@@ -1,0 +1,2 @@
+Scorecards live here, one file per release, committed — a baseline nobody can find is not a
+baseline. `bun evals/score.ts record evals/results/<date>.json <case>=<run-id>...` writes one.

@@ -470,6 +470,34 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   (the vite plugin and `server.ts`) so dev and built output cannot drift. Add new routes in
   one place only.
 
+## The eval corpus
+
+Six fixed canvases in `src/graph/corpus.ts`, run the same way each release, because three of
+this project's goals — runs for hours, does not degrade, no quality-costing bugs — are claims
+about behaviour over time and nothing measured any of them. Read `packages/flow/evals/README.md`
+before running one.
+
+- **Two halves, priced very differently.** The **free** half is a test: every case still passes
+  preflight raising exactly the warnings it declares, which catches a change to `validate.ts`
+  making a legal shape illegal or an illegal one legal. The **paid** half is a person opening
+  each canvas, giving it the fixed task, and pressing Run.
+- **There is deliberately no script that drives the models.** A harness that re-implemented the
+  run would be measuring itself, and `RunLog` already carries every number needed — status,
+  verdict, wall clock, spend, rounds, per-card lines. `evals/score.ts` reads run logs into a
+  scorecard and compares two of them; it never dispatches anything.
+- **The cases are the shipped templates**, with a document toggle turned on for the mode
+  variants — that is how a user reaches those modes, so a regression in a shape nobody builds is
+  worth less than one in the first thing they click.
+- **One pinned model for every card** (`EVAL_MODEL`). A corpus whose cards drifted onto whatever
+  they defaulted to would be measuring the models. It is also why no case runs on a free router:
+  "which model produced this number" has to stay answerable.
+- **What counts as a regression is narrow on purpose.** Status and verdict are not judgement
+  calls. Cost, clock and rounds only count past a tenth or one whole unit, whichever is larger,
+  because a gauntlet costing 3% more is a tokeniser and flagging it every release trains the
+  reader to skip the column. **Lines changed are reported with no direction claimed** — more
+  lines is not better work and fewer is not tighter work, and claiming otherwise would be this
+  file inventing a bar when the bar belongs to the canvas.
+
 ## Running and verifying
 
 - `opencode serve` on **:4096**, canvas dev server on **:5174**. Both start from
