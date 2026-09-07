@@ -177,16 +177,23 @@ function lineCounts(round: LedgerRound) {
 /**
  * A critic's verdict in the few words a round line can hold.
  *
- * The marker is read first: a gauntlet critic is briefed for prose rather than
- * for `VERDICT:` lines, but the ones that emit it are the ones worth quoting
- * exactly. Everything else is the first sentence it wrote, which is where a
- * model that was asked to judge puts its judgement.
+ * The marker decides, and a message without one is reported as **unreadable**
+ * rather than guessed at. Measured 2026-09-07 on a live gauntlet: the critic
+ * cleared the bar and opened `**CLEAR**`, and reading its first line as a
+ * verdict recorded the string `CLEAR**` — which is not a verdict, cannot be
+ * compared against the next round's, and told `bestRound` nothing. Every
+ * critic is now asked for the marker (`criticPrompt`); one that ignores it has
+ * not answered the question the run has to record, and saying so is more
+ * useful than a fragment of prose dressed up as a decision.
+ *
+ * The first line still travels with a `fail`, because there the model has
+ * already committed to the verdict and the line is the reason.
  */
 export function verdictSummary(text: string) {
   const verdict = verdictIn(text)
   if (verdict.kind === "pass") return "PASS"
   if (verdict.kind === "fail") return `FAIL — ${clip(firstLine(verdict.reason))}`
-  return clip(firstLine(text))
+  return `no verdict line — ${clip(firstLine(text), 80)}`
 }
 
 /**
@@ -202,7 +209,15 @@ function firstLine(text: string) {
     text
       .split("\n")
       .filter((line) => !/^\s*#/.test(line))
-      .map((line) => line.replace(/^[\s>*_-]+/, "").trim())
+      // Emphasis comes off both ends. Stripping only the front turned the
+      // critic's `**CLEAR**` into `CLEAR**`, which reads as a typo in every
+      // prompt it appears in.
+      .map((line) =>
+        line
+          .replace(/^[\s>*_-]+/, "")
+          .replace(/[\s*_]+$/, "")
+          .trim(),
+      )
       .find(Boolean) ?? ""
   )
 }

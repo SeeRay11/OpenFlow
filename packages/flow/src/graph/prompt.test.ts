@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { DISPATCH_TOOL, FINISH_TOOL, MCP_REACHES_SESSIONS } from "./dispatch"
+import { FAIL, PASS } from "./verdict"
 import {
   buildPrompt,
   criticPrompt,
@@ -54,7 +55,9 @@ describe("buildPrompt", () => {
 
   test("adds the run task under its own heading", () => {
     const coder = node("coder", "You are the coder.")
-    expect(body(buildPrompt(graph, coder, [], outputs, "ship it"), coder)).toBe("You are the coder.\n\n# Task\n\nship it")
+    expect(body(buildPrompt(graph, coder, [], outputs, "ship it"), coder)).toBe(
+      "You are the coder.\n\n# Task\n\nship it",
+    )
   })
 
   test("omits the task section when the input is whitespace", () => {
@@ -136,7 +139,9 @@ describe("pipelineBriefing", () => {
 
   test("marks which card the node is", () => {
     const text = pipelineBriefing(chain, card(chain, "coder"))
-    expect(text).toContain("coder (coder) · receives: architect (architect) · feeds: reviewer (reviewer)  <-- YOU ARE HERE")
+    expect(text).toContain(
+      "coder (coder) · receives: architect (architect) · feeds: reviewer (reviewer)  <-- YOU ARE HERE",
+    )
     expect(text.match(/YOU ARE HERE/g)).toHaveLength(1)
   })
 
@@ -473,5 +478,20 @@ describe("gauntlet prompts", () => {
     expect(text).toContain("This run has spent $0.42 of $5")
     expect(text).not.toContain("497")
     expect(text).toContain("`final` when it clears the bar")
+  })
+})
+
+describe("the critic is asked for a machine-readable verdict", () => {
+  test("the marker is in the gauntlet critic's briefing", () => {
+    // Without it, a critic that clears the bar writes prose like `**CLEAR**`,
+    // the run records no passed round, and the checkpoint it could have been
+    // rolled back to is never named. Measured live 2026-09-07.
+    const graph = pipeline("root->critic")
+    graph.mode = "orchestration"
+    graph.gauntlet = { bar: "the tests pass", maxSpend: 1, maxMinutes: 10, stall: 3 }
+    graph.nodes[1].role = "reviewer"
+    const text = criticPrompt(graph, graph.nodes[1], graph.nodes[0], "judge it", "do the thing")
+    expect(text).toContain(PASS)
+    expect(text).toContain(FAIL)
   })
 })

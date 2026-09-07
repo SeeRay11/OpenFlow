@@ -603,6 +603,16 @@ export function criticPrompt(
       "  or rewrites a file. A verdict from a critic that changed the tree is thrown away unread.",
       "  If the work does not build or run as it was left, that is not a blocker — it is your",
       "  verdict, and the largest gap.",
+      "",
+      // Measured 2026-09-07 on a live gauntlet: the critic cleared the bar and
+      // wrote `**CLEAR**`. Nothing could read that, so the run recorded no
+      // round as passed and the checkpoint it could have been rolled back to
+      // was never named. Everything above is written for the orchestrator,
+      // which is a model and can read prose; this line is what the engine
+      // reads, and asking for both costs a line.
+      `- **End your message with one line, exactly \`${PASS}\` or \`${FAIL}\`.** Everything above it is`,
+      "  for whoever reads the review. That line is what the run itself records, and without it the",
+      "  run cannot say whether this state was ever passed.",
     ].join("\n"),
   ]
   if (node.agent.prompt.trim()) sections.push(node.agent.prompt.trim())
