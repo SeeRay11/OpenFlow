@@ -362,6 +362,16 @@ export type RunLog = {
    * being able to read them next to each other afterwards.
    */
   rounds?: LedgerRound[]
+  /**
+   * The last round a critic passed, and the ref holding the tree as that round
+   * left it.
+   *
+   * Recorded rather than restored. A run's final state is whatever round it was
+   * in when a bound fired, which is not reliably its best — but the project's
+   * tree is usually dirty and often open in an editor, so moving it back is the
+   * user's command to run, not the engine's.
+   */
+  best?: { round: number; card: string; ref?: string }
 }
 
 export function emptyPipeline(name = "untitled"): Pipeline {

@@ -1,6 +1,6 @@
 import { collisionNote, collisionsIn, writesOf, type Write } from "../graph/collisions"
 import { addDiff, attribute, deltaOf } from "../graph/diff"
-import { ledgerNote, stalledRounds, verdictSummary, type LedgerRound } from "../graph/ledger"
+import { bestRound, ledgerNote, stalledRounds, verdictSummary, type LedgerRound } from "../graph/ledger"
 import { isolates, mergeNote } from "../graph/worktree"
 import { fromToolCall, MCP_REACHES_SESSIONS, parseDispatch } from "../graph/dispatch"
 import { isCritic, orchestrationShape } from "../graph/orchestration"
@@ -14,6 +14,8 @@ import {
   interruptedNote,
   judgeFirstPrompt,
   noWritesNote,
+  scratchNote,
+  unverifiedNote,
   verdictPrompt,
   verifyPrompt,
   orchestratorPrompt,
@@ -299,6 +301,18 @@ export type EngineDeps = {
    */
   treeStat?: typeof store.treeStat
   /**
+   * Commits the working tree as a round left it, under a ref of OpenFlow's own.
+   * Optional: a host without it, or a project that is not a repository, runs
+   * with no way back, exactly as it did before checkpoints existed.
+   */
+  checkpoint?: typeof store.checkpoint
+  /**
+   * A directory outside the project for output that is not the work. Optional:
+   * without it the cards are simply not told about one, which is how every run
+   * before this behaved.
+   */
+  scratch?: typeof store.scratch
+  /**
    * The engine process this host proxies, used to print the exact restart
    * command in the one error that can only be fixed by restarting it.
    */
@@ -311,6 +325,8 @@ const live: EngineDeps = {
   serveStatus: () => store.serverStatus(),
   worktrees: { open: store.openWorktrees, merge: store.mergeWorktrees, cleanup: store.cleanupWorktrees },
   treeStat: () => store.treeStat(),
+  checkpoint: (run, round) => store.checkpoint(run, round),
+  scratch: (run) => store.scratch(run),
 }
 
 /**
@@ -444,6 +460,10 @@ export function start(
    * down at all.
    */
   const rounds: LedgerRound[] = []
+  /** Where cards are told to put output that is not the work, once the host has made one. */
+  let scratchDir = ""
+  /** Cards already told about it — a briefing repeated every turn is a briefing nobody reads. */
+  const toldScratch = new Set<string>()
   /** Said once per run — see the note where it is set. */
   let isolationWarned = false
   /** The commit every tree was branched from, and every merge is measured against. */
@@ -912,7 +932,15 @@ export function start(
         // card captured the game, the orchestrator opened the capture, and the run
         // died. The attachment filter above never sees this path, so the card is
         // told what it cannot do instead.
-        const text = `${build(skipped)}${model && !api.accepts(model, "image/png") ? `\n\n${imageBlindNote()}` : ""}`
+        // Said once per card, on the turn that opens its session. A card with
+        // no shell has nothing to redirect and is not told.
+        const needsScratch = !!scratchDir && !toldScratch.has(node.id) && toolMap(node.agent.tools).bash !== false
+        if (needsScratch) toldScratch.add(node.id)
+        const text = [
+          build(skipped),
+          ...(model && !api.accepts(model, "image/png") ? [imageBlindNote()] : []),
+          ...(needsScratch ? [scratchNote(scratchDir)] : []),
+        ].join("\n\n")
         patch(node.id, { prompt: text })
 
         await api.prompt(sessionID, text, sendable)
@@ -957,8 +985,20 @@ export function start(
         if (!result.text.trim() && !wrote.length && !orchestrating)
           throw new Error("the card finished without producing any output")
 
+        // A verdict reached without running anything is a review of the
+        // source, not of the behaviour — and a boot failure is invisible to
+        // one. Only `bash` counts: reading a file is how the critic got here.
+        const judging = (gauntlet || verify) && isCritic(node)
+        const ran = (events.get(node.id) ?? []).some(
+          (event) =>
+            event.kind === "tool" &&
+            event.at >= turnStarted &&
+            event.status !== "error" &&
+            event.title.startsWith("bash"),
+        )
         const notes = [
           ...(rejected.length ? [toolFailureNote(rejected)] : []),
+          ...(judging && !ran ? [unverifiedNote()] : []),
           // Not an error: a card given `edit` that finds nothing to change is
           // legitimate, and no signal here separates that from a card that
           // described work it never did. The reader is told, and decides.
@@ -1625,8 +1665,19 @@ export function start(
         ),
         ...(collisions.length ? { collisions: collisions.map((collision) => collision.path) } : {}),
       }
+      // Committed after the ledger entry is built, so the ref is recorded on
+      // the round it belongs to. Numbered by the run's rounds rather than this
+      // orchestrator's: two orchestrators both dispatching a third time would
+      // otherwise write the same ref.
+      const saved = await deps.checkpoint?.(log.id, rounds.length + 1).catch(() => null)
+      if (saved) round.ref = saved.ref
       rounds.push(round)
       log.rounds = rounds
+      // The last round a critic passed. Recorded as the run goes, because the
+      // state it names is what the tree looked like then and the ref is the
+      // only thing that still knows.
+      const best = bestRound(rounds)
+      log.best = best ? { round: best.round, card: best.card, ref: best.ref } : undefined
 
       const stop = exhausted(spent, stalledRounds(rounds, node.id))
       forced = stop
@@ -1957,6 +2008,10 @@ ${serve.command}`
         log.status = "error"
         return log
       }
+
+      // Opened once, before anything is dispatched, so every card's first turn
+      // can carry it. A host that cannot make one simply never mentions it.
+      scratchDir = (await deps.scratch?.(log.id).catch(() => null))?.path ?? ""
 
       /** What every peer said in the round before the one now running. */
       let said = new Map<string, string>()

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ledgerNote, progressed, stalledRounds, verdictSummary, type LedgerRound } from "./ledger"
+import { bestRound, ledgerNote, progressed, stalledRounds, verdictSummary, type LedgerRound } from "./ledger"
 
 const round = (patch: Partial<LedgerRound> = {}): LedgerRound => ({
   card: "root",
@@ -158,5 +158,26 @@ describe("verdictSummary", () => {
 
   test("a long line is clipped rather than filling the prompt", () => {
     expect(verdictSummary("x".repeat(400)).length).toBeLessThanOrEqual(120)
+  })
+})
+
+describe("bestRound", () => {
+  test("the most recent round a critic passed", () => {
+    const rounds = [
+      round({ round: 1, cards: [{ card: "reviewer", ok: true, verdict: "PASS" }], ref: "r1" }),
+      round({ round: 2, cards: [{ card: "builder", ok: true }], ref: "r2" }),
+      round({ round: 3, cards: [{ card: "reviewer", ok: true, verdict: "PASS" }], ref: "r3" }),
+      round({ round: 4, cards: [{ card: "builder", ok: true }], ref: "r4" }),
+    ]
+    expect(bestRound(rounds)?.ref).toBe("r3")
+  })
+
+  test("a failed verdict is not a best round, and neither is an unjudged one", () => {
+    expect(bestRound([round({ cards: [{ card: "reviewer", ok: true, verdict: "FAIL — broken" }] })])).toBeUndefined()
+    expect(bestRound([round({ cards: [{ card: "builder", ok: true }] })])).toBeUndefined()
+  })
+
+  test("nothing to go back to on a run with no rounds", () => {
+    expect(bestRound([])).toBeUndefined()
   })
 })

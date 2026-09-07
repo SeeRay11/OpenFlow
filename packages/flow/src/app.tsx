@@ -851,6 +851,16 @@ export function App() {
       // must not fail the run, so nothing here is awaited into the run's own
       // result path.
       void announce(log)
+      // A run ends on whatever round a bound stopped it in, which is not
+      // reliably its best: the last round a critic passed is on the log, and
+      // the tree as that round left it is still reachable. Said only when the
+      // two differ — on a run that ended on its best round there is nothing to
+      // go back to.
+      if (log.best?.ref && log.rounds?.[log.rounds.length - 1]?.ref !== log.best.ref)
+        notice(
+          "info",
+          `the last round a critic passed was round ${log.best.round} — restore that state with: git restore --source ${log.best.ref} --worktree .`,
+        )
       const failure = log.nodes.find((node) => node.status === "error")
       notice(
         log.status === "error" ? "error" : "info",

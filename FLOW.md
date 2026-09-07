@@ -294,6 +294,24 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   second ask goes into the log indistinguishable from a real run's, and reporting success is the
   entire cost of this bug. A card with no children never reaches the check — it is not an
   orchestrator, and blocking it would deadlock the level above.
+- **A verdict reached without running anything says so.** Measured on this fork's first gauntlet:
+  with the deliverable a black screen and every script failing to parse, the critic opened *"the
+  bar is better — the single largest gap is the ground plane position"*. It had read the source
+  and critiqued what it read, which is all a card without eyes can do unless it runs something.
+  The engine cannot supply the eyes and has no idea how an arbitrary project boots, so it does
+  not guess: what it can see is whether the critic made **any** `bash` call in its turn, and
+  `unverifiedNote()` tells the orchestrator when it did not. A note rather than a failure, for
+  the same reason `noWritesNote` is one — a critic reviewing prose or a diff has nothing to run.
+- **A card that can run a shell is given somewhere to put what is not the work.** The write
+  refusal is **soft**: it stops the write tools, not the shell, and a redirect writes a file —
+  measured, a file named `0` holding an orchestrator's grep output was left sitting in the
+  deliverable. Refusing `bash` was already tried and broke the critic's own verification, so
+  instead `lib/scratch.ts` makes a directory per run outside the project and every shell-capable
+  card is told about it **once**, on the turn that opens its session. It cannot be enforced and
+  does not pretend to be: what it removes is the *reason* to redirect into the project, since a
+  card investigating something has to put the output somewhere and the only somewhere it had
+  been given was the folder holding the deliverable. Deleted with the run's recording, alongside
+  its checkpoints.
 - **A card that ignores its spent budget is stopped, not re-asked.** When the budget runs out
   the orchestrator gets one forced-answer turn; if it dispatches anyway the node fails. Without
   that check the loop never ends. A leaf goes through `runSubagent` and is never shown the
@@ -303,6 +321,25 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   `reassignPrompt`, which says the old assignment is over — otherwise it reads the new task as
   more detail on the old one. After an orchestration run, cards nobody dispatched are marked
   `skipped`, not left `queued`.
+- **Every round is committed, and nothing is restored automatically.** `lib/checkpoint.ts`
+  commits the working tree after each dispatch batch under `refs/openflow/<run>/round-<n>`, and
+  the ref lands on the round in the ledger. A gauntlet ends on whatever round a bound stopped it
+  in, and that round is not reliably its best — a builder given one more turn than the work
+  needed will use it, and the critic that would have caught that is the card the run stopped
+  short of asking. `RunLog.best` names the **last round a critic passed**; nothing weaker
+  qualifies, because a round nobody judged has not been judged and preferring "more lines" or
+  "fewer failures" would be the engine inventing a bar when a bar exists and a card was paid to
+  apply it. The UI says so only when the run did not end on that round, and says it as the `git
+  restore --source <ref> --worktree .` the user can run.
+  **The commit is built through a temporary index** (`GIT_INDEX_FILE` + `add -A` + `write-tree`
+  + `commit-tree`), not `git stash create`: stash omits untracked files, and new files are most
+  of what a builder produces, so a checkpoint missing them would restore the edits without the
+  new modules. The user's index, `HEAD` and working tree are untouched — the only visible change
+  is the new ref. **Restoring is deliberately not automatic**: the project's tree is usually
+  dirty and often open in an editor, and an engine that rewrites it because a number moved is a
+  worse failure than the one it is fixing — the same rule the merge path follows in refusing
+  `--3way`. Checkpoints are dropped when the **run's recording is deleted or pruned**, never
+  when the run ends: outliving the run is the whole point of taking one.
 - **A round is recorded, and the record is what "no progress" is measured against.**
   `graph/ledger.ts` writes one `LedgerRound` per dispatch batch — the cards, whether each came
   back, a critic's verdict, the lines the batch moved, the files two cards both wrote — onto

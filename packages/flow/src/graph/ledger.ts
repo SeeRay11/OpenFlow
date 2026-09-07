@@ -40,6 +40,30 @@ export type LedgerRound = {
   files?: number
   /** Files more than one card in the batch wrote. */
   collisions?: string[]
+  /**
+   * The git ref holding the working tree as this round left it, when the
+   * project is a repository. Nothing restores it automatically — see
+   * `lib/checkpoint.ts` for why that is deliberate.
+   */
+  ref?: string
+}
+
+/**
+ * The round a run should be judged on, which is not reliably its last one.
+ *
+ * A gauntlet stops on a bound — spend, wall clock, no progress — and whatever
+ * round it happened to be in when the bound fired is what the tree is left at.
+ * That round can easily be worse than one before it: a builder given one more
+ * turn than the work needed will use it, and the critic that would have caught
+ * that is the card the run stopped short of asking.
+ *
+ * The best round is the most recent one a critic **passed**. Nothing weaker is
+ * usable: a round with no verdict has not been judged at all, and preferring
+ * "more lines" or "fewer failures" would be the engine inventing a bar of its
+ * own when a bar already exists and a card was paid to apply it.
+ */
+export function bestRound(rounds: LedgerRound[]) {
+  return [...rounds].reverse().find((round) => round.cards.some((card) => card.verdict === "PASS"))
 }
 
 /**

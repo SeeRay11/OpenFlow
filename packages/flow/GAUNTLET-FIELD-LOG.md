@@ -14,7 +14,7 @@ a user sees.
 
 ---
 
-## 1. Generated agents are invisible to the engine — *pre-existing trap, hit immediately*
+## 1. Generated agents are invisible to the engine — *fixed*
 
 **Symptom.** Every one of six cards errored within a second of pressing Run:
 `the server does not know an agent named "flappy-3d-gauntlet-coder-world"`.
@@ -27,9 +27,13 @@ writes to the place that does not work.
 **Done.** Merged the generated agent block into the **global** `~/.config/opencode/opencode.json`
 and restarted the engine. Worked around, not fixed.
 
-**Open for release.** The one-click "merge agents" path writes to the project and then the run
-fails. Either write to global config, or say plainly in the failure that the project copy is not
-the one the engine reads.
+**Fixed.** `writeAgents` in `lib/store.ts` merges into the **global** config
+(`~/.config/opencode/opencode.json`), which is the one a drain reads, and stamps each generated
+agent with the pipeline that produced it so a renamed or deleted node's agent is dropped rather
+than accumulating. The generated block still lands in `.openflow/generated/` as the preview
+artifact it always was. Preflight also refuses a run whose agents the server does not know, with
+the restart command for *this* host in the message — the engine reads its config once at boot,
+so a freshly merged agent is invisible until it restarts.
 
 ---
 
@@ -97,7 +101,7 @@ error.
 
 ---
 
-## 5. The critic judged code it never ran — *worked around at the bar, engine gap still open*
+## 5. The critic judged code it never ran — *the engine half is fixed; eyes are still missing*
 
 **Symptom.** With the game a black screen and every script failing to parse, the critic's verdict
 opened: *"The bar is better. The single largest gap is the ground plane position being incorrect
@@ -111,10 +115,18 @@ counts until it passes — with the exact shell commands that stand in for eyes 
 every loaded file, one declaration per top-level name, each script loaded once) and an
 instruction to fail the round if those commands were not run.
 
-**Open for release.** This works, and it should not have to be hand-written into every bar. A
-gauntlet whose deliverable is a web page wants a built-in way for the critic to see console
-output. Until MCP reaches v2 sessions, the honest options are a documented bar template or a
-"boot check" the engine runs itself between rounds.
+**Fixed, as far as it can be here.** The engine cannot supply the eyes — no MCP tool reaches a v2
+session in this fork, and it has no idea how an arbitrary project boots, so an engine-run "boot
+check" would be guessing. What it *can* see is whether the critic ran anything at all: a verdict
+from a critic that made no `bash` call in its turn now carries `unverifiedNote()`, which tells
+the orchestrator it is holding a review of the source rather than of the behaviour, and that a
+runtime failure would have been invisible to it. A note rather than a failure, for the reason
+`noWritesNote` is one: a critic reviewing prose or a diff has nothing to run, and no signal here
+separates that from one that should have run the tests and did not.
+
+**Still open.** A gauntlet whose deliverable is a web page still wants a built-in way for the
+critic to see console output. That waits on MCP reaching v2 sessions, or on a card driving a
+headless browser and capturing the artifact itself.
 
 ---
 
@@ -210,7 +222,7 @@ is merely *untidy*.
 
 ---
 
-## 11. The write refusal is bypassable through a shell redirect — *known, and it left litter*
+## 11. The write refusal is bypassable through a shell redirect — *mitigated; the refusal is still soft*
 
 **Symptom.** A file literally named `0` appeared in the deliverable folder, holding the
 orchestrator's own diagnostics:
@@ -233,9 +245,17 @@ belong in the docs, because a user shipping the result will hit both:
 - a gauntlet's output folder accumulates investigation litter, and the bar's "nothing left
   unfinished" line should say so explicitly, or the final tidy will never happen
 
-**For release.** Either give the orchestrator a scratch directory outside the deliverable and say
-so in its briefing, or have the engine sweep files no card claims between rounds. The first is
-cheaper and more honest.
+**Fixed, the cheap and honest way.** Every card that can run a shell is told, once on the turn
+that opens its session, about a scratch directory outside the project (`lib/scratch.ts`, made
+per run under the OS temp directory and deleted with the run's recording). The note says what it
+is for and why — a redirect writes a file even where the write tools are refused — rather than
+forbidding anything, because nothing here can enforce it. What it removes is the *reason* to
+redirect into the project: a card investigating something has to put the output somewhere, and
+until now the only somewhere it had been given was the folder holding the deliverable.
+
+**Still true.** The "these cards cannot change the work" guarantee remains soft: it stops the
+tool, not the shell. That is why a critic's shell writes are read back with `writesOf` after
+every batch and its verdict discarded if it changed the tree.
 
 
 ---
