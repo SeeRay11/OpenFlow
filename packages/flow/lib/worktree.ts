@@ -3,6 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
+import { treeDiff } from "./diffstat"
 
 const run = promisify(execFile)
 
@@ -67,15 +68,15 @@ export async function isRepo(dir: string) {
  * and a card is given the repo as git understands it.
  */
 export async function baseCommit(dir: string) {
-  const stashed = await git(dir, ["stash", "create"]).then(({ stdout }) => stdout.trim()).catch(() => "")
+  const stashed = await git(dir, ["stash", "create"])
+    .then(({ stdout }) => stdout.trim())
+    .catch(() => "")
   if (stashed) return stashed
   return git(dir, ["rev-parse", "HEAD"]).then(({ stdout }) => stdout.trim())
 }
 
 export type OpenedTree = { card: string; directory: string; branch: string }
-export type OpenResult =
-  | { enabled: true; base: string; trees: OpenedTree[] }
-  | { enabled: false; reason: string }
+export type OpenResult = { enabled: true; base: string; trees: OpenedTree[] } | { enabled: false; reason: string }
 
 /**
  * One worktree per card, all branched from the same base.
@@ -103,7 +104,12 @@ export async function openWorktrees(project: string, runID: string, cards: strin
     const directory = path.join(root, slugID(card))
     const branch = branchName(runID, card)
     // Already open from an earlier batch — the card's session is pointed at it.
-    if (await fs.stat(directory).then(() => true).catch(() => false)) {
+    if (
+      await fs
+        .stat(directory)
+        .then(() => true)
+        .catch(() => false)
+    ) {
       trees.push({ card, directory, branch })
       continue
     }
@@ -124,7 +130,13 @@ export async function openWorktrees(project: string, runID: string, cards: strin
 /** Best-effort: a project without `node_modules`, or a host that refuses links, just runs without it. */
 async function linkModules(project: string, directory: string) {
   const source = path.join(project, "node_modules")
-  if (!(await fs.stat(source).then((s) => s.isDirectory()).catch(() => false))) return
+  if (
+    !(await fs
+      .stat(source)
+      .then((s) => s.isDirectory())
+      .catch(() => false))
+  )
+    return
   await fs
     .symlink(source, path.join(directory, "node_modules"), process.platform === "win32" ? "junction" : "dir")
     .catch(() => {})
@@ -137,6 +149,16 @@ export type MergeReport = {
   empty: string[]
   /** Paths that could not be applied over what is already there, by card. */
   conflicts: { card: string; paths: string[] }[]
+  /**
+   * Lines each card changed, read off its own branch.
+   *
+   * An isolated card is the one case where this needs no guessing at all: the
+   * card had a tree to itself, so everything between the shared base and what
+   * it committed is its work and nobody else's. Counted before the merge, so a
+   * patch that conflicts still reports what the card wrote — the lines existed
+   * whether or not they landed.
+   */
+  stats: { card: string; added: number; removed: number; files: number }[]
 }
 
 /**
@@ -163,18 +185,31 @@ export type MergeReport = {
  * card wrote is reverted to make room.
  */
 export async function mergeWorktrees(project: string, trees: OpenedTree[], base: string): Promise<MergeReport> {
-  const report: MergeReport = { merged: [], empty: [], conflicts: [] }
+  const report: MergeReport = { merged: [], empty: [], conflicts: [], stats: [] }
   for (const tree of trees) {
     const changed = await commitTree(tree.directory)
     if (!changed) {
       report.empty.push(tree.card)
       continue
     }
-    const patch = await git(tree.directory, ["diff", "--binary", base, "HEAD"]).then(({ stdout }) => stdout).catch(() => "")
+    const patch = await git(tree.directory, ["diff", "--binary", base, "HEAD"])
+      .then(({ stdout }) => stdout)
+      .catch(() => "")
     if (!patch.trim()) {
       report.empty.push(tree.card)
       continue
     }
+    // Before the apply, because what the card wrote is true whether or not the
+    // patch lands: a card whose every path conflicts still did the work, and a
+    // report saying it changed nothing would be the wrong half of the story.
+    const stat = await treeDiff(tree.directory, base)
+    if (stat?.length)
+      report.stats.push({
+        card: tree.card,
+        added: stat.reduce((total, file) => total + file.added, 0),
+        removed: stat.reduce((total, file) => total + file.removed, 0),
+        files: stat.length,
+      })
     if (await apply(project, patch)) {
       report.merged.push(tree.card)
       continue
@@ -200,7 +235,9 @@ export async function mergeWorktrees(project: string, trees: OpenedTree[], base:
 /** Commits everything the card left behind, so its work is one reviewable diff. Returns false for a card that changed nothing. */
 async function commitTree(directory: string) {
   await git(directory, ["add", "-A"]).catch(() => {})
-  const staged = await git(directory, ["diff", "--cached", "--name-only"]).then(({ stdout }) => stdout.trim()).catch(() => "")
+  const staged = await git(directory, ["diff", "--cached", "--name-only"])
+    .then(({ stdout }) => stdout.trim())
+    .catch(() => "")
   if (!staged) return false
   // Identity is set on the command rather than the repo: the user's own
   // `user.name` may be unset globally, and a worktree commit must not be the
@@ -220,7 +257,12 @@ async function commitTree(directory: string) {
 
 async function changedPaths(directory: string, base: string) {
   return git(directory, ["diff", "--name-only", base, "HEAD"])
-    .then(({ stdout }) => stdout.split("\n").map((line) => line.trim()).filter(Boolean))
+    .then(({ stdout }) =>
+      stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean),
+    )
     .catch(() => [] as string[])
 }
 

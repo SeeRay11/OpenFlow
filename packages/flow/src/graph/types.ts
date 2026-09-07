@@ -265,6 +265,26 @@ export type NodeEvent = {
   body?: string
 }
 
+/**
+ * Lines a card put into the working tree and took out of it.
+ *
+ * Measured off git rather than asked of the card, so a run that reports having
+ * rewritten a module and a run that reports it while touching nothing are
+ * finally different records. Absent means unmeasured — the project is not a
+ * repository, or the run predates this — and must never render as zero, for
+ * the same reason an unpriced model never renders as free.
+ */
+export type CardDiff = {
+  added: number
+  removed: number
+  files: number
+  /**
+   * Cards these lines could not be told apart from: they wrote the same files
+   * in the same batch, so the figure is the batch's rather than this card's.
+   */
+  shared?: string[]
+}
+
 export type RunNodeLog = {
   id: string
   role: string
@@ -298,6 +318,8 @@ export type RunNodeLog = {
   reused?: boolean
   /** What this node's session reported using, priced. */
   usage?: Spend
+  /** Lines this card added and removed. Absent when the run could not measure them. */
+  diff?: CardDiff
   /** Per-step usage behind `usage`, kept so a run log can be re-priced later. */
   steps?: StepUsage[]
   /**

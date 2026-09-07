@@ -7,6 +7,7 @@ import { hasNativePicker, pickFolderNative } from "./native-picker"
 import type { Supervisor } from "./opencode-process"
 import { COMPATIBLE_PROFILES, globalConfigCandidates, repackage, repackaged } from "./repackage"
 import { install, installed, uninstall } from "./dispatch-tool"
+import { treeStat } from "./diffstat"
 import { cleanupWorktrees, mergeWorktrees, openWorktrees } from "./worktree"
 import { zenModels } from "./zen"
 
@@ -35,6 +36,7 @@ import { zenModels } from "./zen"
  *   GET    /flow/api/runs                  -> [{ id, pipeline, status, started, finished }]
  *   GET    /flow/api/runs/:id              -> run log json
  *   PUT    /flow/api/runs/:id              -> write run log json
+ *   GET    /flow/api/treestat              -> the tree's line counts right now, or null off git
  *   POST   /flow/api/worktrees             -> { run, cards } -> a git worktree per card
  *   POST   /flow/api/worktrees/merge       -> { trees, base } -> what landed and what conflicted
  *   POST   /flow/api/worktrees/cleanup     -> { run, trees } -> remove the trees and branches
@@ -345,7 +347,8 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
       // Restarting spawns a process on the host. Served remotely that is a
       // remote process-control hole, so it is refused for the same reason the
       // native folder picker is — see `lib/guard.ts`.
-      if (allowsRemote()) return { status: 403, body: { error: "restarting the engine is unavailable when serving remotely" } }
+      if (allowsRemote())
+        return { status: 403, body: { error: "restarting the engine is unavailable when serving remotely" } }
       const before = await request.serve.status()
       if (!before.managed) {
         // The C fallback: say who owns it and what to type, rather than
@@ -403,6 +406,14 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     // network on OpenFlow's behalf. `null` means "could not read" — the caller
     // must then leave the catalog alone rather than empty it.
     return ok({ ids: (await zenModels()) ?? null })
+  }
+
+  // A snapshot of what the project's tree currently has that HEAD does not.
+  // Meaningless on its own: the engine takes one before a batch and one after,
+  // and the difference is what that batch wrote.
+  if (segments[0] === "treestat" && method === "GET") {
+    const files = await treeStat(paths.project)
+    return ok({ files: files ?? null })
   }
 
   if (segments[0] === "worktrees" && method === "POST") {
@@ -621,7 +632,12 @@ async function pruneRuns(paths: FlowPaths, rules: { keep?: number; days?: number
   )
   const removed: string[] = []
   for (const entry of doomed) {
-    if (await fs.rm(path.join(paths.runs, `${entry.id}.json`)).then(() => true).catch(() => false))
+    if (
+      await fs
+        .rm(path.join(paths.runs, `${entry.id}.json`))
+        .then(() => true)
+        .catch(() => false)
+    )
       removed.push(entry.id)
   }
   if (removed.length) await removeFromRunsIndex(paths, removed)
@@ -827,7 +843,9 @@ function normalizeMcp(name: string, entry: any): McpServer | undefined {
 }
 
 function isStringRecord(value: unknown): value is Record<string, string> {
-  return Boolean(value) && typeof value === "object" && Object.values(value as object).every((v) => typeof v === "string")
+  return (
+    Boolean(value) && typeof value === "object" && Object.values(value as object).every((v) => typeof v === "string")
+  )
 }
 
 /**
@@ -972,7 +990,13 @@ async function packageRoot() {
   const cwd = process.cwd()
   const candidates = [cwd, path.join(cwd, "packages", "flow"), path.resolve(cwd, ".."), path.resolve(cwd, "..", "..")]
   for (const root of candidates) {
-    if (await fs.stat(path.join(root, "mcp", "dispatch.ts")).then(() => true, () => false)) return root
+    if (
+      await fs.stat(path.join(root, "mcp", "dispatch.ts")).then(
+        () => true,
+        () => false,
+      )
+    )
+      return root
   }
   return cwd
 }
@@ -995,7 +1019,13 @@ async function bunPath() {
   for (const dir of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
     for (const name of names) {
       const candidate = path.join(dir, name)
-      if (await fs.stat(candidate).then((entry) => entry.isFile(), () => false)) return candidate
+      if (
+        await fs.stat(candidate).then(
+          (entry) => entry.isFile(),
+          () => false,
+        )
+      )
+        return candidate
     }
   }
   return "bun"
@@ -1029,7 +1059,14 @@ async function applyDispatchTool(wanted: boolean) {
     const backup = config.raw === undefined ? undefined : await backupConfig(config.target, config.raw)
     await fs.mkdir(path.dirname(config.target), { recursive: true })
     await writeAtomic(config.target, JSON.stringify(result.value, null, 2) + "\n")
-    return { path: config.target, ...installed(result.value, root, runtime), root, changed: true, backup, restart: true }
+    return {
+      path: config.target,
+      ...installed(result.value, root, runtime),
+      root,
+      changed: true,
+      backup,
+      restart: true,
+    }
   })
 }
 
@@ -1229,7 +1266,7 @@ async function registerSkillSource(paths: FlowPaths) {
     // the paths list so this rewrites it into the shape the schema accepts,
     // rather than spreading its indices into the object.
     const legacy = Array.isArray(config.value.skills)
-    const block = legacy ? { paths: config.value.skills } : config.value.skills ?? {}
+    const block = legacy ? { paths: config.value.skills } : (config.value.skills ?? {})
     const current: string[] = Array.isArray(block.paths) ? block.paths : []
     if (!legacy && current.includes(SKILL_SOURCE)) return { registered: false }
     if (config.comments) return { registered: false, error: CONFIG_HAS_COMMENTS }

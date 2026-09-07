@@ -1,4 +1,5 @@
 import { Show } from "solid-js"
+import { diffLabel, diffTitle } from "../graph/diff"
 import { roleColor } from "../graph/roles"
 import type { FlowNode, NodeStatus } from "../graph/types"
 import { actions, runtimeOf, state } from "../state"
@@ -89,6 +90,17 @@ export function NodeCard(props: {
         <span class="badge" data-status={runtime().status} title={statusHelp(runtime().status)}>
           {runtime().status}
         </span>
+        {/* Only ever rendered on a card whose lines were actually measured: a
+            project that is not a repository shows nothing here, because "no
+            measurement" and "changed nothing" are different facts. */}
+        <Show when={runtime().diff}>
+          <span class="node-diff" title={diffTitle(runtime().diff)}>
+            {diffLabel(runtime().diff)}
+            <Show when={runtime().diff?.shared?.length}>
+              <span class="dim"> shared</span>
+            </Show>
+          </span>
+        </Show>
       </div>
 
       <div class="node-body">

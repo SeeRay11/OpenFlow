@@ -1,4 +1,5 @@
 import { collisionNote, collisionsIn, writesOf, type Write } from "../graph/collisions"
+import { addDiff, attribute, deltaOf } from "../graph/diff"
 import { isolates, mergeNote } from "../graph/worktree"
 import { fromToolCall, MCP_REACHES_SESSIONS, parseDispatch } from "../graph/dispatch"
 import { isCritic, orchestrationShape } from "../graph/orchestration"
@@ -28,6 +29,7 @@ import { swarmShape } from "../graph/swarm"
 import { verdictIn } from "../graph/verdict"
 import type {
   Attachment,
+  CardDiff,
   FlowNode,
   NodeEvent,
   NodeStatus,
@@ -37,7 +39,16 @@ import type {
   Spend,
   StepUsage,
 } from "../graph/types"
-import { depthOf, dispatchesOf, GAUNTLET_DISPATCHES, gauntletOf, isolationOf, modeOf, roundsOf, verifyOf } from "../graph/types"
+import {
+  depthOf,
+  dispatchesOf,
+  GAUNTLET_DISPATCHES,
+  gauntletOf,
+  isolationOf,
+  modeOf,
+  roundsOf,
+  verifyOf,
+} from "../graph/types"
 import { ancestors, downstream, layer, upstream } from "../graph/validate"
 import { applyEvent, createActivity, persistable } from "./activity"
 import * as api from "./client"
@@ -57,6 +68,8 @@ export type NodePatch = {
   reused?: boolean
   /** Priced usage for this node so far, across every session it has held. */
   usage?: Spend
+  /** Lines this node put into the working tree and took out of it. */
+  diff?: CardDiff
 }
 
 export type EngineHooks = {
@@ -268,6 +281,15 @@ export type EngineDeps = {
     cleanup: typeof store.cleanupWorktrees
   }
   /**
+   * The project tree's line counts, read before and after a batch so the
+   * difference can be attributed to the cards that ran in it.
+   *
+   * Optional, and absent simply means a run records no line counts: there is no
+   * fallback worth having, since the only other source is the card's own
+   * account of what it did, which is exactly the claim this exists to check.
+   */
+  treeStat?: typeof store.treeStat
+  /**
    * The engine process this host proxies, used to print the exact restart
    * command in the one error that can only be fixed by restarting it.
    */
@@ -279,6 +301,7 @@ const live: EngineDeps = {
   saveRun: (log) => store.saveRun(log),
   serveStatus: () => store.serverStatus(),
   worktrees: { open: store.openWorktrees, merge: store.mergeWorktrees, cleanup: store.cleanupWorktrees },
+  treeStat: () => store.treeStat(),
 }
 
 /**
@@ -356,7 +379,9 @@ export function start(
   const tree = mode === "orchestration" ? orchestrationShape(pipeline) : undefined
   if (tree) {
     if (tree.roots.length !== 1)
-      throw new Error(`an orchestration runs from exactly one card with no incoming connection, and this graph has ${tree.roots.length}`)
+      throw new Error(
+        `an orchestration runs from exactly one card with no incoming connection, and this graph has ${tree.roots.length}`,
+      )
     if (tree.shared.length) throw new Error("a card is dispatched by more than one orchestrator")
     if (tree.depth > depthOf(pipeline))
       throw new Error(`the subagent tree is ${tree.depth} level(s) deep and the limit is ${depthOf(pipeline)}`)
@@ -528,6 +553,50 @@ export function start(
     checkpoint()
   }
 
+  /**
+   * Runs a batch of cards and records the lines they changed.
+   *
+   * The measurement is a pair of snapshots around the batch, never around a
+   * card: cards in a batch run at once in one working directory, so the only
+   * moment the tree can be read and mean something is a boundary where nothing
+   * is running. Which card owns which line is then settled by `attribute`, off
+   * the same tool-call file lists the collision check already reads.
+   *
+   * Isolated cards are skipped here and counted from their own branch instead
+   * (`MergeReport.stats`). They have to be: their work lands in the project
+   * only when the merge runs, so a snapshot taken around the batch would credit
+   * whichever cards happened to be sharing the tree with whatever the merge
+   * folded in.
+   *
+   * Every failure is silent and total — no repository, no host route, a git
+   * that errored — because a run must never fail over its own bookkeeping, and
+   * a missing count already reads as "not measured" everywhere it is shown.
+   */
+  async function measured(ids: string[], work: () => Promise<void>) {
+    const sharing = ids.filter((id) => !opened.has(id))
+    if (!deps.treeStat || !sharing.length) return work()
+    const at = Date.now()
+    const before = await deps
+      .treeStat()
+      .then((result) => result.files)
+      .catch(() => null)
+    await work()
+    if (!before) return
+    const after = await deps
+      .treeStat()
+      .then((result) => result.files)
+      .catch(() => null)
+    if (!after) return
+    const wrote = new Map<string, Write[]>()
+    for (const id of sharing) {
+      const paths = [id, ...descendants(id)].flatMap((child) => writesOf(events.get(child) ?? [], at))
+      if (paths.length) wrote.set(id, paths)
+    }
+    if (!wrote.size) return
+    for (const [id, diff] of attribute(deltaOf(before, after), wrote).cards)
+      patch(id, { diff: addDiff(entry(id).diff, diff) })
+  }
+
   let checkpointTimer: ReturnType<typeof setTimeout> | undefined
   let writes: Promise<unknown> = Promise.resolve()
 
@@ -651,14 +720,16 @@ export function start(
     } else if (policy === "manual") {
       patch(nodeID, { activity: `awaiting permission: ${data.action}` })
       reply = hooks.onPermission
-        ? await hooks.onPermission({
-            requestID,
-            sessionID,
-            nodeID,
-            role: node?.role ?? nodeID,
-            action: data.action,
-            resources,
-          }).catch(() => "reject" as const)
+        ? await hooks
+            .onPermission({
+              requestID,
+              sessionID,
+              nodeID,
+              role: node?.role ?? nodeID,
+              action: data.action,
+              resources,
+            })
+            .catch(() => "reject" as const)
         : "reject"
     }
 
@@ -692,11 +763,7 @@ export function start(
    * rejection is bounded by `questionTimeout` so a run left alone still
    * finishes instead of hanging until the node times out.
    */
-  async function inquire(
-    nodeID: string,
-    sessionID: string,
-    data: { id: string; questions?: api.QuestionInfo[] },
-  ) {
+  async function inquire(nodeID: string, sessionID: string, data: { id: string; questions?: api.QuestionInfo[] }) {
     const requestID = data.id
     if (asked.has(requestID)) return
     asked.add(requestID)
@@ -815,14 +882,14 @@ export function start(
           }
         }
 
-      // A card can reach an image without anyone attaching one: it takes a
-      // screenshot, then opens it. `read` on a PNG comes back as an image part,
-      // and a model with no image modality answers the whole request with
-      // `HTTP 404: No endpoints found that support image input` — which fails
-      // the card, not the tool call. Measured on this fork's first gauntlet: a
-      // card captured the game, the orchestrator opened the capture, and the run
-      // died. The attachment filter above never sees this path, so the card is
-      // told what it cannot do instead.
+        // A card can reach an image without anyone attaching one: it takes a
+        // screenshot, then opens it. `read` on a PNG comes back as an image part,
+        // and a model with no image modality answers the whole request with
+        // `HTTP 404: No endpoints found that support image input` — which fails
+        // the card, not the tool call. Measured on this fork's first gauntlet: a
+        // card captured the game, the orchestrator opened the capture, and the run
+        // died. The attachment filter above never sees this path, so the card is
+        // told what it cannot do instead.
         const text = `${build(skipped)}${model && !api.accepts(model, "image/png") ? `\n\n${imageBlindNote()}` : ""}`
         patch(node.id, { prompt: text })
 
@@ -835,13 +902,13 @@ export function start(
 
         const result = await api.transcript(sessionID)
         if (result.error) throw new Error(result.error)
-      // A card whose tools were rejected still ends its turn cleanly: the
-      // assistant message carries no error, so the node settles `done` and the
-      // orchestrator is told the work is finished. Measured: a card burned
-      // 1.36M tokens with every `write` bounced as "Invalid JSON input for
-      // openai-chat tool call write", reported success, and was re-dispatched on
-      // a false premise. The failures are already on the activity stream; this
-      // is what makes the control loop see them.
+        // A card whose tools were rejected still ends its turn cleanly: the
+        // assistant message carries no error, so the node settles `done` and the
+        // orchestrator is told the work is finished. Measured: a card burned
+        // 1.36M tokens with every `write` bounced as "Invalid JSON input for
+        // openai-chat tool call write", reported success, and was re-dispatched on
+        // a false premise. The failures are already on the activity stream; this
+        // is what makes the control loop see them.
         const rejected = (events.get(node.id) ?? []).filter(
           (event) => event.kind === "tool" && event.status === "error" && event.at >= turnStarted,
         )
@@ -1180,7 +1247,13 @@ export function start(
           // on the activity stream so the turn is not lost with the card.
           failed.add(node.id)
           const reason = "the orchestrator answered twice without dispatching any of its cards"
-          activity.note(node.id, `undispatched:${node.id}:final`, "answered with no card dispatched", decision.answer, "error")
+          activity.note(
+            node.id,
+            `undispatched:${node.id}:final`,
+            "answered with no card dispatched",
+            decision.answer,
+            "error",
+          )
           patch(node.id, { status: "error", error: reason, activity: undefined, finished: Date.now() })
           return undefined
         }
@@ -1232,7 +1305,9 @@ export function start(
       // one that has to see a tree holding still: one critic at a time. It
       // costs wall clock, which a gauntlet already bounds.
       const oneAtATime =
-        !!gauntlet && decision.assignments.length > 1 && decision.assignments.every((entry) => isCritic(nodes.get(entry.card)!))
+        !!gauntlet &&
+        decision.assignments.length > 1 &&
+        decision.assignments.every((entry) => isCritic(nodes.get(entry.card)!))
 
       // A working copy per card, so the batch cannot overwrite itself. Only
       // cards that can write get one — a reader isolated from the project would
@@ -1259,32 +1334,42 @@ export function start(
             // repository is a normal way to work, and repeating it every batch
             // would bury the batch's real findings.
             isolationWarned = true
-            activity.note(node.id, `isolation:${log.id}`, `cards share one working directory — ${result.reason}`, undefined, "done")
+            activity.note(
+              node.id,
+              `isolation:${log.id}`,
+              `cards share one working directory — ${result.reason}`,
+              undefined,
+              "done",
+            )
           }
         }
       }
-      await pool(decision.assignments, oneAtATime ? 1 : limit, controller.signal, async (assignment) => {
-        const child = nodes.get(assignment.card)!
-        // A critic judges from a session it has never used before. Reusing one
-        // would let it read its own earlier verdicts, and a critic that has
-        // watched the work improve grades the improvement rather than the
-        // work — which is the failure the separate critic exists to prevent.
-        // It costs the cached prefix and re-sends the reference files, and
-        // that is the price of the method.
-        if (gauntlet && isCritic(child)) {
-          nodeSession.delete(child.id)
-          consumed.delete(child.id)
-        }
-        declared.set(child.id, assignment.files ?? [])
-        const answer = tree!.children(child.id).length
-          ? await orchestrate(child, assignment.task, false)
-          : await runSubagent(child, node, assignment.task)
-        results.push(
-          answer === undefined
-            ? { card: assignment.card, error: entry(assignment.card).error ?? "the card produced nothing" }
-            : { card: assignment.card, text: answer },
-        )
-      })
+      await measured(
+        decision.assignments.map((assignment) => assignment.card),
+        () =>
+          pool(decision.assignments, oneAtATime ? 1 : limit, controller.signal, async (assignment) => {
+            const child = nodes.get(assignment.card)!
+            // A critic judges from a session it has never used before. Reusing one
+            // would let it read its own earlier verdicts, and a critic that has
+            // watched the work improve grades the improvement rather than the
+            // work — which is the failure the separate critic exists to prevent.
+            // It costs the cached prefix and re-sends the reference files, and
+            // that is the price of the method.
+            if (gauntlet && isCritic(child)) {
+              nodeSession.delete(child.id)
+              consumed.delete(child.id)
+            }
+            declared.set(child.id, assignment.files ?? [])
+            const answer = tree!.children(child.id).length
+              ? await orchestrate(child, assignment.task, false)
+              : await runSubagent(child, node, assignment.task)
+            results.push(
+              answer === undefined
+                ? { card: assignment.card, error: entry(assignment.card).error ?? "the card produced nothing" }
+                : { card: assignment.card, text: answer },
+            )
+          }),
+      )
       if (controller.signal.aborted) return undefined
 
       // Fold the isolated cards' work back into the project. A path that will
@@ -1301,7 +1386,13 @@ export function start(
       if (isolated.length) {
         const report = await deps
           .worktrees!.merge(isolationBase, isolated)
-          .catch(() => ({ merged: [], empty: [], conflicts: [] }))
+          .catch(() => ({ merged: [], empty: [], conflicts: [], stats: [] }))
+        // An isolated card is the one card whose line count needs no
+        // attributing: it had a tree to itself, so its branch is its work.
+        for (const stat of report.stats ?? [])
+          patch(stat.card, {
+            diff: addDiff(entry(stat.card).diff, { added: stat.added, removed: stat.removed, files: stat.files }),
+          })
         const note = mergeNote(report)
         if (note)
           activity.note(
@@ -1331,11 +1422,19 @@ export function start(
         for (const [index, result] of results.entries()) {
           const child = nodes.get(result.card)!
           if (!isCritic(child) || result.text === undefined) continue
-          const wrote = [child.id, ...descendants(child.id)].flatMap((id) => writesOf(events.get(id) ?? [], batchStarted))
+          const wrote = [child.id, ...descendants(child.id)].flatMap((id) =>
+            writesOf(events.get(id) ?? [], batchStarted),
+          )
           if (!wrote.length) continue
           const listed = wrote.map((write) => (write.probable ? `${write.path} (probable)` : write.path)).join(", ")
           const error = `its verdict is discarded: a critic may not change the work it judges, and it wrote ${listed}`
-          activity.note(child.id, `critic-wrote:${child.id}:${spent}`, "verdict discarded — the critic changed the work", listed, "error")
+          activity.note(
+            child.id,
+            `critic-wrote:${child.id}:${spent}`,
+            "verdict discarded — the critic changed the work",
+            listed,
+            "error",
+          )
           patch(child.id, { status: "error", error })
           results[index] = { card: result.card, error }
         }
@@ -1345,8 +1444,7 @@ export function start(
           criticLoss = `${result.card}: ${result.error}`
         }
         if (decision.assignments.some((entry) => !isCritic(nodes.get(entry.card)!))) judged.clear()
-        else
-          for (const result of results) if (result.text !== undefined) judged.add(result.card)
+        else for (const result of results) if (result.text !== undefined) judged.add(result.card)
       }
 
       // `results` lands in pool completion order; the orchestrator asked in a
@@ -1601,8 +1699,9 @@ export function start(
 
       let asked = false
       while (true) {
-        await runTurn(critic, (skipped) =>
-          asked ? verdictPrompt() : verifyPrompt(pipeline, critic, result, skipped),
+        await runTurn(
+          critic,
+          (skipped) => (asked ? verdictPrompt() : verifyPrompt(pipeline, critic, result, skipped)),
           asked,
         )
         if (failed.has(critic.id) || controller.signal.aborted) return
@@ -1626,7 +1725,11 @@ export function start(
         activity.note(
           critic.id,
           `verdict:${critic.id}`,
-          verdict.kind === "pass" ? "verified — the run met the bar" : verdict.kind === "fail" ? "the run did not meet the bar" : "the verifier wrote no verdict",
+          verdict.kind === "pass"
+            ? "verified — the run met the bar"
+            : verdict.kind === "fail"
+              ? "the run did not meet the bar"
+              : "the verifier wrote no verdict",
           verdict.kind === "fail" ? verdict.reason : undefined,
           verdict.kind === "pass" ? "done" : "error",
         )
@@ -1718,6 +1821,7 @@ ${serve.command}`
             )
           },
           peers: swarm.agents.map((node) => node.id),
+          around: measured,
           peer: (id, round) => runPeer(nodes.get(id)!, round, said),
           synthesise: () =>
             runTurn(swarm.synthesizers[0], (skipped) =>
@@ -1725,13 +1829,12 @@ ${serve.command}`
             ),
         })
       else if (tree) await orchestrate(tree.root, input, true)
-      else await runPipeline(validation.layers, limit, controller.signal, (id) => runNode(nodes.get(id)!))
+      else await runPipeline(validation.layers, limit, controller.signal, (id) => runNode(nodes.get(id)!), measured)
       // A card nobody dispatched never ran, and "queued" would read as though
       // the run had stopped short of it. It was simply not needed. Through
       // `patch` rather than onto the log directly, or the canvas card keeps
       // saying "queued" while the run log and statusbar say "skipped".
-      if (tree)
-        for (const node of log.nodes) if (node.status === "queued") patch(node.id, { status: "skipped" })
+      if (tree) for (const node of log.nodes) if (node.status === "queued") patch(node.id, { status: "skipped" })
       // The cards are finished; now something looks at what they produced. Only
       // on a run that actually completed: a run with a failed card has already
       // reported the truth about itself, and paying a critic to confirm it is
@@ -1751,8 +1854,7 @@ ${serve.command}`
       log.status = "error"
       hooks.onNotice?.("error", api.describe(error))
     } finally {
-      for (const node of log.nodes)
-        if (node.status === "queued" || node.status === "running") node.status = "stopped"
+      for (const node of log.nodes) if (node.status === "queued" || node.status === "running") node.status = "stopped"
       log.finished = Date.now()
       log.usage = mergeSpend(log.nodes.map((node) => node.usage))
       // Every card's work was folded back in after its own batch, so what is
@@ -1798,10 +1900,16 @@ async function runPipeline(
   limit: number,
   signal: AbortSignal,
   run: (id: string) => Promise<void>,
+  /**
+   * Wraps each layer, so a caller can measure what the whole layer did to the
+   * working tree. A layer is the boundary because its nodes run at once in one
+   * directory — see `measured` in `run`.
+   */
+  around: (ids: string[], work: () => Promise<void>) => Promise<void> = (_, work) => work(),
 ) {
   for (const ids of layers) {
     if (signal.aborted) return
-    await pool(ids, limit, signal, run)
+    await around(ids, () => pool(ids, limit, signal, run))
   }
 }
 
@@ -1827,12 +1935,14 @@ async function runSwarm(
     round: (round: number) => void
     peer: (id: string, round: number) => Promise<void>
     synthesise: () => Promise<void>
+    /** Wraps a round, so the caller can measure what it did to the working tree. */
+    around: (ids: string[], work: () => Promise<void>) => Promise<void>
   },
 ) {
   for (let round = 1; round <= rounds; round++) {
     if (signal.aborted) return
     step.round(round)
-    await pool(step.peers, limit, signal, (id) => step.peer(id, round))
+    await step.around(step.peers, () => pool(step.peers, limit, signal, (id) => step.peer(id, round)))
   }
   if (signal.aborted) return
   await step.synthesise()
@@ -1885,4 +1995,3 @@ async function unknownAgents(nodes: FlowNode[], api: EngineDeps["api"]) {
   if (!available) return []
   return named.filter((node) => !available.has(node.agent.name!))
 }
-

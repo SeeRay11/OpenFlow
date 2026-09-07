@@ -3,6 +3,7 @@ import { nodeModel } from "./graph/default-model"
 import { ROLES, role } from "./graph/roles"
 import type {
   Attachment,
+  CardDiff,
   FlowNode,
   NodeEvent,
   NodeStatus,
@@ -27,6 +28,8 @@ export type NodeRuntime = {
   finished?: number
   /** Priced token usage for this node's session. */
   usage?: Spend
+  /** Lines this card put into the working tree and took out of it. */
+  diff?: CardDiff
   /** What the card has done, in order — see `NodeEvent`. */
   events?: NodeEvent[]
 }
@@ -193,10 +196,17 @@ export const actions = {
 
   toggleTool(id: string, tool: string, enabled: boolean) {
     setState("dirty", true)
-    setState("pipeline", "nodes", (node) => node.id === id, "agent", "tools", (tools) => ({
-      ...(tools ?? {}),
-      [tool]: enabled,
-    }))
+    setState(
+      "pipeline",
+      "nodes",
+      (node) => node.id === id,
+      "agent",
+      "tools",
+      (tools) => ({
+        ...(tools ?? {}),
+        [tool]: enabled,
+      }),
+    )
   },
 
   select(id?: string) {
@@ -259,9 +269,7 @@ export const actions = {
     setState(
       produce((draft) => {
         draft.pipeline.nodes = draft.pipeline.nodes.filter((node) => !ids.has(node.id))
-        draft.pipeline.edges = draft.pipeline.edges.filter(
-          (edge) => !ids.has(edge.source) && !ids.has(edge.target),
-        )
+        draft.pipeline.edges = draft.pipeline.edges.filter((edge) => !ids.has(edge.source) && !ids.has(edge.target))
         for (const id of ids) delete draft.runtime[id]
         draft.selection = []
         if (draft.expanded && ids.has(draft.expanded)) draft.expanded = undefined
@@ -504,16 +512,25 @@ export const actions = {
   addNodeAttachments(id: string, files: Attachment[]) {
     if (!files.length) return
     setState("dirty", true)
-    setState("pipeline", "nodes", (node) => node.id === id, "agent", "attachments", (current) => [
-      ...(current ?? []),
-      ...files,
-    ])
+    setState(
+      "pipeline",
+      "nodes",
+      (node) => node.id === id,
+      "agent",
+      "attachments",
+      (current) => [...(current ?? []), ...files],
+    )
   },
 
   removeNodeAttachment(id: string, attachmentID: string) {
     setState("dirty", true)
-    setState("pipeline", "nodes", (node) => node.id === id, "agent", "attachments", (current) =>
-      (current ?? []).filter((file) => file.id !== attachmentID),
+    setState(
+      "pipeline",
+      "nodes",
+      (node) => node.id === id,
+      "agent",
+      "attachments",
+      (current) => (current ?? []).filter((file) => file.id !== attachmentID),
     )
   },
 
@@ -523,13 +540,20 @@ export const actions = {
    */
   toggleMcp(id: string, server: string, enabled: boolean, all: string[]) {
     setState("dirty", true)
-    setState("pipeline", "nodes", (node) => node.id === id, "agent", "mcp", (current) => {
-      const base = current ?? all
-      const next = new Set(base)
-      if (enabled) next.add(server)
-      else next.delete(server)
-      return [...next]
-    })
+    setState(
+      "pipeline",
+      "nodes",
+      (node) => node.id === id,
+      "agent",
+      "mcp",
+      (current) => {
+        const base = current ?? all
+        const next = new Set(base)
+        if (enabled) next.add(server)
+        else next.delete(server)
+        return [...next]
+      },
+    )
   },
 
   /** Shows a question from an agent and resolves once someone answers or rejects it. */

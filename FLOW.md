@@ -301,6 +301,30 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   every construct it half-understands is a collision it reports wrongly in both directions. The
   prevention half is a briefing line — one file, one card — and the optional `files` declaration
   on a dispatch, because a batch that never overlaps costs nothing to fix.
+- **What a card changed is measured off git, never asked of the card.** `RunNodeLog.diff` is
+  lines added and removed, and it exists because prose is the one thing a card can always
+  produce whether or not it did the work — the same failure `runTurn`'s wrote-nothing checks
+  answer from the other side. `lib/diffstat.ts` reads the tree (`git diff --numstat HEAD`, plus
+  untracked files counted line by line, since a new source file is in no diff at all);
+  `graph/diff.ts` holds the pure arithmetic, which is why `deltaOf` lives there and not beside
+  the git calls — the engine runs in the browser and cannot import `lib`.
+  **The measurement boundary is a batch, never a card.** Cards in a layer, a round or a dispatch
+  batch run at once in one working directory, so the only moment the tree can be read and mean
+  anything is a boundary where nothing is running; `measured()` in `engine.ts` wraps all three
+  schedulers through one `around` hook. Splitting that delta back out per card reuses the
+  collision check's own file lists: a file exactly one card wrote is that card's, exactly. A file
+  two cards wrote is **neither** card's — reported on both with `shared` naming the other,
+  because a figure labelled as the pair's is worth having and silently handing all of it to one
+  of them is the invention this measurement exists to avoid. A file nobody claimed (build output,
+  a program writing on its own account) is left off every card rather than given to whoever
+  happened to be running.
+  An **isolated** card is the one case needing no attribution at all: it had a tree to itself, so
+  `MergeReport.stats` counts its own branch against the shared base — taken **before** the apply,
+  since a card whose every path conflicts still did the work. Those cards are skipped by the
+  snapshot path, or the merge's own writes would be credited to whoever shared the tree with it.
+  **Absent means unmeasured, and must never render as zero** — a project that is not a
+  repository, a host with no route, a run recorded before this existed. Same rule as an unpriced
+  model, and `diffLabel` renders `±0` only for a real measurement that came back empty.
 - Cost is the standing hazard of both new modes. A swarm is `agents × rounds + 1` sessions; an
   orchestration is `1 + Σ(children × dispatches)` per level, and preflight warns with the actual
   number past a dozen. `MAX_ROUNDS`, `MAX_DEPTH` and `MAX_DISPATCHES` exist for that reason and
