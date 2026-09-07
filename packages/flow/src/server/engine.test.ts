@@ -84,7 +84,19 @@ type HarnessOptions = {
    */
   worktrees?: "available" | "unavailable"
   /** What folding the batch back in reports. */
-  mergeReport?: { merged: string[]; empty: string[]; conflicts: { card: string; paths: string[] }[] }
+  mergeReport?: {
+    merged: string[]
+    empty: string[]
+    conflicts: { card: string; paths: string[] }[]
+    stats?: { card: string; added: number; removed: number; files: number }[]
+  }
+  /**
+   * What the project's tree looks like on each read, in order. The engine takes
+   * one before a batch and one after, so a pair per batch; `null` is a project
+   * that is not a repository. Omitted means the host offers no measurement at
+   * all, which is what a run recorded before this existed looks like.
+   */
+  treeStats?: ({ path: string; added: number; removed: number }[] | null)[]
 }
 
 function deferred() {
@@ -123,6 +135,7 @@ function harness(options: HarnessOptions = {}) {
   const sessionDirs = new Map<string, string | undefined>()
   const worktreeCalls: { open: string[][]; merged: number; cleaned: number } = { open: [], merged: 0, cleaned: 0 }
   let catalogReads = 0
+  let treeReads = 0
   let created = 0
   let inflight = 0
   let peak = 0
@@ -269,21 +282,34 @@ function harness(options: HarnessOptions = {}) {
       saved.push(structuredClone(log))
       return {}
     },
+    ...(options.treeStats
+      ? {
+          async treeStat() {
+            treeReads++
+            return { files: options.treeStats![Math.min(treeReads - 1, options.treeStats!.length - 1)] }
+          },
+        }
+      : {}),
     ...(options.worktrees
       ? {
           worktrees: {
             async open(run: string, cards: string[]) {
               worktreeCalls.open.push(cards)
-              if (options.worktrees === "unavailable") return { enabled: false as const, reason: "not a git repository" }
+              if (options.worktrees === "unavailable")
+                return { enabled: false as const, reason: "not a git repository" }
               return {
                 enabled: true as const,
                 base: "base-commit",
-                trees: cards.map((card) => ({ card, directory: `/tmp/${run}/${card}`, branch: `openflow/${run}/${card}` })),
+                trees: cards.map((card) => ({
+                  card,
+                  directory: `/tmp/${run}/${card}`,
+                  branch: `openflow/${run}/${card}`,
+                })),
               }
             },
             async merge() {
               worktreeCalls.merged++
-              return options.mergeReport ?? { merged: [], empty: [], conflicts: [] }
+              return options.mergeReport ?? { merged: [], empty: [], conflicts: [], stats: [] }
             },
             async cleanup() {
               worktreeCalls.cleaned++
@@ -1111,8 +1137,16 @@ describe("usage", () => {
       // The bus missed a step; the message history has both.
       steps: {
         a: [
-          { messageID: "m1", model: "openai/gpt-x", tokens: { input: 1_000, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 } },
-          { messageID: "m2", model: "openai/gpt-x", tokens: { input: 3_000, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 } },
+          {
+            messageID: "m1",
+            model: "openai/gpt-x",
+            tokens: { input: 1_000, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+          },
+          {
+            messageID: "m2",
+            model: "openai/gpt-x",
+            tokens: { input: 3_000, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+          },
         ],
       },
     })
@@ -1268,9 +1302,7 @@ describe("resume", () => {
   test("direct piping sees a seeded output too", async () => {
     const h = harness()
 
-    await h
-      .run(pipeline("a->b", "b->c"), "do the thing", { pipe: "direct", resume: { a: "a from last time" } })
-      .done
+    await h.run(pipeline("a->b", "b->c"), "do the thing", { pipe: "direct", resume: { a: "a from last time" } }).done
 
     expect(h.prompts.get("b")).toContain("a from last time")
     expect(h.prompts.get("c")).not.toContain("a from last time")
@@ -1735,7 +1767,12 @@ describe("orchestration mode", () => {
   function wrote(h: ReturnType<typeof harness>, node: string, path: string) {
     h.emit({
       type: "session.next.tool.called",
-      data: { sessionID: h.sessionOf.get(node), callID: `${node}-${path}`, tool: "write", input: { path, content: "x" } },
+      data: {
+        sessionID: h.sessionOf.get(node),
+        callID: `${node}-${path}`,
+        tool: "write",
+        input: { path, content: "x" },
+      },
     } as any)
   }
 
@@ -1852,14 +1889,35 @@ describe("a working copy per card", () => {
     for (const node of log.nodes) expect(h.sessionDirs.get(node.sessionID!)).toBeUndefined()
   })
 
+  test("an isolated card is counted from its own branch, not the shared tree", async () => {
+    const h = harness({
+      behavior: batch,
+      worktrees: "available",
+      mergeReport: {
+        merged: ["a", "b"],
+        empty: [],
+        conflicts: [],
+        stats: [
+          { card: "a", added: 40, removed: 2, files: 3 },
+          { card: "b", added: 5, removed: 0, files: 1 },
+        ],
+      },
+      // Read only if the engine wrongly measured the shared tree for these
+      // cards: their work is not in it until the merge runs.
+      treeStats: [[], [{ path: "src/a.ts", added: 999, removed: 999 }]],
+    })
+    const log = await h.run(tree(["root->a", "root->b"], { dispatches: 1 })).done
+
+    expect(log.nodes.find((node) => node.id === "a")!.diff).toEqual({ added: 40, removed: 2, files: 3 })
+    expect(log.nodes.find((node) => node.id === "b")!.diff).toEqual({ added: 5, removed: 0, files: 1 })
+  })
+
   test("each dispatched card's session is created in its own tree", async () => {
     const h = harness({ behavior: batch, worktrees: "available" })
     const log = await h.run(tree(["root->a", "root->b"], { dispatches: 1 })).done
 
     expect(h.worktreeCalls.open).toEqual([["a", "b"]])
-    const dirs = log.nodes
-      .filter((node) => node.id !== "root")
-      .map((node) => h.sessionDirs.get(node.sessionID!))
+    const dirs = log.nodes.filter((node) => node.id !== "root").map((node) => h.sessionDirs.get(node.sessionID!))
     expect(dirs.every(Boolean)).toBe(true)
     expect(new Set(dirs).size).toBe(2)
   })
@@ -1900,7 +1958,7 @@ describe("a working copy per card", () => {
 
   test("a clean merge says nothing — the expected case is not narrated", async () => {
     const h = harness({
-      behavior: batch,
+      behavior: { root: { output: dispatch("a", "b") }, a: { output: "a done" }, b: { output: "b done" } },
       worktrees: "available",
       mergeReport: { merged: ["a", "b"], empty: [], conflicts: [] },
     })
@@ -2059,7 +2117,9 @@ describe("orchestration over the MCP tools", () => {
 
   test("a bad tool call is refused the same way a bad block is", async () => {
     const h = harness({
-      behavior: { root: { output: "", calls: call("openflow_dispatch", { assignments: [{ card: "ghost", task: "x" }] }) } },
+      behavior: {
+        root: { output: "", calls: call("openflow_dispatch", { assignments: [{ card: "ghost", task: "x" }] }) },
+      },
     })
     await h.run(tree(["root->a"]), "do the thing", on).done
 
@@ -2342,9 +2402,7 @@ describe("gauntlet mode", () => {
     expect(reviewer.status).toBe("done")
     expect(reviewer.output).toBe("ours wins")
     // The waits are on the stream, so a run that looks stalled says why.
-    expect(
-      h.activity.some((row) => row.node === "reviewer" && row.event.title.includes("rate limited")),
-    ).toBe(true)
+    expect(h.activity.some((row) => row.node === "reviewer" && row.event.title.includes("rate limited"))).toBe(true)
     expect(log.nodes.find((node) => node.id === "root")!.output).toBe("shipped")
     expect(log.status).toBe("done")
   })
@@ -2406,7 +2464,7 @@ describe("gauntlet mode", () => {
     // Round 1 dispatches the critic; the fake repeats the dispatch block, which
     // trips the stall bound, and the forced answer is accepted with no refusal
     // because a critic has judged this state.
-    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: 'b', stall: 1 })).done
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 1 })).done
 
     expect(h.dispatched).toContain("reviewer")
     expect(h.prompts.get("root")).not.toContain("Not yet — nobody has judged this")
@@ -2622,7 +2680,10 @@ describe("a card that was expected to write", () => {
       type: "session.next.tool.called",
       data: { sessionID: h.sessionOf.get(node), callID: `c-${path}`, tool: "write", input: { path } },
     } as any)
-    h.emit({ type: "session.next.tool.success", data: { sessionID: h.sessionOf.get(node), callID: `c-${path}` } } as any)
+    h.emit({
+      type: "session.next.tool.success",
+      data: { sessionID: h.sessionOf.get(node), callID: `c-${path}` },
+    } as any)
     await flush()
   }
 
@@ -2785,7 +2846,12 @@ describe("a run that ends on a verdict", () => {
     const h = harness({
       models: ["openai/gpt-x"],
       behavior: {
-        root: { outputs: ['```openflow\n{"dispatch":[{"card":"reviewer","task":"judge"}]}\n```', '```openflow\n{"final":"shipped"}\n```'] },
+        root: {
+          outputs: [
+            '```openflow\n{"dispatch":[{"card":"reviewer","task":"judge"}]}\n```',
+            '```openflow\n{"final":"shipped"}\n```',
+          ],
+        },
         reviewer: { output: "ours wins" },
       },
     })
@@ -2897,5 +2963,86 @@ describe("a card whose model cannot read images", () => {
     await h.run(graph, "do the thing", { catalogRetry: 0 }).done
 
     expect(h.prompts.get("a") ?? "").not.toContain("You cannot read images")
+  })
+})
+
+describe("lines a card changed", () => {
+  /** The two events a successful write call puts on the activity stream. */
+  async function wrote(h: ReturnType<typeof harness>, node: string, path: string) {
+    h.emit({
+      type: "session.next.tool.called",
+      data: { sessionID: h.sessionOf.get(node), callID: `d-${node}-${path}`, tool: "write", input: { path } },
+    } as any)
+    h.emit({
+      type: "session.next.tool.success",
+      data: { sessionID: h.sessionOf.get(node), callID: `d-${node}-${path}` },
+    } as any)
+    await flush()
+  }
+
+  test("a card alone with the file it wrote gets the lines exactly", async () => {
+    const h = harness({
+      behavior: { a: { hold: true } },
+      treeStats: [[], [{ path: "src/a.ts", added: 12, removed: 3 }]],
+    })
+    const run = h.run(pipeline("a"))
+    await flush()
+    await wrote(h, "a", "/project/src/a.ts")
+    h.release("a")
+    const log = await run.done
+
+    expect(log.nodes.find((node) => node.id === "a")!.diff).toEqual({ added: 12, removed: 3, files: 1 })
+  })
+
+  test("two cards in one layer on one file share the figure and say so", async () => {
+    const h = harness({
+      behavior: { a: { hold: true }, b: { hold: true } },
+      treeStats: [[], [{ path: "src/a.ts", added: 9, removed: 1 }]],
+    })
+    const graph = pipeline("a", "b")
+    const run = h.run(graph)
+    await flush()
+    await wrote(h, "a", "src/a.ts")
+    await wrote(h, "b", "src/a.ts")
+    h.release("a")
+    h.release("b")
+    const log = await run.done
+
+    // Neither card's alone: they ran at once in one directory, and giving all
+    // nine lines to one of them would be inventing the attribution.
+    expect(log.nodes.find((node) => node.id === "a")!.diff).toEqual({ added: 9, removed: 1, files: 1, shared: ["b"] })
+    expect(log.nodes.find((node) => node.id === "b")!.diff).toEqual({ added: 9, removed: 1, files: 1, shared: ["a"] })
+  })
+
+  test("lines nobody claimed are left off every card", async () => {
+    // Build output. Attributing it to whoever happened to be running is the
+    // number this whole measurement exists to avoid.
+    const h = harness({
+      behavior: { a: { hold: true } },
+      treeStats: [[], [{ path: "dist/bundle.js", added: 900, removed: 0 }]],
+    })
+    const run = h.run(pipeline("a"))
+    await flush()
+    await wrote(h, "a", "src/a.ts")
+    h.release("a")
+    const log = await run.done
+
+    expect(log.nodes.find((node) => node.id === "a")!.diff).toBeUndefined()
+  })
+
+  test("a project that is not a repository measures nothing rather than zero", async () => {
+    const h = harness({ behavior: { a: { hold: true } }, treeStats: [null] })
+    const run = h.run(pipeline("a"))
+    await flush()
+    await wrote(h, "a", "src/a.ts")
+    h.release("a")
+    const log = await run.done
+
+    expect(log.nodes.find((node) => node.id === "a")!.diff).toBeUndefined()
+  })
+
+  test("a host with no measurement at all runs exactly as before", async () => {
+    const log = await harness({ behavior: { a: {} } }).run(pipeline("a")).done
+    expect(log.nodes.find((node) => node.id === "a")!.diff).toBeUndefined()
   })
 })

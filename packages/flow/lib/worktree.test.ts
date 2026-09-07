@@ -188,7 +188,7 @@ describe("mergeWorktrees", () => {
   test("a card that changed nothing is reported as empty, not as merged", async () => {
     const opened = await open(["reader"])
     const report = await mergeWorktrees(dir, opened.trees, opened.base)
-    expect(report).toEqual({ merged: [], empty: ["reader"], conflicts: [] })
+    expect(report).toEqual({ merged: [], empty: ["reader"], conflicts: [], stats: [] })
     await cleanupWorktrees(dir, runID, opened.trees)
   })
 
@@ -209,7 +209,12 @@ describe("cleanupWorktrees", () => {
     const opened = await open(["coder", "tester"])
     await cleanupWorktrees(dir, runID, opened.trees)
 
-    expect(await fs.stat(worktreeRoot(runID)).then(() => true).catch(() => false)).toBe(false)
+    expect(
+      await fs
+        .stat(worktreeRoot(runID))
+        .then(() => true)
+        .catch(() => false),
+    ).toBe(false)
     const branches = (await git(["branch", "--list", "openflow/*"])).stdout.trim()
     expect(branches).toBe("")
     const worktrees = (await git(["worktree", "list"])).stdout.trim().split("\n")
@@ -223,4 +228,13 @@ describe("cleanupWorktrees", () => {
     await cleanupWorktrees(dir, runID, opened.trees)
     expect(await read("a.txt")).toBe("one\nCODER\nthree\n")
   })
+})
+
+test("an isolated card's own branch is where its line count comes from", async () => {
+  const opened = await open(["coder"])
+  await fs.writeFile(path.join(opened.trees[0].directory, "a.txt"), "one\ntwo\nthree\nfour\n")
+  await fs.writeFile(path.join(opened.trees[0].directory, "new.ts"), "x\ny\n")
+  const report = await mergeWorktrees(dir, opened.trees, opened.base)
+  expect(report.stats).toEqual([{ card: "coder", added: 3, removed: 0, files: 2 }])
+  await cleanupWorktrees(dir, runID, opened.trees)
 })

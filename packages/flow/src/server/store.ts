@@ -28,7 +28,11 @@ export type MergeReport = {
   merged: string[]
   empty: string[]
   conflicts: { card: string; paths: string[] }[]
+  /** Lines each card changed, counted on its own branch before the merge. */
+  stats?: { card: string; added: number; removed: number; files: number }[]
 }
+/** One file's line counts. `null` files means the project is not a git repository. */
+export type TreeStat = { files: { path: string; added: number; removed: number; binary?: boolean }[] | null }
 export type BrowseEntry = { name: string; path: string }
 export type BrowseResult = { path: string | null; parent: string | null; entries: BrowseEntry[] }
 export type FlowPaths = {
@@ -113,6 +117,14 @@ export const store = {
   /** Folds each card's work back in. Paths that would not apply are named, never forced. */
   mergeWorktrees: (base: string, trees: WorktreeRef[]) =>
     request<MergeReport>("/worktrees/merge", { method: "POST", body: JSON.stringify({ base, trees }) }),
+  /**
+   * What the project's tree holds that its last commit does not, right now.
+   *
+   * Only useful in pairs: the engine takes one before a batch and one after,
+   * and the difference is what that batch wrote. `files: null` says the project
+   * is not a repository, which is unmeasurable rather than unchanged.
+   */
+  treeStat: () => request<TreeStat>("/treestat"),
   cleanupWorktrees: (run: string, trees: WorktreeRef[]) =>
     request<{ removed: true }>("/worktrees/cleanup", { method: "POST", body: JSON.stringify({ run, trees }) }),
   runs: () => request<RunEntry[]>("/runs"),
@@ -161,7 +173,8 @@ export const store = {
    * [../../lib/repackage.ts]: without the override this engine's runner cannot
    * dispatch an OpenRouter or Groq model however valid its key is.
    */
-  repackageStatus: () => request<{ path: string; applied: string[]; available: string[]; error?: string }>("/repackage"),
+  repackageStatus: () =>
+    request<{ path: string; applied: string[]; available: string[]; error?: string }>("/repackage"),
   /** Writes that override for `providers`. The engine must restart before it applies. */
   repackage: (providers: string[]) =>
     request<{ path: string; changed: string[]; applied: string[]; backup?: string; restart: boolean }>("/repackage", {
@@ -194,7 +207,10 @@ export const store = {
     const response = await fetch("/flow/api/server/restart", { method: "POST" })
     const body = (await response.json().catch(() => undefined)) as (ServeStatus & { error?: string }) | undefined
     if (response.ok) return body as ServeStatus
-    throw Object.assign(new Error(body?.error ?? `restart failed (${response.status})`), { status: response.status, info: body })
+    throw Object.assign(new Error(body?.error ?? `restart failed (${response.status})`), {
+      status: response.status,
+      info: body,
+    })
   },
   /** Switches the live project directory. Takes effect immediately, no restart. */
   setProject: (path: string) => request<FlowPaths>("/project", { method: "POST", body: JSON.stringify({ path }) }),

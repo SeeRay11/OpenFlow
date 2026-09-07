@@ -666,7 +666,9 @@ button:disabled {
 /* the global ring replaces box-shadow outright, so raised controls re-state it */
 .btn:focus-visible,
 .oc-button:focus-visible {
-  box-shadow: var(--v2-elevation-button-neutral), 0 0 0 1px var(--v2-border-border-focus);
+  box-shadow:
+    var(--v2-elevation-button-neutral),
+    0 0 0 1px var(--v2-border-border-focus);
 }
 
 .btn-primary {
@@ -702,7 +704,9 @@ button:disabled {
 
 /* each variant restates the ring on its own shadow, or it would inherit .btn's */
 .btn-primary:focus-visible {
-  box-shadow: var(--v2-elevation-button-contrast), 0 0 0 1px var(--v2-border-border-focus);
+  box-shadow:
+    var(--v2-elevation-button-contrast),
+    0 0 0 1px var(--v2-border-border-focus);
 }
 
 .btn-danger:focus-visible,
@@ -1709,13 +1713,17 @@ main {
 /* selection outranks status: it is the thing the user just did */
 .node.selected {
   border-color: var(--v2-border-border-focus);
-  box-shadow: var(--v2-elevation-raised), 0 0 0 1px var(--v2-border-border-focus);
+  box-shadow:
+    var(--v2-elevation-raised),
+    0 0 0 1px var(--v2-border-border-focus);
 }
 
 /* the shared focus ring replaces box-shadow outright, which would drop the
    card's elevation and flatten it against the canvas — restate both */
 .node:focus-visible {
-  box-shadow: var(--v2-elevation-raised), 0 0 0 1px var(--v2-border-border-focus);
+  box-shadow:
+    var(--v2-elevation-raised),
+    0 0 0 1px var(--v2-border-border-focus);
 }
 
 .node-header {
@@ -1750,6 +1758,22 @@ main {
   line-height: 18px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * Lines this card changed, beside its status.
+ *
+ * Mono, because it is a number read against the numbers on the cards beside it
+ * and a proportional font makes a column of them ragged. Rendered only when the
+ * run measured them — an unmeasured card shows nothing here rather than a zero.
+ */
+.node-diff {
+  flex-shrink: 0;
+  color: var(--v2-text-text-muted);
+  font-family: var(--v2-font-family-mono);
+  font-size: 11px;
+  line-height: 16px;
   white-space: nowrap;
 }
 
@@ -2154,7 +2178,9 @@ main {
 }
 
 .oc-button.oc-primary:focus-visible {
-  box-shadow: var(--v2-elevation-button-contrast), 0 0 0 1px var(--v2-border-border-focus);
+  box-shadow:
+    var(--v2-elevation-button-contrast),
+    0 0 0 1px var(--v2-border-border-focus);
 }
 
 .oc-button.oc-danger:focus-visible {

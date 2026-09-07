@@ -318,12 +318,11 @@ export function App() {
     try {
       const result = await store.installDispatchTool()
       setDispatchTool(await store.dispatchToolStatus().catch(() => undefined))
-      notice(
-        "info",
-        `dispatch tool written to ${result.path}${result.backup ? ` (backup ${result.backup})` : ""}`,
-      )
+      notice("info", `dispatch tool written to ${result.path}${result.backup ? ` (backup ${result.backup})` : ""}`)
       if (result.restart)
-        void showEngineHelp("The dispatch tool is in your config now, and the engine has to restart before cards can call it.")
+        void showEngineHelp(
+          "The dispatch tool is in your config now, and the engine has to restart before cards can call it.",
+        )
     } catch (error) {
       notice("error", api.describe(error))
     } finally {
@@ -563,7 +562,9 @@ export function App() {
         const conflict = body?.error ?? `a different pipeline is already saved as "${state.pipeline.name}"`
         // Never overwrite on the user's behalf: replacing somebody's saved work
         // is the whole thing this guard exists to prevent.
-        if (window.confirm(`${conflict}\n\nOK replaces the saved pipeline. Cancel keeps it so you can rename this one.`))
+        if (
+          window.confirm(`${conflict}\n\nOK replaces the saved pipeline. Cancel keeps it so you can rename this one.`)
+        )
           return save(true)
         return notice("error", `${conflict} — rename this pipeline in the title bar, then save again`)
       }
@@ -581,9 +582,7 @@ export function App() {
 
   /** Saves the current graph to a `.json` file — the same schema the server stores. */
   function exportPipeline() {
-    const url = URL.createObjectURL(
-      new Blob([JSON.stringify(state.pipeline, null, 2)], { type: "application/json" }),
-    )
+    const url = URL.createObjectURL(new Blob([JSON.stringify(state.pipeline, null, 2)], { type: "application/json" }))
     const anchor = document.createElement("a")
     anchor.href = url
     anchor.download = `${state.pipeline.name || "pipeline"}.json`
@@ -823,7 +822,10 @@ export function App() {
           onQuestionClosed: (requestID) => actions.answerQuestion(requestID, undefined),
           // A run stopped by stale config has exactly one fix, so hand it over
           // rather than leaving the user to find the command themselves.
-          onEngineStale: () => void showEngineHelp("The engine is running older config than what is on disk — an agent this pipeline needs was merged after it booted."),
+          onEngineStale: () =>
+            void showEngineHelp(
+              "The engine is running older config than what is on disk — an agent this pipeline needs was merged after it booted.",
+            ),
         },
         {
           pipe: pipe(),
@@ -890,7 +892,11 @@ export function App() {
     // the two differ in case for every run recorded as `run-<ISO>`.
     const id = findRun(runs(), state.run?.id)?.id
     if (!id) return
-    if (!window.confirm(`Delete the recording of run ${id}?\n\nThis cannot be undone. The canvas keeps what it is showing.`))
+    if (
+      !window.confirm(
+        `Delete the recording of run ${id}?\n\nThis cannot be undone. The canvas keeps what it is showing.`,
+      )
+    )
       return
     try {
       await store.deleteRun(id)
@@ -934,6 +940,7 @@ export function App() {
           prompt: node.prompt,
           sessionID: node.sessionID,
           usage: node.usage,
+          diff: node.diff,
           started: node.started,
           finished: node.finished,
           events: node.events,
@@ -1334,7 +1341,14 @@ export function App() {
           promise a fix it cannot deliver — see `MCP_REACHES_SESSIONS`. The
           route stays live for anyone who wants to install it ahead of upstream;
           it just is not advertised. Flip the constant to bring this back. */}
-      <Show when={MCP_REACHES_SESSIONS && modeOf(state.pipeline) === "orchestration" && dispatchTool() && !dispatchTool()!.current}>
+      <Show
+        when={
+          MCP_REACHES_SESSIONS &&
+          modeOf(state.pipeline) === "orchestration" &&
+          dispatchTool() &&
+          !dispatchTool()!.current
+        }
+      >
         <div class="notice" data-kind="info">
           <IconInfo />
           <span class="notice-text">
@@ -1569,7 +1583,11 @@ export function App() {
                     on the reviewer's activity stream. */}
                 <Show when={log().verdict}>
                   {(verdict) => (
-                    <span class="badge" data-status={verdict().kind === "pass" ? "done" : "error"} title={verdict().reason ?? ""}>
+                    <span
+                      class="badge"
+                      data-status={verdict().kind === "pass" ? "done" : "error"}
+                      title={verdict().reason ?? ""}
+                    >
                       {verdict().kind === "pass"
                         ? "verified"
                         : verdict().kind === "fail"
