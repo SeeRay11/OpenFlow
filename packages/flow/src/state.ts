@@ -13,7 +13,7 @@ import type {
 } from "./graph/types"
 import { applyEvent } from "./server/activity"
 import type { QuestionInfo } from "./server/client"
-import { emptyPipeline, modeOf, type FlowMode, type Gauntlet } from "./graph/types"
+import { emptyPipeline, modeOf, type FlowMode, type Gauntlet, type Verify } from "./graph/types"
 import { pathThrough, wouldCycle } from "./graph/validate"
 
 export type NodeRuntime = {
@@ -359,6 +359,24 @@ export const actions = {
     snapshot()
     setState("dirty", true)
     setState("pipeline", "isolate", on ? true : undefined)
+  },
+
+  /**
+   * Whether the run ends on a verdict. Undoable and dirtying like the others:
+   * it changes what an existing graph reports, and costs a session every run.
+   */
+  setVerify(on: boolean) {
+    if (!!state.pipeline.verify === on) return
+    snapshot()
+    setState("dirty", true)
+    setState("pipeline", "verify", on ? {} : undefined)
+  },
+
+  /** The verifier's bar. */
+  setVerifySetting(patch: Partial<Verify>) {
+    if (!state.pipeline.verify) return
+    setState("dirty", true)
+    setState("pipeline", "verify", (current) => ({ ...current, ...patch }))
   },
 
   /** One gauntlet field. Clamped where it is read, not here. */

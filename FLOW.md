@@ -208,6 +208,68 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   after-the-fact note in `graph/collisions.ts` can only report the loss. It is optional because
   most assignments write nothing and a mandatory field is filled with guesses; an undeclared
   overlap still surfaces through the post-batch check.
+- **A verified run ends on a critic's verdict, in any mode.** `Pipeline.verify` is a document
+  property like `mode`, `gauntlet` and `isolate` — absent means off, so no canvas saved before it
+  existed starts spending a session it did not ask for — read through `verifyOf`, and it carries
+  only an optional `bar`. There is no verifier id in it: the critic is picked by **role text**, the
+  way a swarm picks its synthesizer and a gauntlet picks its critics, so designating one is
+  renaming a card and a stored id cannot drift out of step with the canvas. `verifyRun()` runs
+  after the scheduler and knows nothing about which one ran — only what the run produced, which is
+  the cards nothing reads: a pipeline's terminal layer, a swarm's synthesizer, an orchestration's
+  root. It is skipped when a card already failed, because that run has already told the truth about
+  itself and a verdict confirming it is the one nobody needs.
+  Three rules are carried over from the gauntlet, each because dropping it was measured to break
+  the method there: a **new session** per verdict (in a pipeline the reviewer card has usually just
+  run, and a critic that watched the work appear grades the appearing), **one critic at a time**
+  (judging means running the build in the one working directory this fork has), and **inspect the
+  real output, never the summary** — the run's answer is shown to the verifier as a *claim*, and
+  the briefing says so twice. The first card to withhold a pass ends the pass; paying the rest to
+  agree changes nothing.
+  A verdict is one marker line, `VERDICT: PASS` or `VERDICT: FAIL`, parsed by `graph/verdict.ts`,
+  **not** the ` ```openflow ` block: that block is a control instruction with a schema, taught over
+  paragraphs to a card whose job is dispatching, and asking a critic writing prose for JSON buys a
+  parse failure on the one turn that matters. Last marker wins, for the same reason the last
+  dispatch block does. A message with **no** marker is `unreadable`, which fails the run — a
+  glowing review with no line is an unanswered question, and reading it as a pass would rebuild the
+  bug verification exists to kill. It is re-asked once for the line alone first, since the critic
+  has already done the looking. The card's own answer is **put back** afterwards and the verdict
+  goes on `RunLog.verdict`: in a pipeline the reviewer's message was read by the cards downstream
+  during the run, and the log is the only record of what they were given. A gauntlet ignores the
+  setting entirely (`verifyOf` returns nothing) and preflight says so, because its loop already
+  cannot finish without a verdict and a second opinion there would have no owner.
+- **A card is `done` when its session goes idle, so what it did is checked separately.** Idle is
+  all "finished" has ever meant here — `POST /api/session/:id/wait` answers 503 on this build, so
+  `waitForIdle` derives it from `/api/session/active` plus a finished assistant turn — and a model
+  that replies "I'll start on that" and calls nothing satisfies it in one turn. Two checks stand
+  between that and `done`, both in `runTurn` so every mode gets them. **No text and no writes
+  fails the card**: there is nothing to pass downstream and nothing to have built, and a blank
+  input makes the next card answer about nothing. An orchestrator is exempt — a turn that ended on
+  a tool call and said nothing is normal for one, and `parseDispatch` has a re-ask written for
+  exactly it, so failing here would take a run down over a turn that only needed the block; no
+  other card has anything that can re-ask it. **No writes from a card that was expected to write**
+  appends `noWritesNote` to its own answer, because the orchestrator reads the output and nothing
+  else. Expected means the dispatch declared `files` (the orchestrator's own claim, and the engine's
+  only expectation that did not come from a default) or `edit === true` — the box the user ticked,
+  deliberately *not* `swarm-writers`' reading, where an unlisted tool counts as allowed: right for a
+  hazard warning, useless as intent, since it makes almost every card a writer and a note on almost
+  every card is a note nobody reads. Swarm peers and gauntlet critics are exempt, both being cards
+  told not to write. It notes rather than fails because a card given `edit` that finds nothing to
+  change is legitimate and no signal separates it from one describing work it never did. A card
+  that wrote but said nothing answers with `silentWriterNote` — the paths it touched — rather than
+  a blank.
+- **An orchestrator cannot answer for a run it dispatched nothing into.** A `final` from a card
+  with children and `spent === 0` is refused once with `dispatchFirstPrompt`; a second one fails
+  the card. Until 2026-09-03 it was accepted, and it is the cheapest way a run has to look
+  finished while nothing happened: every card the user drew marked `skipped`, one model's turn as
+  the output, the canvas green in seconds. Nothing about that reads as a failure, which is why it
+  was reported from outside the project rather than caught by a check inside it. The gauntlet's
+  `unjudged()` refusal is the same rule one level narrower — nobody *qualified* judged, rather
+  than nobody worked — and it is tested first, because "send the work to a critic" is more useful
+  than "dispatch somebody" to a card that has both problems. The second answer fails rather than
+  being accepted for the reason the gauntlet learned in its own case: an answer let through on the
+  second ask goes into the log indistinguishable from a real run's, and reporting success is the
+  entire cost of this bug. A card with no children never reaches the check — it is not an
+  orchestrator, and blocking it would deadlock the level above.
 - **A card that ignores its spent budget is stopped, not re-asked.** When the budget runs out
   the orchestrator gets one forced-answer turn; if it dispatches anyway the node fails. Without
   that check the loop never ends. A leaf goes through `runSubagent` and is never shown the

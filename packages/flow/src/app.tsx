@@ -81,6 +81,7 @@ import { SkillsPanel } from "./ui/skills-panel"
 import { SpendPanel } from "./ui/spend-panel"
 import { EngineDialog } from "./ui/engine-dialog"
 import { GauntletDialog } from "./ui/gauntlet-dialog"
+import { VerifyDialog } from "./ui/verify-dialog"
 import { costLabel } from "./server/usage"
 import { Select, type SelectOption } from "./ui/select"
 
@@ -119,6 +120,10 @@ const GAUNTLET_OPTIONS: SelectOption[] = [
 const ISOLATE_OPTIONS: SelectOption[] = [
   { value: "off", label: "off", hint: "one shared working directory" },
   { value: "on", label: "on", hint: "a git worktree per card, merged after each batch" },
+]
+const VERIFY_OPTIONS: SelectOption[] = [
+  { value: "off", label: "off", hint: "the run ends when its cards do" },
+  { value: "on", label: "on", hint: "a reviewer card judges the result and the run reports its verdict" },
 ]
 const POLICY_OPTIONS: SelectOption[] = [
   { value: "auto", label: "auto", hint: "answer for me" },
@@ -192,6 +197,7 @@ export function App() {
   const [showMcp, setShowMcp] = createSignal(false)
   const [showSpend, setShowSpend] = createSignal(false)
   const [gauntletOpen, setGauntletOpen] = createSignal(false)
+  const [verifyOpen, setVerifyOpen] = createSignal(false)
   const [tick, setTick] = createSignal(Date.now())
   const [engine, setEngine] = createSignal<ServeStatus>()
   const [restarting, setRestarting] = createSignal(false)
@@ -1215,6 +1221,30 @@ export function App() {
               onChange={(value) => actions.setIsolate(value === "on")}
             />
           </Show>
+          {/* Every mode, unlike the two above it: a gauntlet is the one canvas
+              that already ends on a verdict, and `verifyOf` ignores it there. */}
+          <Show when={!gauntletOf(state.pipeline)}>
+            <Select
+              variant="ghost"
+              prefix="verify: "
+              width={360}
+              title="when the cards have finished, every reviewer card runs once more in a new session, looks at what the run produced, and passes or fails it — so a run that did nothing cannot report success"
+              value={state.pipeline.verify ? "on" : "off"}
+              options={VERIFY_OPTIONS}
+              onChange={(value) => actions.setVerify(value === "on")}
+            />
+            <Show when={state.pipeline.verify}>
+              <button
+                class="btn btn-ghost"
+                type="button"
+                title="what the verifier holds the result against"
+                onClick={() => setVerifyOpen(true)}
+              >
+                <IconSliders />
+                {state.pipeline.verify?.bar?.trim() ? "bar set" : "set the bar"}
+              </button>
+            </Show>
+          </Show>
           <Select
             variant="ghost"
             prefix="permissions: "
@@ -1505,6 +1535,16 @@ export function App() {
         />
       </Show>
 
+      {/* Closes itself if verification is switched off underneath it, or if the
+          canvas becomes a gauntlet, which ignores the setting entirely. */}
+      <Show when={verifyOpen() && state.pipeline.verify && !gauntletOf(state.pipeline)}>
+        <VerifyDialog
+          pipeline={state.pipeline}
+          onChange={actions.setVerifySetting}
+          onClose={() => setVerifyOpen(false)}
+        />
+      </Show>
+
       <footer class="statusbar">
         <div class="statusbar-left">
           <span
@@ -1524,6 +1564,20 @@ export function App() {
                 {/* A gauntlet has no node count to read progress from — it ends
                     on money or time, so those are what a run has to show while
                     it is going. */}
+                {/* Without this a failed verdict reads as a broken run: every
+                    card is green and the badge says error, with the reason only
+                    on the reviewer's activity stream. */}
+                <Show when={log().verdict}>
+                  {(verdict) => (
+                    <span class="badge" data-status={verdict().kind === "pass" ? "done" : "error"} title={verdict().reason ?? ""}>
+                      {verdict().kind === "pass"
+                        ? "verified"
+                        : verdict().kind === "fail"
+                          ? "did not meet the bar"
+                          : "no verdict"}
+                    </span>
+                  )}
+                </Show>
                 <Show when={gauntletProgress(log())}>
                   {(progress) => (
                     <span class="mono" title="what this gauntlet has spent of the bounds that will stop it">

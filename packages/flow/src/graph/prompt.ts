@@ -1,7 +1,8 @@
 import { DISPATCH_TOOL, FENCE, FINISH_TOOL, MCP_REACHES_SESSIONS } from "./dispatch"
 import { isCritic, orchestrationShape, subagentsOf } from "./orchestration"
 import { swarmShape } from "./swarm"
-import { dispatchesOf, gauntletOf, roundsOf, type Attachment, type FlowNode, type Pipeline } from "./types"
+import { dispatchesOf, gauntletOf, roundsOf, verifyOf, type Attachment, type FlowNode, type Pipeline } from "./types"
+import { FAIL, PASS } from "./verdict"
 import { downstream, layer, upstream } from "./validate"
 
 /** `role (id)` — the one label every prompt in every mode uses for a card. */
@@ -494,6 +495,74 @@ function gauntletBriefing(pipeline: Pipeline, node: FlowNode) {
 }
 
 /**
+ * The verification pass: a critic judging a finished run.
+ *
+ * The gauntlet's critic one level out. Everything that makes that one work is
+ * kept — inspect the real output, never the summary; a fresh session, so it is
+ * grading the work rather than its own memory of it improving; do not fix
+ * anything — and one thing is added, because there is no orchestrator here to
+ * read prose and decide: it must end on a marker the engine can read.
+ *
+ * `result` is what the run produced, which is the *claim*, not the evidence.
+ * The briefing says so twice, because a critic handed a confident summary and a
+ * repository will read the summary unless told plainly which one it is judging.
+ */
+export function verifyPrompt(pipeline: Pipeline, node: FlowNode, result: string, skipped: Attachment[] = []) {
+  const verify = verifyOf(pipeline)
+  const sections = [
+    [
+      "# OpenFlow",
+      "",
+      "You are the verifier of an OpenFlow run: a separate `opencode` session with your own model",
+      "and tools. The cards have finished. Nothing else will run after you, and no model reads your",
+      "answer — the run is reported as passing or failing on the line you end with.",
+      "",
+      "## Your part",
+      "",
+      "- **Go and look at the real output.** Read the files, run the thing, run the tests, open what",
+      "  it produces. What the run says it did is below; that is a claim, and you are here to check",
+      "  it. If you could not get to the work, say so and fail it — an unverifiable result is not a",
+      "  passing one.",
+      "- Judge what is there now, not the effort that went into it, and not whether the cards were",
+      "  reasonable. Work that is impressive and short of what was asked for is short of it.",
+      "- Name what is missing, specifically enough to act on. One clear gap beats a list of six.",
+      "- Do not fix anything, including the small things. You are the last card to run; a repair you",
+      "  make is one nobody will ever check.",
+      "",
+      "## How to end",
+      "",
+      `Your last line must be exactly \`${PASS}\` or \`${FAIL}\`, and nothing else on it. Everything`,
+      "above it is yours — one sentence or ten paragraphs, whichever the work deserves. A message",
+      "with no such line is read as no verdict at all, and the run reports that it could not be",
+      "verified.",
+    ].join("\n"),
+  ]
+  if (node.agent.prompt.trim()) sections.push(node.agent.prompt.trim())
+  if (verify?.bar) sections.push(`# The bar\n\n${verify.bar}`)
+  const unreadable = withheld(skipped)
+  if (unreadable) sections.push(unreadable)
+  sections.push(`# What the run claims it did\n\n${result.trim() || "(the run produced no text)"}`)
+  return sections.join("\n\n")
+}
+
+/**
+ * The one re-ask when a critic wrote no verdict line.
+ *
+ * Kept to almost nothing on purpose, like `protocolPrompt`'s last attempt: the
+ * critic has already done the looking and written the reasoning, and repeating
+ * the briefing invites it to do the whole job again. All that is missing is the
+ * line.
+ */
+export function verdictPrompt() {
+  return [
+    "Your message carried no verdict line, so the run has nothing to report.",
+    "",
+    `Reply with \`${PASS}\` or \`${FAIL}\` and nothing else. Judge what you already looked at; do not`,
+    "start again.",
+  ].join("\n")
+}
+
+/**
  * A critic's assignment.
  *
  * It is a leaf card and never sees the dispatch protocol, but it is not an
@@ -725,6 +794,52 @@ export function toolFailureNote(failures: { title: string; body?: string }[]) {
 }
 
 /**
+ * What a card's answer carries when it was expected to write and did not.
+ *
+ * A card is `done` when its session goes idle, which is also what a card that
+ * answered in prose and touched nothing looks like — so an assignment that was
+ * meant to land on disk reads downstream exactly like one that did. Nothing
+ * here decides the card failed: a card given `edit` that concludes there is
+ * nothing to change is legitimate, and the engine cannot tell the two apart.
+ * What it can do is stop the *reader* from assuming.
+ *
+ * `declared` is the paths a dispatch said this card would write, when it said.
+ * That is a claim the orchestrator made and can check; write tools merely
+ * switched on are a much weaker signal, so the two get different words.
+ */
+export function noWritesNote(declared: string[]) {
+  if (declared.length)
+    return [
+      `> **This card was assigned ${declared.length === 1 ? "a file" : "files"} to write and wrote nothing:**`,
+      `> ${declared.map((path) => `\`${path}\``).join(", ")}`,
+      ">",
+      "> Whatever it says above, those paths are as they were. Open them before building on this,",
+      "> and re-dispatch with what is actually missing rather than repeating the assignment.",
+    ].join("\n")
+  return [
+    "> **This card could write files and did not — its turn changed nothing on disk.**",
+    ">",
+    "> That is legitimate if the work was to read, judge or plan. If it was to make a change,",
+    "> what is above is a description of one that was never made.",
+  ].join("\n")
+}
+
+/**
+ * The answer for a card that wrote files and said nothing.
+ *
+ * An empty transcript downstream is worse than useless — the next card is
+ * handed a blank where its input should be and answers about nothing. The work
+ * is real, so it is the writes that become the answer.
+ */
+export function silentWriterNote(paths: string[]) {
+  return [
+    "This card produced no message. What it wrote, read off its tool calls:",
+    "",
+    ...paths.map((path) => `- \`${path}\``),
+  ].join("\n")
+}
+
+/**
  * The re-ask when a turn produced no usable control block.
  *
  * It gets shorter every time. The failure is almost never that the card does
@@ -824,6 +939,48 @@ export function judgeFirstPrompt(pipeline: Pipeline, node: FlowNode) {
     "This is the last time you are asked. Answering again with no critic verdict on the current state",
     "ends the run as a failure, because a gauntlet that certifies work nobody qualified judged is worth",
     "less than one that admits it never got a verdict.",
+  ].join("\n")
+}
+
+/**
+ * What an orchestrator is told when it answers without having dispatched anybody.
+ *
+ * The gauntlet refusal above is the same shape one level narrower: there, the
+ * answer is refused because nobody *qualified* judged the work; here, because
+ * nobody did the work at all. A card that answers on its first turn has
+ * produced a run in which every card the user drew was marked `skipped` and one
+ * model's opinion became the output — which reads as a completed run, so
+ * nothing about it looks wrong until the answer is acted on. Reported from the
+ * outside before it was found from the inside.
+ *
+ * It names the children because the block has to name one of them, and a card
+ * that never dispatched has usually not read the roster it was given.
+ */
+export function dispatchFirstPrompt(pipeline: Pipeline, node: FlowNode) {
+  const children = subagentsOf(pipeline, node)
+  return [
+    "# You answered without using any of your cards",
+    "",
+    `You are an orchestrator: the work goes to the ${children.length} card(s) below, and your answer is`,
+    "built out of what they send back. You have dispatched none of them, so there is nothing behind that",
+    "answer but your own turn — and a task that could be finished in one turn did not need this canvas.",
+    "",
+    ...children.map((child) => {
+      const role = child.agent.prompt.trim().split("\n")[0] || "no role instructions"
+      return `- \`${child.id}\` — ${child.role} · ${role}`
+    }),
+    "",
+    "Split the task and send it out:",
+    "",
+    "```" + FENCE,
+    `{ "dispatch": [ { "card": "${children[0]?.id ?? "<card id>"}", "task": "what it must do, in full" } ] }`,
+    "```",
+    "",
+    "If the work genuinely belongs to one card, dispatch that one card. Do not do the work yourself and",
+    "report it as theirs.",
+    "",
+    "This is the only time you are asked. Answering again without having dispatched anything ends the run",
+    "as a failure, because an answer no card contributed to is not the run that was designed.",
   ].join("\n")
 }
 

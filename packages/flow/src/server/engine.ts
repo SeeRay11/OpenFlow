@@ -5,21 +5,27 @@ import { isCritic, orchestrationShape } from "../graph/orchestration"
 import {
   buildPrompt,
   criticPrompt,
+  dispatchFirstPrompt,
   dispatchResultPrompt,
   forceFinalPrompt,
   imageBlindNote,
   interruptedNote,
   judgeFirstPrompt,
+  noWritesNote,
+  verdictPrompt,
+  verifyPrompt,
   orchestratorPrompt,
   protocolPrompt,
   reassignPrompt,
   subOrchestratorPrompt,
+  silentWriterNote,
   subagentPrompt,
   swarmPrompt,
   toolFailureNote,
   synthesisPrompt,
 } from "../graph/prompt"
 import { swarmShape } from "../graph/swarm"
+import { verdictIn } from "../graph/verdict"
 import type {
   Attachment,
   FlowNode,
@@ -31,11 +37,11 @@ import type {
   Spend,
   StepUsage,
 } from "../graph/types"
-import { depthOf, dispatchesOf, GAUNTLET_DISPATCHES, gauntletOf, isolationOf, modeOf, roundsOf } from "../graph/types"
-import { ancestors, layer, upstream } from "../graph/validate"
+import { depthOf, dispatchesOf, GAUNTLET_DISPATCHES, gauntletOf, isolationOf, modeOf, roundsOf, verifyOf } from "../graph/types"
+import { ancestors, downstream, layer, upstream } from "../graph/validate"
 import { applyEvent, createActivity, persistable } from "./activity"
 import * as api from "./client"
-import { store, type ServeStatus, type WorktreeRef } from "./store"
+import { store, toolMap, type ServeStatus, type WorktreeRef } from "./store"
 import { mergeSpend, summarize, type PricedModel } from "./usage"
 
 export type NodePatch = {
@@ -363,6 +369,17 @@ export function start(
   const isolate = isolationOf(pipeline)
   if (gauntlet && !pipeline.nodes.some((node) => isCritic(node) && !tree!.children(node.id).length))
     throw new Error("a gauntlet has no reviewer card to judge the work against its bar")
+  /**
+   * Whether this run ends on a verdict. Every mode, gauntlets excepted — theirs
+   * already does.
+   */
+  const verify = verifyOf(pipeline)
+  const verifiers = verify ? pipeline.nodes.filter((node) => isCritic(node)) : []
+  // The same shape as the gauntlet check above, and for the same reason: the
+  // engine is callable without preflight, and a run that cannot be verified
+  // would otherwise report exactly what verification exists to stop it
+  // reporting.
+  if (verify && !verifiers.length) throw new Error("verification is on and no card has the reviewer role")
   // Swarm reads no edges at all, so a leftover cycle from a graph that used to
   // be a pipeline is not a reason to refuse it. Orchestration does read them,
   // and `layer` is still what rejects a cycle before the recursion meets one.
@@ -405,6 +422,15 @@ export function start(
   }
   /** Tool-call ids already read, so an old call cannot decide a new turn. */
   const consumed = new Map<string, Set<string>>()
+  /**
+   * The paths the current assignment said a card would write, when it said.
+   *
+   * Optional on a dispatch and empty for every other mode, so its absence
+   * proves nothing — but when it is there it is the orchestrator's own claim
+   * about what should change, which is the only expectation the engine has that
+   * did not come from a default.
+   */
+  const declared = new Map<string, string[]>()
   const active = new Set<string>() // sessionIDs still running
   const answered = new Set<string>() // permission requests already replied to
   const asked = new Set<string>() // question requests already handled
@@ -819,7 +845,50 @@ export function start(
         const rejected = (events.get(node.id) ?? []).filter(
           (event) => event.kind === "tool" && event.status === "error" && event.at >= turnStarted,
         )
-        const answer = rejected.length ? `${result.text}\n\n${toolFailureNote(rejected)}` : result.text
+        // What this turn actually changed on disk, read off the same tool calls
+        // the collision check reads. A card is `done` when its session goes
+        // idle, so "answered in prose and touched nothing" and "did the work"
+        // are the same event out here unless somebody looks.
+        const wrote = writesOf(events.get(node.id) ?? [], turnStarted)
+        const owed = declared.get(node.id) ?? []
+        const expected = owed.length > 0 || writerByChoice(node)
+        // A card that says nothing hands the next card a blank where its input
+        // should be, and the next card answers about nothing. If it wrote, the
+        // writes are the answer; if it did neither, there is nothing to pass on
+        // and nothing to have built — so the card failed, whatever the session
+        // reported.
+        //
+        // Except for an orchestrator, which is asked again instead. A turn that
+        // ended on a tool call and said nothing is a normal thing for one to do
+        // and `parseDispatch` has a re-ask written for exactly it; failing the
+        // card here would take the run down over a turn that only needed the
+        // block. Nothing can re-ask any other card, which is why they are held
+        // to the stricter rule.
+        const orchestrating = !!tree && tree.children(node.id).length > 0
+        if (!result.text.trim() && !wrote.length && !orchestrating)
+          throw new Error("the card finished without producing any output")
+
+        const notes = [
+          ...(rejected.length ? [toolFailureNote(rejected)] : []),
+          // Not an error: a card given `edit` that finds nothing to change is
+          // legitimate, and no signal here separates that from a card that
+          // described work it never did. The reader is told, and decides.
+          ...(expected && !wrote.length ? [noWritesNote(owed)] : []),
+        ]
+        // Only a card that wrote something gets its writes read out as its
+        // answer. An orchestrator's empty turn stays empty, because `decide`
+        // reads that emptiness and has its own thing to say about it.
+        const body =
+          !result.text.trim() && wrote.length ? silentWriterNote(wrote.map((write) => write.path)) : result.text
+        const answer = notes.length ? `${body}\n\n${notes.join("\n\n")}` : body
+        if (expected && !wrote.length)
+          activity.note(
+            node.id,
+            `nowrites:${node.id}:${turnStarted}`,
+            owed.length ? `wrote none of its ${owed.length} assigned file(s)` : "wrote no files",
+            owed.join("\n"),
+            "error",
+          )
         if (rejected.length) {
           entry(node.id).toolFailures = rejected.length
           activity.note(
@@ -888,6 +957,28 @@ export function start(
    */
   function rateLimited(reason: string) {
     return /\b429\b|rate.?limit|too many requests/i.test(reason)
+  }
+
+  /**
+   * Whether a card writing nothing is worth remarking on.
+   *
+   * Deliberately **not** the reading `swarm-writers` uses in preflight. There,
+   * the question is what a card *can* do, so an unlisted tool counts as allowed
+   * — which is right for a hazard warning and useless here, since it makes
+   * almost every card an expected writer and a note on almost every card is a
+   * note nobody reads. `edit === true` is the box the user ticked (`write` and
+   * `patch` alias onto it), so it is the closest thing to a stated intent.
+   *
+   * Three exemptions, all cards whose job is explicitly not to write: a swarm
+   * peer, told in its briefing not to, a gauntlet critic, whose whole value is
+   * that it only inspects, and a card in a verified run, which will be asked to
+   * judge one — a note telling a verifier it changed no files is both wrong and
+   * stapled to the verdict it just wrote.
+   */
+  function writerByChoice(node: FlowNode) {
+    if (mode === "swarm") return false
+    if ((gauntlet || verify) && isCritic(node)) return false
+    return toolMap(node.agent.tools).edit === true
   }
 
   /** A card's one turn in `pipeline` mode, after its layer's predecessors settled. */
@@ -978,6 +1069,8 @@ export function start(
     let forced: { reason: string; error: string } | undefined
     /** Whether the previous turn's `final` was already sent back for a verdict. */
     let refused = false
+    /** Whether an answer has already been sent back for having dispatched nobody. */
+    let refusedEmpty = false
     /** Critic children of this card, and which of them have judged since the last build. */
     const judges = children.filter((id) => isCritic(nodes.get(id)!))
     const judged = new Set<string>()
@@ -1059,6 +1152,35 @@ export function start(
             ? `the bar was never judged — every critic dispatched failed (${criticLoss})`
             : "the bar was never judged — the card answered twice without sending the work to a critic"
           activity.note(node.id, `unjudged:${node.id}:final`, "answered with no verdict on the work", reason, "error")
+          patch(node.id, { status: "error", error: reason, activity: undefined, finished: Date.now() })
+          return undefined
+        }
+        // An orchestrator that answers having dispatched nobody has produced a
+        // run in which every card the user drew is `skipped` and one model's
+        // opinion is the output. Nothing about that looks like a failure — the
+        // canvas settles green in seconds — which is why it was reported from
+        // outside the project rather than caught by a check in it.
+        //
+        // The gauntlet refusal above is the same rule one level narrower, and
+        // it runs first: in a gauntlet with nothing dispatched both are true,
+        // and "send the work to a critic" is the more useful thing to be told
+        // than "dispatch somebody". A card with no children is not an
+        // orchestrator at all — it reached this loop as a subtree root that
+        // lost its children to an edit mid-run, and it has nobody to ask.
+        if (spent === 0 && children.length > 0) {
+          if (!refusedEmpty) {
+            refusedEmpty = true
+            activity.note(node.id, `undispatched:${node.id}`, "answered without dispatching", undefined, "done")
+            build = () => dispatchFirstPrompt(pipeline, node)
+            continue
+          }
+          // Asked once and still nothing dispatched. Fail rather than accept:
+          // the answer would be indistinguishable from a real run's, and the
+          // whole cost of this bug is that it reports success. The text is kept
+          // on the activity stream so the turn is not lost with the card.
+          failed.add(node.id)
+          const reason = "the orchestrator answered twice without dispatching any of its cards"
+          activity.note(node.id, `undispatched:${node.id}:final`, "answered with no card dispatched", decision.answer, "error")
           patch(node.id, { status: "error", error: reason, activity: undefined, finished: Date.now() })
           return undefined
         }
@@ -1153,6 +1275,7 @@ export function start(
           nodeSession.delete(child.id)
           consumed.delete(child.id)
         }
+        declared.set(child.id, assignment.files ?? [])
         const answer = tree!.children(child.id).length
           ? await orchestrate(child, assignment.task, false)
           : await runSubagent(child, node, assignment.task)
@@ -1433,6 +1556,88 @@ export function start(
 
   const parentOf = (id: string) => pipeline.nodes.find((entry) => tree!.children(entry.id).includes(id))
 
+  /**
+   * The verification pass: the gauntlet's critic, generalised to any mode.
+   *
+   * Runs after the scheduler, so it needs to know nothing about which one ran —
+   * only what the run produced. That is the cards nothing reads: a pipeline's
+   * last layer, a swarm's synthesizer, an orchestration's root.
+   *
+   * Three rules are carried over from the gauntlet, each because dropping it
+   * was measured to break the method there. The critic gets a **new session**,
+   * so it grades the work rather than its own memory of the work improving —
+   * which in a pipeline also means the reviewer card that already ran in its
+   * layer comes to this with clean eyes. Critics run **one at a time**, because
+   * judging means running the build and the tests in the one working directory
+   * this fork has, and two at once grade each other's half-built output. And
+   * the critic is told to inspect the **real output**, never the summary it is
+   * shown.
+   *
+   * The card's own answer is put back afterwards. In a pipeline the reviewer's
+   * message was read by the cards downstream of it during the run, and the log
+   * is the only record of what they were given; overwriting it with the verdict
+   * would lose that to save a field.
+   */
+  async function verifyRun() {
+    const terminal = tree
+      ? [tree.root.id]
+      : swarm
+        ? swarm.synthesizers.map((node) => node.id)
+        : pipeline.nodes.filter((node) => !downstream(pipeline, node.id).length).map((node) => node.id)
+    const result = terminal
+      .map((id) => outputs.get(id))
+      .filter((text): text is string => !!text?.trim())
+      .join("\n\n")
+
+    for (const critic of verifiers) {
+      if (controller.signal.aborted) return
+      const before = outputs.get(critic.id)
+      // A verdict on work the critic itself helped produce is the failure the
+      // fresh session exists to prevent, and in a pipeline the reviewer has
+      // usually just run.
+      nodeSession.delete(critic.id)
+      consumed.delete(critic.id)
+      activity.note(critic.id, `verify:${critic.id}`, "verifying the run's result", undefined, "done")
+
+      let asked = false
+      while (true) {
+        await runTurn(critic, (skipped) =>
+          asked ? verdictPrompt() : verifyPrompt(pipeline, critic, result, skipped),
+          asked,
+        )
+        if (failed.has(critic.id) || controller.signal.aborted) return
+        const verdict = verdictIn(outputs.get(critic.id) ?? "")
+        // Asked once more for the line alone. A critic that has done the
+        // looking and written the reasoning is one line short of an answer, and
+        // throwing that away costs the whole pass.
+        if (verdict.kind === "unreadable" && !asked) {
+          asked = true
+          continue
+        }
+        if (before !== undefined) {
+          outputs.set(critic.id, before)
+          patch(critic.id, { output: before })
+        }
+        log.verdict = {
+          card: critic.id,
+          kind: verdict.kind,
+          ...(verdict.kind === "fail" ? { reason: verdict.reason } : {}),
+        }
+        activity.note(
+          critic.id,
+          `verdict:${critic.id}`,
+          verdict.kind === "pass" ? "verified — the run met the bar" : verdict.kind === "fail" ? "the run did not meet the bar" : "the verifier wrote no verdict",
+          verdict.kind === "fail" ? verdict.reason : undefined,
+          verdict.kind === "pass" ? "done" : "error",
+        )
+        // The first card to withhold a pass decides the run. Paying the rest to
+        // agree changes nothing, and the reason a person needs is already here.
+        if (verdict.kind !== "pass") return
+        break
+      }
+    }
+  }
+
   const done = (async () => {
     try {
       // One catalog read serves both jobs: rejecting a model the server does
@@ -1527,11 +1732,21 @@ ${serve.command}`
       // saying "queued" while the run log and statusbar say "skipped".
       if (tree)
         for (const node of log.nodes) if (node.status === "queued") patch(node.id, { status: "skipped" })
+      // The cards are finished; now something looks at what they produced. Only
+      // on a run that actually completed: a run with a failed card has already
+      // reported the truth about itself, and paying a critic to confirm it is
+      // the one verdict nobody needs.
+      if (verify && !controller.signal.aborted && !log.nodes.some((node) => node.status === "error")) await verifyRun()
       log.status = controller.signal.aborted
         ? "stopped"
         : log.nodes.some((node) => node.status === "error")
           ? "error"
-          : "done"
+          : // A run that did what it was asked for badly, or that nobody could
+            // confirm did it at all, has not succeeded — reporting `done` here
+            // is the exact thing verification was turned on to prevent.
+            log.verdict && log.verdict.kind !== "pass"
+            ? "error"
+            : "done"
     } catch (error) {
       log.status = "error"
       hooks.onNotice?.("error", api.describe(error))

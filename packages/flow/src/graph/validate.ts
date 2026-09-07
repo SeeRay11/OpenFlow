@@ -1,7 +1,7 @@
 import { agentKey, toolMap } from "../server/store"
 import { isCritic, orchestrationShape } from "./orchestration"
 import { swarmShape } from "./swarm"
-import { depthOf, dispatchesOf, gauntletOf, modeOf, type Pipeline } from "./types"
+import { depthOf, dispatchesOf, gauntletOf, modeOf, verifyOf, type Pipeline } from "./types"
 
 export type Validation = { ok: true; layers: string[][] } | { ok: false; error: string }
 
@@ -168,6 +168,42 @@ export function preflight(
           message: `Node '${node.role}' has no connections — it runs on the task alone`,
         })
   }
+
+  // Verification is the one setting that adds a card's worth of spend to every
+  // run without adding a card to the canvas, so both of its problems are said
+  // out loud. No reviewer blocks in both places that have to stay in step —
+  // here, and the throw in `start()`.
+  if (verifyOf(pipeline)) {
+    const critics = pipeline.nodes.filter(isCritic)
+    if (!critics.length)
+      blocking.push({
+        kind: "no-verifier",
+        message:
+          "Verification is on and no card has the reviewer role — rename the card that should judge the result, or switch verification off",
+      })
+    // A new session is not a different card. The verifier gets clean eyes, but
+    // if the only critic is also the card whose answer *is* the run's result,
+    // it is grading its own message — which is the failure a separate critic
+    // exists to prevent, wearing the fix as a disguise.
+    else if (critics.every((node) => resultCards(pipeline).includes(node.id)))
+      warnings.push({
+        kind: "verify-self",
+        message: `${critics.map((node) => node.role).join(", ")} would be verifying its own answer — it is both the reviewer and the card whose output ends the run, so give the job to a card that did not write the result`,
+      })
+    else
+      warnings.push({
+        kind: "verify-cost",
+        message: `Verification runs ${critics.map((node) => node.role).join(", ")} once more at the end, in a new session${critics.length > 1 ? ", one at a time until one withholds a pass" : ""} — that is ${critics.length} session(s) beyond what the graph shows`,
+      })
+  }
+  // A gauntlet already ends on a critic's verdict, so a second pass would pay
+  // for an answer the run has. `verifyOf` ignores it; silence would leave the
+  // user believing a toggle they set is doing something.
+  if (pipeline.verify && gauntletOf(pipeline))
+    warnings.push({
+      kind: "verify-redundant",
+      message: "Verification is ignored in a gauntlet — a gauntlet already cannot finish without a critic's verdict",
+    })
 
   return { blocking, warnings }
 }
@@ -498,4 +534,18 @@ export function descendants(pipeline: Pipeline, id: string) {
  */
 export function pathThrough(pipeline: Pipeline, id: string) {
   return [id, ...ancestors(pipeline, id), ...descendants(pipeline, id)]
+}
+
+/**
+ * The cards whose output is the run's result — what a verifier is shown, and
+ * what it must not have written itself.
+ *
+ * The same three answers `verifyRun` uses, kept here so the warning and the
+ * engine cannot disagree about what "the result" means.
+ */
+function resultCards(pipeline: Pipeline) {
+  const mode = modeOf(pipeline)
+  if (mode === "orchestration") return orchestrationShape(pipeline).roots.map((node) => node.id)
+  if (mode === "swarm") return swarmShape(pipeline).synthesizers.map((node) => node.id)
+  return pipeline.nodes.filter((node) => !downstream(pipeline, node.id).length).map((node) => node.id)
 }
