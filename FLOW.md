@@ -136,7 +136,16 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   into the same session three times, waiting 20s, 40s, 80s. A gauntlet pays for this more than
   any other mode: the critic gets a session it has never used before on every verdict, which is
   exactly the traffic shape a per-model limit punishes, and it is the one card the run cannot
-  route around.
+  route around. **A 502, a dropped socket and a `fetch failed` say the same thing**, and
+  `transient()` retries them on a budget of their own — separate from the rate-limit budget, so
+  a card being throttled and a card whose connection keeps dropping do not spend each other's.
+  The terminal list stays narrow on purpose: a 401, a 404 from a model id that does not exist,
+  an `UnsupportedApiError` — re-sending those buys three waits and the identical error. The
+  engine's **own** refusals are never transient, because they are conclusions rather than
+  transport. And a **lost session is replaced, not re-sent into** (`sessionLost`): every turn
+  prompted into a handle the server has forgotten fails identically, so the id is dropped, a new
+  session is opened on the next attempt, and only the model's memory of the turn is lost — a
+  card's prompt is rebuilt from the graph, never from the session.
   **A card's spend is the sum of every session it has held.** `reconcile` merges a session's
   steps into the node's map rather than replacing it, keyed by message id so sessions add up
   without double-counting. Replacing meant a re-dispatched card's earlier spend left the run
@@ -147,6 +156,21 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   waits for MCP to reach v2 sessions — though a card with `bash` can drive a headless browser
   and capture the artifact itself, which is how the runtime lines of a bar have actually been
   judged here.
+- **A run that nobody is watching says when it ended.** Every mode here is meant to be left
+  alone — a gauntlet is bounded in hours and spend rather than turns — and the ending that most
+  needs reporting (a card failed, a cap fired) is exactly the one the canvas cannot report to
+  somebody who walked away. `src/alerts.ts` sends it on two channels, **both off by default and
+  both the user's own decision**, because an ending posted to a URL is data leaving the machine.
+  The desktop notification is **skipped while the page has focus** — watching the canvas is
+  already being told — and the webhook fires either way, since whoever reads it is not the person
+  in front of this tab. Permission is asked from the click that switches alerts on (a prompt
+  needs a gesture); a browser that refuses does **not** switch the setting back off, because the
+  webhook works without any permission and a user who just denied notifications wants it more,
+  not less. A bad webhook URL is named in the dialog rather than dropped silently: believing you
+  have alerts and having none is worse than having none. `announce()` never throws and is never
+  awaited into the run's own result — failing to report an ending must not be what turns a
+  finished run into a failed one. The preference is signal-backed with localStorage best-effort,
+  the same shape as `graph/default-model.ts`, so `bun test` needs no storage polyfill.
 - **An interrupted run is picked up, not started again.** The engine runs *in the page*, so a
   reload, a crash or a closed tab ends a run with nothing alive to write `done`, `error` or
   `stopped` — while the sessions are still on the server and still addressable. `RunOptions.sessions`

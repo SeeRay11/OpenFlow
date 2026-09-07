@@ -3046,3 +3046,88 @@ describe("lines a card changed", () => {
     expect(log.nodes.find((node) => node.id === "a")!.diff).toBeUndefined()
   })
 })
+
+describe("a turn the provider could not take", () => {
+  test("a gateway error is retried, not written off", async () => {
+    // The 429 case was already handled; a 502 said exactly the same thing and
+    // was nevertheless terminal, which is most of what "cannot run for hours"
+    // meant in practice.
+    const h = harness({
+      behavior: { a: { errors: ["Provider request failed with HTTP 502 Bad Gateway"], output: "done at last" } },
+    })
+    const log = await h.run(pipeline("a"), "go", { rateLimitBackoff: 1 }).done
+
+    const node = log.nodes.find((entry) => entry.id === "a")!
+    expect(node.status).toBe("done")
+    expect(node.output).toBe("done at last")
+    expect(h.activity.some((row) => row.node === "a" && row.event.title.includes("could not be reached"))).toBe(true)
+  })
+
+  test("a dropped connection is retried", async () => {
+    const h = harness({ behavior: { a: { errors: ["fetch failed"], output: "recovered" } } })
+    const log = await h.run(pipeline("a"), "go", { rateLimitBackoff: 1 }).done
+
+    expect(log.nodes.find((entry) => entry.id === "a")!.output).toBe("recovered")
+  })
+
+  test("rate limits and dropped connections do not spend each other's budget", async () => {
+    // Three of each, then an answer. A single shared counter would have failed
+    // this card on the fourth error.
+    const h = harness({
+      behavior: {
+        a: {
+          errors: [
+            "Provider request failed with HTTP 429",
+            "Provider request failed with HTTP 429",
+            "Provider request failed with HTTP 429",
+            "Provider request failed with HTTP 503",
+            "ECONNRESET",
+            "socket hang up",
+          ],
+          output: "still here",
+        },
+      },
+    })
+    const log = await h.run(pipeline("a"), "go", { rateLimitBackoff: 1 }).done
+
+    expect(log.nodes.find((entry) => entry.id === "a")!.output).toBe("still here")
+  })
+
+  test("an authentication failure fails the card immediately", async () => {
+    // Re-sending this is three more waits and the identical error. The run
+    // should report a card that failed in a second, not in a minute.
+    const h = harness({ behavior: { a: { error: "Provider request failed with HTTP 401 Unauthorized" } } })
+    const log = await h.run(pipeline("a"), "go", { rateLimitBackoff: 1 }).done
+
+    const node = log.nodes.find((entry) => entry.id === "a")!
+    expect(node.status).toBe("error")
+    expect(node.error).toContain("401")
+    expect(h.activity.some((row) => row.node === "a" && row.event.title.includes("retrying"))).toBe(false)
+  })
+
+  test("the engine's own refusal is never retried", async () => {
+    // "finished without producing any output" is a conclusion about the card,
+    // not a transport failure. Asking again would spend a turn to reach it.
+    const h = harness({ behavior: { a: { output: "" } } })
+    const log = await h.run(pipeline("a"), "go", { rateLimitBackoff: 1 }).done
+
+    const node = log.nodes.find((entry) => entry.id === "a")!
+    expect(node.status).toBe("error")
+    expect(node.error).toContain("without producing any output")
+    expect(h.activity.some((row) => row.node === "a" && row.event.title.includes("retrying"))).toBe(false)
+  })
+
+  test("a lost session is replaced rather than re-sent into", async () => {
+    // Every turn prompted into a session the server has lost fails the same
+    // way, so the handle is dropped and the next attempt opens a new one.
+    const h = harness({ behavior: { a: { errors: ["session not found"], output: "answered in a new session" } } })
+    const log = await h.run(pipeline("a"), "go", { rateLimitBackoff: 1 }).done
+
+    const node = log.nodes.find((entry) => entry.id === "a")!
+    expect(node.status).toBe("done")
+    expect(node.output).toBe("answered in a new session")
+    expect(h.created()).toBe(2)
+    expect(node.sessionID).toBe("s2")
+    expect(h.activity.some((row) => row.node === "a" && row.event.title.includes("session was lost"))).toBe(true)
+  })
+})
