@@ -1,0 +1,61 @@
+[
+  {
+    "id": "pipeline-chain",
+    "status": "done",
+    "seconds": 1049,
+    "cost": 0.0168379854,
+    "failed": [],
+    "added": 29,
+    "removed": 5
+  },
+  {
+    "id": "pipeline-verified",
+    "status": "done",
+    "verdict": "pass",
+    "seconds": 447,
+    "cost": 0.014228022941999999,
+    "failed": [],
+    "added": 47,
+    "removed": 6
+  },
+  {
+    "id": "swarm-debate",
+    "status": "done",
+    "seconds": 803,
+    "cost": 0.0229525121,
+    "failed": []
+  },
+  {
+    "id": "orchestration-tree",
+    "status": "done",
+    "seconds": 1043,
+    "cost": 0.019762456150000003,
+    "failed": [],
+    "rounds": 3,
+    "stalled": 0,
+    "added": 43,
+    "removed": 6
+  },
+  {
+    "id": "orchestration-isolated",
+    "status": "done",
+    "seconds": 680,
+    "cost": 0.014130454156000003,
+    "failed": [],
+    "rounds": 3,
+    "stalled": 0,
+    "added": 29,
+    "removed": 8
+  },
+  {
+    "id": "gauntlet-loop",
+    "status": "done",
+    "seconds": 1967,
+    "cost": 0.037815154236,
+    "failed": [],
+    "rounds": 3,
+    "stalled": 0,
+    "added": 39,
+    "removed": 6
+  }
+]

@@ -18,24 +18,96 @@
 
 import fs from "node:fs/promises"
 import path from "node:path"
+import { CORPUS } from "../src/graph/corpus"
 import { compareScores, report, scoreRun, type Score } from "../src/graph/evals"
 import type { RunLog } from "../src/graph/types"
 
 const [command, ...rest] = process.argv.slice(2)
 
 if (command === "record") await record(rest)
+else if (command === "collect") await collect(rest)
 else if (command === "compare") await compare(rest)
 else {
-  console.error("usage: bun evals/score.ts record <out.json> <case>=<run-id>...")
+  console.error("usage: bun evals/score.ts collect <out.json>")
+  console.error("       bun evals/score.ts record <out.json> <case>=<run-id>...")
   console.error("       bun evals/score.ts compare <baseline.json> <results.json>")
   process.exit(1)
 }
 
-async function record([out, ...pairs]: string[]) {
-  if (!out || !pairs.length) return fail("record needs an output file and at least one <case>=<run-id>")
-  const runs = process.env.OPENFLOW_PROJECT
+/**
+ * Scores the newest finished run of each corpus case, without being told any
+ * run ids.
+ *
+ * The canvases are installed under their case ids (`evals/install.ts`), so a
+ * run log's `pipeline` field already says which case produced it. Collecting on
+ * that rather than on ids typed by hand removes the one step of the paid half
+ * where a person can silently mismatch a row and a run — and a scorecard
+ * attributed to the wrong case is worse than a missing one, because it then
+ * compares cleanly against the wrong baseline.
+ *
+ * A case that was never run is left out and named rather than recorded as a
+ * failure: "not run" and "ran and failed" are different facts, and
+ * `compareScores` already reports the first on its own.
+ */
+async function collect([out]: string[]) {
+  if (!out) return fail("collect needs an output file")
+  const logs = await readRuns()
+  const scores: Score[] = []
+  const missing: string[] = []
+  for (const entry of CORPUS) {
+    // Newest first, and only runs that ended: a log still marked `running` is
+    // one the page abandoned, and scoring it would record a half-finished case
+    // as this release's number.
+    const mine = logs
+      .filter((log) => log.pipeline === entry.id && log.status !== "running")
+      .sort((a, b) => (b.started ?? 0) - (a.started ?? 0))
+    if (!mine.length) {
+      missing.push(entry.id)
+      continue
+    }
+    scores.push(scoreRun(entry.id, mine[0]))
+  }
+  await fs.writeFile(out, JSON.stringify(scores, null, 2) + "\n", "utf8")
+  console.log(`collected ${scores.length} of ${CORPUS.length} case(s) into ${out}`)
+  for (const score of scores) console.log(`  ${line(score)}`)
+  if (missing.length) console.log(`not run: ${missing.join(", ")}`)
+}
+
+async function readRuns() {
+  const files = await fs.readdir(runsDir()).catch(() => [] as string[])
+  const logs: RunLog[] = []
+  for (const file of files.filter((name) => name.startsWith("run-") && name.endsWith(".json"))) {
+    const raw = await fs.readFile(path.join(runsDir(), file), "utf8").catch(() => undefined)
+    if (raw === undefined) continue
+    const parsed = JSON.parse(raw) as RunLog
+    if (parsed?.id) logs.push(parsed)
+  }
+  return logs
+}
+
+function runsDir() {
+  return process.env.OPENFLOW_PROJECT
     ? path.join(process.env.OPENFLOW_PROJECT, ".openflow", "runs")
     : path.join(process.cwd(), ".openflow", "runs")
+}
+
+/** One scorecard row, as the terminal shows it. */
+function line(score: Score) {
+  return (
+    `${score.id.padEnd(24)} ${score.status}${score.verdict ? ` (${score.verdict})` : ""}` +
+    `${score.seconds === undefined ? "" : ` · ${score.seconds}s`}` +
+    // Unpriced stays unpriced all the way to the terminal, for the reason it
+    // stays unpriced everywhere else here.
+    `${score.cost === undefined ? " · cost unknown" : ` · $${score.cost.toFixed(4)}`}` +
+    `${score.rounds ? ` · ${score.rounds} round(s)` : ""}` +
+    `${score.added === undefined ? "" : ` · +${score.added} −${score.removed}`}` +
+    `${score.failed.length ? ` · failed: ${score.failed.join(", ")}` : ""}`
+  )
+}
+
+async function record([out, ...pairs]: string[]) {
+  if (!out || !pairs.length) return fail("record needs an output file and at least one <case>=<run-id>")
+  const runs = runsDir()
   const scores: Score[] = []
   for (const pair of pairs) {
     const [id, run] = pair.split("=")
@@ -47,14 +119,7 @@ async function record([out, ...pairs]: string[]) {
   }
   await fs.writeFile(out, JSON.stringify(scores, null, 2) + "\n", "utf8")
   console.log(`recorded ${scores.length} case(s) to ${out}`)
-  for (const score of scores)
-    console.log(
-      `  ${score.id}: ${score.status}${score.verdict ? ` (${score.verdict})` : ""}` +
-        `${score.seconds === undefined ? "" : ` · ${score.seconds}s`}` +
-        // Unpriced stays unpriced all the way to the terminal, for the reason
-        // it stays unpriced everywhere else here.
-        `${score.cost === undefined ? " · cost unknown" : ` · $${score.cost.toFixed(2)}`}`,
-    )
+  for (const score of scores) console.log(`  ${line(score)}`)
 }
 
 async function compare([baseline, results]: string[]) {
