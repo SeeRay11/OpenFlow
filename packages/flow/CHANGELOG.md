@@ -58,6 +58,7 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
 
 - First release.
 
+[1.2.2]: https://github.com/SeeRay11/OpenFlow/releases/tag/v1.2.2
 [1.2.1]: https://github.com/SeeRay11/OpenFlow/releases/tag/v1.2.1
 [1.2.0]: https://github.com/SeeRay11/OpenFlow/releases/tag/v1.2.0
 [1.1.2]: https://github.com/SeeRay11/OpenFlow/releases/tag/v1.1.2

@@ -26,6 +26,9 @@ The plan it was built from, and the original build brief, are kept in
 
 Questions, workflows, and feedback: [r/OpenFlowAI](https://www.reddit.com/r/OpenFlowAI/).
 
+Changelog: [CHANGELOG.md](CHANGELOG.md), tagged on the
+[releases page](https://github.com/SeeRay11/OpenFlow/releases).
+
 ## Install
 
 **Prerequisites:** [Bun](https://bun.sh) 1.3+ and [Git](https://git-scm.com).
