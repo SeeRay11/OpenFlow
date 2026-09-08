@@ -38,19 +38,23 @@ export function Canvas() {
   }
 
   /**
-   * Left drag on empty canvas is the marquee; panning moved to the middle
-   * button, or Alt with the left one for a mouse that has no middle button.
+   * Plain left drag on empty canvas pans; Shift with it draws the marquee.
+   * Middle button, and Alt with the left one, still pan.
    *
-   * A rectangle and a pan are the same gesture, so one of them had to give the
-   * plain drag up, and the rectangle is the one a card can be caught by.
+   * A rectangle and a pan are the same gesture, so one of them has to be
+   * modified, and panning is the one reached constantly.
    */
   function onSurfaceDown(event: PointerEvent) {
-    if (event.button === 1 || (event.button === 0 && event.altKey)) return startPan(event)
-    if (event.button === 0) return startMarquee(event)
+    if (event.button === 0 && event.shiftKey) return startMarquee(event)
+    // A press on empty canvas still clears the selection — it used to fall out
+    // of the marquee's no-drag case, which the plain drag no longer reaches.
+    if (event.button === 0) actions.select(undefined)
+    if (event.button === 1 || event.button === 0) return startPan(event)
   }
 
   function startMarquee(event: PointerEvent) {
-    const additive = event.ctrlKey || event.metaKey || event.shiftKey
+    // Shift now opens the marquee, so adding to a selection is Ctrl/Cmd with it.
+    const additive = event.ctrlKey || event.metaKey
     if (!additive) actions.select(undefined)
     const origin = { x: event.clientX, y: event.clientY }
     const move = (moved: PointerEvent) =>

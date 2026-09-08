@@ -1631,9 +1631,8 @@ main {
     var(--v2-background-bg-base);
   overflow: hidden;
   touch-action: none;
-  /* Left drag draws a selection rectangle, so the grab hand would promise a
-     pan the gesture no longer does. Panning is the middle button, or Alt. */
-  cursor: default;
+  /* Plain left drag pans; Shift+drag draws the selection rectangle. */
+  cursor: grab;
 }
 
 .viewport {
