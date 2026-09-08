@@ -41,3 +41,8 @@ tsconfig.tsbuildinfo
 # Scratch project a run was pointed at with OPENFLOW_PROJECT. Its own .openflow
 # lands inside it, so it is run state at one more level of nesting.
 FlappyBird/
+
+# The local role library: roles the user added on this machine, saved by the
+# canvas. Personal state, unlike the pipelines and generated agent blocks above.
+.openflow/roles.json
+
