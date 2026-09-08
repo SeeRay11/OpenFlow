@@ -3,6 +3,26 @@
 All notable changes to OpenFlow are recorded here. OpenFlow lives in `packages/flow`;
 the rest of the repo is a vendored OpenCode fork and is not covered by this file.
 
+## [1.2.2] - 2026-09-07
+
+- Add the eval corpus: six fixed canvases run the same way each release, a scorer
+  that reads run logs into a scorecard, and the first recorded baseline.
+- Gauntlet and every long run: commit the working tree after each round under a
+  ref, record what each round produced, and measure stalling off that record
+  rather than off the task text.
+- Survive a provider blip mid-run, and announce when a run ends on a channel the
+  user turned on.
+- Count the lines each card changed, measured off git rather than asked of the
+  card.
+- A card is done when it did the work, not when it stopped talking.
+- Give every card in a batch its own working copy when the canvas asks for it.
+- Warn when a dispatching card runs on a routed model.
+- Make the Runs menu usable: legible rows, delete, prune, search.
+- Select many cards at once on the canvas; the plain canvas drag pans again.
+- Stop blaming a stale engine for a project that is not a git repository — offer
+  `git init` instead.
+- Track only the shipped templates under `.openflow`.
+
 ## [1.2.1] - 2026-09-01
 
 - Keep swarm and orchestration cards out of each other's files: a batch is refused
