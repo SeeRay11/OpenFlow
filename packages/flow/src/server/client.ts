@@ -18,6 +18,9 @@ export type OpencodeClient = ReturnType<typeof createOpencodeClient>
 
 let context: FlowContext | undefined
 let client: OpencodeClient | undefined
+/** Same server, no directory — see `agentsUnscoped`. Never rebuilt, since it
+ * carries no project to go stale. */
+let unscoped: OpencodeClient | undefined
 
 /**
  * The vite dev server proxies `/api`, `/global` and `/event` to the running
@@ -100,6 +103,23 @@ export async function health() {
 export async function agents(): Promise<AgentV2Info[]> {
   const { client } = await connect()
   const body = unwrap<any>((await client.v2.agent.list()) as any)
+  return (body.data ?? body) as AgentV2Info[]
+}
+
+/**
+ * The agents a *run* will actually have, rather than the ones this directory
+ * reports.
+ *
+ * `agents()` is scoped to `OPENFLOW_PROJECT`, and a directory the server does
+ * not recognise as a project — most often one that is simply not a git
+ * repository — answers with an empty list, built-ins included. A session's
+ * config is resolved from the engine's own cwd and not from that directory, so
+ * a second client with no `directory` at all sees what the drain sees, and an
+ * empty scoped list can be told apart from an agent that is genuinely absent.
+ */
+export async function agentsUnscoped(): Promise<AgentV2Info[]> {
+  unscoped ??= createOpencodeClient({ baseUrl: window.location.origin })
+  const body = unwrap<any>((await unscoped.v2.agent.list()) as any)
   return (body.data ?? body) as AgentV2Info[]
 }
 

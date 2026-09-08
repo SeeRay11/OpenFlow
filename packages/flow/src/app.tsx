@@ -655,11 +655,19 @@ export function App() {
       // The server caches a project's config, so a merge is invisible to a
       // server that is already running. Check rather than claim success.
       const live = new Set((await api.agents().catch(() => [])).map((agent) => agent.id))
-      const invisible = keys.filter((key) => !live.has(key))
+      // An empty list is the other case, and it is not about this merge at all:
+      // a directory the server does not recognise as a project reports no
+      // agents, built-ins included. The drain reads its config from the
+      // engine's own cwd, so ask there before blaming the write — same split
+      // the run's preflight makes, and the reason `git init` is the fix.
+      const drain = live.size ? live : new Set((await api.agentsUnscoped().catch(() => [])).map((agent) => agent.id))
+      const invisible = keys.filter((key) => !drain.has(key))
       if (invisible.length) {
         actions.notice(
           "error",
-          `wrote ${result.path}, but the server has not loaded ${invisible.join(", ")} — restart \`opencode serve\`, then reload this page`,
+          live.size
+            ? `wrote ${result.path}, but the server has not loaded ${invisible.join(", ")} — restart \`opencode serve\`, then reload this page`
+            : `wrote ${result.path}, but this project reports no agents at all — not even the built-in ones, which is what a folder that is not a git repository looks like. Run \`git init\` in it, or point OPENFLOW_PROJECT at a repository.`,
         )
         return
       }

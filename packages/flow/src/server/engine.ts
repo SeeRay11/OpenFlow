@@ -279,6 +279,13 @@ export type EngineDeps = {
      * calls to read anyway. Absent means the text fallback decides.
      */
     sessionCalls?: typeof api.sessionCalls
+    /**
+     * The agent list with no directory on it — what the drain sees. Optional so
+     * a test double can leave it out; absent means an empty scoped list is read
+     * as the stale-config case it was read as before, which is the answer that
+     * was right whenever the directory is a real project.
+     */
+    agentsUnscoped?: typeof api.agentsUnscoped
   }
   saveRun: (log: RunLog) => Promise<unknown>
   /**
@@ -1979,32 +1986,39 @@ export function start(
         return log
       }
 
-      const missing = await unknownAgents(dispatching, api)
-      if (missing.length) {
-        // The fix is always the same — restart the engine — so the message
-        // carries the command for *this* host rather than the generic name of
-        // a binary that may not be on PATH, or may be a different version than
-        // the one this checkout runs.
-        const serve = await deps.serveStatus?.().catch(() => undefined)
-        const how = serve
+      const gap = await unknownAgents(dispatching, api)
+      if (gap) {
+        // The fix is always the same for the stale-config case — restart the
+        // engine — so the message carries the command for *this* host rather
+        // than the generic name of a binary that may not be on PATH, or may be
+        // a different version than the one this checkout runs.
+        const serve = gap.scope === "config" ? await deps.serveStatus?.().catch(() => undefined) : undefined
+        const restart = serve
           ? serve.managed
             ? `use the restart button in the titlebar, or run: ${serve.command}`
             : `stop \`opencode serve\` where it is running (Ctrl+C in that window), then run this from the OpenFlow repo root:
 ${serve.command}`
           : "restart `opencode serve` where it is running"
-        for (const node of missing) {
+        for (const node of gap.nodes) {
           failed.add(node.id)
           patch(node.id, {
             status: "error",
-            error: `the server does not know an agent named "${node.agent.name}" — it reads its config once at boot, so a merged agent stays invisible until it restarts. ${how}`,
+            error:
+              gap.scope === "directory"
+                ? `the server does not know an agent named "${node.agent.name}", and it knows no agents at all for this project — not even the built-in ones. That is what a project folder which is not a git repository looks like from here. Run \`git init\` in it, or point OPENFLOW_PROJECT at a repository. Restarting the engine will not change this.`
+                : `the server does not know an agent named "${node.agent.name}" — it reads its config once at boot, so a merged agent stays invisible until it restarts. ${restart}`,
             finished: Date.now(),
           })
         }
         hooks.onNotice?.(
           "error",
-          `unknown agent on ${missing.map((node) => node.role).join(", ")} — the engine needs a restart to see it`,
+          gap.scope === "directory"
+            ? `unknown agent on ${gap.nodes.map((node) => node.role).join(", ")} — the project folder is not a git repository, so it reports no agents at all`
+            : `unknown agent on ${gap.nodes.map((node) => node.role).join(", ")} — the engine needs a restart to see it`,
         )
-        hooks.onEngineStale?.()
+        // Deliberately not opened for the directory case: that dialog offers a
+        // restart, and a restart is exactly what does not fix it.
+        if (gap.scope === "config") hooks.onEngineStale?.()
         log.status = "error"
         return log
       }
@@ -2189,21 +2203,47 @@ function unknownModels(nodes: FlowNode[], catalog: Map<string, unknown>) {
 }
 
 /**
- * Nodes pointing at an agent the server has never heard of.
+ * Nodes pointing at an agent the server has never heard of, and which of the
+ * two reasons it is.
  *
  * The server reads a project's opencode.json once and caches it, so agents
  * merged after it started are invisible until it restarts. Running anyway is
  * the worst failure mode available: the session comes up with an empty
  * permission ruleset and every tool call dies with "Unable to read ...", which
  * reads like a broken model rather than a stale config.
+ *
+ * An **empty** list is a different question, and answering it as the same one
+ * costs an hour: the built-ins are gone too, which no config merge can cause.
+ * That is what a directory the server does not recognise as a project looks
+ * like — most often one that is simply not a git repository. The run itself may
+ * be perfectly fine, because a session's config is resolved from the engine's
+ * own cwd rather than from `OPENFLOW_PROJECT`, so the unscoped list is asked
+ * before anything is failed and the cards proceed when the names are in it.
+ * Only when they are not is the run stopped, and then the fix is `git init`,
+ * not a restart.
  */
 async function unknownAgents(nodes: FlowNode[], api: EngineDeps["api"]) {
   const named = nodes.filter((node) => node.agent.name)
-  if (!named.length) return []
+  if (!named.length) return undefined
   const available = await api
     .agents()
     .then((list) => new Set(list.map((agent) => agent.id)))
     .catch(() => undefined)
-  if (!available) return []
-  return named.filter((node) => !available.has(node.agent.name!))
+  if (!available) return undefined
+
+  if (!available.size) {
+    const drain = await api
+      .agentsUnscoped?.()
+      .then((list) => new Set(list.map((agent) => agent.id)))
+      .catch(() => undefined)
+    // No unscoped read available: the host is a test double or an older build,
+    // and guessing which of the two cases this is would be worse than the
+    // stale-config message that shipped before this check existed.
+    if (!drain) return { scope: "config" as const, nodes: named }
+    const missing = named.filter((node) => !drain.has(node.agent.name!))
+    return missing.length ? { scope: "directory" as const, nodes: missing } : undefined
+  }
+
+  const missing = named.filter((node) => !available.has(node.agent.name!))
+  return missing.length ? { scope: "config" as const, nodes: missing } : undefined
 }

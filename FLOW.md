@@ -579,6 +579,25 @@ after a restart, `GET /api/skill` did not list the new skill, with or without
 appear immediately and every provider then used it. Until the engine is spawned in the project,
 a skill that must reach a card has to be global.
 
+**An empty scoped agent list is a question about the directory, not about any name.** A project
+folder the server does not recognise as one — most often a folder that is simply not a git
+repository — answers `GET /api/agent` with **zero** agents, built-ins included. Measured again
+2026-09-08 against a live engine: a non-git temp directory returned 0, this repo returned 49,
+and the same read with no `x-opencode-directory` at all returned the same 49. Every named card
+therefore reads as missing, and the message that used to be shown blamed a stale engine and
+quoted a restart command — which changes nothing, and is expensive precisely because it sounds
+right. The run itself was usually fine: a session resolves its config from the engine's own cwd
+rather than from `OPENFLOW_PROJECT`, which is the same split this section documents for agents,
+skills and provider overrides — here it surfaces in the *check* rather than in the run.
+So `unknownAgents` treats an empty list as its own case and asks `agentsUnscoped()` (a second
+client built with no `directory`, so it sees what the drain sees) before failing anything: if
+the names are there the cards run, and only when they are not does it stop, say `git init`, and
+**not** call `onEngineStale` — that dialog offers the one fix that cannot work. A non-empty list
+missing one name is still the ordinary stale-config case and still says restart. `mergeAgents`
+in `src/app.tsx` splits the same two cases after a write, for the same reason. A host with no
+unscoped read (an older build, a test double) keeps the old message, which is the right answer
+whenever the directory is a real project.
+
 ## Design directive (standing)
 
 **The entire OpenFlow UI matches upstream OpenCode, and stays minimal.** Copy from upstream

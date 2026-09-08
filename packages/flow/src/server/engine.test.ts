@@ -62,8 +62,14 @@ type HarnessOptions = {
    * `/api/health` before its catalog has filled, so the first read can be short.
    */
   modelsRefilled?: string[]
-  /** Agent ids the server knows about. */
+  /** Agent ids the server knows about for this project. */
   agents?: string[]
+  /**
+   * Agent ids the server knows about with no directory on the read — what the
+   * drain sees. Omitted means the host has no unscoped read at all, which is
+   * how an older build and a plain test double both look.
+   */
+  unscoped?: string[]
   /** Subset of `models` that accepts image input. */
   vision?: string[]
   /** Price rows per "providerID/id", as the catalog would report them. */
@@ -231,6 +237,13 @@ function harness(options: HarnessOptions = {}) {
     async agents() {
       return (options.agents ?? []).map((id) => ({ id })) as any
     },
+    ...(options.unscoped
+      ? {
+          async agentsUnscoped() {
+            return options.unscoped!.map((id) => ({ id })) as any
+          },
+        }
+      : {}),
     async sessionCalls(sessionID: string) {
       const node = nodeOf.get(sessionID)!
       const spec = behavior[node] ?? {}
@@ -1281,6 +1294,67 @@ describe("stale engine", () => {
     const log = await h.run(graph).done
 
     expect(log.nodes[0].error).toContain("opencode serve")
+  })
+
+  test("a project reporting no agents at all runs anyway when the drain has them", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.name = "flow-a"
+    // The scoped read is empty — the directory is not a project — but the drain
+    // resolves its config from the engine's cwd and has the agent.
+    const h = harness({ agents: [], unscoped: ["build", "flow-a"] })
+    let stale = 0
+    h.hooks.onEngineStale = () => {
+      stale += 1
+    }
+
+    const log = await h.run(graph).done
+
+    expect(log.status).toBe("done")
+    expect(stale).toBe(0)
+    expect(h.dispatched).toEqual(["a"])
+  })
+
+  test("says git init, not restart, when nothing knows the agent and the built-ins are gone too", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.name = "flow-a"
+    const h = harness({ agents: [], unscoped: ["build"] })
+    let stale = 0
+    h.hooks.onEngineStale = () => {
+      stale += 1
+    }
+    h.deps.serveStatus = async () => ({
+      managed: true,
+      running: true,
+      url: "http://127.0.0.1:4096",
+      command: "bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096",
+    })
+
+    const log = await h.run(graph).done
+
+    expect(log.status).toBe("error")
+    expect(log.nodes[0].error).toContain("git init")
+    // The restart dialog offers the one fix that cannot work here.
+    expect(stale).toBe(0)
+    expect(log.nodes[0].error).not.toContain("restart button")
+  })
+
+  test("an agent missing from a project that has others is still the stale-config case", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.name = "flow-a"
+    const h = harness({ agents: ["build"], unscoped: ["build", "flow-a"] })
+    let stale = 0
+    h.hooks.onEngineStale = () => {
+      stale += 1
+    }
+
+    const log = await h.run(graph).done
+
+    expect(log.status).toBe("error")
+    // The scoped list is not empty, so the unscoped one is never consulted — a
+    // merged agent the running server has not reloaded is exactly this.
+    expect(stale).toBe(1)
+    expect(log.nodes[0].error).toContain("opencode serve")
+    expect(log.nodes[0].error).not.toContain("git init")
   })
 })
 
