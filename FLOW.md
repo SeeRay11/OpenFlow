@@ -531,6 +531,15 @@ Working headless techniques:
 - The model picker is a portal `.oc-menu` with `input[placeholder="Search models…"]`; set
   the value through the native setter plus an `input` event, then click the matching leaf.
 - Inspector fields drive fine via `form_input` on their refs.
+- **A `window.confirm` guard reads as "cancel" in a hidden pane**, so anything behind one
+  silently does nothing — measured 2026-09-07 driving the Open menu: the row was clicked, the
+  menu closed, the notice never appeared and the canvas never switched, three times in a row,
+  with no error anywhere. Stub `window.confirm = () => true` before driving any control that
+  might sit behind an unsaved-changes prompt, and assert the state actually changed
+  (`.titlebar-name`'s value here) rather than trusting the click.
+- **Menu rows are `button.oc-item[data-key="…"]`, and clicking the inner `span.oc-item-label`
+  does nothing.** Select on the `[data-key]` button itself; a text search that lands on the
+  label finds the row and clicks the wrong element.
 - A bare `fetch('/api/agent')` reports the **server-cwd** project's agents. Add header
   `x-opencode-directory: <OPENFLOW_PROJECT>` to see the merged pipeline agents.
 

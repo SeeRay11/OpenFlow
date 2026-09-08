@@ -28,8 +28,14 @@ import type { Pipeline } from "./types"
  * It is also why a case is not run on a free router: a routed model makes "which
  * model produced this number" unanswerable, and the orchestrator seat has
  * already been measured failing that way.
+ *
+ * A cheap model on purpose. The corpus is run every release and its job is to
+ * measure OpenFlow, not the frontier — a dearer model would buy better
+ * deliverables and worse economics for the thing being measured. Changing this
+ * invalidates every recorded scorecard, so change it and re-record a baseline
+ * in the same commit.
  */
-export const EVAL_MODEL = "anthropic/claude-sonnet-5"
+export const EVAL_MODEL = "openrouter/deepseek/deepseek-v4-flash"
 
 function from(id: string, patch: (pipeline: Pipeline) => Pipeline = (p) => p) {
   const template = TEMPLATES.find((entry) => entry.id === id)
@@ -71,6 +77,18 @@ export const CORPUS: EvalCase[] = [
     id: "orchestration-isolated",
     covers: "a working copy per card, and the merge back",
     pipeline: from("orchestrated-build", (pipeline) => ({ ...pipeline, isolate: true })),
+    // Measured 2026-09-08, first full corpus run: this case exercised nothing.
+    // Worktrees open only for a batch of more than one writer, and the
+    // orchestrator dispatched one card per round all three rounds, so no tree
+    // was ever created and the merge path never ran — a green row that measured
+    // nothing at all, which is worse than a red one.
+    //
+    // The fix is a task that genuinely splits, not a bigger prompt: the run task
+    // in `evals/README.md` is one file's worth of work, and an orchestrator that
+    // fans it out to two cards would be wrong to. Until the case carries its own
+    // two-writer task, read this row as "orchestration still works", not as
+    // "isolation works".
+    warns: [],
   },
   {
     id: "gauntlet-loop",

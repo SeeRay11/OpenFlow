@@ -23,14 +23,14 @@ this needs — status, verdict, wall clock, spend, rounds, and every card's line
 
 ## The cases
 
-| id | what it is there to catch |
-| --- | --- |
-| `pipeline-chain` | layers in order, each card reading the one before it |
-| `pipeline-verified` | a reviewer runs again at the end and the run reports its verdict |
-| `swarm-debate` | peers in rounds behind a barrier, then one synthesizer |
-| `orchestration-tree` | the dispatch protocol, and cards nobody dispatched settling `skipped` |
-| `orchestration-isolated` | a working copy per card, and the merge back |
-| `gauntlet-loop` | builder and critic to a bar, with spend, clock and stall all live |
+| id                       | what it is there to catch                                             |
+| ------------------------ | --------------------------------------------------------------------- |
+| `pipeline-chain`         | layers in order, each card reading the one before it                  |
+| `pipeline-verified`      | a reviewer runs again at the end and the run reports its verdict      |
+| `swarm-debate`           | peers in rounds behind a barrier, then one synthesizer                |
+| `orchestration-tree`     | the dispatch protocol, and cards nobody dispatched settling `skipped` |
+| `orchestration-isolated` | a working copy per card, and the merge back                           |
+| `gauntlet-loop`          | builder and critic to a bar, with spend, clock and stall all live     |
 
 Every card runs on `EVAL_MODEL`, pinned in `corpus.ts`. It is one model on purpose: a corpus
 whose cards drifted onto whatever they defaulted to would be measuring the models, which is
@@ -77,8 +77,16 @@ narrow:
   fewer is not tighter work. The moment this starts saying otherwise it has invented a bar of
   its own, and the bar belongs to the canvas.
 
+## Known holes in the corpus
+
+- **`orchestration-isolated` does not currently test isolation.** Worktrees open only for a
+  batch of more than one writer, and on the first full run the orchestrator dispatched a single
+  card in each of its three rounds — so no tree was created and the merge path never ran. The
+  row still says something useful (orchestration works), but not the thing its name claims. It
+  needs a task that genuinely splits across two files before it measures what it is for.
+
 ## What this does not do
 
-It does not judge the deliverable. Whether the `--json` flag was implemented *well* is what the
+It does not judge the deliverable. Whether the `--json` flag was implemented _well_ is what the
 gauntlet's own critic is for, and its verdict is in the scorecard. This measures whether
 OpenFlow still gets a run to that verdict for the same money in the same time.
