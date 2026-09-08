@@ -46,3 +46,14 @@ FlappyBird/
 # canvas. Personal state, unlike the pipelines and generated agent blocks above.
 .openflow/roles.json
 
+# Only the shipped templates are tracked under pipelines/ and generated/. Every
+# other file there is a canvas saved or run against this repo during a smoke
+# test - local state, not a deliverable.
+.openflow/pipelines/*
+.openflow/generated/*
+!.openflow/pipelines/diamond.json
+!.openflow/pipelines/feature-build.json
+!.openflow/generated/diamond.opencode.json
+!.openflow/generated/feature-build.opencode.json
+!.openflow/generated/orchestrated-build.opencode.json
+

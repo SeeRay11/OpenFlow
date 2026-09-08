@@ -1,0 +1,54 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "orchestrated-build-orchestrator-nmtnsikw10": {
+      "mode": "primary",
+      "description": "OpenFlow node nmtnsikw10 (orchestrator) of pipeline orchestrated build",
+      "prompt": "You are the orchestrator. Decide what has to happen, split it across the cards below you by what each is for, and give each one a task it can finish alone. Read what they return, dispatch again where the answer is not good enough, and write the final answer yourself. Do a card's work yourself only when no card below you can do it.",
+      "permission": {
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "edit": "deny",
+        "bash": "deny",
+        "question": "deny"
+      }
+    },
+    "orchestrated-build-architect-nmtnsikw11": {
+      "mode": "primary",
+      "description": "OpenFlow node nmtnsikw11 (architect) of pipeline orchestrated build",
+      "prompt": "You are the architect. Given the plan, decide module boundaries, data shapes, and the public interfaces. Output signatures and file layout. No implementation.",
+      "permission": {
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "edit": "deny",
+        "bash": "deny"
+      }
+    },
+    "orchestrated-build-coder-nmtnsikw12": {
+      "mode": "primary",
+      "description": "OpenFlow node nmtnsikw12 (coder) of pipeline orchestrated build",
+      "prompt": "You are the coder. Implement exactly what the upstream plan and architecture specify. Keep diffs tight.",
+      "permission": {
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
+    "orchestrated-build-reviewer-nmtnsikw13": {
+      "mode": "primary",
+      "description": "OpenFlow node nmtnsikw13 (reviewer) of pipeline orchestrated build",
+      "prompt": "You are the reviewer. Audit the upstream output for correctness bugs and missed requirements. One line per finding, most severe first. No praise.",
+      "permission": {
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "edit": "deny",
+        "bash": "deny"
+      }
+    }
+  }
+}
