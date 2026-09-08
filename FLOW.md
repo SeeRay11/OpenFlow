@@ -602,10 +602,14 @@ components rather than approximating them, and do not add extra affordances alon
   `updateSelected` / `updateSelectedAgent` / `toggleSelectedTool`. Renaming a multi-selection
   renames every card in it, which in swarm mode is how the synthesizer is designated: role text
   is the flag, so a bulk rename can take the decider with it.
-- **Left drag on the canvas draws the marquee, so panning is the middle button or Alt+left.**
-  A rectangle and a pan are the same gesture and one had to give the plain drag up; the
-  rectangle is the one a card can be caught by. The `.canvas` cursor is `default` rather than
-  `grab` for the same reason.
+- **Plain left drag on the canvas pans; Shift+left drag draws the marquee.** A rectangle and a
+  pan are the same gesture and one has to take the modifier — panning is the one reached
+  constantly, so the rectangle took it (measured: with the marquee on the plain drag, moving
+  around the canvas by mouse was gone). Middle button and Alt+left still pan, and the `.canvas`
+  cursor is `grab` again. Adding to a selection with the marquee is therefore Ctrl/Cmd only;
+  Shift on a *card* is still `pathThrough`, since that press never reaches the surface. The
+  plain press also clears the selection explicitly — that used to fall out of the marquee's
+  no-drag case.
 - **The marquee hit-tests client rects off the DOM, not positions.** A card's height depends on
   what it is showing (activity, error, output preview), and a client rect is already in the
   zoomed, panned frame the box is drawn in. That is what `data-node-id` on `.node` is for, and
