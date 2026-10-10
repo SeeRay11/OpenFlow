@@ -8,7 +8,9 @@
  *
  *   1. GATE-LEDGER   Tages-Tabelle der Verdict-Verteilung; GRAUZONE ohne
  *                    grund zählt (Begründung ist Pflicht); FABRIK-
- *                    Empfehlungen ohne fabrik_run am selben Tag = ABWEICHUNG.
+ *                    Empfehlungen ohne folgenden fabrik_run = ABWEICHUNG
+ *                    (task_ref-Match; Monitoring-Sonden zählen getrennt,
+ *                    Hebel 2/14 vom 10.10.2026).
  *   2. OPENCODE-LOG  Treffer je Tag auf of-run|fabrik|FABRIK|OpenFlow, davon
  *                    of-run.sh-Aufrufe; rotierte opencode.log.1 nur als
  *                    Gesamtzahl; „Invalid dharma stream event"-Signaturen
@@ -77,7 +79,10 @@ if (existsSync(LEDGER)) {
 const dayOf = (e: Any) => (typeof e?.ts === "string" ? e.ts.slice(0, 10) : "")
 const inWindow = (e: Any) => days.includes(dayOf(e))
 const tasks = ledgerEntries.filter((e) => e?.event === "task" && inWindow(e))
-const fabrikRuns = ledgerEntries.filter((e) => e?.event === "fabrik_run" && inWindow(e))
+// Hebel 14 (10.10.2026): Monitoring-Sonden (Signatur monitoring:true) zählen
+// getrennt von echten Fabrik-Runs. Legacy-Einträge ohne das Feld sind real.
+const fabrikRuns = ledgerEntries.filter((e) => e?.event === "fabrik_run" && inWindow(e) && e?.monitoring !== true)
+const fabrikRunsMonitoring = ledgerEntries.filter((e) => e?.event === "fabrik_run" && inWindow(e) && e?.monitoring === true)
 
 const ledgerRows = days.map((d) => {
   const t = tasks.filter((e) => dayOf(e) === d)
@@ -87,6 +92,7 @@ const ledgerRows = days.map((d) => {
     grauzone: t.filter((e) => e?.entscheidung === "GRAUZONE").length,
     fabrik: t.filter((e) => e?.entscheidung === "FABRIK").length,
     fabrikRun: fabrikRuns.filter((e) => dayOf(e) === d).length,
+    fabrikRunMonitoring: fabrikRunsMonitoring.filter((e) => dayOf(e) === d).length,
   }
 })
 
@@ -96,9 +102,19 @@ const grauzoneOhneGrund = tasks
   .filter((e) => e?.entscheidung === "GRAUZONE" && !e?.grund)
   .map((e) => ({ ts: e.ts, task: String(e?.task ?? "").slice(0, 60) }))
 
-// ABWEICHUNG: FABRIK-Empfehlung, der am selben Tag kein fabrik_run folgte.
+// ABWEICHUNG: FABRIK-Empfehlung ohne folgenden fabrik_run. Seit Hebel 2
+// (10.10.2026) wird der Bezug über task_ref/gate_id gematcht — ein fabrik_run
+// mit task_ref=<gate_id> der Task-Bewertung gilt als Folge (egal welcher Tag).
+// Monitoring-Sonden (monitoring:true) sind keine Folge. Legacy-Einträge ohne
+// gate_id fallen auf den Tages-Match zurück (alte Ledger bleiben vergleichbar).
 const abweichungen = tasks
-  .filter((e) => e?.entscheidung === "FABRIK" && !fabrikRuns.some((r) => dayOf(r) === dayOf(e)))
+  .filter((e) => {
+    if (e?.entscheidung !== "FABRIK") return false
+    if (typeof e?.gate_id === "string" && e.gate_id) {
+      return !fabrikRuns.some((r) => r?.task_ref === e.gate_id)
+    }
+    return !fabrikRuns.some((r) => dayOf(r) === dayOf(e))
+  })
   .map((e) => ({ ts: e.ts, task: String(e?.task ?? "").slice(0, 60) }))
 
 // ------------------------------------------------------------- 2. Opencode-Log
@@ -182,14 +198,17 @@ if (JSON_OUT) {
   if (!existsSync(LEDGER)) {
     console.log("0 Einträge (Ledger fehlt)")
   } else {
-    console.log(`| Tag | DIREKT | GRAUZONE | FABRIK | fabrik_run |`)
-    console.log(`|---|---|---|---|---|`)
-    for (const r of ledgerRows) console.log(`| ${r.tag} | ${r.direkt} | ${r.grauzone} | ${r.fabrik} | ${r.fabrikRun} |`)
-    console.log(`| Σ | ${sum(ledgerRows.map((r) => r.direkt))} | ${sum(ledgerRows.map((r) => r.grauzone))} | ${sum(ledgerRows.map((r) => r.fabrik))} | ${sum(ledgerRows.map((r) => r.fabrikRun))} |`)
+    console.log(`| Tag | DIREKT | GRAUZONE | FABRIK | fabrik_run (real) | fabrik_run (monitoring) |`)
+    console.log(`|---|---|---|---|---|---|`)
+    for (const r of ledgerRows)
+      console.log(`| ${r.tag} | ${r.direkt} | ${r.grauzone} | ${r.fabrik} | ${r.fabrikRun} | ${r.fabrikRunMonitoring} |`)
+    console.log(
+      `| Σ | ${sum(ledgerRows.map((r) => r.direkt))} | ${sum(ledgerRows.map((r) => r.grauzone))} | ${sum(ledgerRows.map((r) => r.fabrik))} | ${sum(ledgerRows.map((r) => r.fabrikRun))} | ${sum(ledgerRows.map((r) => r.fabrikRunMonitoring))} |`,
+    )
     console.log(``)
     console.log(`GRAUZONE ohne Begründung (Pflicht verletzt): ${grauzoneOhneGrund.length}`)
     for (const g of grauzoneOhneGrund) console.log(`  !! ${g.ts} «${g.task}»`)
-    console.log(`ABWEICHUNGEN — FABRIK-Empfehlung ohne fabrik_run am selben Tag: ${abweichungen.length}`)
+    console.log(`ABWEICHUNGEN — FABRIK-Empfehlung ohne folgenden fabrik_run (task_ref-Match, Legacy: Tages-Match): ${abweichungen.length}`)
     for (const a of abweichungen) console.log(`  - ${a.ts} «${a.task}»`)
   }
   console.log("")

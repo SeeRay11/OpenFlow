@@ -19,9 +19,15 @@
  *   echo "<task>" | bun of-gate.ts classify        # Text via stdin
  *   bun of-gate.ts classify --text "<task>"        # Text als Arg
  *   bun of-gate.ts log <entscheidung> "<task>" "<grund>" [--event task|fabrik_run]
+ *                                              [--task-ref <gate_id>] [--monitoring]
  *
  * Ausgabe classify: eine JSON-Zeile {entscheidung, signale, prefix, grund}.
  * log hängt an ${OPENFLOW_LEDGER:-~/.openflow/gate-ledger.jsonl}.
+ *
+ * --task-ref (Hebel 2, 10.10.2026): gate_id der Task-Bewertung, auf die sich
+ *   ein fabrik_run bezieht (≤ 30 min davor, derselbe Agent/Kontext).
+ * --monitoring (Hebel 14, 10.10.2026): fabrik_run war nur eine Monitoring-
+ *   Sonde (--scorecard/--loop-check/--nutzung) — Historie bleibt, KPI trennt.
  */
 
 import { appendFileSync, mkdirSync } from "node:fs"
@@ -103,20 +109,26 @@ if (cmd === "classify") {
 
 if (cmd === "log") {
   // of-gate.ts log <entscheidung> "<task>" "<grund>" [--event task|fabrik_run]
+  //                  [--task-ref <gate_id>] [--monitoring]
   const [entscheidung, task = "", grund = ""] = argv.slice(1)
   const ev = argv.includes("--event") ? argv[argv.indexOf("--event") + 1] : "task"
-  const entry = {
+  const entry: Record<string, unknown> = {
     ts: new Date().toISOString(),
     event: ev,
     entscheidung,
     task: task.slice(0, 160),
     grund: grund.slice(0, 240),
   }
+  if (argv.includes("--task-ref")) entry.task_ref = argv[argv.indexOf("--task-ref") + 1] ?? null
+  if (ev === "fabrik_run" && !("task_ref" in entry)) entry.task_ref = null
+  if (argv.includes("--monitoring")) entry.monitoring = true
   mkdirSync(dirname(LEDGER), { recursive: true })
   appendFileSync(LEDGER, JSON.stringify(entry) + "\n")
   console.log(JSON.stringify(entry))
   process.exit(0)
 }
 
-console.error("usage: bun of-gate.ts classify [--text <task>] | log <entscheidung> <task> <grund> [--event task|fabrik_run]")
+console.error(
+  "usage: bun of-gate.ts classify [--text <task>] | log <entscheidung> <task> <grund> [--event task|fabrik_run] [--task-ref <gate_id>] [--monitoring]",
+)
 process.exit(2)

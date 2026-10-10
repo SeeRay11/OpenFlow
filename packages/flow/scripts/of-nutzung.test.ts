@@ -22,7 +22,7 @@ const SCRIPT = join(import.meta.dir, "of-nutzung.ts")
 interface Parsed {
   fenster: { tage: number; von: string; bis: string; startTs: string }
   ledger: {
-    tabelle: Array<{ tag: string; direkt: number; grauzone: number; fabrik: number; fabrikRun: number }>
+    tabelle: Array<{ tag: string; direkt: number; grauzone: number; fabrik: number; fabrikRun: number; fabrikRunMonitoring: number }>
     grauzoneOhneGrund: Array<{ ts: string; task: string }>
     abweichungen: Array<{ ts: string; task: string }>
   }
@@ -93,7 +93,7 @@ describe("of-nutzung — Gate-Ledger", () => {
     expect(r.exitCode).toBe(0)
     const heute = r.report.ledger.tabelle.find((x) => x.tag === day(0))!
     const gestern = r.report.ledger.tabelle.find((x) => x.tag === day(1))!
-    expect(gestern).toEqual({ tag: day(1), direkt: 1, grauzone: 1, fabrik: 0, fabrikRun: 0 })
+    expect(gestern).toEqual({ tag: day(1), direkt: 1, grauzone: 1, fabrik: 0, fabrikRun: 0, fabrikRunMonitoring: 0 })
     expect(heute.direkt).toBe(0)
     expect(heute.grauzone).toBe(1)
     expect(heute.fabrik).toBe(1)
@@ -103,6 +103,58 @@ describe("of-nutzung — Gate-Ledger", () => {
     // FABRIK ohne fabrik_run am selben Tag = ABWEICHUNG; der gefolgte und der
     // außerhalb des Fensters nicht
     expect(r.report.ledger.abweichungen).toEqual([{ ts: ts(2), task: "FABRIK-Empfehlung ohne Folgen" }])
+  })
+
+  test("Hebel 14: fabrik_run mit monitoring:true zählt NICHT in fabrikRun, nur in fabrikRunMonitoring", async () => {
+    const c = newCase()
+    const entries = [
+      { ts: ts(1), event: "fabrik_run", command: "echter Fabrik-Run" },
+      { ts: ts(1), event: "fabrik_run", command: "Monitoring-Sonde", monitoring: true },
+    ]
+    writeFileSync(c.ledger, entries.map((e) => JSON.stringify(e)).join("\n") + "\n")
+    writeFileSync(c.log, "timestamp=2020-01-01T00:00:00.000Z level=INFO message=leer\n")
+    writeFileSync(c.logRotated, "")
+    mkdirSync(c.runsDir)
+
+    const r = await nutzung(c)
+    expect(r.exitCode).toBe(0)
+    const gestern = r.report.ledger.tabelle.find((x) => x.tag === day(1))!
+    expect(gestern.fabrikRun).toBe(1) // nur der echte Run
+    expect(gestern.fabrikRunMonitoring).toBe(1) // die Sonde getrennt
+  })
+
+  test("Hebel 2: task_ref→gate_id matcht über die Tagesgrenze — keine ABWEICHUNG", async () => {
+    const c = newCase()
+    const entries = [
+      { ts: ts(1), event: "task", entscheidung: "FABRIK", grund: "z", gate_id: "gate-42", task: "spät gefolgt" },
+      { ts: ts(2), event: "fabrik_run", task_ref: "gate-42", command: "…" },
+    ]
+    writeFileSync(c.ledger, entries.map((e) => JSON.stringify(e)).join("\n") + "\n")
+    writeFileSync(c.log, "timestamp=2020-01-01T00:00:00.000Z level=INFO message=leer\n")
+    writeFileSync(c.logRotated, "")
+    mkdirSync(c.runsDir)
+
+    const r = await nutzung(c)
+    expect(r.exitCode).toBe(0)
+    // FABRIK-Verdict Tag 1, fabrik_run mit passendem task_ref Tag 2 → gefolgt
+    expect(r.report.ledger.abweichungen).toEqual([])
+  })
+
+  test("Hebel 2: task_ref eines ANDEREN gate_id ist keine Folge — ABWEICHUNG bleibt", async () => {
+    const c = newCase()
+    const entries = [
+      { ts: ts(0), event: "task", entscheidung: "FABRIK", grund: "z", gate_id: "gate-1", task: "falsch verknüpft" },
+      { ts: ts(0), event: "fabrik_run", task_ref: "gate-999", command: "…" },
+    ]
+    writeFileSync(c.ledger, entries.map((e) => JSON.stringify(e)).join("\n") + "\n")
+    writeFileSync(c.log, "timestamp=2020-01-01T00:00:00.000Z level=INFO message=leer\n")
+    writeFileSync(c.logRotated, "")
+    mkdirSync(c.runsDir)
+
+    const r = await nutzung(c)
+    expect(r.exitCode).toBe(0)
+    // fabrik_run gehört zu einem anderen gate_id → die Empfehlung blieb ohne Folge
+    expect(r.report.ledger.abweichungen).toEqual([{ ts: ts(0), task: "falsch verknüpft" }])
   })
 
   test("fehlendes Ledger meldet 0 statt zu sterben", async () => {
