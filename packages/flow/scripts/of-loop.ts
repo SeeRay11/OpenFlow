@@ -9,7 +9,10 @@
  *      checkpoint-resume via of-run.sh --resume (detached, AUTO_RETRY aktiv).
  *      Der alte Run wird mit loop.resumedAt markiert — jede Heilungskette
  *      läuft höchstens einmal pro Run, nichts reiht sich endlos.
- *   4. BERICHTEN: eine Zeile in /tmp/of-loop-state.jsonl; der letzte Zustand
+ *   4. DIGEST: einmal täglich (State ~/.openflow/digest-last.date) das
+ *      Gate-Ledger der letzten 7 Tage scannen — FABRIK/GRAUZONE-Empfehlungen
+ *      ohne Fabrik-Run als digest-YYYY-MM-DD.md + Konsolen-Zeile melden.
+ *   5. BERICHTEN: eine Zeile in /tmp/of-loop-state.jsonl; der letzte Zustand
  *      steht in /tmp/of-loop-last.json.
  *
  * Guardrails:
@@ -34,6 +37,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, statSync, renameS
 import { join } from "node:path"
 import { homedir } from "node:os"
 import { spawn } from "node:child_process"
+import { runDailyDigest } from "./of-digest.ts"
 
 const argv = process.argv.slice(2)
 const flag = (name: string, fallback?: string) => {
@@ -47,6 +51,11 @@ const PIPELINES = (flag("--pipelines", "auto-orchestrator,feature-build") ?? "")
 const INTERVAL = argv.includes("--interval") ? Number(flag("--interval", "300")) : 0
 const STATE = "/tmp/of-loop-state.jsonl"
 const LAST = "/tmp/of-loop-last.json"
+// Hebel 3 — Kandidaten-Digest: einmal täglich FABRIK/GRAUZONE-Empfehlungen
+// ohne Fabrik-Run melden (Datei + Konsolen-Zeile); State digest-last.date
+// verhindert Wiederholung am selben Tag.
+const DIGEST_DIR = flag("--digest-dir", join(homedir(), ".openflow"))
+const DIGEST_LEDGER = flag("--ledger", process.env.OPENFLOW_LEDGER ?? join(DIGEST_DIR, "gate-ledger.jsonl"))
 
 const ROOT = join(homedir(), "workspace/OpenFlow")
 const OF_RUN = join(ROOT, "packages/flow/scripts/of-run.sh")
@@ -186,6 +195,15 @@ async function cycle(): Promise<{ ts: string; gereapt: number; geheilt: string[]
   }
   const alerts = checkInvariants()
   for (const a of alerts) console.error(`of-loop ALERT [${a.invariante}] ${a.wert} (Schwelle: ${a.schwelle})`)
+  // Hebel 3 — einmal täglich: Kandidaten-Digest (FABRIK/GRAUZONE ohne Run).
+  // Läuft im selben Zyklus, ist aber über digest-last.date selbst gedrosselt;
+  // ein Doppelzyklus schreibt nichts doppelt. Best effort wie der Bericht.
+  try {
+    const digest = runDailyDigest(DIGEST_DIR, DIGEST_LEDGER, new Date())
+    if (digest) console.error(digest.zeile)
+  } catch (e) {
+    console.error(`of-loop: Digest fehlgeschlagen: ${e instanceof Error ? e.message : String(e)}`)
+  }
   const state = { ts: new Date().toISOString(), gereapt, geheilt, alerts }
   try {
     appendFileSync(STATE, JSON.stringify(state) + "\n")
