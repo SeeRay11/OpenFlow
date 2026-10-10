@@ -4,3 +4,4 @@
 import "./reap.test.ts"
 import "./gate.test.ts"
 import "./scorecard.test.ts"
+import "./of-nutzung.test.ts"

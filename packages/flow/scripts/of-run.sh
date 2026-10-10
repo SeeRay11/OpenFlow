@@ -8,6 +8,11 @@
 #                                              cards keep their output, the rest
 #                                              continue in their sessions
 #
+#   of-run.sh --nutzung [TAGE]                    Nutzungsanalyse in einem
+#                                              Befehl (of-nutzung.ts; Ledger-
+#                                              Tabelle, opencode.log-Treffer,
+#                                              Scorecard-Kopf, Loop-Sonde;
+#                                              Default-Fenster 6 Tage)
 #   of-run.sh --reap [flags]                   zombie runs beg (of-reap.ts;
 #                                              --dry-run --min-age-min 30 ...)
 #   of-run.sh --scorecard [flags]              verdict statistics over all runs
@@ -34,6 +39,7 @@ if [ "${1:-}" = "--scorecard" ]; then shift; exec "$BUN" "$ROOT/packages/flow/sc
 if [ "${1:-}" = "--reap" ]; then shift; exec "$BUN" "$ROOT/packages/flow/scripts/of-reap.ts" "$@"; fi
 if [ "${1:-}" = "--loop" ]; then shift; exec "$BUN" "$ROOT/packages/flow/scripts/of-loop.ts" "$@"; fi
 if [ "${1:-}" = "--loop-check" ]; then shift; exec "$BUN" "$ROOT/packages/flow/scripts/of-loopcheck.ts" "$@"; fi
+if [ "${1:-}" = "--nutzung" ]; then shift; exec "$BUN" "$ROOT/packages/flow/scripts/of-nutzung.ts" "$@"; fi
 
 MODE=detached
 RESUME_ARGS=()
