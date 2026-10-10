@@ -20,6 +20,8 @@ interface Agg {
   passRetried: number
   fail: number
   stopped: number
+  stoppedMitGrund: number
+  stoppedOhneGrund: number
   runningNow: number
   reaped: number
   passQuote: number
@@ -157,13 +159,71 @@ describe("of-scorecard — Aggregate inkl. attempts & reaped", () => {
     )
     expect(p.aggregate.reaped).toBe(1)
     expect(p.runs[0].reaped).toBe(true)
+    expect(p.runs[0].reapedReason).toBe("kein Checkpoint")
     expect(p.runs[0].verdict).toBe("STOPPED")
 
     const t = await scorecard([])
     expect(t.exitCode).toBe(0)
-    expect(t.stdout).toContain("| STOPPED | 1 |")
+    expect(t.stdout).toContain("| STOPPED | 1 (davon 1 mit Grund (z. B. zombie), 0 ohne Grund) |")
     expect(t.stdout).toContain("gereapte Zombies | 1")
     expect(t.stdout).toContain("(gereapte Leiche)")
+  })
+
+  test("(5b) STOPPED-Breakdown: mit reaped.reason vs. ohne (reaped:true hat keinen Grund)", async () => {
+    newCase()
+    const p = await measure(
+      [
+        { id: "stop-mit-grund", status: "stopped", reaped: { reason: "zombie: 15 min stumm" } },
+        { id: "stop-reaped-bool", status: "stopped", reaped: true }, // boolean → kein Grund-Objekt
+        { id: "stop-ohne-alles", status: "stopped" }, // kein reaped-Feld
+      ],
+      { order: ["stop-mit-grund", "stop-ohne-alles", "stop-reaped-bool"] }, // readdirSync().sort() = alphabetisch
+    )
+    expect(p.aggregate.stopped).toBe(3)
+    expect(p.aggregate.stoppedMitGrund).toBe(1)
+    expect(p.aggregate.stoppedOhneGrund).toBe(2)
+    expect(p.runs[0].reapedReason).toBe("zombie: 15 min stumm")
+    expect(p.runs[1].reapedReason).toBeNull()
+    expect(p.runs[2].reapedReason).toBeNull()
+  })
+
+  test("(5c) Text-Ausgabe nennt Quelle (runs-dir) direkt unter der Überschrift", async () => {
+    newCase()
+    writeRun("quelle-run", { id: "quelle-run", status: "done" })
+    const t = await scorecard([])
+    expect(t.exitCode).toBe(0)
+    const zeilen = t.stdout.split("\n")
+    const kopf = zeilen.findIndex((z) => z.startsWith("## OpenFlow Scorecard"))
+    expect(kopf).toBeGreaterThanOrEqual(0)
+    expect(zeilen[kopf + 1]).toBe(`Quelle: ${runsDir}`)
+  })
+
+  test("(5d) OF_RUNS_DIR-Env steuert das Run-Verzeichnis ohne --runs-dir-Flag", async () => {
+    newCase()
+    writeRun("env-run", { id: "env-run", status: "error" })
+    const prev = process.env.OF_RUNS_DIR
+    process.env.OF_RUNS_DIR = runsDir
+    try {
+      // Bun.spawn erbt Laufzeit-Mutationen von process.env nicht (gemessen:
+      // SEEN=UNSET ohne explizites env) — deshalb explizit weiterreichen.
+      const proc = Bun.spawn(["bun", SCRIPT, "--ledger", ledger, "--json"], {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env },
+      })
+      const stdout = await new Response(proc.stdout).text()
+      const stderr = await new Response(proc.stderr).text()
+      const exitCode = await proc.exited
+      expect(exitCode).toBe(0)
+      expect(stderr).toBe("")
+      const parsed = JSON.parse(stdout) as Parsed
+      expect(parsed.aggregate.runsTotal).toBe(1)
+      expect(parsed.aggregate.fail).toBe(1)
+      expect(parsed.runs[0].id).toBe("env-run")
+    } finally {
+      if (prev === undefined) delete process.env.OF_RUNS_DIR
+      else process.env.OF_RUNS_DIR = prev
+    }
   })
 
   test("(6) Mischfall: alle Kennzahlen in Runs und Aggregat korrekt", async () => {
@@ -247,7 +307,7 @@ describe("of-scorecard — Textausgabe (--limit)", () => {
     expect(r.stdout).toContain("| PASS (done) | 2 (50 %) |")
     expect(r.stdout).toContain("| davon PASS_RETRIED (Auto-Retry) | 1 |")
     expect(r.stdout).toContain("| FAIL (error) | 1 |")
-    expect(r.stdout).toContain("| STOPPED | 1 |")
+    expect(r.stdout).toContain("| STOPPED | 1 (davon 0 mit Grund (z. B. zombie), 1 ohne Grund) |")
     expect(r.stdout).toContain("gereapte Zombies | 1")
     expect(r.stdout).toContain("PASS_RETRIED") // Verdict-Spalte
     expect(r.stdout).toContain("| Output gesamt | 0 Wörter |")

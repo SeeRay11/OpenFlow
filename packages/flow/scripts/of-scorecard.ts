@@ -21,7 +21,7 @@
  */
 
 import { readdirSync, readFileSync, existsSync } from "node:fs"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { homedir } from "node:os"
 
 const argv = process.argv.slice(2)
@@ -29,7 +29,7 @@ const flag = (name: string, fallback?: string) => {
   const i = argv.indexOf(name)
   return i >= 0 ? argv[i + 1] : fallback
 }
-const RUNS_DIR = flag("--runs-dir", join(homedir(), "workspace/flow-lab/.openflow/runs"))
+const RUNS_DIR = resolve(flag("--runs-dir", process.env.OF_RUNS_DIR ?? join(homedir(), "workspace/flow-lab/.openflow/runs")))
 const LEDGER = flag("--ledger", process.env.OPENFLOW_LEDGER ?? join(homedir(), ".openflow/gate-ledger.jsonl"))
 const LIMIT = Number(flag("--limit", "20"))
 const JSON_OUT = argv.includes("--json")
@@ -45,6 +45,7 @@ interface Row {
   outputWords: number
   attempts: number
   reaped: boolean
+  reapedReason: string | null
 }
 
 function scoreRun(log: any): Row {
@@ -79,6 +80,10 @@ function scoreRun(log: any): Row {
     outputWords: words,
     attempts,
     reaped: !!log?.reaped,
+    reapedReason:
+      typeof log?.reaped === "object" && log?.reaped !== null && typeof log?.reaped?.reason === "string"
+        ? log?.reaped?.reason
+        : null,
   }
 }
 
@@ -104,6 +109,8 @@ const agg = {
   passRetried: rows.filter((r) => r.verdict === "PASS_RETRIED").length,
   fail: rows.filter((r) => r.verdict === "FAIL").length,
   stopped: rows.filter((r) => r.verdict === "STOPPED").length,
+  stoppedMitGrund: rows.filter((r) => r.verdict === "STOPPED" && r.reapedReason !== null).length,
+  stoppedOhneGrund: rows.filter((r) => r.verdict === "STOPPED" && r.reapedReason === null).length,
   runningNow: rows.filter((r) => r.status === "running").length,
   reaped: rows.filter((r) => r.reaped).length,
   passQuote: rows.length ? +(rows.filter((r) => r.verdict.startsWith("PASS")).length / rows.length * 100).toFixed(1) : 0,
@@ -145,14 +152,15 @@ if (JSON_OUT) {
   console.log(JSON.stringify({ aggregate: agg, ledger, runs: rows.slice(-LIMIT) }, null, 2))
 } else {
   const recent = rows.slice(-LIMIT)
-  console.log(`## OpenFlow Scorecard — ${rows.length} Runs (${RUNS_DIR})`)
+  console.log(`## OpenFlow Scorecard — ${rows.length} Runs`)
+  console.log(`Quelle: ${RUNS_DIR}`)
   console.log("")
   console.log(`| Kennzahl | Wert |`)
   console.log(`|---|---|`)
   console.log(`| PASS (done) | ${agg.pass} (${agg.passQuote} %) |`)
   console.log(`| davon PASS_RETRIED (Auto-Retry) | ${agg.passRetried} |`)
   console.log(`| FAIL (error) | ${agg.fail} |`)
-  console.log(`| STOPPED | ${agg.stopped} |`)
+  console.log(`| STOPPED | ${agg.stopped} (davon ${agg.stoppedMitGrund} mit Grund (z. B. zombie), ${agg.stoppedOhneGrund} ohne Grund) |`)
   console.log(`| jetzt noch running (nach Reaper: 0 erwartet) | ${agg.runningNow} |`)
   console.log(`| davon gereapte Zombies | ${agg.reaped} |`)
   console.log(`| Ø Dauer PASS | ${agg.avgDurationSecPass !== null ? agg.avgDurationSecPass + " s" : "k.A."} |`)
