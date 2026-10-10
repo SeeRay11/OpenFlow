@@ -621,7 +621,7 @@ describe("OpenAI Chat route", () => {
       const body = sseEvents(deltaChunk({ content: 123 }))
       const error = yield* LLMClient.generate(request).pipe(Effect.provide(fixedResponse(body)), Effect.flip)
 
-      expect(error.message).toContain("Invalid openai/openai-chat stream event")
+      expect(error.message).toContain("Provider stream ended without a terminal finish event")
     }),
   )
 

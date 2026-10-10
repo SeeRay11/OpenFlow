@@ -229,16 +229,39 @@ function makeFromTransport<Body, Prepared, Frame, Event, State>(
   const protocol = input.protocol
   const encodeBody = Schema.encodeSync(Schema.fromJsonString(protocol.body.schema))
   const decodeEventEffect = Schema.decodeUnknownEffect(protocol.stream.event)
-  const decodeEvent = (route: string) => (frame: Frame) =>
-    decodeEventEffect(frame).pipe(
-      Effect.mapError(() =>
-        ProviderShared.eventError(
-          input.id,
-          `Invalid ${route} stream event`,
-          typeof frame === "string" ? frame : ProviderShared.encodeJson(frame),
-        ),
-      ),
+  // Providers occasionally interleave schema-less keep-alive frames (ping /
+  // empty choices) into an otherwise valid event stream. Every frame first
+  // runs through the event schema (`fromJsonString` parses internally) —
+  // decodable frames, including decodable error frames, flow on as events.
+  // Only when schema decoding fails does the frame's shape decide, inside the
+  // catch: non-JSON payloads and parsed records carrying an `error` field are
+  // fatal, every other benign frame is skipped with a warning.
+  const decodeEvent = (route: string) => (frame: Frame) => {
+    const fatal = () => {
+      const raw = typeof frame === "string" ? frame : ProviderShared.encodeJson(frame)
+      return Effect.fail(ProviderShared.eventError(input.id, `Invalid ${route} stream event`, raw))
+    }
+    let parsed: unknown = frame
+    let json = true
+    if (typeof frame === "string") {
+      try {
+        parsed = ProviderShared.decodeJson(frame)
+      } catch {
+        json = false
+      }
+    }
+    const hasError = json && ProviderShared.isRecord(parsed) && "error" in parsed
+    return decodeEventEffect(frame).pipe(
+      Effect.map((event) => Option.some(event)),
+      Effect.catch(() => {
+        if (!json || hasError) return fatal()
+        const raw = typeof frame === "string" ? frame : ProviderShared.encodeJson(frame)
+        return Effect.logWarning(
+          `${route}: skipping benign stream frame that failed schema decode: ${raw}`,
+        ).pipe(Effect.map(() => Option.none()))
+      }),
     )
+  }
 
   type BuiltRouteInput = Omit<MakeTransportInput<Body, Prepared, Frame, Event, State>, "defaults"> & {
     readonly defaults?: RouteDefaults
@@ -282,6 +305,8 @@ function makeFromTransport<Body, Prepared, Frame, Event, State>(
           .frames(prepared, request, runtime)
           .pipe(
             Stream.mapEffect(decodeEvent(route)),
+            Stream.filter(Option.isSome),
+            Stream.map((event) => event.value),
             protocol.stream.terminal ? Stream.takeUntil(protocol.stream.terminal) : (stream) => stream,
           )
         return events.pipe(

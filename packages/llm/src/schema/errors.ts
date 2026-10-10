@@ -139,9 +139,10 @@ export class InvalidProviderOutputReason extends Schema.Class<InvalidProviderOut
   route: Schema.optional(Schema.String),
   raw: Schema.optional(Schema.String),
   providerMetadata: Schema.optional(ProviderMetadata),
+  transient: Schema.optional(Schema.Boolean),
 }) {
   get retryable() {
-    return false
+    return this.transient === true
   }
 }
 
