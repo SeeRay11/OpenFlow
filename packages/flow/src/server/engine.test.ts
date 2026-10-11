@@ -1645,6 +1645,64 @@ describe("orchestration mode", () => {
     expect(log.nodes.find((node) => node.id === "a")!.status).toBe("skipped")
   })
 
+  // Measured 2026-10-11 (run-2026-10-11T21-29-09-806Z): the orchestrator of
+  // a canvas with a critic answered the task itself, every card was skipped,
+  // and the run reported done with a wrong number (227 instead of 231) that
+  // nobody had checked. A canvas that carries a critic does not end on an
+  // answer no critic has seen.
+  test("an orchestrator that answers straight away has its answer reviewed by the critic first", async () => {
+    const h = harness({
+      behavior: {
+        root: { outputs: [final("the third-largest file has 227 lines"), final("the third-largest file has 231 lines")] },
+        critic: { output: "does not pass: the third-largest file has 231 lines, not 227" },
+      },
+    })
+    const log = await h.run(tree(["root->a", "root->critic"]), "name the third-largest file").done
+
+    expect(h.dispatched).toEqual(["root", "critic", "root"])
+    // The critic is briefed with the task and the answer it has to check.
+    expect(h.prompts.get("critic")).toContain("name the third-largest file")
+    expect(h.prompts.get("critic")).toContain("227 lines")
+    // Its finding goes back the way every result does — into the
+    // orchestrator's next turn — and the orchestrator answers again.
+    const turns = h.promptLog.filter((entry) => entry.node === "root")
+    expect(turns).toHaveLength(2)
+    expect(turns[1]!.text).toContain("231 lines, not 227")
+    expect(log.status).toBe("done")
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("the third-largest file has 231 lines")
+    expect(log.nodes.find((node) => node.id === "a")!.status).toBe("skipped")
+  })
+
+  test("an answer whose review produced nothing fails rather than passing unchecked", async () => {
+    const h = harness({
+      behavior: {
+        root: { output: final("the answer") },
+        critic: { error: "provider said no" },
+      },
+    })
+    const log = await h.run(tree(["root->critic"])).done
+
+    expect(h.dispatched).toEqual(["root", "critic", "root"])
+    expect(log.status).toBe("error")
+    expect(log.nodes.find((node) => node.id === "root")!.error).toContain("never reviewed")
+  })
+
+  test("an answer a critic already judged is not sent back a second time", async () => {
+    const h = harness({
+      behavior: {
+        root: { outputs: [dispatch("a"), dispatch("critic"), final("checked answer")] },
+        a: { output: "a did it" },
+        critic: { output: "passes" },
+      },
+    })
+    const log = await h.run(tree(["root->a", "root->critic"], { dispatches: 3 })).done
+
+    expect(h.dispatched).toEqual(["root", "a", "root", "critic", "root"])
+    expect(h.promptLog.filter((entry) => entry.node === "critic")).toHaveLength(1)
+    expect(log.status).toBe("done")
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("checked answer")
+  })
+
   test("a subagent with cards of its own orchestrates its subtree one level down", async () => {
     const h = harness({
       behavior: {

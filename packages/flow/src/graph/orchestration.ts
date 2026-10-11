@@ -14,8 +14,15 @@ export const ORCHESTRATOR_ROLE = "orchestrator"
  */
 export const CRITIC_ROLE = "reviewer"
 
+/**
+ * Role texts that also read as a critic. Canvases in use name their judging
+ * card `critic` (auto-orchestrator, team-dharma, …); read only as `reviewer`,
+ * the engine never saw a critic there and nothing held an answer to review.
+ */
+const CRITIC_ALIASES = new Set([CRITIC_ROLE, "critic"])
+
 export function isCritic(node: FlowNode) {
-  return node.role === CRITIC_ROLE
+  return CRITIC_ALIASES.has(node.role)
 }
 
 /**

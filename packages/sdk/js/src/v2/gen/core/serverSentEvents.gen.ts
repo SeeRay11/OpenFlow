@@ -137,11 +137,9 @@ export const createSseClient = <TData = unknown>({
         let buffer = ""
 
         const abortHandler = () => {
-          try {
-            reader.cancel()
-          } catch {
-            // noop
-          }
+          // cancel() settles asynchronously; after an abort it rejects with
+          // AbortError, which the try/catch never sees -> unhandledRejection.
+          reader.cancel().catch(() => {})
         }
 
         signal.addEventListener("abort", abortHandler)

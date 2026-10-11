@@ -15,6 +15,7 @@ import {
   orchestratorPrompt,
   protocolPrompt,
   reassignPrompt,
+  reviewAnswerTask,
   subOrchestratorPrompt,
   subagentPrompt,
   swarmPrompt,
@@ -1089,6 +1090,12 @@ export function start(
      * blocking it would deadlock the level above.
      */
     const unjudged = () => !!gauntlet && judges.length > 0 && judged.size === 0
+    /**
+     * Whether the engine already sent this card's answer to its critics since
+     * the last batch that built anything — once, so a critic that returns
+     * nothing ends the card instead of being asked forever.
+     */
+    let reviewSent = false
 
     while (true) {
       // Always `reuse`: `runTurn` opens a session when the card has none, so
@@ -1096,7 +1103,7 @@ export function start(
       await runTurn(node, build, true)
       if (failed.has(node.id) || controller.signal.aborted) return undefined
 
-      const decision = await decide(node, children, refine && !returning && spent === 0)
+      let decision = await decide(node, children, refine && !returning && spent === 0)
 
       if (decision.kind === "error") {
         if (retries >= PROTOCOL_RETRIES) {
@@ -1114,12 +1121,39 @@ export function start(
           decision.reason,
           "done",
         )
-        build = () => protocolPrompt(pipeline, node, decision.reason, retries, children)
+        const reason = decision.reason
+        build = () => protocolPrompt(pipeline, node, reason, retries, children)
         continue
       }
 
       // A retry is spent on the malformed turn, not on the run's budget.
       retries = 0
+      // Outside a gauntlet the card may answer on its own — but not past a
+      // critic it never asked. Measured 2026-10-11: the auto-orchestrator
+      // answered the task itself, every card was skipped, and the run passed
+      // with a wrong number nobody had checked. So the answer goes to the
+      // critics as a dispatch of their own, and their finding returns the way
+      // every result does: into this card's next turn. A critic that came back
+      // with nothing leaves the answer unreviewed, and that is a failure.
+      if (decision.kind === "final" && !gauntlet && judges.length > 0 && judged.size === 0) {
+        if (reviewSent) {
+          failed.add(node.id)
+          const reason = "the answer was never reviewed — the critic sent to check it returned nothing"
+          activity.note(node.id, `unreviewed:${node.id}:final`, "answered with no review", reason, "error")
+          patch(node.id, { status: "error", error: reason, activity: undefined, finished: Date.now() })
+          return undefined
+        }
+        reviewSent = true
+        activity.note(node.id, `review:${node.id}:${spent}`, "answer sent to the critic before it counts", undefined, "done")
+        const answer = decision.answer
+        decision = {
+          kind: "dispatch",
+          assignments: judges.map((card) => ({ card, task: reviewAnswerTask(task, answer) })),
+        }
+        // A turn told to answer did answer; the review is the engine's
+        // dispatch, not the card ignoring its bound.
+        forced = undefined
+      }
       if (decision.kind === "final") {
         // A gauntlet ends when the work clears the bar, and the card that
         // decides that is never the card that assigned the work. Measured: an
@@ -1332,10 +1366,13 @@ export function start(
           criticsLost++
           criticLoss = `${result.card}: ${result.error}`
         }
-        if (decision.assignments.some((entry) => !isCritic(nodes.get(entry.card)!))) judged.clear()
-        else
-          for (const result of results) if (result.text !== undefined) judged.add(result.card)
       }
+      // What this batch did to the standing verdict. A batch that built
+      // anything invalidates it; only a batch of critics alone judges a state.
+      if (decision.assignments.some((entry) => !isCritic(nodes.get(entry.card)!))) {
+        judged.clear()
+        reviewSent = false
+      } else for (const result of results) if (result.text !== undefined) judged.add(result.card)
 
       // `results` lands in pool completion order; the orchestrator asked in a
       // particular order and reads more easily in it.
