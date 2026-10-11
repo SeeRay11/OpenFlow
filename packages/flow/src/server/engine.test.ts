@@ -1633,7 +1633,7 @@ describe("orchestration mode", () => {
   })
 
   test("an orchestrator that answers straight away spends nothing on its cards", async () => {
-    const h = harness({ behavior: { root: { output: final("the answer") } } })
+    const h = harness({ behavior: { root: { output: final("indivisible: one lookup answers it\nthe answer") } } })
     const log = await h.run(tree(["root->a", "root->b"])).done
 
     expect(h.dispatched).toEqual(["root"])
@@ -1653,7 +1653,12 @@ describe("orchestration mode", () => {
   test("an orchestrator that answers straight away has its answer reviewed by the critic first", async () => {
     const h = harness({
       behavior: {
-        root: { outputs: [final("the third-largest file has 227 lines"), final("the third-largest file has 231 lines")] },
+        root: {
+          outputs: [
+            final("indivisible: one command answers it\nthe third-largest file has 227 lines"),
+            final("the third-largest file has 231 lines"),
+          ],
+        },
         critic: { output: "does not pass: the third-largest file has 231 lines, not 227" },
       },
     })
@@ -1671,6 +1676,60 @@ describe("orchestration mode", () => {
     expect(log.status).toBe("done")
     expect(log.nodes.find((node) => node.id === "root")!.output).toBe("the third-largest file has 231 lines")
     expect(log.nodes.find((node) => node.id === "a")!.status).toBe("skipped")
+  })
+
+  // Measured 2026-10-11/12 (auto-orchestrator, run-2026-10-11T22-49-09-053Z):
+  // a task naming two independent parts, and the orchestrator counted both
+  // itself, sent only the critic, and all three workers were skipped. A card
+  // with workers that answers before any of them worked is asked once to hand
+  // the independent parts out.
+  test("an answer before any worker was dispatched is sent back once to split the work", async () => {
+    const h = harness({
+      behavior: {
+        root: { outputs: [final("16 files; the largest has 316 lines"), dispatch("a", "b"), final("both parts, from a and b")] },
+        a: { output: "16 files" },
+        b: { output: "316, 243, 231" },
+      },
+    })
+    const log = await h.run(tree(["root->a", "root->b"], { dispatches: 2 }), "(a) count, (b) the three largest").done
+
+    expect(h.dispatched.slice(0, 2)).toEqual(["root", "root"])
+    expect(h.dispatched).toContain("a")
+    expect(h.dispatched).toContain("b")
+    const turns = h.promptLog.filter((entry) => entry.node === "root")
+    expect(turns[1]!.text).toContain("no worker has done any of this")
+    expect(turns[1]!.text).toContain("indivisible:")
+    expect(log.status).toBe("done")
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("both parts, from a and b")
+  })
+
+  test("an answer that says in one line why the task cannot be split goes through", async () => {
+    const h = harness({
+      behavior: { root: { output: final("indivisible: one command answers the whole task\n42") } },
+    })
+    const log = await h.run(tree(["root->a", "root->b"])).done
+
+    expect(h.dispatched).toEqual(["root"])
+    expect(log.status).toBe("done")
+    // The declaration is the engine's to read, not part of the run's answer.
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("42")
+  })
+
+  test("an answer after a worker was dispatched is not sent back to split", async () => {
+    const h = harness({
+      behavior: {
+        root: { outputs: [dispatch("a"), final("a's answer, checked")] },
+        a: { output: "a did it" },
+      },
+    })
+    const log = await h.run(tree(["root->a", "root->b"], { dispatches: 2 })).done
+
+    expect(h.dispatched).toEqual(["root", "a", "root"])
+    expect(h.promptLog.filter((entry) => entry.node === "root").map((entry) => entry.text).join("\n")).not.toContain(
+      "no worker has done any of this",
+    )
+    expect(log.status).toBe("done")
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("a's answer, checked")
   })
 
   test("an answer whose review produced nothing fails rather than passing unchecked", async () => {
@@ -2105,7 +2164,7 @@ describe("orchestration over the MCP tools", () => {
 
   test("a finish tool call ends the run, and its answer is the result", async () => {
     const h = harness({
-      behavior: { root: { output: "thinking out loud", calls: call("openflow_finish", { answer: "the answer" }) } },
+      behavior: { root: { output: "thinking out loud", calls: call("openflow_finish", { answer: "indivisible: one step\nthe answer" }) } },
     })
     const log = await h.run(tree(["root->a"]), "do the thing", on).done
 
@@ -2142,7 +2201,7 @@ describe("orchestration over the MCP tools", () => {
         root: {
           output: "",
           calls: [
-            { name: "openflow_finish", input: { answer: "changed my mind" } },
+            { name: "openflow_finish", input: { answer: "indivisible: one step\nchanged my mind" } },
             { name: "openflow_dispatch", input: { assignments: [{ card: "a", task: "stale" }] } },
           ],
         },
@@ -2186,7 +2245,7 @@ describe("a tool call belongs to the turn that made it", () => {
     const h = harness({
       behavior: {
         root: {
-          output: "```openflow\n" + JSON.stringify({ final: "answered on the re-ask" }) + "\n```",
+          output: "```openflow\n" + JSON.stringify({ final: "indivisible: one step\nanswered on the re-ask" }) + "\n```",
           // The same call, still in the history on the re-ask — which is what a
           // real session looks like, since the orchestrator is re-prompted into
           // the one it already holds. Its id has been consumed, so the second

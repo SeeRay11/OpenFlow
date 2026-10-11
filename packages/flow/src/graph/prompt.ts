@@ -989,3 +989,47 @@ export function reviewAnswerTask(task: string, answer: string) {
     "whether it passes, and for every error give the correct value and how you established it.",
   ].join("\n")
 }
+
+/**
+ * The line an orchestrator writes first in its `final` to say why the task
+ * cannot be split. The engine reads it; it never reaches the run's answer.
+ */
+const INDIVISIBLE = /^\s*(?:indivisible|nicht zerlegbar)\s*:\s*\S.*$/im
+
+/**
+ * Splits a `final` into its "cannot be split" line and the answer itself.
+ * Only the first non-empty line counts — a phrase deep in the answer is
+ * content, not a declaration.
+ */
+export function indivisibleReason(answer: string) {
+  const lines = answer.split("\n")
+  const first = lines.findIndex((line) => line.trim() !== "")
+  if (first < 0 || !INDIVISIBLE.test(lines[first]!)) return undefined
+  const rest = lines.slice(first + 1).join("\n").trim()
+  return { reason: lines[first]!.trim(), answer: rest || answer.trim() }
+}
+
+/**
+ * What an orchestrator is told when it answers without having dispatched any
+ * of its workers. Measured 2026-10-11/12 (auto-orchestrator, a task naming two
+ * independent parts): the orchestrator counted both parts itself with `bash`,
+ * sent only the critic, and the three workers were skipped. Doing it alone is
+ * cheaper for the card and against the canvas — independent parts run at the
+ * same time on the cards built for them. A task that truly is one step stays
+ * one step: a single line saying why lets the answer through.
+ */
+export function splitFirstPrompt(pipeline: Pipeline, node: FlowNode) {
+  const workers = subagentsOf(pipeline, node).filter((child) => !isCritic(child))
+  return [
+    "# Not yet — no worker has done any of this",
+    "",
+    "You answered without handing any part of the task to the cards built to do it. If the task has",
+    "two or more parts that do not need each other, dispatch them now — one part per card, in ONE",
+    `batch, so they run at the same time: ${workers.map((card) => `\`${card.id}\``).join(", ")}.`,
+    "",
+    "If the task really is a single step that cannot be split, answer again and make the first line",
+    "of your `final` one sentence saying why, starting with `indivisible:` — for example",
+    '`indivisible: one command answers the whole task`. That line lets the answer through and is',
+    "removed before the run reports it.",
+  ].join("\n")
+}

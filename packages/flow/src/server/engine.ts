@@ -16,6 +16,8 @@ import {
   protocolPrompt,
   reassignPrompt,
   reviewAnswerTask,
+  indivisibleReason,
+  splitFirstPrompt,
   subOrchestratorPrompt,
   subagentPrompt,
   swarmPrompt,
@@ -1096,6 +1098,11 @@ export function start(
      * nothing ends the card instead of being asked forever.
      */
     let reviewSent = false
+    /** Children that do work rather than judge it. */
+    const workers = children.filter((id) => !isCritic(nodes.get(id)!))
+    /** Whether any worker has been dispatched from here; and whether the card was asked once to. */
+    let delegated = false
+    let splitAsked = false
 
     while (true) {
       // Always `reuse`: `runTurn` opens a session when the card has none, so
@@ -1128,6 +1135,27 @@ export function start(
 
       // A retry is spent on the malformed turn, not on the run's budget.
       retries = 0
+      // A card with workers that answers before any of them did anything is
+      // asked once to hand out the independent parts. Measured 2026-10-11/12
+      // (auto-orchestrator, a task naming two independent parts): the card
+      // counted both itself with `bash`, sent only the critic, and the three
+      // workers were skipped. A first line `indivisible: <why>` lets a task
+      // that really is one step through, and is stripped from the answer.
+      if (decision.kind === "final" && !gauntlet && workers.length > 0 && !delegated && !forced) {
+        const declared = indivisibleReason(decision.answer)
+        if (declared) {
+          // Declared once, settled: a later answer (after the critic's
+          // review, say) is not asked again.
+          splitAsked = true
+          activity.note(node.id, `indivisible:${node.id}:${spent}`, "answered alone", declared.reason, "done")
+          decision = { kind: "final", answer: declared.answer }
+        } else if (!splitAsked) {
+          splitAsked = true
+          activity.note(node.id, `split:${node.id}:${spent}`, "answered without dispatching a worker", undefined, "done")
+          build = () => splitFirstPrompt(pipeline, node)
+          continue
+        }
+      }
       // Outside a gauntlet the card may answer on its own — but not past a
       // critic it never asked. Measured 2026-10-11: the auto-orchestrator
       // answered the task itself, every card was skipped, and the run passed
@@ -1370,6 +1398,7 @@ export function start(
       // What this batch did to the standing verdict. A batch that built
       // anything invalidates it; only a batch of critics alone judges a state.
       if (decision.assignments.some((entry) => !isCritic(nodes.get(entry.card)!))) {
+        delegated = true
         judged.clear()
         reviewSent = false
       } else for (const result of results) if (result.text !== undefined) judged.add(result.card)
