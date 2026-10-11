@@ -964,3 +964,28 @@ export function subOrchestratorPrompt(
   sections.push(`# Your assignment\n\n${label(pipeline, parent.id)} dispatched you with this:\n\n${task.trim()}`)
   return sections.join("\n\n")
 }
+
+/**
+ * The assignment a critic gets when the orchestrator answered without having
+ * anything checked: the task and the answer, and the instruction to verify
+ * rather than to agree. Sent by the engine, not written by the orchestrator,
+ * so the critic sees the answer itself and not a summary of it.
+ */
+export function reviewAnswerTask(task: string, answer: string) {
+  return [
+    "The orchestrator answered the task below itself; no card has checked the answer. Review it before",
+    "the run reports it.",
+    "",
+    "## The task",
+    "",
+    task,
+    "",
+    "## The answer to review",
+    "",
+    answer,
+    "",
+    "Check the answer against the task: is it complete, is every claim correct? Re-derive what you can",
+    "verify — run the command, open the file, count again — instead of trusting the answer. Say plainly",
+    "whether it passes, and for every error give the correct value and how you established it.",
+  ].join("\n")
+}

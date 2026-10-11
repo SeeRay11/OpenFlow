@@ -112,6 +112,22 @@ if (sseTypesPatched === sseTypesSource) {
 }
 await Bun.write(sseTypesPath, sseTypesPatched)
 
+// Patch a @hey-api/openapi-ts codegen bug: the SSE abort handler wraps
+// `reader.cancel()` in a synchronous try/catch, but cancel() returns a promise
+// that rejects with AbortError once the request's signal has aborted. Nobody
+// awaits it, so every subscriber that aborts its stream gets an
+// unhandledRejection (measured: one per OpenFlow run, right before "done").
+const ssePath = "./src/v2/gen/core/serverSentEvents.gen.ts"
+const sseSource = await Bun.file(ssePath).text()
+const ssePatched = sseSource.replace(
+  /try \{\s*reader\.cancel\(\)\s*\} catch \{\s*\/\/ noop\s*\}/,
+  "reader.cancel().catch(() => {})",
+)
+if (ssePatched === sseSource) {
+  throw new Error(`SSE cancel patch did not apply; @hey-api/openapi-ts output may have changed (${ssePath})`)
+}
+await Bun.write(ssePath, ssePatched)
+
 await $`bun prettier --write src/gen`
 await $`bun prettier --write src/v2`
 await $`rm -rf dist`
