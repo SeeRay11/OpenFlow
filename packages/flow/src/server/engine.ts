@@ -895,16 +895,20 @@ export function start(
         // "Not now" is not "this card is finished". The provider refused the
         // turn before it produced anything, so the same prompt goes back into
         // the same session after a wait rather than costing the run a card.
-        if (rateLimited(reason) && attempt < RATE_LIMIT_RETRIES && rateLimitBackoff > 0) {
+        // A provider that broke off mid-stream with a 5xx/429 error packet is
+        // the same "not now": the llm layer classifies the packet and leads its
+        // message with the effective status, the turn goes back after a wait.
+        const transient = rateLimited(reason) ? "rate limited" : streamFailed(reason) ? "provider error" : undefined
+        if (transient && attempt < RATE_LIMIT_RETRIES && rateLimitBackoff > 0) {
           const wait = rateLimitBackoff * 2 ** attempt
           activity.note(
             node.id,
             `ratelimit:${node.id}:${turnStarted}`,
-            `rate limited — retrying in ${Math.round(wait / 1000)}s (${attempt + 1} of ${RATE_LIMIT_RETRIES})`,
+            `${transient} — retrying in ${Math.round(wait / 1000)}s (${attempt + 1} of ${RATE_LIMIT_RETRIES})`,
             reason,
             "done",
           )
-          patch(node.id, { activity: `rate limited — retrying in ${Math.round(wait / 1000)}s` })
+          patch(node.id, { activity: `${transient} — retrying in ${Math.round(wait / 1000)}s` })
           if (sessionID) active.delete(sessionID)
           await new Promise((resolve) => setTimeout(resolve, wait))
           if (controller.signal.aborted) {
@@ -941,6 +945,17 @@ export function start(
    */
   function rateLimited(reason: string) {
     return /\b429\b|rate.?limit|too many requests/i.test(reason)
+  }
+
+  /**
+   * Whether the provider failed a turn mid-stream with a retryable error
+   * packet (`data: {"error":{…}}` after HTTP 200 — dharma forwards upstream
+   * failures this way since 0.6.18). `@opencode-ai/llm` classifies the packet
+   * (`streamErrorPacket`) and writes `Provider stream error (<status> …)`; a
+   * 5xx status there is a provider-side failure, not a fault of the turn.
+   */
+  function streamFailed(reason: string) {
+    return /Provider stream error \(5\d\d\b/.test(reason)
   }
 
   /** A card's one turn in `pipeline` mode, after its layer's predecessors settled. */

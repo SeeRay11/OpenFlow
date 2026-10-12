@@ -234,8 +234,10 @@ function makeFromTransport<Body, Prepared, Frame, Event, State>(
   // runs through the event schema (`fromJsonString` parses internally) —
   // decodable frames, including decodable error frames, flow on as events.
   // Only when schema decoding fails does the frame's shape decide, inside the
-  // catch: non-JSON payloads and parsed records carrying an `error` field are
-  // fatal, every other benign frame is skipped with a warning.
+  // catch: non-JSON payloads are fatal, parsed records carrying an `error`
+  // field fail as a classified provider error (retryable for 429/5xx — the
+  // router reports a mid-stream upstream failure this way), every other
+  // benign frame is skipped with a warning.
   const decodeEvent = (route: string) => (frame: Frame) => {
     const fatal = () => {
       const raw = typeof frame === "string" ? frame : ProviderShared.encodeJson(frame)
@@ -254,7 +256,8 @@ function makeFromTransport<Body, Prepared, Frame, Event, State>(
     return decodeEventEffect(frame).pipe(
       Effect.map((event) => Option.some(event)),
       Effect.catch(() => {
-        if (!json || hasError) return fatal()
+        if (!json) return fatal()
+        if (hasError) return Effect.fail(ProviderShared.streamErrorPacket((parsed as { error: unknown }).error))
         const raw = typeof frame === "string" ? frame : ProviderShared.encodeJson(frame)
         return Effect.logWarning(
           `${route}: skipping benign stream frame that failed schema decode: ${raw}`,

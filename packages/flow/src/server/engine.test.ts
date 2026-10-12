@@ -2478,6 +2478,52 @@ describe("gauntlet mode", () => {
     expect(log.status).toBe("done")
   })
 
+  test("a card the provider broke off mid-stream with a 5xx error packet is retried", async () => {
+    // Measured 2026-10-12: 4 of 5 runs between 09:32 and 09:37 UTC died on
+    // `Invalid dharma/openai-compatible-chat stream event` — dharma forwarded
+    // an upstream failure as `data: {"error":{"message":"list index out of
+    // range","code":500}}`. The llm layer now classifies the packet; this is
+    // the message it writes, and the card goes back instead of dying.
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { outputs: [dispatch("reviewer"), final("shipped")] },
+        reviewer: {
+          errors: ["Provider stream error (500): list index out of range"],
+          output: "ours wins",
+        },
+      },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"]), "do the thing", {
+      rateLimitBackoff: 1,
+    }).done
+
+    const reviewer = log.nodes.find((node) => node.id === "reviewer")!
+    expect(reviewer.status).toBe("done")
+    expect(reviewer.output).toBe("ours wins")
+    expect(
+      h.activity.some((row) => row.node === "reviewer" && row.event.title.includes("provider error — retrying")),
+    ).toBe(true)
+    expect(log.status).toBe("done")
+  })
+
+  test("a non-retryable stream error packet still fails the card", async () => {
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { outputs: [dispatch("reviewer"), final("shipped")] },
+        reviewer: { errors: ["Provider stream error (400 invalid_request_error): bad tool schema"], output: "x" },
+      },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"]), "do the thing", {
+      rateLimitBackoff: 1,
+    }).done
+
+    const reviewer = log.nodes.find((node) => node.id === "reviewer")!
+    expect(reviewer.status).toBe("error")
+    expect(reviewer.error).toContain("bad tool schema")
+  })
+
   test("a card's spend adds up across the sessions it holds", async () => {
     // Measured 2026-09-01: the critic's own cost fell from $0.0204 to $0.0023
     // across a re-dispatch and the run total fell with it, because a node's
