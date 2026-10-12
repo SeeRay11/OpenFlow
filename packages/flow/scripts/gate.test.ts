@@ -16,11 +16,16 @@ import { join } from "node:path"
 import { classify as classifyDirekt } from "./of-gate"
 import { ALLE as KORPUS, BEKANNTE_LUECKEN } from "./gate-korpus"
 import { VORAB_AUFTRAEGE, VORAB_KEIN_AUFTRAG } from "./gate-korpus-einheiten"
+import { FANOUT_NUTZER, PRUEFFRAGEN, SUBAGENT_AUFTRAEGE } from "./gate-korpus-subagent"
+import { erkenneEinheiten } from "./of-gate"
 
 const ALLE = [
   ...KORPUS,
   { name: "K2c vorab Aufträge", faelle: VORAB_AUFTRAEGE },
   { name: "K2c vorab kein Auftrag", faelle: VORAB_KEIN_AUFTRAG },
+  { name: "K2d vorab Subagent-Aufträge", faelle: SUBAGENT_AUFTRAEGE },
+  { name: "K2d vorab Fan-out-Nutzeraufträge", faelle: FANOUT_NUTZER },
+  { name: "K2d vorab Prüffragen", faelle: PRUEFFRAGEN },
 ]
 
 const SCRIPT = join(import.meta.dir, "of-gate.ts")
@@ -223,6 +228,40 @@ describe("of-gate classify — Auftrag mit Ergebnisobjekt (K2b, Korpus)", () => 
   test("erklärverb mit Artefakt als GEGENSTAND ist kein Auftrag", () => {
     expect(classifyDirekt("Can you explain the difference between an audit and a review here?").injizieren).toBe(false)
     expect(classifyDirekt("Erkläre, wie die Fabrik parallel recherchiert und einen Vergleichsartikel schreibt").injizieren).toBe(false)
+  })
+})
+
+describe("of-gate erkenneEinheiten — nur benannte Gegenstände (K2d, Abnahme R15)", () => {
+  test("Satzfragmente und Partizipien sind keine Einheiten", () => {
+    expect(erkenneEinheiten("Lies packages/flow/scripts/of-gate.ts, prüfe, wo der Wert injizieren gesetzt wird, und berichte.")).toBeNull()
+    expect(erkenneEinheiten("Lies TODO.md und zähle alle als erledigt markierten Einträge.")).toBeNull()
+    expect(erkenneEinheiten("Wo wird reasoning_effort gesetzt, und welcher Wert, low oder medium?")).toBeNull()
+    expect(erkenneEinheiten("Prüfe in package.json, ob die Version 0.6.24 lautet, und melde Abweichungen.")).toBeNull()
+  })
+
+  test("Ob-Klausel reicht über Punkte und Kommas in Dateinamen bis zum Satzende", () => {
+    expect(erkenneEinheiten("Prüfe, ob die Tests in auth.spec.ts, oauth.spec.ts und token.spec.ts grün sind.")).toBeNull()
+    expect(classifyDirekt("Prüfe, ob die Tests in auth.spec.ts, oauth.spec.ts und token.spec.ts grün sind.").injizieren).toBe(false)
+    // …aber ein neuer Hauptsatz nach „, und“ gehört nicht mehr zur Prüffrage.
+    expect(erkenneEinheiten("Prüfe, ob die Preise noch stimmen, und schreib je Anbieter einen Bericht.")).toBe("je Anbieter")
+  })
+
+  test("Nominalgruppen, Bezeichner, Nummern, Namen und koordinierte Attribute zählen", () => {
+    expect(erkenneEinheiten("Teste alle 20 rille-Werkzeuge gegen wrangler dev.")).toBe("alle 20 rille-Werkzeuge")
+    expect(erkenneEinheiten("Geh alle offenen Issues durch.")).toBe("alle offenen Issues")
+    expect(erkenneEinheiten("Write a short review for each of the four open pull requests.")).toMatch(/^each of the four open pull/)
+    expect(erkenneEinheiten("Erstelle Steckbriefe zu den Georgia Guidestones, dem Bohemian Grove und dem Denver Airport.")).not.toBeNull()
+    expect(erkenneEinheiten("Mach ein Code-Review von PR 2571, 2570 und 2568.")).not.toBeNull()
+    expect(erkenneEinheiten("Erstelle eine Testsuite für die Module auth, router und cache.")).not.toBeNull()
+    expect(erkenneEinheiten("Recherchiere hebräische, griechische und lateinische Quellen.")).not.toBeNull()
+    expect(erkenneEinheiten("Reviewe die PRs 2560 bis 2571.")).toBe("PRs 2560 bis 2571")
+  })
+
+  test("Umfang, Alternative, Paar und Auswahl sind keine Menge", () => {
+    expect(erkenneEinheiten("Lies die Datei of-gate.ts, Zeilen 300 bis 360.")).toBeNull()
+    expect(erkenneEinheiten("Nimm tests/unit oder src/__tests__ als Ordner.")).toBeNull()
+    expect(erkenneEinheiten("Erkläre den Unterschied zwischen Review und Audit.")).toBeNull()
+    expect(erkenneEinheiten("Sag mir, welche der drei Ursachen es ist.")).toBeNull()
   })
 })
 

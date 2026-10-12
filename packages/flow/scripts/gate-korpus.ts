@@ -290,6 +290,10 @@ export const HOLDOUT_AUFTRAEGE: Fall[] = [
 export const BEKANNTE_LUECKEN: string[] = [
   "recherchier parallel A B C vergleich artikel",
   "Bitte schreib einen Artikel über die Georgia Guidestones mit Recherche zu den Inschriften.",
+  // K2d: Einheiten erkannt („den Georgia Guidestones, dem Bohemian Grove und
+  // dem Denver Airport“), aber „Steckbriefe“ ohne Artikel ist kein erkanntes
+  // Ergebnisobjekt und „Erstelle“ kein Arbeitsverb — Ergebnis-Seite, nicht K2d.
+  "Erstelle Steckbriefe zu den Georgia Guidestones, dem Bohemian Grove und dem Denver Airport.",
 ]
 
 export const ALLE: { name: string; faelle: Fall[] }[] = [
