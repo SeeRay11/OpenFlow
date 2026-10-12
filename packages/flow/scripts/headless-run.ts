@@ -73,6 +73,20 @@ let name = rest[0]
 let input = rest.slice(1).join(" ")
 const initialResume: Record<string, string> = {}
 const initialSessions: Record<string, string> = {}
+/**
+ * Seeds a continuation from a run log: done cards keep their output, and every
+ * card that held a session names it. A done card's session is not reopened in
+ * a pipeline (the engine drops it); in an orchestration the orchestrator's
+ * later turns continue there, which is what keeps their context.
+ */
+function seedFrom(log: any, outputs: Record<string, string>, held: Record<string, string>) {
+  for (const node of log.nodes ?? []) {
+    if (node.status === "done" && typeof node.output === "string") outputs[node.id] = node.output
+    if (node.sessionID) held[node.id] = node.sessionID
+  }
+}
+const continued = (outputs: Record<string, string>, held: Record<string, string>) =>
+  Object.keys(held).filter((id) => outputs[id] === undefined).length
 if (resumeRef !== undefined) {
   const path = resumeRef.startsWith("/") ? resumeRef : `/tmp/openflow-checkpoint-${resumeRef}.json`
   // Ein trunkierter Checkpoint (Crash mitten im Bun.write) ist ein harter
@@ -86,12 +100,9 @@ if (resumeRef !== undefined) {
   }
   name = log.pipeline
   if (!input) input = log.input ?? ""
-  for (const node of log.nodes ?? []) {
-    if (node.status === "done" && typeof node.output === "string") initialResume[node.id] = node.output
-    else if (node.sessionID) initialSessions[node.id] = node.sessionID
-  }
+  seedFrom(log, initialResume, initialSessions)
   console.error(
-    `resuming ${log.id} - ${Object.keys(initialResume).length} card(s) kept, ${Object.keys(initialSessions).length} continued in session`,
+    `resuming ${log.id} - ${Object.keys(initialResume).length} card(s) kept, ${continued(initialResume, initialSessions)} continued in session`,
   )
 }
 if (!name) {
@@ -183,21 +194,22 @@ for (let attempt = 1; attempt <= attemptsMax; attempt++) {
   const resumeOutputs: Record<string, string> = attempt === 1 ? { ...initialResume } : {}
   const resumeSessions: Record<string, string> = attempt === 1 ? { ...initialSessions } : {}
   if (attempt > 1 && log) {
-    for (const node of log.nodes ?? []) {
-      if (node.status === "done" && typeof node.output === "string") resumeOutputs[node.id] = node.output
-      else if (node.sessionID) resumeSessions[node.id] = node.sessionID
-    }
+    seedFrom(log, resumeOutputs, resumeSessions)
     console.error(
-      `auto-retry ${attempt}/${attemptsMax}: ${Object.keys(resumeOutputs).length} Karte(n) gehalten, ${Object.keys(resumeSessions).length} in Session weiter — vorheriger Fehler: ${log.status}`,
+      `auto-retry ${attempt}/${attemptsMax}: ${Object.keys(resumeOutputs).length} Karte(n) gehalten, ${continued(resumeOutputs, resumeSessions)} in Session weiter — vorheriger Fehler: ${log.status}`,
     )
   }
+  // Seeds are run OPTIONS, the fourth argument. They used to ride in the hooks
+  // object, where the engine never looks: every headless resume and auto-retry
+  // since v1.5.0 re-ran its "kept" cards (Abnahme 12.10.2026, `reused: 0`).
+  // tsconfig includes this file so the compiler holds the line.
   const run = start(pipeline, input, {
-    resume: resumeOutputs,
-    sessions: resumeSessions,
     onNode: (id, patch) => {
       if (patch.status) console.error(`[${id}] ${patch.status}`)
     },
     onRun: (current: any) => {
+      // Wer den Run hält: of-reap beendet einen lebenden, aber stummen Prozess.
+      current.host = { pid: process.pid }
       log = current
       void Bun.write(`/tmp/openflow-checkpoint-${current.id}.json`, JSON.stringify(current, null, 2)).catch(() => undefined)
       void flow(`runs/${encodeURIComponent(current.id)}`, {
@@ -209,7 +221,7 @@ for (let attempt = 1; attempt <= attemptsMax; attempt++) {
     onNotice: (kind, text) => console.error(`[${kind}] ${text}`),
     onQuestion: () => Promise.resolve(undefined),
     onEngineStale: () => console.error("engine config is stale — restart opencode serve"),
-  })
+  }, { resume: resumeOutputs, sessions: resumeSessions })
   log = await run.done
   predecessors.push(log.id)
   console.error(`run ${log.id}: ${log.status} (Versuch ${attempt}/${attemptsMax})`)

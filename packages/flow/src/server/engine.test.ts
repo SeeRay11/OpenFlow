@@ -2889,3 +2889,105 @@ describe("a card whose model cannot read images", () => {
     expect(h.prompts.get("a") ?? "").not.toContain("You cannot read images")
   })
 })
+
+describe("the node deadline holds across provider retries", () => {
+  const overloaded = "Provider stream error (503 service_unavailable): Service temporarily overloaded"
+
+  test("a retry waits only for what is left of the card's one deadline", async () => {
+    // Measured 12.10.2026: a 503 was retried ("retrying (1 of 3)") and the card
+    // then held its run for 43 minutes behind a 30-minute limit — every attempt
+    // was handed a fresh `nodeTimeout`.
+    const h = harness({ behavior: { a: { errors: [overloaded, overloaded, overloaded, overloaded] } } })
+    const began = Date.now()
+    const log = await h.run(pipeline("a"), "do the thing", { nodeTimeout: 1_000, rateLimitBackoff: 600 }).done
+
+    expect(h.waits[0].timeout).toBe(1_000)
+    // The second attempt gets what the first one and its wait left over.
+    expect(h.waits.length).toBe(2)
+    expect(h.waits[1].timeout!).toBeLessThan(500)
+    // The next wait (1.2 s) would end past the deadline, so the card fails
+    // now, with the provider's reason, instead of being retried past it.
+    expect(log.nodes[0].status).toBe("error")
+    expect(log.nodes[0].error).toContain("503")
+    expect(Date.now() - began).toBeLessThan(1_500)
+  })
+
+  test("a session that outlived its deadline is interrupted", async () => {
+    const h = harness()
+    h.deps.api.waitForIdle = async () => {
+      throw new Error("timed out waiting for the session to finish")
+    }
+    const log = await h.run(pipeline("a")).done
+
+    expect(log.nodes[0].status).toBe("error")
+    expect(h.interrupted).toEqual([h.sessionOf.get("a")!])
+  })
+})
+
+describe("a permission request the bus never delivered", () => {
+  test("is read from the session and answered, so the card does not wait on it forever", async () => {
+    // Measured 12.10.2026, twice: an `external_directory` request pending on a
+    // `read` — asked while the bus was not listening — kept the session
+    // `running` for over an hour. Nothing else would ever answer it.
+    const h = harness()
+    const pending = [{ id: "per-missed", action: "external_directory", resources: ["/elsewhere/*"] }]
+    h.deps.api.pendingPermissions = async () => pending.filter((request) => !h.replies.some((r) => r.requestID === request.id))
+    h.deps.api.waitForIdle = async () => {
+      // The session only goes idle once its request is answered.
+      for (let i = 0; i < 40 && !h.replies.length; i++) await new Promise((resolve) => setTimeout(resolve, 5))
+      if (!h.replies.length) throw new Error("timed out waiting for the session to finish")
+    }
+    const log = await h.run(pipeline("a")).done
+
+    expect(h.replies.map((reply) => [reply.requestID, reply.reply])).toEqual([["per-missed", "once"]])
+    expect(log.nodes[0].status).toBe("done")
+    expect(log.nodes[0].permissions?.[0]?.requestID).toBe("per-missed")
+  })
+})
+
+describe("resume in orchestration mode", () => {
+  const block = (body: string) => "```openflow\n" + body + "\n```"
+  const dispatch = (...cards: string[]) =>
+    block(JSON.stringify({ dispatch: cards.map((card) => ({ card, task: `do ${card}` })) }))
+  const final = (answer: string) => block(JSON.stringify({ final: answer }))
+  const tree = (...spec: string[]): Pipeline => ({ ...pipeline(...spec), mode: "orchestration" })
+
+  test("kept cards are reused, only the open card runs, the orchestrator continues in its session", async () => {
+    // Measured 12.10.2026: `--resume` reported "3 card(s) kept" and the
+    // scorecard said `reused: 0` — the orchestration scheduler never read
+    // `resume`, so boss and every worker were paid for a second time.
+    const h = harness({ behavior: { root: { output: final("both parts done") }, b: { output: "b finished now" } } })
+    const log = await h.run(tree("root->a", "root->b"), "do the thing", {
+      resume: { root: dispatch("a", "b"), a: "a from last time" },
+      sessions: { root: "s-root", a: "s-a", b: "s-b" },
+    }).done
+
+    expect(log.status).toBe("done")
+    // a never ran; b continued in the session it held; root's next turn went
+    // into its own session with the results, not into a fresh briefing.
+    expect(h.dispatched).toEqual(["b", "root"])
+    expect(h.created()).toBe(0)
+    const a = log.nodes.find((node) => node.id === "a")!
+    expect(a.reused).toBe(true)
+    expect(a.output).toBe("a from last time")
+    expect(h.prompts.get("root")).toContain("a from last time")
+    expect(h.prompts.get("root")).toContain("b finished now")
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("both parts done")
+    expect(log.nodes.filter((node) => node.reused).length).toBeGreaterThanOrEqual(1)
+  })
+
+  test("an orchestrator turn that does not read as a control block runs fresh, and its children with it", async () => {
+    const h = harness({ behavior: { root: { outputs: [dispatch("a"), final("done")] } } })
+    const log = await h.run(tree("root->a"), "do the thing", {
+      resume: { root: "no block in here", a: "a from last time" },
+      sessions: { root: "s-root", a: "s-a" },
+    }).done
+
+    // No guessing: the dispatch is made again, so the child's seed — recorded
+    // for a dispatch nobody can prove was this one — is not used either.
+    expect(h.dispatched[0]).toBe("root")
+    expect(h.dispatched).toContain("a")
+    expect(log.nodes.find((node) => node.id === "a")!.reused).toBeUndefined()
+    expect(log.status).toBe("done")
+  })
+})

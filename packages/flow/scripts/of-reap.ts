@@ -14,6 +14,15 @@
  * Der Runner schreibt den Checkpoint bei JEDEM onRun-Patch neu — ein lebender
  * Run hat also einen frischen Checkpoint. Stille = tot.
  *
+ * Hänger (Abnahme 12.10.2026): Ein Run kann stumm sein, während sein Prozess
+ * LEBT — eine Karte hing 43 min in einer Session, die der Server weiter als
+ * laufend führte. Der Reap setzte den Run auf "stopped", der Prozess lief
+ * weiter, und jeder spätere Reap fand „0 Zombies", weil der Status schon
+ * stimmte. headless-run schreibt deshalb `host.pid` in den Run-Log; lebt
+ * dieser Prozess noch (und ist er wirklich ein headless-run), wird er beim
+ * Reap beendet (SIGTERM) — auch bei einem früher schon gereapten Run — und
+ * als Hänger gezählt.
+ *
  * Reap = Ehrlichkeit, kein Datenverlust: status "stopped", error-Begründung,
  * finished=now, reaped-Block mit Messwerten. Atomic via temp+rename, damit
  * der Canvas-Store nie eine halbe JSON liest.
@@ -24,6 +33,17 @@
  */
 
 import { readdirSync, readFileSync, existsSync, statSync, writeFileSync, renameSync } from "node:fs"
+
+/** Der Prozess lebt und ist ein headless-run — eine fremde, wiederverwendete PID wird nie getroffen. */
+function lebenderLauf(pid: unknown): number | undefined {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 1) return undefined
+  try {
+    const cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8")
+    return cmd.includes("headless-run.ts") ? pid : undefined
+  } catch {
+    return undefined
+  }
+}
 import { join } from "node:path"
 import { homedir } from "node:os"
 
@@ -45,7 +65,26 @@ if (!existsSync(RUNS_DIR)) {
 const now = Date.now()
 let inspected = 0
 let reaped = 0
+let haenger = 0
 const details: string[] = []
+
+/** Beendet den hängenden Prozess eines Runs; true, wenn einer lebte. */
+function beende(file: string, log: any, grund: string): boolean {
+  const pid = lebenderLauf(log?.host?.pid)
+  if (pid === undefined) return false
+  haenger++
+  if (DRY) {
+    details.push(`DRY ${file} — Hänger: Prozess ${pid} lebt (${grund}), würde SIGTERM senden`)
+    return true
+  }
+  try {
+    process.kill(pid, "SIGTERM")
+    details.push(`HAENGER ${file} — Prozess ${pid} lebte (${grund}), SIGTERM gesendet`)
+  } catch (error) {
+    details.push(`HAENGER ${file} — Prozess ${pid} lebt (${grund}), SIGTERM scheiterte: ${String(error)}`)
+  }
+  return true
+}
 
 for (const file of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json")).sort()) {
   const path = join(RUNS_DIR, file)
@@ -56,7 +95,12 @@ for (const file of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json")).sort
   } catch {
     continue // keine Zombie-Entscheidung auf kaputter Datei
   }
-  if (log?.status !== "running") continue
+  // Früher schon gereapt, Prozess lebt trotzdem weiter: der Fall, den jeder
+  // Folge-Reap als „0 Zombies" übersah.
+  if (log?.status !== "running") {
+    if (log?.reaped) beende(file, log, "Run bereits gereapt")
+    continue
+  }
 
   const id = log.id ?? file.replace(/\.json$/, "")
   const checkpoint = `/tmp/openflow-checkpoint-${id}.json`
@@ -79,9 +123,11 @@ for (const file of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json")).sort
 
   if (DRY) {
     details.push(`DRY ${file} — würde reaps: ${reason}`)
+    beende(file, log, reason)
     reaped++
     continue
   }
+  beende(file, log, reason)
 
   log.status = "stopped"
   log.error = `reaped: ${reason}`
@@ -99,5 +145,7 @@ for (const file of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json")).sort
 }
 
 for (const line of details) console.error(line)
-console.log(`of-reap: ${inspected} runs geprüft, ${reaped} ${DRY ? "Zombie(s) gefunden (dry-run)" : "Zombie(s) geborgen"}`)
+console.log(
+  `of-reap: ${inspected} runs geprüft, ${reaped} ${DRY ? "Zombie(s) gefunden (dry-run)" : "Zombie(s) geborgen"}, ${haenger} Hänger-Prozess(e) ${DRY ? "gefunden" : "beendet"}`,
+)
 process.exit(0)

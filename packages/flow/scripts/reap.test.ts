@@ -142,4 +142,54 @@ describe("of-reap", () => {
     expect(log.status).toBe("done")
     expect(log.reaped).toBeUndefined()
   })
+
+  // Abnahme 12.10.2026: der Run war gereapt, sein Prozess hing 43 min weiter,
+  // und jeder Folge-Reap meldete „0 Zombies". Ein Stellvertreter-Prozess mit
+  // `headless-run.ts` in der Kommandozeile steht für den hängenden Lauf.
+  function haengerProzess() {
+    return Bun.spawn(["bash", "-c", "sleep 60; true", "headless-run.ts"], { stdout: "ignore", stderr: "ignore" })
+  }
+
+  it("beendet den lebenden Prozess eines stummen Runs und zählt ihn als Hänger", async () => {
+    const proc = haengerProzess()
+    const id = uniqId()
+    const file = join(runsDir, `${id}.json`)
+    writeRun(file, { id, status: "running", started: Date.now() - 120 * 60_000, host: { pid: proc.pid } })
+    setCheckpoint(id, 60)
+    const r = reap(["--min-age-min", "30"])
+    expect(r.stdout).toContain("1 Zombie(s) geborgen, 1 Hänger-Prozess(e) beendet")
+    expect(r.stderr).toContain(`Prozess ${proc.pid} lebte`)
+    expect(await proc.exited).not.toBe(0)
+  })
+
+  it("erkennt den Hänger auch, wenn der Run schon früher gereapt wurde", async () => {
+    const proc = haengerProzess()
+    const id = uniqId()
+    const file = join(runsDir, `${id}.json`)
+    writeRun(file, {
+      id,
+      status: "stopped",
+      started: Date.now() - 60 * 60_000,
+      reaped: { at: new Date().toISOString(), reason: "zombie" },
+      host: { pid: proc.pid },
+    })
+    const r = reap(["--min-age-min", "30"])
+    expect(r.stdout).toContain("0 Zombie(s) geborgen, 1 Hänger-Prozess(e) beendet")
+    expect(await proc.exited).not.toBe(0)
+  })
+
+  it("trifft keine fremde PID: ein Prozess, der kein headless-run ist, bleibt am Leben", () => {
+    const proc = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore" })
+    try {
+      const id = uniqId()
+      const file = join(runsDir, `${id}.json`)
+      writeRun(file, { id, status: "running", started: Date.now() - 120 * 60_000, host: { pid: proc.pid } })
+      setCheckpoint(id, 60)
+      const r = reap(["--min-age-min", "30"])
+      expect(r.stdout).toContain("1 Zombie(s) geborgen, 0 Hänger-Prozess(e) beendet")
+      expect(proc.killed || proc.exitCode !== null).toBe(false)
+    } finally {
+      proc.kill()
+    }
+  })
 })

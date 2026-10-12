@@ -222,6 +222,8 @@ export const DEFAULT_QUESTION_TIMEOUT = 5 * 60_000
 export const DEFAULT_CHECKPOINT_EVERY = 2_000
 /** How long to wait before re-reading a model catalog that looked incomplete. */
 export const DEFAULT_CATALOG_RETRY = 1_500
+/** How often a waiting card's session is asked for permission requests the bus did not deliver. */
+export const PERMISSION_SWEEP = 15_000
 
 export type Run = {
   log: RunLog
@@ -269,6 +271,11 @@ export type EngineDeps = {
      * name.
      */
     titleSession?: typeof api.titleSession
+    /**
+     * Permission requests a session is blocked on. Optional: without it the
+     * engine relies on the bus alone, as it did before.
+     */
+    pendingPermissions?: typeof api.pendingPermissions
   }
   saveRun: (log: RunLog) => Promise<unknown>
   /**
@@ -647,6 +654,13 @@ export function start(
     }, controller.signal)
     .catch(() => undefined)
 
+  /** Answers whatever the session is blocked on that the bus did not bring. */
+  async function sweepPermissions(nodeID: string, sessionID: string) {
+    if (!api.pendingPermissions) return
+    const pending = await api.pendingPermissions(sessionID).catch(() => [])
+    for (const request of pending) if (!answered.has(request.id)) await answer(nodeID, sessionID, request)
+  }
+
   /**
    * Answers one permission request. Every decision is recorded on the node and
    * in the run log — an approval that leaves no trace is how a run quietly
@@ -795,12 +809,19 @@ export function start(
     // holds them; a retry after a refused prompt does not, so the attachments
     // ride the re-send rather than being lost with the turn that never landed.
     let delivered = !!sessionID
+    // One deadline for the whole turn, retries included. Each attempt used to
+    // get a fresh `nodeTimeout`, so three provider retries could hold a card for
+    // two hours behind a limit that reads as thirty minutes.
+    const began = Date.now()
+    const left = () => nodeTimeout - (Date.now() - began)
     for (let attempt = 0; ; attempt++) {
       const opened = sessionID
       // Only this turn's tool failures count; a card is prompted into the session
       // it already holds, so every earlier turn's are still on the stream.
       const turnStarted = Date.now()
       patch(node.id, {
+        // A replayed card that is dispatched again produces this run's answer.
+        ...(entry(node.id).reused ? { reused: undefined } : {}),
         status: "running",
         ...(opened ? {} : { started: Date.now() }),
         activity: opened ? "continuing session" : "starting session",
@@ -856,7 +877,20 @@ export function start(
         await api.prompt(sessionID, text, sendable)
         delivered = true
         if (controller.signal.aborted) throw new StopError()
-        await api.waitForIdle(sessionID, { signal: controller.signal, timeout: nodeTimeout })
+        // Requests the bus never delivered are read from the session itself:
+        // once now (one left pending by the run this one continues), then on
+        // a timer while the card works.
+        const waiting = sessionID
+        await sweepPermissions(node.id, waiting)
+        const sweep = setInterval(() => void sweepPermissions(node.id, waiting), PERMISSION_SWEEP)
+        try {
+          await api.waitForIdle(sessionID, {
+            signal: controller.signal,
+            timeout: attempt === 0 ? nodeTimeout : Math.max(1, left()),
+          })
+        } finally {
+          clearInterval(sweep)
+        }
         active.delete(sessionID)
         if (controller.signal.aborted) throw new StopError()
 
@@ -892,6 +926,10 @@ export function start(
           return
         }
         const reason = api.describe(error)
+        // A session that outlived its deadline is still running on the server
+        // and would keep its stuck tool call — and the next prompt into it —
+        // waiting. Interrupted, so a resume or retry finds it idle.
+        if (sessionID && reason.includes("timed out waiting")) await api.interrupt(sessionID).catch(() => undefined)
         // "Not now" is not "this card is finished". The provider refused the
         // turn before it produced anything, so the same prompt goes back into
         // the same session after a wait rather than costing the run a card.
@@ -899,8 +937,10 @@ export function start(
         // the same "not now": the llm layer classifies the packet and leads its
         // message with the effective status, the turn goes back after a wait.
         const transient = rateLimited(reason) ? "rate limited" : streamFailed(reason) ? "provider error" : undefined
-        if (transient && attempt < RATE_LIMIT_RETRIES && rateLimitBackoff > 0) {
-          const wait = rateLimitBackoff * 2 ** attempt
+        const wait = rateLimitBackoff * 2 ** attempt
+        // A retry that could not finish before the deadline is not attempted:
+        // the card fails now, with the provider's reason, instead of after.
+        if (transient && attempt < RATE_LIMIT_RETRIES && rateLimitBackoff > 0 && wait < left()) {
           activity.note(
             node.id,
             `ratelimit:${node.id}:${turnStarted}`,
@@ -958,18 +998,50 @@ export function start(
     return /Provider stream error \(5\d\d\b/.test(reason)
   }
 
+  /** Seeds from the interrupted run not yet taken — each answers exactly one turn. */
+  const unreplayed = new Set(Object.keys(resume))
+
+  /**
+   * Settles a card from the run this one continues, without a session or a
+   * prompt. Returns the seeded output, or undefined when there is none left.
+   *
+   * The one place a seed becomes a result, for both schedulers. In a pipeline
+   * a card has one turn, so its seed is the whole card. In an orchestration
+   * the seed is the card's last recorded turn — an orchestrator's dispatch, a
+   * leaf's answer to that dispatch — so the card is handed the session it held
+   * as well, and a later turn continues there with its context instead of
+   * being briefed from nothing. Measured 12.10.2026: the orchestration path
+   * never read `resume` at all, so a resume that reported "3 card(s) kept"
+   * re-ran every card (`reused: 0`).
+   */
+  function replay(node: FlowNode): string | undefined {
+    if (!unreplayed.delete(node.id)) return undefined
+    const seeded = resume[node.id]!
+    const held = tree ? options.sessions?.[node.id] : undefined
+    if (held) {
+      nodeSession.set(node.id, held)
+      sessions.set(held, node.id)
+    }
+    outputs.set(node.id, seeded)
+    const at = Date.now()
+    activity.note(node.id, `reused:${node.id}`, "reused from a previous run", undefined, "done")
+    patch(node.id, {
+      status: "done",
+      output: seeded,
+      activity: undefined,
+      started: at,
+      finished: at,
+      reused: true,
+      ...(held ? { sessionID: held } : {}),
+    })
+    return seeded
+  }
+
   /** A card's one turn in `pipeline` mode, after its layer's predecessors settled. */
   async function runNode(node: FlowNode) {
-    const seeded = resume[node.id]
-    if (seeded !== undefined) {
-      // Already paid for. Checked before the upstream-failure guard because a
-      // reused output does not depend on anything this run does.
-      outputs.set(node.id, seeded)
-      const at = Date.now()
-      activity.note(node.id, `reused:${node.id}`, "reused from a previous run", undefined, "done")
-      patch(node.id, { status: "done", output: seeded, activity: undefined, started: at, finished: at, reused: true })
-      return
-    }
+    // Already paid for. Checked before the upstream-failure guard because a
+    // reused output does not depend on anything this run does.
+    if (replay(node) !== undefined) return
 
     const sources = upstream(pipeline, node.id)
     if (sources.some((source) => failed.has(source))) {
@@ -1009,13 +1081,22 @@ export function start(
    *
    * Returns the answer, or undefined when the card failed or the run stopped.
    */
-  async function orchestrate(node: FlowNode, task: string, first: boolean): Promise<string | undefined> {
+  async function orchestrate(
+    node: FlowNode,
+    task: string,
+    first: boolean,
+    mayReplay = false,
+  ): Promise<string | undefined> {
     const children = tree!.children(node.id)
+    // The turn the interrupted run recorded for this card stands in for its
+    // first turn here — but only where the dispatch that reaches it is the
+    // same one: the root, or a child of a batch that was itself replayed.
+    let replaying = mayReplay && replay(node) !== undefined
     const budget = gauntlet ? GAUNTLET_DISPATCHES : dispatchesOf(pipeline)
     // A card dispatched a second time is prompted into the session it already
     // holds, so it still has its briefing and its earlier task — only the job
     // is new.
-    const returning = nodeSession.has(node.id)
+    const returning = nodeSession.has(node.id) && !replaying
     let build = (skipped: Attachment[]) =>
       returning
         ? reassignPrompt(task)
@@ -1119,13 +1200,35 @@ export function start(
     let delegated = false
     let splitAsked = false
 
+    /** Whether the batch now being handed out is the one the interrupted run recorded. */
+    let replayBatch = false
     while (true) {
       // Always `reuse`: `runTurn` opens a session when the card has none, so
       // this is "keep the one you have" rather than "there must be one".
-      await runTurn(node, build, true)
-      if (failed.has(node.id) || controller.signal.aborted) return undefined
+      if (!replaying) {
+        await runTurn(node, build, true)
+        if (failed.has(node.id) || controller.signal.aborted) return undefined
+      } else {
+        // Every call already in the held session belongs to the old run; the
+        // replayed turn is read from its recorded text alone.
+        const held = nodeSession.get(node.id)
+        const old = held ? ((await api.sessionCalls?.(held).catch(() => [])) ?? []) : []
+        consumed.set(node.id, new Set(old.map((call) => call.id)))
+      }
 
       let decision = await decide(node, children, refine && !returning && spent === 0)
+      replayBatch = replaying && decision.kind === "dispatch"
+      if (replaying) {
+        replaying = false
+        // A recorded turn that does not read as a control block (the decision
+        // went through a tool call, say) is not guessed at: the card runs its
+        // first turn fresh, as it would have without a seed.
+        if (decision.kind === "error") {
+          nodeSession.delete(node.id)
+          consumed.delete(node.id)
+          continue
+        }
+      }
 
       if (decision.kind === "error") {
         if (retries >= PROTOCOL_RETRIES) {
@@ -1340,9 +1443,12 @@ export function start(
           consumed.delete(child.id)
         }
         const body = await contractBody(assignment, child)
-        const answer = tree!.children(child.id).length
-          ? await orchestrate(child, withBoard(body), false)
-          : await runSubagent(child, node, withBoard(body), planVerify)
+        const seeded = replayBatch && !tree!.children(child.id).length ? replay(child) : undefined
+        const answer = seeded !== undefined
+          ? seeded
+          : tree!.children(child.id).length
+            ? await orchestrate(child, withBoard(body), false, replayBatch)
+            : await runSubagent(child, node, withBoard(body), planVerify)
         if (answer !== undefined) board = boardAbsorb(board, answer)
         results.push(
           answer === undefined
@@ -1758,7 +1864,7 @@ ${serve.command}`
               synthesisPrompt(pipeline, swarm.synthesizers[0], outputs, input, skipped),
             ),
         })
-      else if (tree) await orchestrate(tree.root, input, true)
+      else if (tree) await orchestrate(tree.root, input, true, true)
       else await runPipeline(validation.layers, limit, controller.signal, (id) => runNode(nodes.get(id)!))
       // A card nobody dispatched never ran, and "queued" would read as though
       // the run had stopped short of it. It was simply not needed. Through

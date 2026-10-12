@@ -144,3 +144,22 @@ suite("turnText", () => {
     expect(turnText([])).toBeUndefined()
   })
 })
+
+suite("waitUntilIdle", () => {
+  test("gives up at its deadline even while the server still lists the session as running", async () => {
+    // Measured 12.10.2026: a session stuck in a `read` tool stayed `running`
+    // for over an hour; the deadline sat behind the "still active" branch and
+    // was never reached.
+    const { waitUntilIdle } = await import("./client")
+    const probes = { active: async () => new Set(["s1"]), last: async () => undefined }
+    const began = Date.now()
+    await expect(waitUntilIdle("s1", probes, { interval: 5, timeout: 50 })).rejects.toThrow("timed out")
+    expect(Date.now() - began).toBeLessThan(1_000)
+  }, 2_000)
+
+  test("returns once the session is idle with a finished turn", async () => {
+    const { waitUntilIdle } = await import("./client")
+    const probes = { active: async () => new Set<string>(), last: async () => ({ finish: "stop" }) }
+    await waitUntilIdle("s1", probes, { interval: 5, timeout: 1_000 })
+  })
+})
