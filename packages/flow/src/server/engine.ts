@@ -2,6 +2,7 @@ import { collisionNote, collisionsIn, normalizePath, writesOf, type Write } from
 import { isolates, mergeNote } from "../graph/worktree"
 import { fromPhantomCall, fromToolCall, MCP_REACHES_SESSIONS, parseDispatch, type Assignment } from "../graph/dispatch"
 import { boardAbsorb, boardSection } from "./board"
+import { turnNext, turnRoot, type RecordedTurn } from "./turn-hash"
 import { isCritic, orchestrationShape } from "../graph/orchestration"
 import {
   assignmentBody,
@@ -63,6 +64,8 @@ export type NodePatch = {
   finished?: number
   /** Carried over from an earlier run rather than produced by this one. */
   reused?: boolean
+  /** Every turn this run settled for the card, by chained input hash (K7). */
+  turns?: RecordedTurn[]
   /** Priced usage for this node so far, across every session it has held. */
   usage?: Spend
 }
@@ -165,6 +168,14 @@ export type RunOptions = {
    * already finished and never runs, so its session is not reopened.
    */
   sessions?: Record<string, string>
+  /**
+   * Turns a previous run recorded, keyed by node id (see `turn-hash.ts`). A
+   * card about to be prompted whose chained input hash equals its recorded
+   * turn at the same position takes that turn's answer instead — no session,
+   * no prompt, no bill — whichever scheduler or orchestrator asks for it. The
+   * first mismatch ends it: from there the card runs.
+   */
+  turns?: Record<string, RecordedTurn[]>
   /**
    * Whether to look for the orchestrator's decision in a tool call before
    * falling back to the fenced block.
@@ -806,6 +817,61 @@ export function start(
    * the price.
    */
   async function runTurn(node: FlowNode, build: (skipped: Attachment[]) => string, reuse = false) {
+    const link = chainOf(node.id)
+    /** The prompt exactly as the attempt below would send it. */
+    const compose = (delivered: boolean) => {
+      const files = delivered ? [] : [...runFiles, ...(node.agent.attachments ?? [])]
+      const model = node.agent.model ? catalog.get(node.agent.model) : undefined
+      const sendable = files.filter((file) => !model || api.accepts(model, file.mime))
+      const skipped = files.filter((file) => !sendable.includes(file))
+      const text = `${build(skipped)}${model && !api.accepts(model, "image/png") ? `\n\n${imageBlindNote()}` : ""}`
+      return { files, sendable, skipped, text }
+    }
+    const extend = (text: string) => turnNext(link.hash ?? turnRoot(node.agent.model), text)
+    const want = recorded.get(node.id)?.[link.k]
+    if (want && !carried.has(node.id)) {
+      const { text } = compose(!!nodeSession.get(node.id) || link.history)
+      const hash = extend(text)
+      if (hash === want.hash) {
+        link.hash = hash
+        link.k++
+        link.history = true
+        unreplayed.delete(node.id)
+        outputs.set(node.id, want.output)
+        const at = Date.now()
+        activity.note(
+          node.id,
+          link.k === 1 ? `reused:${node.id}` : `reused:${node.id}:${link.k}`,
+          "reused from a previous run",
+          `turn ${link.k}, input hash ${hash.slice(0, 12)}`,
+          "done",
+        )
+        patch(node.id, {
+          status: "done",
+          output: want.output,
+          prompt: text,
+          activity: undefined,
+          ...(link.k === 1 ? { started: at } : {}),
+          finished: at,
+          reused: true,
+          turns: [...(entry(node.id).turns ?? []), { hash, output: want.output }],
+        })
+        return
+      }
+    }
+    if (recorded.delete(node.id)) {
+      // Diverged: the recorded answer belongs to a different input. A seed for
+      // the same card is just as stale. A card that took turns over has no
+      // session of its own; the one it held last run carries exactly that
+      // history, so its next turn goes there rather than into a blank one.
+      unreplayed.delete(node.id)
+      const held = options.sessions?.[node.id]
+      if (link.history && !nodeSession.has(node.id) && held) {
+        nodeSession.set(node.id, held)
+        sessions.set(held, node.id)
+        reuse = true
+      }
+    }
     // A card carried over from an interrupted run is prompted into the session
     // it was already working in, whichever scheduler is asking. Consumed on the
     // first turn: from the second one on it is an ordinary reused session, and
@@ -868,10 +934,7 @@ export function start(
         // Run-level files first, then the node's own pins. A file the node's
         // model has no modality for is withheld and named in the text instead,
         // so one blind model in the middle of a chain does not stop the run.
-        const files = delivered ? [] : [...runFiles, ...(node.agent.attachments ?? [])]
-        const model = node.agent.model ? catalog.get(node.agent.model) : undefined
-        const sendable = files.filter((file) => !model || api.accepts(model, file.mime))
-        const skipped = files.filter((file) => !sendable.includes(file))
+        const { files, sendable, skipped, text } = compose(delivered || link.history)
         if (files.length) {
           entry(node.id).attachments = {
             sent: sendable.map((file) => file.name),
@@ -887,7 +950,6 @@ export function start(
       // card captured the game, the orchestrator opened the capture, and the run
       // died. The attachment filter above never sees this path, so the card is
       // told what it cannot do instead.
-        const text = `${build(skipped)}${model && !api.accepts(model, "image/png") ? `\n\n${imageBlindNote()}` : ""}`
         patch(node.id, { prompt: text })
 
         await api.prompt(sessionID, text, sendable)
@@ -933,8 +995,18 @@ export function start(
             "error",
           )
         }
+        const hash = extend(text)
         outputs.set(node.id, answer)
-        patch(node.id, { status: "done", output: answer, activity: undefined, finished: Date.now() })
+        link.hash = hash
+        link.k++
+        link.history = true
+        patch(node.id, {
+          status: "done",
+          output: answer,
+          activity: undefined,
+          finished: Date.now(),
+          turns: [...(entry(node.id).turns ?? []), { hash, output: answer }],
+        })
       } catch (error) {
         if (error instanceof StopError || controller.signal.aborted) {
           failed.add(node.id)
@@ -1018,6 +1090,21 @@ export function start(
   const unreplayed = new Set(Object.keys(resume))
 
   /**
+   * K7: the previous run's turns by chained input hash, and where each card
+   * stands in its own chain this run. `history` is whether the card has turns
+   * behind it that its next prompt builds on — a session, or turns taken over
+   * from the record (which have none). A card leaves `recorded` at its first
+   * mismatch and runs from there.
+   */
+  const recorded = new Map(Object.entries(options.turns ?? {}).filter(([, turns]) => turns?.length))
+  const chain = new Map<string, { hash?: string; k: number; history: boolean }>()
+  const chainOf = (id: string) => chain.get(id) ?? chain.set(id, { k: 0, history: false }).get(id)!
+  /** Whether a card's recorded turns came from a per-turn record, not an old log's last prompt. */
+  const hashed = (id: string) => !!recorded.get(id)?.some((turn) => !turn.legacy)
+  /** Whether the card's next prompt continues earlier turns rather than briefing it. */
+  const hasHistory = (id: string) => nodeSession.has(id) || chainOf(id).history
+
+  /**
    * Settles a card from the run this one continues, without a session or a
    * prompt. Returns the seeded output, or undefined when there is none left.
    *
@@ -1057,7 +1144,8 @@ export function start(
   async function runNode(node: FlowNode) {
     // Already paid for. Checked before the upstream-failure guard because a
     // reused output does not depend on anything this run does.
-    if (replay(node) !== undefined) return
+    // A card with a per-turn record is held to its input hash in `runTurn`.
+    if (!hashed(node.id) && replay(node) !== undefined) return
 
     const sources = upstream(pipeline, node.id)
     if (sources.some((source) => failed.has(source))) {
@@ -1107,12 +1195,14 @@ export function start(
     // The turn the interrupted run recorded for this card stands in for its
     // first turn here — but only where the dispatch that reaches it is the
     // same one: the root, or a child of a batch that was itself replayed.
-    let replaying = mayReplay && replay(node) !== undefined
+    // A card with a per-turn record replays turn by turn, each one held to its
+    // input hash in `runTurn` (K7) — this one-seed shortcut is for old logs.
+    let replaying = mayReplay && !hashed(node.id) && replay(node) !== undefined
     const budget = gauntlet ? GAUNTLET_DISPATCHES : dispatchesOf(pipeline)
     // A card dispatched a second time is prompted into the session it already
     // holds, so it still has its briefing and its earlier task — only the job
     // is new.
-    const returning = nodeSession.has(node.id) && !replaying
+    const returning = hasHistory(node.id) && !replaying
     let build = (skipped: Attachment[]) =>
       returning
         ? reassignPrompt(task)
@@ -1152,7 +1242,7 @@ export function start(
      * later turn re-reading what the provider had cached.
      */
     const contractBody = async (assignment: Assignment, child: FlowNode) => {
-      if (!assignment.skills?.length || nodeSession.has(child.id)) return assignmentBody(assignment)
+      if (!assignment.skills?.length || hasHistory(child.id)) return assignmentBody(assignment)
       const loaded: { name: string; content: string }[] = []
       for (const name of assignment.skills) {
         const text = await skillText(name)
@@ -1457,9 +1547,10 @@ export function start(
         if (gauntlet && isCritic(child)) {
           nodeSession.delete(child.id)
           consumed.delete(child.id)
+          chainOf(child.id).history = false
         }
         const body = await contractBody(assignment, child)
-        const seeded = replayBatch && !tree!.children(child.id).length ? replay(child) : undefined
+        const seeded = replayBatch && !tree!.children(child.id).length && !hashed(child.id) ? replay(child) : undefined
         const answer = seeded !== undefined
           ? seeded
           : tree!.children(child.id).length
@@ -1744,7 +1835,9 @@ export function start(
     // arguments are the decision when the text carries none. See
     // `fromPhantomCall`. The ids also keep an earlier turn's call from being
     // mistaken for this one's, which only works if every turn is read.
-    const calls = (await api.sessionCalls?.(nodeSession.get(node.id)!).catch(() => [])) ?? []
+    // A turn taken over from the record (K7) has no session to read.
+    const own = nodeSession.get(node.id)
+    const calls = own ? ((await api.sessionCalls?.(own).catch(() => [])) ?? []) : []
     const seen = consumed.get(node.id) ?? new Set<string>()
     let decision: ReturnType<typeof parseDispatch> | undefined
     let phantom: { name: string; read: ReturnType<typeof parseDispatch> } | undefined
@@ -1773,7 +1866,7 @@ export function start(
 
   /** A leaf card: one turn, one assignment, no protocol to speak. */
   async function runSubagent(node: FlowNode, parent: FlowNode, task: string, verify: string[] = []) {
-    const returning = nodeSession.has(node.id)
+    const returning = hasHistory(node.id)
     const critic = gauntlet && isCritic(node)
     await runTurn(
       node,

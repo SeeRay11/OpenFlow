@@ -2,6 +2,7 @@ import { describe, expect, setSystemTime, test } from "bun:test"
 import { pipeline } from "../graph/test-support"
 import type { Attachment, NodeEvent, Pipeline, RunLog, StepUsage } from "../graph/types"
 import type { BusEvent, PermissionReply, QuestionInfo } from "./client"
+import { recordedTurns, type RecordedTurn } from "./turn-hash"
 import {
   DEFAULT_NODE_TIMEOUT,
   start,
@@ -2989,6 +2990,106 @@ describe("resume in orchestration mode", () => {
     expect(h.dispatched).toContain("a")
     expect(log.nodes.find((node) => node.id === "a")!.reused).toBeUndefined()
     expect(log.status).toBe("done")
+  })
+})
+
+describe("resume by input hash (K7)", () => {
+  // Abnahme R13 K7, 12.10.2026: `--resume` on a FINISHED PASS checkpoint
+  // reported "5 card(s) kept", took over the boss's event only, and re-ran
+  // worker-1..3 and critic (350 s). The orchestrator's seed was its final
+  // answer, not a control block, so it was briefed afresh and every card it
+  // handed work to was a new card. Soll: a card whose input (chained prompt
+  // hash) equals the recorded one is taken over, whoever creates it; a
+  // different input runs again.
+  const block = (body: string) => "```openflow\n" + body + "\n```"
+  const dispatch = (...cards: [string, string][]) =>
+    block(JSON.stringify({ dispatch: cards.map(([card, task]) => ({ card, task })) }))
+  const final = (answer: string) => block(JSON.stringify({ final: answer }))
+  const tree = (...spec: string[]): Pipeline => ({ ...pipeline(...spec), mode: "orchestration" })
+  /** What headless-run hands the engine from a checkpoint. */
+  async function from(log: RunLog, drop: string[] = []) {
+    const resume: Record<string, string> = {}
+    const sessions: Record<string, string> = {}
+    const turns: Record<string, RecordedTurn[]> = {}
+    for (const node of log.nodes) {
+      if (drop.includes(node.id)) continue
+      if (node.status === "done" && typeof node.output === "string") resume[node.id] = node.output
+      if (node.sessionID) sessions[node.id] = node.sessionID
+      const recorded = await recordedTurns(node as any)
+      if (recorded) turns[node.id] = recorded
+    }
+    return { resume, sessions, turns }
+  }
+  const first = () =>
+    harness({
+      behavior: {
+        root: { outputs: [dispatch(["a", "do a"], ["b", "do b"]), final("both parts done")] },
+        a: { output: "a from last time" },
+        b: { output: "b from last time" },
+      },
+    })
+  const again = (root: string[]) =>
+    harness({ behavior: { root: { outputs: root }, a: { output: "a NEW" }, b: { output: "b NEW" } } })
+
+  test("a finished orchestration resumed with the same input runs nothing — every card is taken over", async () => {
+    const old = await first().run(tree("root->a", "root->b"), "do the thing").done
+    expect(old.status).toBe("done")
+    const h = again([dispatch(["a", "x"]), final("NEW answer")])
+    const log = await h.run(tree("root->a", "root->b"), "do the thing", (await from(old)) as any).done
+
+    expect(log.status).toBe("done")
+    expect(h.dispatched).toEqual([])
+    expect(h.created()).toBe(0)
+    expect(log.nodes.map((node) => [node.id, node.reused, node.output])).toEqual([
+      ["root", true, "both parts done"],
+      ["a", true, "a from last time"],
+      ["b", true, "b from last time"],
+    ])
+  })
+
+  test("a different run input breaks the hash: every card runs again", async () => {
+    const old = await first().run(tree("root->a", "root->b"), "do the thing").done
+    const h = again([dispatch(["a", "do a"], ["b", "do b"]), final("NEW answer")])
+    const log = await h.run(tree("root->a", "root->b"), "do another thing", (await from(old)) as any).done
+
+    expect(log.status).toBe("done")
+    expect([...h.dispatched].sort()).toEqual(["a", "b", "root", "root"])
+    expect(log.nodes.filter((node) => node.reused).length).toBe(0)
+  })
+
+  test("cards the orchestrator creates anew are taken over when their input hash matches", async () => {
+    const old = await first().run(tree("root->a", "root->b"), "do the thing").done
+    // The orchestrator is not carried (as after a boss failure) and runs; it
+    // hands out the same tasks, so a and b receive byte-identical prompts.
+    const h = again([dispatch(["a", "do a"], ["b", "do b"]), final("NEW answer")])
+    const log = await h.run(tree("root->a", "root->b"), "do the thing", (await from(old, ["root"])) as any).done
+
+    expect(log.status).toBe("done")
+    expect(h.dispatched).toEqual(["root", "root"])
+    expect(log.nodes.find((node) => node.id === "a")).toMatchObject({ reused: true, output: "a from last time" })
+    expect(log.nodes.find((node) => node.id === "b")).toMatchObject({ reused: true, output: "b from last time" })
+    expect(h.prompts.get("root")).toContain("a from last time")
+  })
+
+  test("a card handed a different task runs again; its sibling with the same task is taken over", async () => {
+    const old = await first().run(tree("root->a", "root->b"), "do the thing").done
+    const h = again([dispatch(["a", "do a"], ["b", "do b differently"]), final("NEW answer")])
+    const log = await h.run(tree("root->a", "root->b"), "do the thing", (await from(old, ["root"])) as any).done
+
+    expect(log.status).toBe("done")
+    expect(h.dispatched).toEqual(["root", "b", "root"])
+    expect(log.nodes.find((node) => node.id === "a")).toMatchObject({ reused: true, output: "a from last time" })
+    expect(log.nodes.find((node) => node.id === "b")!.reused).toBeUndefined()
+    expect(log.nodes.find((node) => node.id === "b")!.output).toBe("b NEW")
+  })
+
+  test("a resumed run records the turns again, so a resume of the resume is complete too", async () => {
+    const old = await first().run(tree("root->a", "root->b"), "do the thing").done
+    const mid = await again([]).run(tree("root->a", "root->b"), "do the thing", (await from(old)) as any).done
+    const h = again([])
+    const log = await h.run(tree("root->a", "root->b"), "do the thing", (await from(mid)) as any).done
+    expect(h.dispatched).toEqual([])
+    expect(log.nodes.every((node) => node.reused)).toBe(true)
   })
 })
 
