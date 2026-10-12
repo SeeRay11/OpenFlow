@@ -32,6 +32,7 @@
 }
 
 import { herkunft } from "./of-heilung"
+import { bericht, buildScorecard, seedFrom, uebernimm } from "./of-ergebnis"
 import { start } from "../src/server/engine"
 import * as api from "../src/server/client"
 import { agentBlock } from "../src/server/store"
@@ -75,18 +76,6 @@ let input = rest.slice(1).join(" ")
 const initialResume: Record<string, string> = {}
 const initialSessions: Record<string, string> = {}
 let resumeCheckpoint: { id?: string; origin?: string } | undefined
-/**
- * Seeds a continuation from a run log: done cards keep their output, and every
- * card that held a session names it. A done card's session is not reopened in
- * a pipeline (the engine drops it); in an orchestration the orchestrator's
- * later turns continue there, which is what keeps their context.
- */
-function seedFrom(log: any, outputs: Record<string, string>, held: Record<string, string>) {
-  for (const node of log.nodes ?? []) {
-    if (node.status === "done" && typeof node.output === "string") outputs[node.id] = node.output
-    if (node.sessionID) held[node.id] = node.sessionID
-  }
-}
 const continued = (outputs: Record<string, string>, held: Record<string, string>) =>
   Object.keys(held).filter((id) => outputs[id] === undefined).length
 if (resumeRef !== undefined) {
@@ -151,48 +140,15 @@ if (spread) {
 const AUTO_RETRY = Math.max(0, Number(process.env.OPENFLOW_AUTO_RETRY ?? "1"))
 const attemptsMax = 1 + AUTO_RETRY
 
-interface Scorecard {
-  runId: string
-  pipeline: string
-  verdict: string
-  attempts: number
-  predecessors: string[]
-  nodes: { total: number; done: number; error: number; stopped: number; skipped: number; reused: number }
-  durationSec: number | null
-  outputWords: number
-  outputChars: number
-}
-
-function buildScorecard(log: any, attempts: number, predecessors: string[], startedMs: number): Scorecard {
-  const nodes: any[] = Array.isArray(log.nodes) ? log.nodes : []
-  const count = (s: string) => nodes.filter((n) => n?.status === s).length
-  const outputs = nodes.filter((n) => n?.status === "done" && typeof n.output === "string").map((n) => n.output as string)
-  const durationSec = typeof log.finished === "number" && typeof log.started === "number"
-    ? Math.round((log.finished - log.started) / 1000)
-    : Math.round((Date.now() - startedMs) / 1000)
-  return {
-    runId: log.id,
-    pipeline: log.pipeline,
-    verdict: log.status === "done" ? (attempts > 1 ? "PASS_RETRIED" : "PASS") : log.status === "error" ? "FAIL" : log.status.toUpperCase(),
-    attempts,
-    predecessors,
-    nodes: {
-      total: nodes.length,
-      done: count("done"),
-      error: count("error"),
-      stopped: count("stopped"),
-      skipped: count("skipped"),
-      reused: nodes.filter((n) => n?.reused).length,
-    },
-    durationSec,
-    outputWords: outputs.reduce((a, o) => a + o.split(/\s+/).filter(Boolean).length, 0),
-    outputChars: outputs.reduce((a, o) => a + o.length, 0),
-  }
-}
-
 const startedMs = Date.now()
 const predecessors: string[] = []
 let log: any
+// Alles, was aus früheren Läufen übernommen ist (Resume-Checkpoint, dann jeder
+// Versuch dieses Prozesses). K11: ohne diesen Speicher verlor ein Versuch, der
+// übernommene Karten als `skipped` endete, ihre Outputs — der nächste Versuch
+// säte 0, die SCORECARD meldete reused 0 und 0 Wörter.
+const carried: Record<string, string> = { ...initialResume }
+const carriedSessions: Record<string, string> = { ...initialSessions }
 for (let attempt = 1; attempt <= attemptsMax; attempt++) {
   const resumeOutputs: Record<string, string> = attempt === 1 ? { ...initialResume } : {}
   const resumeSessions: Record<string, string> = attempt === 1 ? { ...initialSessions } : {}
@@ -230,6 +186,8 @@ for (let attempt = 1; attempt <= attemptsMax; attempt++) {
     onEngineStale: () => console.error("engine config is stale — restart opencode serve"),
   }, { resume: resumeOutputs, sessions: resumeSessions })
   log = await run.done
+  uebernimm(log, carried, carriedSessions)
+  seedFrom(log, carried, carriedSessions)
   predecessors.push(log.id)
   console.error(`run ${log.id}: ${log.status} (Versuch ${attempt}/${attemptsMax})`)
   if (log.status === "done" || attempt === attemptsMax) break
@@ -248,11 +206,6 @@ void flow(`runs/${encodeURIComponent(log.id)}`, {
   body: JSON.stringify(log),
 }).catch((error) => console.error(`scorecard save failed: ${String(error)}`))
 await Bun.write(`/tmp/openflow-checkpoint-${log.id}.json`, JSON.stringify(log, null, 2)).catch(() => undefined)
-console.error(`checkpoint: /tmp/openflow-checkpoint-${log.id}.json`)
-console.log(`=== SCORECARD ===\n${JSON.stringify(scorecard, null, 2)}`)
-for (const node of log.nodes) {
-  console.error(`[${node.id}] ${node.status}`)
-  if (node.output !== undefined) console.log(`=== ${node.id} ===\n${node.output}`)
-}
-console.error(`run ${log.id}: ${log.status} — verdict ${scorecard.verdict} (${scorecard.attempts} Versuch(e), ${scorecard.outputWords} Wörter Output)`)
+// Checkpoint-Zeile zuletzt, auf stdout nach allen Modelltexten (Befund (c)).
+bericht(log, scorecard, { out: (s) => console.log(s), err: (s) => console.error(s) })
 process.exit(log.status === "done" ? 0 : 1)
