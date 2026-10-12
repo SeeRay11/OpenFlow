@@ -171,3 +171,48 @@ describe("entscheide — kombinierte Regel an EINER Stelle", () => {
     expect(JSON.parse(calls[0].init.body).messages[0].content).toBe(LLM_PROMPT + GRAU)
   })
 })
+
+// K2e-Nachtrag (13.10.2026): `quelle` sagt, WER entschieden hat — das Plugin
+// stuft danach ab (wortregel/praefix → Pflichtweg, llm → weicher Hinweis).
+describe("quelle — Herkunft der Entscheidung", () => {
+  const WORTREGEL = "Recherchiere getrennt, wie Navidrome, Jellyfin und Plex die Bibliothek indexieren, und fass jeden in einem eigenen Abschnitt zusammen."
+
+  test("classify: praefix / nein_signal / wortregel / keine", () => {
+    expect(classify("fabrik: " + GRAU)).toMatchObject({ entscheidung: "FABRIK", injizieren: true, quelle: "praefix" })
+    expect(classify("direkt: " + GRAU)).toMatchObject({ entscheidung: "DIREKT", injizieren: false, quelle: "praefix" })
+    expect(classify(NEIN_FAELLE_Q[0])).toMatchObject({ entscheidung: "DIREKT", quelle: "nein_signal" })
+    expect(classify(WORTREGEL)).toMatchObject({ entscheidung: "FABRIK", injizieren: true, quelle: "wortregel" })
+    expect(classify(GRAU)).toMatchObject({ entscheidung: "GRAUZONE", injizieren: false, quelle: "keine" })
+    expect(classify("Was ist ein Durable Object?")).toMatchObject({ entscheidung: "GRAUZONE", quelle: "keine" })
+  })
+
+  test("entscheide: LLM JA → quelle llm (injizieren), LLM NEIN → quelle llm (nicht injizieren)", async () => {
+    expect(await entscheide(GRAU, { fetch: mock(() => antwort("JA")).f, keyFile: KEY })).toMatchObject({ injizieren: true, quelle: "llm" })
+    expect(await entscheide(GRAU, { fetch: mock(() => antwort("NEIN")).f, keyFile: KEY })).toMatchObject({ injizieren: false, quelle: "llm" })
+  })
+
+  test("entscheide: LLM-Ausfall → quelle keine (kein Urteil, keine Injektion)", async () => {
+    expect(await entscheide(GRAU, { fetch: mock(() => antwort("", 503)).f, keyFile: KEY })).toMatchObject({ injizieren: false, quelle: "keine", llm: null })
+    expect(await entscheide(GRAU, { fetch: mock(() => antwort("vielleicht")).f, keyFile: KEY })).toMatchObject({ injizieren: false, quelle: "keine", llm_fehler: "unklar" })
+  })
+
+  test("entscheide: Wortregel, Prefix und Nein-Signal behalten ihre Quelle und fragen das LLM nicht", async () => {
+    const { f, calls } = mock(() => antwort("JA"))
+    expect(await entscheide(WORTREGEL, { fetch: f, keyFile: KEY })).toMatchObject({ quelle: "wortregel", injizieren: true })
+    expect(await entscheide("fabrik: " + GRAU, { fetch: f, keyFile: KEY })).toMatchObject({ quelle: "praefix", injizieren: true })
+    expect(await entscheide(NEIN_FAELLE_Q[0], { fetch: f, keyFile: KEY })).toMatchObject({ quelle: "nein_signal", injizieren: false })
+    expect(calls).toHaveLength(0)
+  })
+
+  test("injizieren ⇒ quelle ∈ {praefix, wortregel, llm} (nie nein_signal/keine)", async () => {
+    const texte = [GRAU, WORTREGEL, "fabrik: x", "direkt: x", NEIN_FAELLE_Q[0], "Was ist ein Durable Object?"]
+    for (const t of texte)
+      for (const urteil of ["JA", "NEIN", ""]) {
+        const v = await entscheide(t, { fetch: mock(() => antwort(urteil, urteil ? 200 : 503)).f, keyFile: KEY })
+        if (v.injizieren) expect(["praefix", "wortregel", "llm"]).toContain(v.quelle)
+        else expect(v.quelle === "wortregel").toBe(false)
+      }
+  })
+})
+
+const NEIN_FAELLE_Q = ["Deploye dharma, thoth und merkspur nacheinander auf Produktion und schreib mir je Worker die Versionsnummer."]

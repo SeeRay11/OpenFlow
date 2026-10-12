@@ -42,7 +42,8 @@
  *                                              [--task-ref <gate_id>] [--monitoring]
  *
  * Ausgabe classify: eine JSON-Zeile
- *   {entscheidung, signale, prefix, grund, auftrag: {verb, objekt, einheiten} | null, injizieren}.
+ *   {entscheidung, signale, prefix, grund, auftrag: {verb, objekt, einheiten} | null, injizieren,
+ *    quelle: praefix|nein_signal|wortregel|llm|keine}; mit --llm zusätzlich llm, llm_ms, llm_fehler.
  * log hängt an ${OPENFLOW_LEDGER:-~/.openflow/gate-ledger.jsonl}.
  *
  * --task-ref (Hebel 2, 10.10.2026): gate_id der Task-Bewertung, auf die sich
@@ -651,6 +652,18 @@ export function nutzerText(textRaw: string): string {
   return (firstHook > 0 ? textRaw.slice(0, firstHook) : textRaw).trim()
 }
 
+/**
+ * Woher die Entscheidung stammt (K2e-Nachtrag, 13.10.2026) — das Plugin stuft
+ * danach den Hinweis ab: `praefix`/`wortregel` → Pflichtweg, `llm` → weicher
+ * Hinweis ohne Pflicht. `nein_signal` und `keine` injizieren nie.
+ *   praefix     — Nutzer-Prefix fabrik:/direkt:
+ *   nein_signal — Nein-Fall-Signal (Deploy, Geld, Secrets, Löschen …)
+ *   wortregel   — erkenneAuftrag: Auftrag mit Ergebnis über ≥ 2 Einheiten
+ *   llm         — Grauzone, der LLM-Urteiler hat JA oder NEIN gesagt
+ *   keine       — Grauzone ohne Urteil (classify ohne --llm, LLM-Ausfall)
+ */
+export type Quelle = "praefix" | "nein_signal" | "wortregel" | "llm" | "keine"
+
 export function classify(textRaw: string) {
   const trimmed = nutzerText(textRaw)
   const lower = trimmed.replace(/^["„“»]/, "").toLowerCase()
@@ -661,13 +674,13 @@ export function classify(textRaw: string) {
 
   // Nutzer-Prefix ist Wille, kein Rat.
   if (prefix === "fabrik")
-    return { entscheidung: "FABRIK", signale: fabrik, prefix, grund: "Nutzer-Prefix fabrik:", auftrag: null, injizieren: true }
+    return { entscheidung: "FABRIK", signale: fabrik, prefix, grund: "Nutzer-Prefix fabrik:", auftrag: null, injizieren: true, quelle: "praefix" as Quelle }
   if (prefix === "direkt")
-    return { entscheidung: "DIREKT", signale: direkt, prefix, grund: "Nutzer-Prefix direkt:", auftrag: null, injizieren: false }
+    return { entscheidung: "DIREKT", signale: direkt, prefix, grund: "Nutzer-Prefix direkt:", auftrag: null, injizieren: false, quelle: "praefix" as Quelle }
 
   // Sicherheit schlägt Effizienz.
   if (direkt.length > 0)
-    return { entscheidung: "DIREKT", signale: direkt, prefix, grund: `Nein-Fall-Signal(e): ${direkt.join(", ")}`, auftrag: null, injizieren: false }
+    return { entscheidung: "DIREKT", signale: direkt, prefix, grund: `Nein-Fall-Signal(e): ${direkt.join(", ")}`, auftrag: null, injizieren: false, quelle: "nein_signal" as Quelle }
 
   // DIE Regel (K2c): Auftrag mit Ergebnis über ≥ 2 unabhängige Einheiten,
   // ohne Bindung an Material dieser Sitzung. Signalwörter sind nur Messung.
@@ -680,6 +693,7 @@ export function classify(textRaw: string) {
       grund: `Auftrag über mehrere Einheiten (${auftrag.einheiten.slice(0, 40)}) mit Ergebnis (${auftrag.verb} → ${auftrag.objekt.slice(0, 60)})`,
       auftrag,
       injizieren: true,
+      quelle: "wortregel" as Quelle,
     }
   if (fabrik.length >= 2)
     return {
@@ -689,10 +703,11 @@ export function classify(textRaw: string) {
       grund: `${fabrik.length} Ja-Fall-Signale (${fabrik.join(", ")}), aber kein Auftrag mit Ergebnis über ≥ 2 Einheiten (oder an Sitzungskontext gebunden) — nur Messung, keine Injektion`,
       auftrag: null,
       injizieren: false,
+      quelle: "keine" as Quelle,
     }
   if (fabrik.length === 1)
-    return { entscheidung: "GRAUZONE", signale: fabrik, prefix, grund: `nur ein Ja-Fall-Signal (${fabrik[0]}) — Eskalationsleiter entscheidet, Begründung Pflicht`, auftrag, injizieren: false }
-  return { entscheidung: "GRAUZONE", signale: [], prefix, grund: "keine Signale — Eskalationsleiter entscheidet, Begründung Pflicht", auftrag, injizieren: false }
+    return { entscheidung: "GRAUZONE", signale: fabrik, prefix, grund: `nur ein Ja-Fall-Signal (${fabrik[0]}) — Eskalationsleiter entscheidet, Begründung Pflicht`, auftrag, injizieren: false, quelle: "keine" as Quelle }
+  return { entscheidung: "GRAUZONE", signale: [], prefix, grund: "keine Signale — Eskalationsleiter entscheidet, Begründung Pflicht", auftrag, injizieren: false, quelle: "keine" as Quelle }
 }
 
 // ---------------------------------------------------------------------------
@@ -801,7 +816,8 @@ export async function urteileMitLlm(text: string, opts: LlmOpts = {}): Promise<b
  *   2. Wortregel-Auftrag (FABRIK) → injizieren, ohne LLM-Aufruf.
  *   3. GRAUZONE → LLM-Urteiler; JA → injizieren, NEIN/null → nicht.
  * Rückgabe = classify-Verdikt + `llm` (true/false/null), `llm_ms` (null, wenn
- * nicht aufgerufen), `llm_fehler`.
+ * nicht aufgerufen), `llm_fehler`; `quelle` = `llm`, sobald das LLM JA/NEIN
+ * gesagt hat (bei Ausfall bleibt `keine`).
  */
 export async function entscheide(textRaw: string, opts: LlmOpts = {}) {
   const v = classify(textRaw)
@@ -813,11 +829,12 @@ export async function entscheide(textRaw: string, opts: LlmOpts = {}) {
       entscheidung: "FABRIK",
       grund: `Grauzone, LLM-Urteiler (dharma/${LLM_MODELL}): JA — Wortregel ohne belegten Auftrag${v.signale.length ? ` (Signale: ${v.signale.join(", ")})` : ""}`,
       injizieren: true,
+      quelle: "llm" as Quelle,
       llm: true,
       llm_ms: d.ms,
       llm_fehler: null,
     }
-  return { ...v, llm: d.urteil, llm_ms: d.ms, llm_fehler: d.fehler }
+  return { ...v, quelle: (d.urteil === null ? "keine" : "llm") as Quelle, llm: d.urteil, llm_ms: d.ms, llm_fehler: d.fehler }
 }
 
 if (import.meta.main) {
