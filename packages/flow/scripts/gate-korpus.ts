@@ -11,6 +11,40 @@
 
 export type Fall = [text: string, soll: boolean]
 
+// R14 (abnahme14/k2/k2.ts), wörtlich (Klassen r und c zusammen).
+export const R14: Fall[] = [
+  ["Recherchiere die Preismodelle von Z.AI, ClinePass und OpenCode Go und leg mir eine Vergleichstabelle unter docs/vertraege-vergleich.md ab.", true],
+  ["Ich hätte gern für jeden der 13 Worker eine kurze Sicherheitsbewertung als Markdown-Tabelle.", true],
+  ["Mach mir drei Varianten für den Landingpage-Hero, jeweils mit Headline und Subline.", true],
+  ["Kannst du die fünf größten Konkurrenten von rille recherchieren und mir eine Übersicht mit Preisen machen?", true],
+  ["Write a comparison of Vitest, Jest and Bun test for our monorepo, with a recommendation.", true],
+  ["Bitte schreib einen Artikel über die Georgia Guidestones mit Recherche zu den Inschriften.", true],
+  ["Teste alle zwölf Tools von wortwert gegen die Live-Instanz und dokumentiere die Ergebnisse in einer Tabelle.", true],
+  ["Durchsuche die Doku aller 13 Worker nach toten Links und erstelle pro Worker eine Liste.", true],
+  ["Lass drei unabhängige Reviewer über den Auth-Umbau schauen und fass ihre Befunde in einem Bericht zusammen.", true],
+  ["Erstelle für die Module A, B, C und D je eine Testsuite mit Randfällen.", true],
+  ["Analysiere die Logs der letzten sieben Tage für alle Worker und schreib einen Bericht mit den Top-Fehlern.", true],
+  ["Ich brauche bis morgen einen Vergleichsartikel zu den drei LLM-Routern, gut recherchiert.", true],
+  ["Wie würdest du vorgehen, wenn du drei Anbieter parallel recherchieren und einen Vergleichsbericht schreiben müsstest?", false],
+  ["Erklär mir in zwei Sätzen, was ein Audit von einem Review unterscheidet.", false],
+  ["Erkläre mir den Unterschied zwischen Review und Audit und fasse ihn in drei Sätzen zusammen.", false],
+  ["Prüf bitte kurz, ob die drei Tests in auth.spec.ts grün sind, und fass das Ergebnis zusammen.", false],
+  ["Analysiere die drei Fehlermeldungen im Log oben und erkläre die Ursache.", false],
+  ["Fass mir kurz zusammen, was die drei letzten Commits geändert haben.", false],
+  ["Schreib mir eine kurze Zusammenfassung von diesem Review-Kommentar.", false],
+  ["Erstelle eine Tabelle mit den drei Werten aus der Analyse oben.", false],
+  ["Formuliere mir eine Beispielaufgabe für die Fabrik, etwa: recherchiere drei Anbieter parallel und erstelle einen Vergleichsbericht.", false],
+  ["Wenn ich schreibe: recherchiere A, B und C parallel und erstelle einen Vergleichsbericht – startet dann die Fabrik?", false],
+  ["Lohnt sich die Fabrik für einen Vergleich von drei Artikeln?", false],
+  ["Lies den Bericht in docs/report.md und sag mir, ob die Analyse stimmt.", false],
+  ["Vergleiche die beiden Fehlermeldungen oben und sag, ob es derselbe Bug ist.", false],
+  ["Schau dir die Review-Kommentare zu PR #41 an und schreib eine Antwort auf den ersten.", false],
+  ["Gib mir eine Liste der drei langsamsten Tests aus dem letzten Lauf, ohne Analyse.", false],
+  ["Kurze Zusammenfassung bitte: was hat die Recherche zu den Anbietern ergeben?", false],
+  ["Hypothetisch: recherchiere A, B und C parallel und schreib einen Vergleichsartikel – wie viele Worker bräuchte die Fabrik dafür?", false],
+  ["Nicht ausführen, nur bewerten: recherchiere drei Anbieter parallel und schreib einen Vergleichsartikel.", false],
+]
+
 // R13 (abnahme13/k2/k2.ts), wörtlich.
 export const R13: Fall[] = [
   ["Mich würde interessieren, wie die Fabrik parallele Recherchen zusammenführt und vergleicht.", false],
@@ -247,14 +281,19 @@ export const HOLDOUT_AUFTRAEGE: Fall[] = [
 ]
 // Gemessene Lücken (Aufträge, die NICHT injiziert werden). Bewusst stehen
 // gelassen — Asymmetrie: ein übersehener Auftrag kostet nur den Hinweis.
-//  - Telegrammstil ohne Artikel/Präposition/Aufzählung: kein Ergebnisobjekt belegbar.
-//  - Nur EIN Fächer-Signal (fan-out-quantor): „bisherige Fächer-Signale“ heißt ≥ 2.
+//  - Nur EINE Einheit (K2c): ein Artikel über EIN Thema ist ein Deliverable,
+//    aber kein Fan-out über ≥ 2 unabhängige Einheiten. R14 führt ihn als
+//    Auftrag; nach der Einheiten-Regel ist er keiner für die Fabrik.
+//  - Telegrammstil ohne Komma-Aufzählung: „parallel“ allein ist seit K2c
+//    keine Einheitenmenge, „A B C“ ohne Kommas keine Aufzählung.
+// (Seit K2c erkannt und daher gestrichen: „Prüfe jeden Doku-Verweis …“.)
 export const BEKANNTE_LUECKEN: string[] = [
   "recherchier parallel A B C vergleich artikel",
-  "Prüfe jeden Doku-Verweis in docs/ und erstelle eine Liste der toten Links.",
+  "Bitte schreib einen Artikel über die Georgia Guidestones mit Recherche zu den Inschriften.",
 ]
 
 export const ALLE: { name: string; faelle: Fall[] }[] = [
+  { name: "R14", faelle: R14 },
   { name: "R13", faelle: R13 },
   { name: "R12", faelle: R12 },
   { name: "R11", faelle: R11 },

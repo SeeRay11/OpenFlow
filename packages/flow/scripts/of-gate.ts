@@ -4,14 +4,16 @@
  * Bewertet einen Task-Text gegen die Ja-/Nein-Fälle der Nutzerorder vom
  * 18.09.2026 — ohne LLM, reine Signale. Liefert eine EMPFEHLUNG:
  *
- *   FABRIK    — AUFTRAG MIT ERGEBNISOBJEKT (Befehls-/Erstellverb + Bericht/
- *               Artikel/Datei/Tabelle/„für jeden …“/Mengenangabe) UND
- *               mindestens 2 Ja-Fall-Signale (Research-Fächer, Multi-Review,
- *               Artikel, Varianten, Testsuiten). Nur dann `injizieren: true`.
+ *   FABRIK    — AUFTRAG ÜBER ≥ 2 UNABHÄNGIGE EINHEITEN MIT ERGEBNIS (K2c):
+ *               Befehls-/Erstell-/Bedarfsform + Einheitenmenge („für jeden …“,
+ *               „alle 13 Worker“, „A, B und C“) + Ergebnis (Arbeitsverb oder
+ *               Bericht/Artikel/Tabelle/Datei), ohne Bindung an Material der
+ *               Sitzung („oben“, „dieser“, „den letzten …“). Nur dann
+ *               `injizieren: true`. Signalwörter sind seit K2c nur Messung.
  *   DIREKT    — klarer Nein-Fall (Geldpfad, Deploy, Secrets, Rückfragen,
  *               Einzelschritt <1 min) oder Nutzer-Prefix "direkt:"
  *   GRAUZONE  — alles andere: Fragen, Erklärwünsche, Aufträge ohne
- *               Ergebnisobjekt oder mit weniger als 2 Signalen. Nur Messung.
+ *               Einheitenmenge/Ergebnis oder an Kontext gebunden. Nur Messung.
  *
  * Default umgedreht (K2, 12.10.2026, Abnahme R13 3/10): Bis dahin hieß
  * „≥ 2 Signalwörter“ FABRIK, und eine Satzanfangs-Liste („erklaerfrage“)
@@ -39,7 +41,7 @@
  *                                              [--task-ref <gate_id>] [--monitoring]
  *
  * Ausgabe classify: eine JSON-Zeile
- *   {entscheidung, signale, prefix, grund, auftrag: {verb, objekt} | null, injizieren}.
+ *   {entscheidung, signale, prefix, grund, auftrag: {verb, objekt, einheiten} | null, injizieren}.
  * log hängt an ${OPENFLOW_LEDGER:-~/.openflow/gate-ledger.jsonl}.
  *
  * --task-ref (Hebel 2, 10.10.2026): gate_id der Task-Bewertung, auf die sich
@@ -145,9 +147,9 @@ const SCHWACH_EN = ["explain", "describe", "outline", "show", "tell", "list"]
 
 // Ergebnis-Artefakte (auch als Kompositum-Endung: Vergleichs|artikel).
 const ARTEFAKT_DE =
-  "bericht|berichts|artikel|report|dossier|whitepaper|blogpost|tabelle|liste|übersicht|uebersicht|matrix|testsuite|test-suite|regressionssuite|tests|review|reviews|empfehlung|zusammenfassung|memo|gutachten|steckbrief|varianten|entwürfe|entwuerfe|abschnitt|kapitel|dokument|präsentation|praesentation|checkliste|faktenblatt|vergleich|auswertung|analyse|rangliste"
+  "bericht|berichts|artikel|report|dossier|whitepaper|blogpost|tabelle|liste|übersicht|uebersicht|matrix|testsuite|test-suite|regressionssuite|tests|review|reviews|empfehlung|zusammenfassung|memo|gutachten|steckbrief|varianten|entwürfe|entwuerfe|abschnitt|kapitel|dokument|präsentation|praesentation|checkliste|faktenblatt|vergleich|auswertung|analyse|rangliste|datei|dateien"
 const ARTEFAKT_EN =
-  "report|article|blog ?post|table|list|test ?suite|tests|review|reviews|summary|summaries|comparison|recommendation|memo|document|doc|spreadsheet|matrix|variants|drafts|section|chapter|checklist|brief|write-?up|analysis|ranking|overview"
+  "report|article|blog ?post|table|list|test ?suite|tests|review|reviews|summary|summaries|comparison|recommendation|memo|document|doc|spreadsheet|matrix|variants|drafts|section|chapter|checklist|brief|write-?up|analysis|ranking|overview|file|files"
 
 // STARK: eindeutig bestelltes Ergebnis.
 const OBJ_PFAD =
@@ -171,14 +173,6 @@ const OBJ_PRAEP_EN = new RegExp(
   "i",
 )
 const OBJ_UMFANG = /\d+[- ]?(wörter|woerter|words|seiten|pages|zeichen)\b/i
-// SCHWACH: Fan-out-Menge — zählt nur zusammen mit einem Erstellverb.
-const OBJ_QUANTOR =
-  /\b(?:für|for)\s+(?:jede[nrsm]?|alle|each|every)\b|\bjede[nrsm]?\s+(?:unserer|der|einzelne[nrsm]?|\p{Lu})|\b(?:je|pro|per)\s+(?!nachdem|mehr|weniger|desto|eher)\p{L}{3,}|\b(?:each|every)\s+[a-z]{3,}|\bjeweils\b/iu
-const OBJ_MENGE =
-  /\b(?:\d+|zwei|drei|vier|fünf|fuenf|sechs|sieben|acht|neun|zehn|elf|zwölf|zwoelf|zwanzig|alle[rnm]?|sämtliche[rn]?|saemtliche[rn]?|two|three|four|five|six|seven|eight|nine|ten|twelve|twenty|all)\s+(?:[\p{L}-]+\s+){0,2}?\p{L}{3,}/iu
-const OBJ_AUFZAEHLUNG =
-  /[\p{L}\d.+-]+\s*,\s*[\p{L}\d.+-]+(?:\s*,\s*[\p{L}\d.+-]+)*\s*,?\s+(?:und|and|oder|or|sowie|&)\s+[\p{L}\d.+-]+|[\p{L}\d.+-]+\s*,\s*[\p{L}\d.+-]+\s*,\s*[\p{L}\d.+-]+/u
-
 // Ausdrücklich NICHT ausführen.
 const VETO =
   /\bnur (erklären|erklaeren|beschreiben|erläutern)\b|\bnicht (starten|ausführen|ausfuehren|laufen lassen)\b|\bohne (sie|es|ihn|das|die fabrik) zu (starten|ausführen)\b|\bjust explain\b|\b(don't|do not) (run|start|execute)\b/i
@@ -204,12 +198,6 @@ const FRAGE_ANFANG = new RegExp(
 // Bitt-Rahmen: darin zählen auch Infinitive („kannst du … recherchieren“).
 const BITT_RAHMEN =
   /^(?:(?:kannst|könntest|koenntest|würdest|wuerdest|magst|willst)\s+du|(?:can|could|would|will)\s+you|bitte|please)\b/i
-// Bedarfs-Rahmen: „Ich brauche einen Vergleichsartikel …“.
-const BEDARF = new RegExp(
-  `\\b(?:ich|wir)\\s+(?:brauche|brauchen|hätte gern|hätte gerne|haette gern|hätten gern|will|wollen|möchte|möchten|moechte)\\s+(?:bitte\\s+|gern(?:e)?\\s+|noch\\s+)?(?:ein|eine|einen)\\s+(?:${W}+\\s+){0,2}?${W}*?(?:${ARTEFAKT_DE})\\b` +
-    `|\\b(?:i|we)\\s+(?:need|want|'d like|would like)\\s+(?:a|an)\\s+(?:${W}+\\s+){0,2}?${W}*?(?:${ARTEFAKT_EN})\\b`,
-  "i",
-)
 // Verbindungswörter, nach denen ein Imperativ stehen darf.
 const VERBINDER =
   /(?:^|[,;:–—(]|\b(?:und|dann|danach|anschließend|anschliessend|zuerst|zunächst|zunaechst|bitte|mal|jetzt|also|ok|okay|außerdem|ausserdem|and|then|please|first|now|so|also))$/i
@@ -282,31 +270,143 @@ function hauptsatz(rest: string): string {
   return i >= 0 ? rest.slice(0, i) : rest
 }
 
-export function erkenneAuftrag(textRaw: string): { verb: string; objekt: string } | null {
-  const text = ohneZitate(textRaw)
+// ---------------------------------------------------------------------------
+// EINHEITEN (K2c, 12.10.2026, Abnahme R14 4/10)
+// ---------------------------------------------------------------------------
+// Die Fabrik lohnt sich nur bei ≥ 2 UNABHÄNGIGEN EINHEITEN, die je ein
+// eigenes Ergebnis liefern. Bis K2b reichte jede Zahl vor einem Nomen
+// („die drei letzten Commits“, „drei Werte aus der Analyse oben“) als
+// Fan-out-Menge UND als Ergebnisobjekt. Jetzt drei getrennte Fragen:
+//   1. Einheitenmenge: Quantor (für jeden/je/pro/jeweils/einzeln/for each),
+//      Menge aus Zahl/alle/mehrere + Gegenstand („über mehrere Quellen“),
+//      Aufzählung von ≥ 3 Gegenständen. „parallel“ ALLEIN nennt keine
+//      Gegenstände („Recherchiere parallel und erkläre die Unterschiede“ —
+//      wovon?) und ist deshalb keine Einheitenmenge; gemessen kostet das
+//      im ganzen Korpus nur den Telegrammsatz „recherchier parallel A B C …“. Eine Zahl vor einem UMFANG-Nomen („drei Sätze“,
+//      „fünf Stichpunkte“, „vier Werte“, „sieben Tage“) ist KEINE Einheit.
+//      Gesucht wird nicht in Ja/Nein-Prüffragen („prüf, ob die drei Tests …“):
+//      dort steht der Gegenstand der Frage, nicht die Arbeitseinheit.
+//   2. Ergebnis: Arbeitsverb (recherchiere/analysiere/vergleiche/teste/
+//      reviewe/fasse zusammen …) oder ein bestelltes Artefakt.
+//   3. Kontextbindung („oben“, „dieser“, „den letzten …“, „von eben“,
+//      „aus der Analyse“, „this“, „above“) → nie Pflichtweg: der Auftrag
+//      arbeitet auf Material dieser Sitzung, die Fabrik sähe es nicht.
+// Beispiel-/Hypothese-Rahmen („etwa: …“, „wenn ich schreibe: …“,
+// „Hypothetisch: …“) gelten wie ein Zitat.
+
+const ZAHL =
+  "(?:[2-9]|[1-9]\\d{1,2}|zwei|drei|vier|fünf|fuenf|sechs|sieben|acht|neun|zehn|elf|zwölf|zwoelf|zwanzig|dreißig|dreissig|fünfzig|fuenfzig|hundert|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|fifty|hundred)"
+// Nomen, deren Zahl einen UMFANG angibt, keine Einheitenmenge.
+const UMFANG_NOMEN =
+  /^(?:sätzen?|saetzen?|satz|zeilen?|wörtern?|woertern?|worte?|absätzen?|absaetzen?|absatz|stichpunkten?|punkten?|spalten?|werten?|zahlen|beispielen?|fällen?|faellen?|minuten|sekunden|stunden|tagen?|wochen?|monaten?|jahren?|seiten|zeichen|sentences?|lines?|words?|paragraphs?|bullets?|bullet|points?|columns?|values?|numbers?|examples?|cases?|minutes?|seconds?|hours?|days?|weeks?|months?|years?|pages?|characters?|items?)$/i
+// Wörter, die nach einer Zahl kein Gegenstand sind („2027 und …“, „3 bis 5“).
+const KEIN_NOMEN = /^(?:und|oder|bis|mal|uhr|prozent|and|or|to|times|percent|of|the|in|im|am|um|vor|nach|mit|von|für|fuer|x)$/i
+const MENGE_EIN = new RegExp(
+  `\\b(?:(?:alle[rnms]?|sämtliche[rn]?|saemtliche[rn]?|mehrere[rn]?|all|several|multiple)(?:\\s+(?:the|der|die|den|unserer|unsere[rn]?|our))?(?:\\s+${ZAHL})?|${ZAHL})\\s+((?:[\\p{L}][\\p{L}.-]*\\s+){0,2}[\\p{L}][\\p{L}-]*)`,
+  "giu",
+)
+const QUANTOR_EIN =
+  /\b(?:für|fuer|for)\s+(?:jede[nrsm]?|alle|each|every)\b|\bjede[nrsm]?\s+(?:unserer|der|des|einzelne[nrsm]?|\p{Lu})|\b(?:je|pro|per)\s+(?!nachdem|mehr|weniger|desto|eher|\d)(?!(?:zwei|drei|vier|fünf|fuenf|sechs|sieben|acht|neun|zehn|zwanzig)\b)\p{L}{3,}|\b(?:each|every)\s+[a-z]{3,}|\bjeweils\b|\beinzeln\b|\bseparat\b|\bgetrennt\b|\bseparately\b|\bindividually\b|\bone by one\b/iu
+const AUFZAEHLUNG_EIN =
+  /[\p{L}\d.+-]+\s*,\s*[\p{L}\d.+-]+(?:\s*,\s*[\p{L}\d.+-]+)*\s*,?\s+(?:und|and|oder|or|sowie|&)\s+[\p{L}\d.+-]+|[\p{L}\d.+-]+\s*,\s*[\p{L}\d.+-]+\s*,\s*[\p{L}\d.+-]+|\b1\)\s[\s\S]*\b2\)\s/u
+// Aufzählung von Kriterien/Spalten ist keine Einheitenmenge.
+const KRITERIEN_LISTE =
+  /\b(?:nach|hinsichtlich|bezüglich|bezueglich|bzgl|by|regarding|in terms of|spalten(?:\s+für|\s+fuer)?|columns(?:\s+for)?|felder(?:n)?(?:\s+für)?|fields(?:\s+for)?)\s*:?\s*[\p{L}\d.+-]+\s*,\s*[\p{L}\d.+-]+(?:\s*,\s*[\p{L}\d.+-]+)*\s*,?\s*(?:(?:und|and|oder|or|sowie|&)\s+[\p{L}\d.+-]+)?/giu
+// Ja/Nein-Prüffrage („prüf, ob die drei Tests grün sind“, „tell me if the
+// three branches are correct“): ihr Gegenstand ist keine Arbeitseinheit.
+// W-Nebensätze bleiben — „Erkläre in einem Bericht, wie die 5 Anbieter …“
+// nennt die Einheiten gerade im Nebensatz.
+const INDIREKTE_FRAGE =
+  /(?:,\s*|\s)(?:ob|whether|if)\s[^,;.!?–—]*/giu
+const KONTEXT = new RegExp(
+  [
+    "\\b(?:oben|obige[nmrs]?|vorhin|soeben|hier|hierzu|darüber|dazu)\\b",
+    "\\bvon (?:eben|gerade|gestern|vorhin)\\b",
+    "\\b(?:du|wir|ich) (?:gerade|eben)\\b",
+    "\\b(?:diese[rsnm]?|jene[rsnm]?)\\s+\\p{L}",
+    "\\b(?:deiner|deinem|deinen|meiner|meinem|unserer) (?:letzten|vorigen|vorherigen)\\b",
+    `\\b(?:der|die|den|dem|des)\\s+(?:${ZAHL}\\s+)?(?:letzte[nmrs]?|vorige[nmrs]?|vorherige[nmrs]?)\\b(?!\\s+(?:${ZAHL}\\s+)?(?:tage?n?|wochen?|monate?n?|jahre?n?|stunden?|minuten?|nächte?n?|naechte?n?|sprints?|quartale?n?)\\b)`,
+    "\\baus der (?:analyse|recherche|tabelle|liste|antwort|ausgabe)\\b",
+    "\\b(?:above|this|these|that one|the previous|earlier)\\b",
+    `\\b(?:the|my|your)\\s+last\\b(?!\\s+(?:${ZAHL}\\s+)?(?:days?|weeks?|months?|years?|hours?|sprints?|quarters?)\\b)`,
+  ].join("|"),
+  "iu",
+)
+const BEISPIEL_RAHMEN =
+  /(?:\b(?:etwa|beispielsweise|zum beispiel|hypothetisch|angenommen|e\.g\.|for example|for instance|hypothetically|suppose)|\bz\.\s?b\.|\b(?:wenn|falls) ich (?:schreibe|sage|tippe|frage|eingebe)|\bif i (?:write|say|type))\s*:[\s\S]*$/imu
+
+// Arbeitsverben: ihr Ergebnis je Einheit IST das Ergebnis (Recherche-,
+// Prüf-, Vergleichsbefund). Die übrigen Erstellverben brauchen ein Artefakt.
+const ARBEIT = new Set([
+  "recherchier", "analysier", "vergleich", "prüf", "pruef", "test", "bewert", "evaluier", "untersuch",
+  "review", "benchmark", "auditier", "dokumentier", "fass", "trag", "stell", "ermittl", "führ", "fuehr",
+  "research", "compare", "summarize", "summarise", "analyze", "analyse", "document", "evaluate", "audit",
+  "assess", "investigate",
+])
+const BEDARF_RAHMEN =
+  /\b(?:(?:ich|wir)\s+(?:brauche|brauchen|hätte gerne?|haette gerne?|hätten gerne?|will|wollen|möchte|möchten|moechte|moechten)|(?:i|we)\s+(?:need|want|'d like|would like))\b/i
+
+/** Einheitenmenge (≥ 2 unabhängige Gegenstände) oder null. */
+export function erkenneEinheiten(text: string): string | null {
+  let t = text.replace(INDIREKTE_FRAGE, " ")
+  t = t.replace(KRITERIEN_LISTE, " ")
+  const q = t.match(QUANTOR_EIN)
+  if (q) return q[0]
+  for (const m of t.matchAll(MENGE_EIN)) {
+    const woerter = m[1].trim().split(/\s+/)
+    if (KEIN_NOMEN.test(woerter[0])) continue
+    if (/^(?:1[89]|20)\d\d$/.test(m[0].trim().split(/\s+/)[0])) continue // Jahreszahl
+    if (woerter.some((w) => UMFANG_NOMEN.test(w.replace(/[.,]$/, "")))) continue
+    return m[0].trim()
+  }
+  const a = t.match(AUFZAEHLUNG_EIN)
+  if (a) return a[0]
+  return null
+}
+
+export function erkenneAuftrag(textRaw: string): { verb: string; objekt: string; einheiten: string } | null {
+  const text = ohneZitate(textRaw).replace(BEISPIEL_RAHMEN, " ")
   if (VETO.test(text)) return null
-  const bedarf = text.match(BEDARF)
-  if (bedarf) return { verb: "bedarf", objekt: bedarf[0].trim() }
+  if (KONTEXT.test(text)) return null
+  const einheiten = erkenneEinheiten(text)
+  if (!einheiten) return null
 
   const ergebnisObjekt = (s: string) =>
     s.match(OBJ_PFAD)?.[0] ?? s.match(OBJ_PRAEP_DE)?.[0] ?? s.match(OBJ_PRAEP_EN)?.[0] ?? s.match(OBJ_UMFANG)?.[0] ?? null
   const artefaktObjekt = (s: string) => s.match(OBJ_ARTEFAKT_DE)?.[0] ?? s.match(OBJ_ARTEFAKT_EN)?.[0] ?? null
-  const mengenObjekt = (s: string) =>
-    s.match(OBJ_QUANTOR)?.[0] ?? s.match(OBJ_MENGE)?.[0] ?? s.match(OBJ_AUFZAEHLUNG)?.[0] ?? null
+  // „drei Varianten“, „five drafts“: die Einheiten sind selbst die Artefakte.
+  // Ausgenommen Datei/file: „die drei geänderten Dateien“ sind EINGABE —
+  // als Ergebnis zählt eine Datei nur mit Artikel/Präposition („als Datei“).
+  const mengenArtefakt = (s: string) => {
+    const m = s.match(new RegExp(`\\b${ZAHL}\\s+(?:${W}+\\s+){0,2}?${W}*?(?:${ARTEFAKT_DE}|entwürfe|entwuerfe|${ARTEFAKT_EN}|reports|articles|tables|lists)\\b`, "iu"))?.[0]
+    return m && !/(?:datei|dateien|file|files)$/i.test(m) ? m : null
+  }
+
+  // Bedarfs-Rahmen: „Ich hätte gern für jeden … eine Tabelle“, „Ich brauche
+  // bis morgen einen Vergleichsartikel …“ — Artefakt im selben Hauptsatz.
+  for (const satz of saetze(text)) {
+    if (FRAGE_ANFANG.test(satz)) continue
+    const b = satz.match(BEDARF_RAHMEN)
+    if (!b) continue
+    const rest = hauptsatz(satz.slice((b.index ?? 0) + b[0].length))
+    const o = ergebnisObjekt(rest) ?? artefaktObjekt(rest)
+    if (o) return { verb: "bedarf", objekt: o.trim(), einheiten }
+  }
 
   const verben = saetze(text).flatMap(findeVerben)
-  // Erstell-/Befehlsverb: Objekt irgendwo im Text („Was macht jeder unserer
-  // 13 Worker? Analysiere parallel und fasse zusammen.“).
   for (const v of verben.filter((v) => v.stark)) {
-    const o = ergebnisObjekt(text) ?? (v.kreation ? artefaktObjekt(text) : null) ?? mengenObjekt(text)
-    if (o) return { verb: v.verb, objekt: o.trim() }
+    const stamm = v.verb.toLowerCase().replace(/(?:en|e|n)$/, "")
+    const arbeit = ARBEIT.has(v.verb.toLowerCase()) || ARBEIT.has(stamm)
+    const o =
+      ergebnisObjekt(text) ?? (v.kreation ? artefaktObjekt(text) : null) ?? mengenArtefakt(text) ?? (arbeit ? v.verb : null)
+    if (o) return { verb: v.verb, objekt: o.trim(), einheiten }
   }
   // Erklärverb: nur mit Ergebnisobjekt im eigenen Hauptsatz („Erkläre in
   // einem Bericht, wie …“ ja — „Erkläre, wie die Fabrik einen Bericht
   // schreibt“ und „explain the difference between an audit and a review“ nein).
   for (const v of verben.filter((v) => !v.stark)) {
     const o = ergebnisObjekt(hauptsatz(v.rest))
-    if (o) return { verb: v.verb, objekt: o.trim() }
+    if (o) return { verb: v.verb, objekt: o.trim(), einheiten }
   }
   return null
 }
@@ -335,13 +435,15 @@ export function classify(textRaw: string) {
   if (direkt.length > 0)
     return { entscheidung: "DIREKT", signale: direkt, prefix, grund: `Nein-Fall-Signal(e): ${direkt.join(", ")}`, auftrag: null, injizieren: false }
 
+  // DIE Regel (K2c): Auftrag mit Ergebnis über ≥ 2 unabhängige Einheiten,
+  // ohne Bindung an Material dieser Sitzung. Signalwörter sind nur Messung.
   const auftrag = erkenneAuftrag(trimmed)
-  if (fabrik.length >= 2 && auftrag)
+  if (auftrag)
     return {
       entscheidung: "FABRIK",
       signale: fabrik,
       prefix,
-      grund: `mindestens 2 Ja-Fall-Signale: ${fabrik.join(", ")} — Auftrag mit Ergebnisobjekt (${auftrag.verb} → ${auftrag.objekt.slice(0, 60)})`,
+      grund: `Auftrag über mehrere Einheiten (${auftrag.einheiten.slice(0, 40)}) mit Ergebnis (${auftrag.verb} → ${auftrag.objekt.slice(0, 60)})`,
       auftrag,
       injizieren: true,
     }
@@ -350,7 +452,7 @@ export function classify(textRaw: string) {
       entscheidung: "GRAUZONE",
       signale: fabrik,
       prefix,
-      grund: `${fabrik.length} Ja-Fall-Signale (${fabrik.join(", ")}), aber kein Auftrag mit Ergebnisobjekt — nur Messung, keine Injektion`,
+      grund: `${fabrik.length} Ja-Fall-Signale (${fabrik.join(", ")}), aber kein Auftrag mit Ergebnis über ≥ 2 Einheiten (oder an Sitzungskontext gebunden) — nur Messung, keine Injektion`,
       auftrag: null,
       injizieren: false,
     }

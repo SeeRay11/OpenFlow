@@ -14,7 +14,14 @@ import { existsSync, mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { classify as classifyDirekt } from "./of-gate"
-import { ALLE, BEKANNTE_LUECKEN } from "./gate-korpus"
+import { ALLE as KORPUS, BEKANNTE_LUECKEN } from "./gate-korpus"
+import { VORAB_AUFTRAEGE, VORAB_KEIN_AUFTRAG } from "./gate-korpus-einheiten"
+
+const ALLE = [
+  ...KORPUS,
+  { name: "K2c vorab Aufträge", faelle: VORAB_AUFTRAEGE },
+  { name: "K2c vorab kein Auftrag", faelle: VORAB_KEIN_AUFTRAG },
+]
 
 const SCRIPT = join(import.meta.dir, "of-gate.ts")
 const TMP = mkdtempSync(join(tmpdir(), "of-gate-test-"))
@@ -56,7 +63,7 @@ describe("of-gate classify — Basisklassifikation", () => {
     expect(r.prefix).toBeNull()
     expect(r.signale).toContain("recherche")
     expect(r.signale).toContain("parallel")
-    expect(r.grund).toMatch(/^mindestens 2 Ja-Fall-Signale:/)
+    expect(r.grund).toMatch(/^Auftrag über mehrere Einheiten/)
   })
 
   test("(2) klare DIREKT-Aufgabe: trivialer Einzelschritt → DIREKT", async () => {
@@ -168,7 +175,7 @@ describe("of-gate classify — Erklärfragen ohne Ergebnisobjekt (K2)", () => {
     const r = await classify("Recherchiere parallel und erkläre die Unterschiede")
     expect(r.entscheidung).toBe("GRAUZONE")
     expect(r.injizieren).toBe(false)
-    expect(r.grund).toMatch(/kein Auftrag mit Ergebnisobjekt/)
+    expect(r.grund).toMatch(/kein Auftrag mit Ergebnis über ≥ 2 Einheiten/)
   })
 })
 
