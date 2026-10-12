@@ -1,8 +1,10 @@
 /**
  * Testsuite für of-gate.ts (deterministischer Fabrik-Gate, REGEL 4).
  *
- * Das Skript exportiert nichts und ruft bei direktem Import (bun test)
- * `process.exit(2)` auf — deshalb wird es als CLI-Prozess gespawned.
+ * Die CLI-Fälle laufen als gespawnter Prozess (Vertrag der Ausgabe); der
+ * Korpus (gate-korpus.ts) läuft in-process gegen das exportierte `classify`
+ * — seit K2b steht die CLI hinter `import.meta.main`, ein Import ist frei
+ * von Seiteneffekten.
  * Alle Läufe schreiben NUR in ein Temp-Verzeichnis (OPENFLOW_LEDGER
  * zeigt auf os.tmpdir()); echte Runs, $HOME und Repo-Dateien bleiben unangetastet.
  */
@@ -11,6 +13,8 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { classify as classifyDirekt } from "./of-gate"
+import { ALLE, BEKANNTE_LUECKEN } from "./gate-korpus"
 
 const SCRIPT = join(import.meta.dir, "of-gate.ts")
 const TMP = mkdtempSync(join(tmpdir(), "of-gate-test-"))
@@ -38,6 +42,8 @@ async function classify(task: string) {
     signale: string[]
     prefix: string | null
     grund: string
+    auftrag: { verb: string; objekt: string } | null
+    injizieren: boolean
   }
 }
 
@@ -110,11 +116,12 @@ describe("of-gate classify — Sicherheit schlägt Effizienz", () => {
   })
 })
 
-describe("of-gate classify — Erklärfragen ohne Deliverable (K2)", () => {
-  // Erklär-/Verständnisfragen sind Einzelschritte (Nein-Fall), auch ohne „?"
-  // und auch wenn Fabrik-Signalwörter nur Gegenstand der Frage sind.
-  // Vor dem Fix (gemessen 12.10.2026): die ersten vier GRAUZONE, die mit
-  // zwei Signalwörtern FABRIK.
+describe("of-gate classify — Erklärfragen ohne Ergebnisobjekt (K2)", () => {
+  // Erklär-/Verständnisfragen bekommen KEINEN Pflichtweg, auch ohne „?" und
+  // auch wenn Fabrik-Signalwörter nur Gegenstand der Frage sind. Bis K2b
+  // waren sie DIREKT über die Satzanfangs-Liste `erklaerfrage`; die ist
+  // entfallen (kein Ledger-Etikett mehr), die Fälle sind jetzt GRAUZONE
+  // (nur Messung) — entscheidend ist `injizieren: false`.
   const erklaerfragen = [
     "Erkläre, wie der Router den Failover macht",
     "Ich frage mich, wie X funktioniert",
@@ -130,16 +137,16 @@ describe("of-gate classify — Erklärfragen ohne Deliverable (K2)", () => {
     "Erklär mir, wie die parallele Recherche zusammenfasst",
   ]
   for (const task of erklaerfragen) {
-    test(`(7) Erklärfrage → DIREKT: ${task}`, async () => {
+    test(`(7) Erklärfrage → kein Pflichtweg: ${task}`, async () => {
       const r = await classify(task)
-      expect(r.entscheidung).toBe("DIREKT")
-      expect(r.signale).toEqual(["erklaerfrage"])
+      expect(r.entscheidung).toBe("GRAUZONE")
+      expect(r.injizieren).toBe(false)
+      expect(r.signale).not.toContain("erklaerfrage")
     })
   }
 
-  // Abwägung: Wer eine Erklärung als DELIVERABLE bestellt (Schreib-/
-  // Erstell-Verb, „in einem Bericht/Artikel", Umfang in Wörtern), hat einen
-  // Ja-Fall — das bleibt FABRIK.
+  // Wer eine Erklärung als ERGEBNIS bestellt (Schreib-/Erstell-Verb,
+  // „in einem Bericht/Artikel", Umfang in Wörtern), hat einen Ja-Fall.
   const auftraege = [
     "Schreibe einen Artikel, der erklärt, wie der Router den Failover macht, mit Recherche zu 5 Anbietern",
     "Erkläre in einem 3000-Wörter-Bericht mit Recherche zu 5 Anbietern, wie Failover funktioniert",
@@ -147,17 +154,68 @@ describe("of-gate classify — Erklärfragen ohne Deliverable (K2)", () => {
     "Explain in a report with research and a benchmark of 5 providers how failover works",
   ]
   for (const task of auftraege) {
-    test(`(8) Erklär-Auftrag mit Deliverable bleibt FABRIK: ${task}`, async () => {
+    test(`(8) Erklär-Auftrag mit Ergebnisobjekt bleibt FABRIK: ${task}`, async () => {
       const r = await classify(task)
       expect(r.entscheidung).toBe("FABRIK")
-      expect(r.signale).not.toContain("erklaerfrage")
+      expect(r.injizieren).toBe(true)
+      expect(r.auftrag).not.toBeNull()
     })
   }
 
-  test("(9) Erklär-Wort mitten im Auftrag ist keine Erklärfrage", async () => {
+  test("(9) Auftrag OHNE Ergebnisobjekt: Signale reichen nicht mehr (Default umgedreht)", async () => {
+    // Bis K2b FABRIK (2 Signale). Kein Bericht, keine Datei, keine Menge —
+    // das Ergebnis ist eine Chat-Antwort; Asymmetrie: nur messen.
     const r = await classify("Recherchiere parallel und erkläre die Unterschiede")
-    expect(r.entscheidung).toBe("FABRIK")
-    expect(r.signale).not.toContain("erklaerfrage")
+    expect(r.entscheidung).toBe("GRAUZONE")
+    expect(r.injizieren).toBe(false)
+    expect(r.grund).toMatch(/kein Auftrag mit Ergebnisobjekt/)
+  })
+})
+
+describe("of-gate classify — Auftrag mit Ergebnisobjekt (K2b, Korpus)", () => {
+  // In-process: dieselbe Funktion, die die CLI ausgibt (import.meta.main-Riegel).
+  const luecken = new Set(BEKANNTE_LUECKEN)
+  for (const { name, faelle } of ALLE) {
+    test(`${name}: ${faelle.length} Fälle — Pflichtweg genau bei Aufträgen`, () => {
+      const falsch: string[] = []
+      for (const [text, soll] of faelle) {
+        if (luecken.has(text)) continue
+        const r = classifyDirekt(text)
+        if (r.injizieren !== soll) falsch.push(`${soll ? "VERPASST" : "INJIZIERT"} ${r.entscheidung} [${r.signale}] ${text}`)
+        // Eine Stelle: FABRIK ⇔ injizieren.
+        expect(r.injizieren).toBe(r.entscheidung === "FABRIK")
+      }
+      expect(falsch).toEqual([])
+    })
+  }
+
+  test("bekannte Lücken sind noch Lücken (sonst aus BEKANNTE_LUECKEN streichen)", () => {
+    for (const text of BEKANNTE_LUECKEN) expect(classifyDirekt(text).injizieren).toBe(false)
+  })
+
+  test("Zitat zählt nicht als Auftrag, ausgepackter Ganz-Zitat-Prompt schon", () => {
+    expect(classifyDirekt("Der Nutzer schrieb „Recherchiere parallel A, B und C und vergleiche sie in einem Bericht“ — sinnvoll?").injizieren).toBe(false)
+    expect(classifyDirekt('"Recherchiere parallel A, B und C und vergleiche sie in einem Bericht."').injizieren).toBe(true)
+  })
+
+  test("ausdrückliches Nicht-Ausführen schlägt den Auftrag", () => {
+    expect(classifyDirekt("Recherchiere parallel A, B und C und vergleiche sie in einem Bericht — nur erklären, nicht starten.").injizieren).toBe(false)
+  })
+
+  test("Nein-Fall-Signal schlägt Auftrag mit Ergebnisobjekt", () => {
+    const r = classifyDirekt("Recherchiere parallel A, B und C, vergleiche sie in einem Bericht und deploye danach")
+    expect(r.entscheidung).toBe("DIREKT")
+    expect(r.injizieren).toBe(false)
+  })
+
+  test("Prefix fabrik: injiziert auch eine Frage, direkt: nie", () => {
+    expect(classifyDirekt("fabrik: wie spät ist es?").injizieren).toBe(true)
+    expect(classifyDirekt("direkt: Recherchiere parallel A, B, C und vergleiche sie in einem Artikel").injizieren).toBe(false)
+  })
+
+  test("erklärverb mit Artefakt als GEGENSTAND ist kein Auftrag", () => {
+    expect(classifyDirekt("Can you explain the difference between an audit and a review here?").injizieren).toBe(false)
+    expect(classifyDirekt("Erkläre, wie die Fabrik parallel recherchiert und einen Vergleichsartikel schreibt").injizieren).toBe(false)
   })
 })
 
