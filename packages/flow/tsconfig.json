@@ -18,6 +18,6 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src", "lib", "vite", "vite.config.ts", "server.ts"],
+  "include": ["src", "lib", "vite", "vite.config.ts", "server.ts", "scripts/headless-run.ts"],
   "exclude": ["dist"]
 }

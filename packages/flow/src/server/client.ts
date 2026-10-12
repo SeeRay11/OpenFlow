@@ -314,6 +314,27 @@ export async function waitForIdle(
   sessionID: string,
   options: { signal?: AbortSignal; interval?: number; timeout?: number } = {},
 ) {
+  return waitUntilIdle(sessionID, { active: activeSessions, last: lastAssistant }, options)
+}
+
+/**
+ * The polling behind `waitForIdle`, with the two server reads passed in so the
+ * deadline can be tested without a server.
+ *
+ * The deadline is checked before anything else on every pass. It used to sit
+ * behind the "still active" branch, so a session the server kept listing as
+ * running — measured 12.10.2026: a `read` tool stuck in `running` after a 503
+ * retry, the session still `running` an hour later — never reached it, and
+ * the card held its run for 43 minutes past a 30-minute limit.
+ */
+export async function waitUntilIdle(
+  sessionID: string,
+  probes: {
+    active: () => Promise<Set<string>>
+    last: (sessionID: string) => Promise<{ finish?: unknown; error?: unknown } | undefined>
+  },
+  options: { signal?: AbortSignal; interval?: number; timeout?: number } = {},
+) {
   const interval = options.interval ?? 750
   const timeout = options.timeout ?? 30 * 60_000
   const started = Date.now()
@@ -323,28 +344,49 @@ export async function waitForIdle(
     if (options.signal?.aborted) return
     await new Promise((resolve) => setTimeout(resolve, interval))
     if (options.signal?.aborted) return
+    if (Date.now() - started > timeout) throw new Error(WAIT_TIMED_OUT)
 
-    const active = await activeSessions().catch(() => undefined)
+    const active = await probes.active().catch(() => undefined)
     if (active?.has(sessionID)) {
       sawActive = true
       continue
     }
 
-    const finished = await lastAssistant(sessionID)
+    const finished = await probes.last(sessionID)
     if (finished && (finished.finish || finished.error)) return
     // The loop may not have been admitted yet; give it a grace window.
     if (!sawActive && Date.now() - started < 20_000) continue
-    if (Date.now() - started > timeout) throw new Error("timed out waiting for the session to finish")
     if (active === undefined) continue
     if (!sawActive) throw new Error("the session never started executing — check the model and provider auth")
     return
   }
 }
 
+/** What `waitForIdle` throws when its deadline passes; the engine matches on it. */
+export const WAIT_TIMED_OUT = "timed out waiting for the session to finish"
+
 async function lastAssistant(sessionID: string) {
   const { client } = await connect()
   const body = unwrap<any>((await client.v2.session.messages({ sessionID, order: "desc", limit: 10 })) as any)
   return (body.data ?? []).find((message: any) => message.type === "assistant")
+}
+
+/**
+ * Permission requests a session is blocked on right now.
+ *
+ * The engine answers requests as they arrive on the event bus, and the bus is
+ * best-effort: a request asked while it was reconnecting — or while no run was
+ * listening at all, between an interrupted run and its resume — is never
+ * delivered again. The session then waits on it for good. Measured 12.10.2026,
+ * twice: an `external_directory` request pending on a `read`, the session
+ * `running` for over an hour.
+ */
+export async function pendingPermissions(
+  sessionID: string,
+): Promise<{ id: string; action: string; resources?: string[] }[]> {
+  const { client } = await connect()
+  const body = unwrap<any>((await client.v2.session.permission.list({ sessionID })) as any)
+  return body.data ?? []
 }
 
 export type PermissionReply = "once" | "always" | "reject"
