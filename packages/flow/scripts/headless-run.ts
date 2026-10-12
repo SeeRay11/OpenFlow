@@ -32,8 +32,9 @@
 }
 
 import { herkunft } from "./of-heilung"
-import { bericht, buildScorecard, seedFrom, uebernimm } from "./of-ergebnis"
+import { bericht, buildScorecard, seedFrom, turnsFrom, uebernimm, vorgaenger } from "./of-ergebnis"
 import { start } from "../src/server/engine"
+import type { RecordedTurn } from "../src/server/turn-hash"
 import * as api from "../src/server/client"
 import { agentBlock } from "../src/server/store"
 import { isPipeline } from "../src/graph/pipeline-io"
@@ -75,6 +76,7 @@ let name = rest[0]
 let input = rest.slice(1).join(" ")
 const initialResume: Record<string, string> = {}
 const initialSessions: Record<string, string> = {}
+const initialTurns: Record<string, RecordedTurn[]> = {}
 let resumeCheckpoint: { id?: string; origin?: string } | undefined
 const continued = (outputs: Record<string, string>, held: Record<string, string>) =>
   Object.keys(held).filter((id) => outputs[id] === undefined).length
@@ -93,6 +95,7 @@ if (resumeRef !== undefined) {
   name = log.pipeline
   if (!input) input = log.input ?? ""
   seedFrom(log, initialResume, initialSessions)
+  turnsFrom(log, initialTurns)
   console.error(
     `resuming ${log.id} - ${Object.keys(initialResume).length} card(s) kept, ${continued(initialResume, initialSessions)} continued in session`,
   )
@@ -152,8 +155,10 @@ const carriedSessions: Record<string, string> = { ...initialSessions }
 for (let attempt = 1; attempt <= attemptsMax; attempt++) {
   const resumeOutputs: Record<string, string> = attempt === 1 ? { ...initialResume } : {}
   const resumeSessions: Record<string, string> = attempt === 1 ? { ...initialSessions } : {}
+  const resumeTurns: Record<string, RecordedTurn[]> = attempt === 1 ? { ...initialTurns } : {}
   if (attempt > 1 && log) {
     seedFrom(log, resumeOutputs, resumeSessions)
+    turnsFrom(log, resumeTurns)
     console.error(
       `auto-retry ${attempt}/${attemptsMax}: ${Object.keys(resumeOutputs).length} Karte(n) gehalten, ${continued(resumeOutputs, resumeSessions)} in Session weiter — vorheriger Fehler: ${log.status}`,
     )
@@ -184,7 +189,7 @@ for (let attempt = 1; attempt <= attemptsMax; attempt++) {
     onNotice: (kind, text) => console.error(`[${kind}] ${text}`),
     onQuestion: () => Promise.resolve(undefined),
     onEngineStale: () => console.error("engine config is stale — restart opencode serve"),
-  }, { resume: resumeOutputs, sessions: resumeSessions })
+  }, { resume: resumeOutputs, sessions: resumeSessions, turns: resumeTurns })
   log = await run.done
   uebernimm(log, carried, carriedSessions)
   seedFrom(log, carried, carriedSessions)
@@ -195,7 +200,7 @@ for (let attempt = 1; attempt <= attemptsMax; attempt++) {
 
 // Scorecard in den finalen Run-Log schreiben (der letzte onRun-PUT kam ohne
 // sie) und als Block ausdrucken — die 10/10-Frage ist damit pro Run messbar.
-const scorecard = buildScorecard(log, predecessors.length, predecessors.slice(0, -1), startedMs)
+const scorecard = buildScorecard(log, predecessors.length, vorgaenger(resumeCheckpoint?.id, predecessors), startedMs)
 log.scorecard = scorecard
 // Herkunft (resumeOf/retryOf/origin) steht seit onRun in jedem Versuch;
 // hier nur nachgezogen, falls run.done ein Objekt ohne sie liefert.

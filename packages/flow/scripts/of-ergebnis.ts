@@ -19,6 +19,8 @@
  * stdout und stderr die Reihenfolge im Log umdrehen kann.
  */
 
+import { recordedTurns, type RecordedTurn } from "../src/server/turn-hash"
+
 export interface Scorecard {
   runId: string
   pipeline: string
@@ -42,6 +44,28 @@ export function seedFrom(log: any, outputs: Record<string, string>, held: Record
     if (node.status === "done" && typeof node.output === "string") outputs[node.id] = node.output
     if (node.sessionID) held[node.id] = node.sessionID
   }
+}
+
+/**
+ * K7: die aufgezeichneten Züge jeder fertigen Karte (Eingabe-Hash + Antwort),
+ * damit die Engine eine Karte nur übernimmt, wenn ihre Eingabe dieselbe ist —
+ * auch wenn der Orchestrator sie neu anlegt. Alte Logs ohne `turns`: der
+ * letzte Prompt gilt als Zug 1 (siehe `recordedTurns`).
+ */
+export function turnsFrom(log: any, turns: Record<string, RecordedTurn[]>) {
+  for (const node of log?.nodes ?? []) {
+    const recorded = recordedTurns(node)
+    if (recorded) turns[node.id] = recorded
+  }
+}
+
+/**
+ * Vorgänger eines Laufs für die SCORECARD: der Checkpoint-Lauf, aus dem
+ * fortgesetzt wurde (falls Resume), dann die früheren Versuche dieses
+ * Prozesses. Abnahme R13 K11: ein Resume meldete `predecessors: []`.
+ */
+export function vorgaenger(resumeId: string | undefined, versuche: string[]): string[] {
+  return [...(resumeId ? [resumeId] : []), ...versuche.slice(0, -1)]
 }
 
 /** Zustände, in denen eine Karte in DIESEM Versuch nichts eigenes geliefert hat. */

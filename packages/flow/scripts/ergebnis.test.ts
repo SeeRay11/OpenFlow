@@ -11,7 +11,8 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { bericht, buildScorecard, seedFrom, uebernimm } from "./of-ergebnis.ts"
+import { bericht, buildScorecard, seedFrom, turnsFrom, uebernimm, vorgaenger } from "./of-ergebnis.ts"
+import { turnNext, turnRoot } from "../src/server/turn-hash.ts"
 
 const W1 = "worker eins liefert sieben Wörter Bericht hier"
 const W3 = "worker drei liefert fünf Wörter"
@@ -140,5 +141,37 @@ process.exit(1)
     const roh = readFileSync(out, "utf8").replace(/\x1b\[[0-9;]*m/g, "")
     expect(roh).toContain("checkpoint: /tmp/openflow-checkpoint-FALSCH.json")
     expect(leser(roh)).toBe(ECHT)
+  })
+})
+
+describe("K11 (R13) — predecessors nennen den Checkpoint, aus dem fortgesetzt wurde", () => {
+  // Abnahme R13, 12.10.2026: Resume /tmp/of-run-resume-20261012-210103-16808.log
+  // aus run-2026-10-12T18-55-45-095Z-fssxbr meldete "predecessors": [].
+  test("Resume, ein Versuch: der Checkpoint-Lauf steht vorn", () => {
+    expect(vorgaenger("run-2026-10-12T18-55-45-095Z-fssxbr", ["run-B"])).toEqual(["run-2026-10-12T18-55-45-095Z-fssxbr"])
+  })
+  test("Resume + Auto-Retry: Checkpoint, dann der gescheiterte Versuch", () => {
+    expect(vorgaenger("run-A", ["run-B", "run-C"])).toEqual(["run-A", "run-B"])
+  })
+  test("ohne Resume unverändert: nur frühere Versuche", () => {
+    expect(vorgaenger(undefined, ["run-B", "run-C"])).toEqual(["run-B"])
+    expect(vorgaenger(undefined, ["run-B"])).toEqual([])
+  })
+})
+
+describe("K7 — turnsFrom: Eingabe-Hashes aus dem Checkpoint", () => {
+  test("neuer Log: aufgezeichnete Züge; alter Log: letzter Prompt als Zug 1 (legacy); nicht fertig: nichts", () => {
+    const log = {
+      nodes: [
+        { id: "boss", status: "done", model: "m", prompt: "p3", output: "o3", turns: [{ hash: "h1", output: "o1" }, { hash: "h2", output: "o2" }] },
+        { id: "w", status: "done", model: "dharma/auto", prompt: "brief", output: "answer" },
+        { id: "x", status: "error", model: "m", prompt: "p", output: "o" },
+      ],
+    }
+    const turns: Record<string, any> = {}
+    turnsFrom(log, turns)
+    expect(turns.boss).toEqual([{ hash: "h1", output: "o1" }, { hash: "h2", output: "o2" }])
+    expect(turns.w).toEqual([{ hash: turnNext(turnRoot("dharma/auto"), "brief"), output: "answer", legacy: true }])
+    expect(turns.x).toBeUndefined()
   })
 })

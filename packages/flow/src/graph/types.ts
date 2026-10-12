@@ -281,6 +281,11 @@ export type RunNodeLog = {
    * already finished — without it the only clue is the absence of a sessionID.
    */
   reused?: boolean
+  /**
+   * Every turn the card settled in this run: chained input hash + answer, in
+   * order (K7, see `server/turn-hash.ts`). What a resume compares against.
+   */
+  turns?: { hash: string; output: string }[]
   /** What this node's session reported using, priced. */
   usage?: Spend
   /** Per-step usage behind `usage`, kept so a run log can be re-priced later. */
