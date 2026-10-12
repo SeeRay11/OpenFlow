@@ -4,11 +4,13 @@
  * Ein Zyklus (Aufruf durch systemd-Timer alle 5 min oder manuell):
  *   1. REAP: Zombies bergen (Checkpoint stumm > 10 min).
  *   2. MESSen: Scorecard-Logik über alle Runs.
- *   3. HEILEN: error-Runs, die noch nie resumed wurden und frisch genug sind
- *      (finished innerhalb --max-age-h, default 24), bekommen ein
- *      checkpoint-resume via of-run.sh --resume (detached, AUTO_RETRY aktiv).
- *      Der alte Run wird mit loop.resumedAt markiert — jede Heilungskette
- *      läuft höchstens einmal pro Run, nichts reiht sich endlos.
+ *   3. HEILEN: Regel in of-heilung.ts — nur der URSPRUNG einer Familie
+ *      (Ursprung + Resumes + Auto-Retries), höchstens HEIL_MAX (2) Heilungen
+ *      je Ursprung, nie ein Heilungslauf; bei SERIE_GLEICH (3) gleichen
+ *      Fehlschlägen Stopp + Alarm I5-fehlerserie (Konsole, Alerts, Ledger
+ *      event heilung_gestoppt, loop.alarm am Ursprung). Resume-Quelle ist der
+ *      jüngste gescheiterte Lauf der Familie, er wird mit loop.resumedAt
+ *      markiert (= gezählte Heilung).
  *   4. DIGEST: einmal täglich (State ~/.openflow/digest-last.date) das
  *      Gate-Ledger der letzten 7 Tage scannen — FABRIK/GRAUZONE-Empfehlungen
  *      ohne Fabrik-Run als digest-YYYY-MM-DD.md + Konsolen-Zeile melden.
@@ -17,7 +19,7 @@
  *
  * Guardrails:
  *   - Bewusst OHNE flock: Zyklen stapeln sich nicht praktisch (Timer 5 min,
- *     ein Zyklus < 10 s). Ein Doppelzyklus wäre harmlos — markResumed ist
+ *     ein Zyklus < 10 s). Ein Doppelzyklus wäre harmlos — markLoop ist
  *     atomar pro Run (Temp+Rename), der zweite Zugriff fliegt am
  *     loop.resumedAt-Kriterium vorbei. Der Timer-Abstand macht Überlappung
  *     zur Theorie; sollte sie real werden, ist ein flock nachrüstbar, ohne
@@ -25,11 +27,10 @@
  *   - Nur Pipelines aus --pipelines (default auto-orchestrator,feature-build)
  *     werden geheilt — Test-/Probe-Pipelines (refine-probe & Co.) bleiben
  *     ehrlich FAIL.
- *   - Kein Resume für Runs mit eigener scorecard.attempts >= 2 (der Runner
- *     hat bereits selbst einmal wiederholt).
  *
  * Usage:
  *   bun of-loop.ts [--interval MIN]        # einmalig; mit --interval endlos
+ *     [--dry-run] [--state-dir DIR] [--runs-dir DIR] [--ledger FILE]
  *   of-run.sh --loop [flags]               # weitergereicht
  */
 
@@ -38,6 +39,7 @@ import { join } from "node:path"
 import { homedir } from "node:os"
 import { spawn } from "node:child_process"
 import { runDailyDigest } from "./of-digest.ts"
+import { planeHeilung, HEIL_MAX, SERIE_GLEICH, type RunLog } from "./of-heilung.ts"
 
 const argv = process.argv.slice(2)
 const flag = (name: string, fallback?: string) => {
@@ -49,8 +51,12 @@ const MAX_AGE_H = Number(flag("--max-age-h", "24"))
 const REAP_MIN = Number(flag("--reap-min-age-min", "10"))
 const PIPELINES = (flag("--pipelines", "auto-orchestrator,feature-build") ?? "").split(",").map((s) => s.trim()).filter(Boolean)
 const INTERVAL = argv.includes("--interval") ? Number(flag("--interval", "300")) : 0
-const STATE = "/tmp/of-loop-state.jsonl"
-const LAST = "/tmp/of-loop-last.json"
+const STATE_DIR = flag("--state-dir", "/tmp")
+const STATE = join(STATE_DIR, "of-loop-state.jsonl")
+const LAST = join(STATE_DIR, "of-loop-last.json")
+const ALERTS = join(STATE_DIR, "of-loop-alerts.jsonl")
+// --dry-run: planen, markieren und berichten, aber keinen Resume starten.
+const DRY_RUN = argv.includes("--dry-run")
 // Hebel 3 — Kandidaten-Digest: einmal täglich FABRIK/GRAUZONE-Empfehlungen
 // ohne Fabrik-Run melden (Datei + Konsolen-Zeile); State digest-last.date
 // verhindert Wiederholung am selben Tag.
@@ -72,42 +78,30 @@ function reap(): number {
   return m ? Number(m[1]) : 0
 }
 
-interface HealCandidate { file: string; id: string }
-
-function findHealable(): HealCandidate[] {
+// Die Heil-Regel steht in of-heilung.ts (eine Stelle, rein, getestet): nur
+// der Ursprung einer Familie, höchstens HEIL_MAX-mal, nie ein Heilungslauf,
+// Stopp + Alarm bei SERIE_GLEICH gleichen Fehlschlägen.
+function ladeLogs(): Array<RunLog & { file: string }> {
   if (!existsSync(RUNS_DIR)) return []
-  const now = Date.now()
-  const out: HealCandidate[] = []
+  const out: Array<RunLog & { file: string }> = []
   for (const file of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json")).sort()) {
-    const path = join(RUNS_DIR, file)
-    let log: any
-    try { log = JSON.parse(readFileSync(path, "utf8")) } catch { continue }
-    if (log?.status !== "error") continue
-    if (!PIPELINES.includes(log?.pipeline)) continue
-    if (log?.loop?.resumedAt) continue // schon einmal geheilt — Kette endet
-    if ((log?.scorecard?.attempts ?? 1) >= 2) continue // Runner-Auto-Retry verbraucht
-    const finished = typeof log?.finished === "number" ? log.finished : 0
-    if (!finished || (now - finished) / 3_600_000 > MAX_AGE_H) continue
-    const checkpoint = `/tmp/openflow-checkpoint-${log.id}.json`
-    if (!existsSync(checkpoint)) continue // ohne Checkpoint kein Resume-Material
-    // Tiefen-Grenze: Nachkommen einer Heilung nicht erneut heilen — die
-    // Kette endet nach original + Auto-Retry + EINER Loop-Heilung (mit deren
-    // Auto-Retry), sonst repetiert ein kaputter Task im 5-Minuten-Takt.
     try {
-      const ck = JSON.parse(readFileSync(checkpoint, "utf8"))
-      if (ck?.resumeOf) continue
-    } catch { continue }
-    // Finale-Absicherung: nicht anfassen, wenn gerade ein Prozess dazu läuft
-    if (now - statSync(checkpoint).mtimeMs < 15 * 60_000) continue
-    out.push({ file: path, id: log.id })
+      const log = JSON.parse(readFileSync(join(RUNS_DIR, file), "utf8"))
+      if (typeof log?.id === "string") out.push({ ...log, file: join(RUNS_DIR, file) })
+    } catch { /* halb geschrieben: nächster Zyklus */ }
   }
   return out
 }
 
-function markResumed(path: string): boolean {
+function checkpointMtime(id: string): number | null {
+  const path = `/tmp/openflow-checkpoint-${id}.json`
+  try { return statSync(path).mtimeMs } catch { return null }
+}
+
+function markLoop(path: string, felder: Record<string, unknown>): boolean {
   try {
     const log = JSON.parse(readFileSync(path, "utf8"))
-    log.loop = { ...(log.loop ?? {}), resumedAt: new Date().toISOString(), by: "of-loop" }
+    log.loop = { ...(log.loop ?? {}), ...felder }
     const tmp = `${path}.looping`
     writeFileSync(tmp, JSON.stringify(log, null, 2))
     renameSync(tmp, path)
@@ -182,18 +176,34 @@ function checkInvariants(): Alert[] {
 
 async function cycle(): Promise<{ ts: string; gereapt: number; geheilt: string[]; alerts: Alert[] }> {
   // Überlappungs-Schutz bewusst ohne Lock: Ein Doppelzyklus wäre harmlos —
-  // markResumed ist atomar pro Run (Temp+Rename), ein zweiter Resume-Start
+  // markLoop ist atomar pro Run (Temp+Rename), ein zweiter Resume-Start
   // für denselben Run fliegt am loop.resumedAt-Kriterium vorbei. Der
   // Timer-Abstand (5 min) macht Überlappung praktisch unmöglich.
   const gereapt = reap()
   const geheilt: string[] = []
-  for (const c of findHealable()) {
-    if (!markResumed(c.file)) continue
-    startResume(c.id)
-    geheilt.push(c.id)
-    console.error(`of-loop: heile ${c.id} via checkpoint-resume (detached)`)
+  const logs = ladeLogs()
+  const datei = new Map(logs.map((l) => [l.id, l.file]))
+  const plan = planeHeilung(logs, { now: Date.now(), pipelines: PIPELINES, maxAgeH: MAX_AGE_H, checkpoint: checkpointMtime })
+  for (const h of plan.heilen) {
+    const file = datei.get(h.quelle)
+    if (!file || !markLoop(file, { resumedAt: new Date().toISOString(), by: "of-loop", ursprung: h.ursprung, heilung: h.heilung })) continue
+    if (!DRY_RUN) startResume(h.quelle)
+    geheilt.push(h.quelle)
+    console.error(`of-loop: heile ${h.quelle} (Ursprung ${h.ursprung}, Heilung ${h.heilung}/${HEIL_MAX}) via checkpoint-resume (detached)`)
   }
   const alerts = checkInvariants()
+  // I5 — Fehlerserie: die Heilung dieses Ursprungs ist beendet, EIN Alarm
+  // (Marker loop.alarm am Ursprung verhindert Wiederholung), sichtbar in
+  // Konsole, Alerts (of-loopcheck wird rot) und Gate-Ledger.
+  for (const a of plan.alarme) {
+    const at = new Date().toISOString()
+    const file = datei.get(a.ursprung)
+    if (!file || !markLoop(file, { alarm: { at, fehler: a.fehler, anzahl: a.anzahl } })) continue
+    alerts.push({ ts: at, invariante: "I5-fehlerserie", wert: `${a.ursprung}: ${a.anzahl}x "${a.fehler.slice(0, 120)}" — Heilung gestoppt`, schwelle: `${SERIE_GLEICH} gleiche Fehlschläge in Folge` })
+    try {
+      appendFileSync(DIGEST_LEDGER, JSON.stringify({ ts: at, event: "heilung_gestoppt", ursprung: a.ursprung, fehler: a.fehler, anzahl: a.anzahl }) + "\n")
+    } catch { /* Ledger ist best effort, die Alarmzeile steht trotzdem */ }
+  }
   for (const a of alerts) console.error(`of-loop ALERT [${a.invariante}] ${a.wert} (Schwelle: ${a.schwelle})`)
   // Hebel 3 — einmal täglich: Kandidaten-Digest (FABRIK/GRAUZONE ohne Run).
   // Läuft im selben Zyklus, ist aber über digest-last.date selbst gedrosselt;
@@ -208,7 +218,7 @@ async function cycle(): Promise<{ ts: string; gereapt: number; geheilt: string[]
   try {
     appendFileSync(STATE, JSON.stringify(state) + "\n")
     writeFileSync(LAST, JSON.stringify(state, null, 2))
-    if (alerts.length > 0) appendFileSync("/tmp/of-loop-alerts.jsonl", alerts.map((a) => JSON.stringify(a)).join("\n") + "\n")
+    if (alerts.length > 0) appendFileSync(ALERTS, alerts.map((a) => JSON.stringify(a)).join("\n") + "\n")
   } catch { /* Bericht ist best effort */ }
   return state
 }
