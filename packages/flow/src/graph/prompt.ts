@@ -438,6 +438,14 @@ export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode, skills:
           `- You may dispatch ${dispatches} time(s) before you have to answer. Spend them on work that`,
           "  changes the answer, not on confirming what a card already told you.",
         ]),
+    // Measured 2026-10-12 (auto-orchestrator): with three workers wired, the
+    // boss filled all three every time — two independent parts went out as A,
+    // B and "A and B again as a cross-check"; a one-step count went out three
+    // times verbatim. Listing the cards reads as "use them all"; this line says
+    // the number of parts decides, not the number of cards.
+    "- Use as many cards as the task has independent parts — one part per card, and no more. A card",
+    "  with no part of its own stays idle; that costs nothing. Never give two cards the same work or",
+    "  a copy of another card's part \"to double-check\": checking is a critic's job, not a worker's.",
     // The engine reports these after the fact — it compares what each card in a
     // batch wrote and names the files two of them both touched. Saying it here
     // is the cheaper half: a batch that never overlaps costs nothing to fix.

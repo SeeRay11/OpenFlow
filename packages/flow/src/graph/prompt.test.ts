@@ -7,6 +7,7 @@ import {
   forceFinalPrompt,
   dispatchResultPrompt,
   orchestratorPrompt,
+  splitFirstPrompt,
   pipelineBriefing,
   reassignPrompt,
   subOrchestratorPrompt,
@@ -305,6 +306,20 @@ describe("orchestration prompts", () => {
     expect(text).toContain('{ "final": "the answer to the task" }')
     expect(text).toContain("You may dispatch 2 time(s)")
     expect(text).toContain("ship the feature")
+  })
+
+  test("the orchestrator uses one card per independent part and leaves the rest idle", () => {
+    // Measured 2026-10-12: two independent parts, three workers wired — the
+    // third got both parts again "as a cross-check".
+    const graph = tree()
+    const text = orchestratorPrompt(graph, at(graph, "boss"), "ship the feature")
+
+    expect(text).toContain("Use as many cards as the task has independent parts — one part per card, and no more.")
+    expect(text).toContain("A card\n  with no part of its own stays idle")
+    expect(text).toContain("Never give two cards the same work")
+    // The fan-out rule from the refusal stays as it was.
+    const refusal = splitFirstPrompt(graph, at(graph, "boss"))
+    expect(refusal).toContain("one part per card, in ONE")
   })
 
   test("a subagent with cards of its own is briefed as an orchestrator and given an assignment", () => {
