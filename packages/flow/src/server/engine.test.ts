@@ -2263,10 +2263,10 @@ describe("a tool call belongs to the turn that made it", () => {
 })
 
 describe("the tool channel is parked", () => {
-  test("by default a run never asks for tool calls at all", async () => {
-    // No MCP tool can reach a v2 session in this fork, so scanning for one
-    // would be a request per orchestrator turn that cannot find anything.
-    let asked = 0
+  test("by default a real tool call never decides — the block does", async () => {
+    // No MCP tool can reach a v2 session in this fork. The history is still
+    // read every turn (for the phantom `openflow` call, below), but a call to
+    // the parked tools never outranks the text.
     const h = harness({
       behavior: {
         root: {
@@ -2275,12 +2275,83 @@ describe("the tool channel is parked", () => {
         },
       },
     })
-    const counting = { ...h.deps, api: { ...h.deps.api, sessionCalls: async (id: string) => (asked++, []) } }
-    const log = await start({ ...pipeline("root->a"), mode: "orchestration" }, "do the thing", h.hooks, {}, counting)
-      .done
+    const log = await start({ ...pipeline("root->a"), mode: "orchestration" }, "do the thing", h.hooks, {}, h.deps).done
 
-    expect(asked).toBe(0)
     expect(log.nodes.find((node) => node.id === "root")!.output).toBe("the block decided")
+  })
+})
+
+describe("a call to the phantom tool `openflow`", () => {
+  // Measured in Abnahme R9 (12.10.2026): dharma/power called `openflow` with
+  // the dispatch as a JSON string and got `Unknown tool` back from the v2
+  // registry. The call cannot be answered, but its arguments can be read.
+  const tree = (...spec: string[]) => ({ ...pipeline(...spec), mode: "orchestration" as const, dispatches: 1 })
+  const measured = { dispatch: JSON.stringify([{ card: "a", task: "check both results" }]) }
+
+  test("its arguments dispatch when the text carried no block", async () => {
+    const notices: string[] = []
+    const h = harness({
+      behavior: { root: { outputs: ["I will hand this to the critic now.", "```openflow\n{\"final\":\"done\"}\n```"], calls: [{ id: "p1", name: "openflow", input: measured }] } },
+    })
+    const hooks = { ...h.hooks, onNotice: (_: string, text: string) => notices.push(text) }
+    await start(tree("root->a"), "do the thing", hooks, {}, h.deps).done
+
+    expect(h.dispatched.slice(0, 2)).toEqual(["root", "a"])
+    expect(h.prompts.get("a")).toContain("check both results")
+    // Not re-asked about a missing block: the second root turn is the
+    // synthesis after `a` returned, not a correction.
+    expect(h.promptLog[1].node).toBe("a")
+    expect(notices.some((text) => text.includes('"openflow"'))).toBe(true)
+  })
+
+  test("leaked markup on the name and the empty call are handled", async () => {
+    const h = harness({
+      behavior: {
+        root: {
+          output: "no block here",
+          calls: [
+            { id: "p2", name: "openflow</arg_value>", input: {} },
+            { id: "p1", name: "openflow</arg_value>", input: measured },
+          ],
+        },
+      },
+    })
+    await start(tree("root->a"), "do the thing", h.hooks, {}, h.deps).done
+
+    expect(h.dispatched.slice(0, 2)).toEqual(["root", "a"])
+  })
+
+  test("the block the model wrote after the rejection wins", async () => {
+    // What usually happens: `Unknown tool` comes back and the model writes the
+    // block. What it wrote last is what it meant.
+    const h = harness({
+      behavior: {
+        root: {
+          output: "```openflow\n" + JSON.stringify({ final: "indivisible: one step\nchanged my mind" }) + "\n```",
+          calls: [{ id: "p1", name: "openflow", input: measured }],
+        },
+      },
+    })
+    const log = await start(tree("root->a"), "do the thing", h.hooks, {}, h.deps).done
+
+    expect(h.dispatched).toEqual(["root"])
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("changed my mind")
+  })
+
+  test("an earlier turn's call is not replayed on a later turn", async () => {
+    const h = harness({
+      behavior: {
+        root: {
+          // Turn 1 decides by text, with a phantom call beside it; turn 2 (after
+          // `a` returns) writes no block. The old call must not dispatch again.
+          outputs: ["```openflow\n" + JSON.stringify({ dispatch: [{ card: "a", task: "first" }] }) + "\n```", "prose only", "```openflow\n{\"final\":\"ok\"}\n```"],
+          calls: [{ id: "p1", name: "openflow", input: measured }],
+        },
+      },
+    })
+    await start({ ...pipeline("root->a"), mode: "orchestration" }, "do the thing", h.hooks, {}, h.deps).done
+
+    expect(h.dispatched.filter((node) => node === "a")).toHaveLength(1)
   })
 })
 
