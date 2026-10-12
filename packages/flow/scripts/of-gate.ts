@@ -291,6 +291,12 @@ function hauptsatz(rest: string): string {
 //   3. Kontextbindung („oben“, „dieser“, „den letzten …“, „von eben“,
 //      „aus der Analyse“, „this“, „above“) → nie Pflichtweg: der Auftrag
 //      arbeitet auf Material dieser Sitzung, die Fabrik sähe es nicht.
+// K2d (Abnahme R15 5/10): Punkt 1 verlangt jetzt ein NOMEN als Einheit —
+// „alle/jede/je/pro/each <Nominalgruppe>“, „<Zahl> <Nomen>“ oder eine
+// Aufzählung von ≥ 3 benannten Gegenständen (Nomen, Bezeichner, Nummern,
+// Namen, koordinierte Attribute). Bloße Adverbien („jeweils“, „einzeln“,
+// „separat“) und Satzfragmente („x.ts, prüfe, wo“) zählen nicht mehr; die
+// Prüffrage reicht bis zum Satzende. Details bei `klasse`/`nominalAb`.
 // Beispiel-/Hypothese-Rahmen („etwa: …“, „wenn ich schreibe: …“,
 // „Hypothetisch: …“) gelten wie ein Zitat.
 
@@ -298,17 +304,223 @@ const ZAHL =
   "(?:[2-9]|[1-9]\\d{1,2}|zwei|drei|vier|fünf|fuenf|sechs|sieben|acht|neun|zehn|elf|zwölf|zwoelf|zwanzig|dreißig|dreissig|fünfzig|fuenfzig|hundert|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|fifty|hundred)"
 // Nomen, deren Zahl einen UMFANG angibt, keine Einheitenmenge.
 const UMFANG_NOMEN =
-  /^(?:sätzen?|saetzen?|satz|zeilen?|wörtern?|woertern?|worte?|absätzen?|absaetzen?|absatz|stichpunkten?|punkten?|spalten?|werten?|zahlen|beispielen?|fällen?|faellen?|minuten|sekunden|stunden|tagen?|wochen?|monaten?|jahren?|seiten|zeichen|sentences?|lines?|words?|paragraphs?|bullets?|bullet|points?|columns?|values?|numbers?|examples?|cases?|minutes?|seconds?|hours?|days?|weeks?|months?|years?|pages?|characters?|items?)$/i
-// Wörter, die nach einer Zahl kein Gegenstand sind („2027 und …“, „3 bis 5“).
-const KEIN_NOMEN = /^(?:und|oder|bis|mal|uhr|prozent|and|or|to|times|percent|of|the|in|im|am|um|vor|nach|mit|von|für|fuer|x)$/i
-const MENGE_EIN = new RegExp(
-  `\\b(?:(?:alle[rnms]?|sämtliche[rn]?|saemtliche[rn]?|mehrere[rn]?|all|several|multiple)(?:\\s+(?:the|der|die|den|unserer|unsere[rn]?|our))?(?:\\s+${ZAHL})?|${ZAHL})\\s+((?:[\\p{L}][\\p{L}.-]*\\s+){0,2}[\\p{L}][\\p{L}-]*)`,
-  "giu",
+  /^(?:sätzen?|saetzen?|satz|zeilen?|wörtern?|woertern?|worte?|absätzen?|absaetzen?|absatz|stichpunkten?|punkten?|spalten?|werten?|zahlen|beispielen?|fällen?|faellen?|minuten?|sekunden?|stunden?|tage?n?|wochen?|monate?n?|jahre?n?|seiten?|zeichen|sentences?|lines?|words?|paragraphs?|bullets?|bullet|points?|columns?|values?|numbers?|examples?|cases?|minutes?|seconds?|hours?|days?|weeks?|months?|years?|pages?|characters?|items?)$/i
+
+// ---------------------------------------------------------------------------
+// NOMEN-PRÜFUNG (K2d, 12.10.2026, Abnahme R15 5/10)
+// ---------------------------------------------------------------------------
+// R15: Subagent-Aufträge wie „Lies src/x.ts, prüfe, wo der Wert … gesetzt
+// wird“ wurden zur Einheitenmenge „x.ts, prüfe, wo“, „alle als erledigt
+// markierten“ zur Menge „alle …“. Ursache: Aufzählung und Mengenwort zählten
+// JEDES Wort als Gegenstand. Jetzt zählt eine Einheit nur, wenn sie eine
+// NOMINALGRUPPE ist: (Artikel)* (Zahl)? (Attribut)* NOMEN. Was ein Nomen ist,
+// sagt die Wortform, keine Satzliste:
+//   - Bezeichner (Pfad, Datei, Version mit Buchstaben, snake/camelCase,
+//     Akronym) — sprachunabhängig;
+//   - Deutsch: groß geschrieben und nicht am Satzanfang (Substantiv/Name);
+//     klein geschriebene Wörter sind dort nie Nomen (Verb, Partizip, Adjektiv);
+//   - Englisch: groß geschrieben (nicht am Satzanfang) oder ein klein
+//     geschriebenes Inhaltswort, das kein Funktionswort und kein Befehlsverb ist.
+// Die Wortlisten unten sind GESCHLOSSENE Wortklassen (Artikel, Präpositionen,
+// Konjunktionen, Pronomen, Hilfsverben) bzw. die schon vorhandenen
+// Befehlsverben — keine Satz-Flicken.
+const FUNKTION_DE = new Set(
+  ("der die das den dem des ein eine einen einem einer eines kein keine und oder sowie als wie in im ins an am auf aus bei beim mit nach " +
+    "von vom vor zu zum zur über ueber unter für fuer durch gegen ohne um bis seit wo was wer wen wem ob dass welche welcher welches " +
+    "welchen welchem nicht noch auch nur schon so sehr dort da es sie er ich wir du ihr man sich mir mich dir dich uns euch ihm ihn " +
+    "ihre ihren ihrem ihrer seine seinen seinem seiner unsere unserer unseren unserem meine meiner meinen deine deiner jede jeder jeden " +
+    "jedem jedes alle allen aller sämtliche saemtliche mehrere mehreren je pro jeweils einzeln ist sind war wird werden wurde hat haben " +
+    "kann soll muss darf gibt dann danach bitte mal").split(" "),
 )
-const QUANTOR_EIN =
-  /\b(?:für|fuer|for)\s+(?:jede[nrsm]?|alle|each|every)\b|\bjede[nrsm]?\s+(?:unserer|der|des|einzelne[nrsm]?|\p{Lu})|\b(?:je|pro|per)\s+(?!nachdem|mehr|weniger|desto|eher|\d)(?!(?:zwei|drei|vier|fünf|fuenf|sechs|sieben|acht|neun|zehn|zwanzig)\b)\p{L}{3,}|\b(?:each|every)\s+[a-z]{3,}|\bjeweils\b|\beinzeln\b|\bseparat\b|\bgetrennt\b|\bseparately\b|\bindividually\b|\bone by one\b/iu
-const AUFZAEHLUNG_EIN =
-  /[\p{L}\d.+-]+\s*,\s*[\p{L}\d.+-]+(?:\s*,\s*[\p{L}\d.+-]+)*\s*,?\s+(?:und|and|oder|or|sowie|&)\s+[\p{L}\d.+-]+|[\p{L}\d.+-]+\s*,\s*[\p{L}\d.+-]+\s*,\s*[\p{L}\d.+-]+|\b1\)\s[\s\S]*\b2\)\s/u
+const FUNKTION_EN = new Set(
+  ("the a an and or nor as of in on at to for with by from into onto about over under than that which what where when who whom how " +
+    "whether if is are was were be been being it its they them their our ours your yours my his her we you i me us not no all each " +
+    "every some any several multiple both other others per one then also only just so please there here do does did has have had can " +
+    "could should would will may might must").split(" "),
+)
+const VERB_EN = new Set([
+  "research", "write", "create", "compare", "review", "summarize", "summarise", "analyze", "analyse", "test", "document", "draft",
+  "build", "generate", "evaluate", "audit", "benchmark", "compile", "collect", "assess", "investigate", "produce", "prepare",
+  "explain", "describe", "outline", "show", "tell", "list", "read", "check", "find", "report", "look", "give", "return",
+  "count", "run", "fix", "see", "search", "note", "make", "put", "save", "use", "verify", "inspect", "scan", "grep", "quote",
+])
+
+type Wort = { w: string; anfang: boolean }
+type Klasse = "N" | "A" | "D" | "Z" | "X" // Nomen · Attribut · Artikel/Det. · Zahl · Abbruch
+
+function istBezeichner(w: string): boolean {
+  // Pfad/Datei/Version mit Buchstabe, snake_case, camelCase, Akronym (≥ 2 Großbuchstaben).
+  return /\p{L}/u.test(w) && (/[./_\\]/.test(w) || /\p{Ll}\p{Lu}/u.test(w) || /^\p{Lu}[\p{Lu}\d.-]+$/u.test(w) || /\d/.test(w))
+}
+
+function klasse(x: Wort, englisch: boolean): Klasse {
+  const w = x.w.replace(/^[„“"'`(\[]+|[“”"'`)\].:]+$/g, "")
+  const k = w.toLowerCase()
+  if (!w) return "X"
+  if (/^\d+$/.test(w) || new RegExp(`^${ZAHL}$`, "iu").test(w)) return "Z"
+  if (istBezeichner(w)) return "N"
+  // Klein geschrieben mit Bindestrich („go-e“, „zerez-sync“): Produkt-/Paketname, kein Wort der Satzgrammatik.
+  if (/^\p{Ll}[\p{L}\d]*-[\p{L}\d-]+$/u.test(w) && !x.anfang) return "N"
+  // Einzelbuchstabe als Platzhaltername („Module A, B und C“, „a, b und c“) — außer engl. „a“/„I“.
+  if (/^\p{L}$/u.test(w) && !x.anfang && !(englisch && /^[ai]$/i.test(w) && w !== "A")) return "N"
+  if (englisch ? FUNKTION_EN.has(k) : FUNKTION_DE.has(k)) {
+    return /^(?:der|die|das|den|dem|des|ein|eine|einen|einem|einer|eines|unsere|unserer|unseren|unserem|the|a|an|our|of)$/i.test(k) ? "D" : "X"
+  }
+  // Kompositum mit großem Schlussglied („rille-Werkzeuge“, „e-Mails“) ist ein Nomen.
+  if (/-\p{Lu}[\p{L}]*$/u.test(w)) return "N"
+  if (/^\p{Lu}/u.test(w)) {
+    if (x.anfang) return "X" // Satzanfang: Imperativ („Lies“, „Prüfe“, „Read“), kein Gegenstand
+    return "N"
+  }
+  if (!englisch) return "A" // klein geschrieben: Verb/Partizip/Adjektiv, nie Nomen
+  return VERB_EN.has(k) ? "X" : "N"
+}
+
+/**
+ * Längste Nominalgruppe ab Wortindex i: (D)* (Z)? (A)* N+ → Endindex des
+ * Kopfnomens oder -1. Ein klein geschriebenes Attribut (A) zählt nur hinter
+ * Artikel, Zahl oder Mengenwort („die offenen Issues“, „alle offenen Issues“):
+ * ohne Begleiter ist ein kleines Wort nach „und“/Komma ein Imperativ
+ * („…, und melde Abweichungen“), kein Attribut.
+ */
+function nominalAb(ks: Klasse[], i: number, maxAttr = 3, begleiter = false): number {
+  let j = i
+  while (ks[j] === "D") { j++; begleiter = true }
+  if (ks[j] === "Z") { j++; begleiter = true }
+  let kopf = -1
+  let attr = 0
+  while (j < ks.length && (ks[j] === "A" || ks[j] === "N")) {
+    if (ks[j] === "N") kopf = j
+    else if (kopf >= 0 || !begleiter) break // Attribut nach dem Kopf / ohne Begleiter beendet die Gruppe
+    else if (++attr > maxAttr) break
+    j++
+  }
+  return kopf
+}
+
+/** Ist ks[von..bis) GANZ eine Nominalgruppe? */
+function ganzNominal(ks: Klasse[]): boolean {
+  return ks.length > 0 && ks.length <= 6 && nominalAb(ks, 0) === ks.length - 1
+}
+
+/** Nominalgruppe am ENDE von ks (Kopf = letztes Wort)? */
+function nominalAmEnde(ks: Klasse[]): boolean {
+  if (ks[ks.length - 1] !== "N") return false
+  for (let s = ks.length - 1; s >= Math.max(0, ks.length - 6); s--) if (nominalAb(ks, s) === ks.length - 1) return true
+  return false
+}
+
+function englischerText(t: string): boolean {
+  const de = (t.match(/\b(?:der|die|das|und|ist|nicht|mit|für|fuer|ein|eine|einen|ob|wo|wird|auf|den|dem|zu|im|von)\b/gi) ?? []).length
+  const en = (t.match(/\b(?:the|and|is|not|with|for|an|whether|where|to|of|on|each|every|from|which)\b/gi) ?? []).length
+  return en > de
+}
+
+function woerter(satz: string): Wort[] {
+  return [...satz.matchAll(/[^\s,;:!?()]+/g)].map((m, i) => ({ w: m[0], anfang: i === 0 }))
+}
+
+const MENGEN_WORT =
+  /^(?:jede[nrsm]?|je|pro|per|each|every|alle[rnms]?|sämtliche[rn]?|saemtliche[rn]?|mehrere[rn]?|all|several|multiple)$/i
+const AUSNAHME_JE = /^(?:nachdem|mehr|weniger|desto|eher|nach)$/i
+
+/** „alle/jede/je/pro/each/mehrere <Nominalgruppe>“ oder „<Zahl> <Nomen>“. */
+function mengeImSatz(satz: string, englisch: boolean): string | null {
+  const ws = woerter(satz)
+  const ks = ws.map((w) => klasse(w, englisch))
+  for (let i = 0; i < ws.length; i++) {
+    // Bereich benannter Gegenstände: „die PRs 2560 bis 2571“ (nicht „Zeilen 300 bis 360“).
+    if (ks[i] === "N" && ks[i + 1] === "Z" && /^(?:bis|to|-)$/i.test(ws[i + 2]?.w ?? "") && ks[i + 3] === "Z" && !UMFANG_NOMEN.test(ws[i].w))
+      return ws.slice(i, i + 4).map((w) => w.w).join(" ").replace(/[.:]+$/, "")
+    const roh = ws[i].w.replace(/[.:]+$/, "")
+    const mengenwort = MENGEN_WORT.test(roh)
+    const zahl = ks[i] === "Z" && !/[.,]\d/.test(ws[i].w) && !/^(?:1[89]|20)\d\d$/.test(roh)
+    if (!mengenwort && !zahl) continue
+    if (mengenwort && AUSNAHME_JE.test(ws[i + 1]?.w ?? "")) continue
+    // Auswahl EINES Elements: „welche der drei Ursachen“, „which of the three“.
+    if (zahl && /^(?:der|of|the)$/i.test(ws[i - 1]?.w ?? "") && /^(?:welche[rsmn]?|which|of)$/i.test(ws[i - 2]?.w ?? "")) continue
+    // „jedes der sieben Pakete“, „each of the four PRs“
+    let s = i + 1
+    if (/^(?:der|des|unserer|of)$/i.test(ws[s]?.w ?? "")) s++
+    const kopf = nominalAb(ks, s, 2, true) // Mengenwort/Zahl ist selbst Begleiter
+    if (kopf < 0) continue
+    const gruppe = ws.slice(s, kopf + 1).map((w) => w.w.replace(/[.:]+$/, ""))
+    if (gruppe.some((w) => UMFANG_NOMEN.test(w))) continue
+    return ws.slice(i, kopf + 1).map((w) => w.w).join(" ").replace(/[.:]+$/, "")
+  }
+  return null
+}
+
+// Verbstämme aus den Befehlslisten oben: ein kleines Wort mit diesem Stamm ist
+// ein Imperativ („prüfe“, „teste“), kein Attribut und kein Name.
+function istVerbform(w: string): boolean {
+  const k = w.toLowerCase().replace(/[.:]+$/, "")
+  return [...STARK_DE, ...SCHWACH_DE].some((s) => k === s || k === s + "e" || k === s + "en")
+}
+const ADJ_ENDUNG = /(?:e|en|er|es|em)$/i
+
+/**
+ * Aufzählung von ≥ 3 Gliedern, die als Gegenstände benannt sind:
+ *   nom   „Hetzner, Netcup und Contabo“, „den Georgia Guidestones, dem Bohemian Grove und …“
+ *   zahl  „PR 2571, 2570 und 2568“ (Nomen + Nummern; nicht bei Umfang-Nomen)
+ *   name  „die Module auth, router und cache“ (klein geschriebene Namen hinter einem Nomen)
+ *   attr  „hebräische, griechische und lateinische Quellen“ (koordinierte Attribute, EIN Kopfnomen)
+ * Zwei Glieder („Review und Audit“) zählen NICHT: gemessen kippte „Erkläre den
+ * Unterschied zwischen Review und Audit …“ damit auf FABRIK — zwei Begriffe
+ * sind meist das Paar EINER Frage, keine Menge. „A oder B“ ist eine Alternative.
+ */
+function aufzaehlungImSatz(satz: string, englisch: boolean): string | null {
+  // Glieder an Komma bzw. Konjunktion trennen; Trenner merken.
+  const teile = satz.split(/\s*,\s*(?:(?:und|oder|sowie|and|or)\s+)?|\s+(?:und|oder|sowie|and|or|&)\s+/i)
+  const trenner = [...satz.matchAll(/\s*,\s*(?:(?:und|oder|sowie|and|or)\s+)?|\s+(?:und|oder|sowie|and|or|&)\s+/gi)].map((m) =>
+    /\b(?:oder|or)\b/i.test(m[0]) ? "o" : "k",
+  )
+  let wortIndex = 0
+  const glieder = teile.map((teil) => {
+    const ws = woerter(teil).map((w, j) => ({ w: w.w, anfang: wortIndex === 0 && j === 0 }))
+    wortIndex += ws.length
+    return { ws: ws.map((w) => w.w.replace(/[.:]+$/, "")), ks: ws.map((w) => klasse(w, englisch)) }
+  })
+  type Art = "nom" | "zahl" | "name" | "attr"
+  const anfangsArt = (g: { ws: string[]; ks: Klasse[] }): Art | null => {
+    const n = g.ks.length
+    if (nominalAmEnde(g.ks)) return "nom"
+    if (n >= 2 && g.ks[n - 1] === "Z" && g.ks[n - 2] === "N" && !UMFANG_NOMEN.test(g.ws[n - 2])) return "zahl"
+    if (!englisch && n >= 2 && g.ks[n - 1] === "A" && g.ks[n - 2] === "N" && !istVerbform(g.ws[n - 1])) return "name"
+    if (!englisch && n >= 1 && g.ks[n - 1] === "A" && ADJ_ENDUNG.test(g.ws[n - 1]) && !istVerbform(g.ws[n - 1])) return "attr"
+    return null
+  }
+  const endung = (w: string) => w.match(ADJ_ENDUNG)?.[0].toLowerCase() ?? ""
+  for (let i = 0; i < glieder.length - 1; i++) {
+    const art = anfangsArt(glieder[i])
+    if (!art) continue
+    const ref = glieder[i].ws[glieder[i].ws.length - 1]
+    let n = 1
+    let alternative = false
+    let j = i + 1
+    for (; j < glieder.length; j++) {
+      if (trenner[j - 1] === "o") alternative = true
+      const { ws, ks } = glieder[j]
+      const einzelA = ks.length === 1 && ks[0] === "A" && !istVerbform(ws[0])
+      const mitte =
+        art === "nom" ? ganzNominal(ks)
+        : art === "zahl" ? ks.length === 1 && ks[0] === "Z"
+        : art === "name" ? einzelA || ganzNominal(ks)
+        : einzelA && endung(ws[0]) === endung(ref)
+      if (mitte) { n++; continue }
+      const ende =
+        art === "nom" ? nominalAb(ks, 0) >= 0
+        : art === "zahl" ? ks[0] === "Z"
+        : art === "name" ? ks[0] === "A" && !istVerbform(ws[0])
+        : ks[0] === "A" && endung(ws[0]) === endung(ref) && !istVerbform(ws[0]) && nominalAb(ks, 0, 3, true) >= 0
+      if (ende) n++
+      break
+    }
+    if (n >= 3 && !alternative) return teile.slice(i, Math.min(j + 1, teile.length)).join(", ")
+    i = j - 1
+  }
+  return null
+}
 // Aufzählung von Kriterien/Spalten ist keine Einheitenmenge.
 const KRITERIEN_LISTE =
   /\b(?:nach|hinsichtlich|bezüglich|bezueglich|bzgl|by|regarding|in terms of|spalten(?:\s+für|\s+fuer)?|columns(?:\s+for)?|felder(?:n)?(?:\s+für)?|fields(?:\s+for)?)\s*:?\s*[\p{L}\d.+-]+\s*,\s*[\p{L}\d.+-]+(?:\s*,\s*[\p{L}\d.+-]+)*\s*,?\s*(?:(?:und|and|oder|or|sowie|&)\s+[\p{L}\d.+-]+)?/giu
@@ -316,8 +528,14 @@ const KRITERIEN_LISTE =
 // three branches are correct“): ihr Gegenstand ist keine Arbeitseinheit.
 // W-Nebensätze bleiben — „Erkläre in einem Bericht, wie die 5 Anbieter …“
 // nennt die Einheiten gerade im Nebensatz.
+// K2d: die Klausel reicht bis zum SATZENDE — ein Punkt zählt nur, wenn danach
+// Leerraum/Ende folgt („auth.spec.ts“, „0.6.24“ bleiben drin), ein Komma nur,
+// wenn danach ein neuer Hauptsatz mit und/dann/and/then beginnt („…, ob X grün
+// ist, und schreib je Anbieter …“). Bis K2c brach sie an JEDEM „.“ und „,“ ab:
+// „ob die Tests in auth.spec.ts, oauth.spec.ts und token.spec.ts grün sind“
+// ließ „.spec.ts, oauth.spec.ts und token.spec.ts“ als Einheitenmenge stehen.
 const INDIREKTE_FRAGE =
-  /(?:,\s*|\s)(?:ob|whether|if)\s[^,;.!?–—]*/giu
+  /(?:,\s*|\s)(?:ob|whether|if)\s(?:[^.!?;\n,]|[.!?](?=[^\s])|,(?!\s*(?:und|dann|danach|and|then)\s))*/giu
 const KONTEXT = new RegExp(
   [
     "\\b(?:oben|obige[nmrs]?|vorhin|soeben|hier|hierzu|darüber|dazu)\\b",
@@ -346,21 +564,22 @@ const ARBEIT = new Set([
 const BEDARF_RAHMEN =
   /\b(?:(?:ich|wir)\s+(?:brauche|brauchen|hätte gerne?|haette gerne?|hätten gerne?|will|wollen|möchte|möchten|moechte|moechten)|(?:i|we)\s+(?:need|want|'d like|would like))\b/i
 
-/** Einheitenmenge (≥ 2 unabhängige Gegenstände) oder null. */
+/** Einheitenmenge (≥ 2 unabhängige, als NOMEN benannte Gegenstände) oder null. */
 export function erkenneEinheiten(text: string): string | null {
   let t = text.replace(INDIREKTE_FRAGE, " ")
   t = t.replace(KRITERIEN_LISTE, " ")
-  const q = t.match(QUANTOR_EIN)
-  if (q) return q[0]
-  for (const m of t.matchAll(MENGE_EIN)) {
-    const woerter = m[1].trim().split(/\s+/)
-    if (KEIN_NOMEN.test(woerter[0])) continue
-    if (/^(?:1[89]|20)\d\d$/.test(m[0].trim().split(/\s+/)[0])) continue // Jahreszahl
-    if (woerter.some((w) => UMFANG_NOMEN.test(w.replace(/[.,]$/, "")))) continue
-    return m[0].trim()
+  const englisch = englischerText(t)
+  const s = saetze(t).flatMap((x) => x.split(/\s*[;:–—]\s+/))
+  for (const satz of s) {
+    const m = mengeImSatz(satz, englisch)
+    if (m) return m
   }
-  const a = t.match(AUFZAEHLUNG_EIN)
-  if (a) return a[0]
+  for (const satz of s) {
+    const a = aufzaehlungImSatz(satz, englisch)
+    if (a) return a
+  }
+  const nummern = t.match(/\b1\)\s[\s\S]*\b2\)\s/u)
+  if (nummern) return nummern[0]
   return null
 }
 
