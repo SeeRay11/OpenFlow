@@ -264,6 +264,63 @@ export function fromToolCall(
 }
 
 /**
+ * Reads the control block out of a call to a tool that does not exist.
+ *
+ * Measured (Abnahme R8/R9, 12.10.2026): the orchestrator on dharma/power calls
+ * a tool named `openflow` — sometimes with the fence's own keys as arguments
+ * (`{ "dispatch": "[{\"card\": \"critic\", …}]"}`, the array as a JSON
+ * *string*), sometimes as `openflow</arg_value>` with `{}`, a leaked tool-call
+ * markup. The v2 registry answers `Unknown tool` and this fork does not edit
+ * it, so the call cannot be answered — but its arguments can be read. A prompt
+ * line saying "`openflow` is not a tool" (a0bea22eb) made it rarer, not gone.
+ *
+ * The arguments are turned back into the block they stand for and handed to
+ * `parseDispatch`, so there is no second parser and a phantom call is judged
+ * exactly like the block would have been. `undefined` means the name is not
+ * ours, or the arguments hold nothing that reads as a block (the `{}` case).
+ *
+ * The engine only falls back to this when the turn's text decided nothing:
+ * the model sees `Unknown tool` and usually writes the block afterwards, and
+ * what it wrote last is what it meant.
+ */
+export function fromPhantomCall(
+  name: string,
+  input: unknown,
+  children: string[],
+  options: DispatchOptions = {},
+): Dispatch | undefined {
+  const bare = name.trim().split(/[<\s]/)[0] ?? ""
+  if (!bare.toLowerCase().startsWith(FENCE)) return undefined
+  const args = typeof input === "string" ? (strictJson(input) ?? input) : input
+  if (typeof args === "string") return args.trim() ? parseDispatch(args, children, options) : undefined
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return undefined
+  const block: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(args))
+    block[key] = typeof value === "string" && /^\s*[[{]/.test(value) ? (strictJson(value) ?? value) : value
+  // The MCP schema's own spellings, for a model that remembered the tool names.
+  if (!("dispatch" in block) && "assignments" in block) {
+    block.dispatch = block.assignments
+    delete block.assignments
+  }
+  if (!("final" in block) && "answer" in block) {
+    block.final = block.answer
+    delete block.answer
+  }
+  if ("dispatch" in block || "final" in block) return parseDispatch(JSON.stringify(block), children, options)
+  // One string argument carrying the whole block (`{ "block": "```openflow …" }`).
+  const texts = Object.values(args).filter((value): value is string => typeof value === "string" && !!value.trim())
+  return texts.length === 1 ? parseDispatch(texts[0], children, options) : undefined
+}
+
+function strictJson(text: string) {
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * The one place a batch of assignments is judged, whichever channel carried it.
  *
  * Everything here is deliberately strict, and the reasons are written to be

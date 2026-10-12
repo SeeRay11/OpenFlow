@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { DISPATCH_TOOL, FENCE, FINISH_TOOL, fromToolCall, parseDispatch } from "./dispatch"
+import { DISPATCH_TOOL, FENCE, FINISH_TOOL, fromPhantomCall, fromToolCall, parseDispatch } from "./dispatch"
 
 const children = ["n1", "n2"]
 const block = (body: string) => "```" + FENCE + "\n" + body + "\n```"
@@ -419,5 +419,61 @@ describe("the contract half — plan, evidence, skills, avoid", () => {
     )
     expect(result.kind).toBe("error")
     expect(result).toHaveProperty("reason", expect.stringContaining("both written"))
+  })
+})
+
+describe("fromPhantomCall", () => {
+  // The argument shapes are copied from the checkpoints of Abnahme R9
+  // (12.10.2026), where dharma/power called a tool named `openflow` and the
+  // v2 registry answered `Unknown tool`.
+  const children = ["worker-1", "worker-2", "critic"]
+  const measured = {
+    dispatch: JSON.stringify([{ card: "critic", task: "Prüfe die beiden Ergebnisse gegen die Original-Aufgabe" }]),
+  }
+
+  test("the dispatch the model passed as a JSON string is read like the block", () => {
+    expect(fromPhantomCall("openflow", measured, children)).toEqual(
+      parseDispatch("```openflow\n" + JSON.stringify({ dispatch: JSON.parse(measured.dispatch) }) + "\n```", children),
+    )
+    expect(fromPhantomCall("openflow", measured, children)).toEqual({
+      kind: "dispatch",
+      assignments: [{ card: "critic", task: "Prüfe die beiden Ergebnisse gegen die Original-Aufgabe" }],
+    })
+  })
+
+  test("leaked tool-call markup on the name does not hide it", () => {
+    expect(fromPhantomCall("openflow</arg_value>", measured, children)?.kind).toBe("dispatch")
+    expect(fromPhantomCall("openflow</arg_value></arg_value>", { final: "done" }, children)).toEqual({
+      kind: "final",
+      answer: "done",
+    })
+  })
+
+  test("the measured empty call carries nothing to read", () => {
+    expect(fromPhantomCall("openflow</arg_value>", {}, children)).toBeUndefined()
+  })
+
+  test("the MCP schema spellings and a raw block string are read too", () => {
+    expect(fromPhantomCall("openflow_dispatch", { assignments: [{ card: "worker-1", task: "x" }] }, children)?.kind).toBe(
+      "dispatch",
+    )
+    expect(fromPhantomCall("openflow", { answer: "the answer" }, children)).toEqual({ kind: "final", answer: "the answer" })
+    expect(
+      fromPhantomCall("openflow", { block: "```openflow\n" + JSON.stringify({ final: "from text" }) + "\n```" }, children),
+    ).toEqual({ kind: "final", answer: "from text" })
+    expect(fromPhantomCall("openflow", JSON.stringify({ final: "a string input" }), children)).toEqual({
+      kind: "final",
+      answer: "a string input",
+    })
+  })
+
+  test("the block's rules still apply — a phantom call is not a way around them", () => {
+    expect(fromPhantomCall("openflow", { dispatch: [{ card: "ghost", task: "x" }] }, children)?.kind).toBe("error")
+    expect(fromPhantomCall("openflow", measured, children, { needsPlan: true })?.kind).toBe("error")
+  })
+
+  test("any other tool is not ours", () => {
+    expect(fromPhantomCall("todowrite", { final: "x" }, children)).toBeUndefined()
+    expect(fromPhantomCall("bash", measured, children)).toBeUndefined()
   })
 })

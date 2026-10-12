@@ -1,6 +1,6 @@
 import { collisionNote, collisionsIn, normalizePath, writesOf, type Write } from "../graph/collisions"
 import { isolates, mergeNote } from "../graph/worktree"
-import { fromToolCall, MCP_REACHES_SESSIONS, parseDispatch, type Assignment } from "../graph/dispatch"
+import { fromPhantomCall, fromToolCall, MCP_REACHES_SESSIONS, parseDispatch, type Assignment } from "../graph/dispatch"
 import { boardAbsorb, boardSection } from "./board"
 import { isCritic, orchestrationShape } from "../graph/orchestration"
 import {
@@ -1617,23 +1617,36 @@ export function start(
    * than killing a run over one flaky request.
    */
   async function decide(node: FlowNode, children: string[], needsPlan = false) {
-    // Skipped entirely while the tool channel is parked: no MCP tool can reach
-    // a v2 session in this fork, so every scan would be a request per turn that
-    // cannot find anything. See `MCP_REACHES_SESSIONS`.
-    const calls = toolChannel ? ((await api.sessionCalls?.(nodeSession.get(node.id)!).catch(() => [])) ?? []) : []
+    // Read every turn, even while the tool channel is parked: a call to the
+    // phantom tool `openflow` lands in the history as `Unknown tool`, and its
+    // arguments are the decision when the text carries none. See
+    // `fromPhantomCall`. The ids also keep an earlier turn's call from being
+    // mistaken for this one's, which only works if every turn is read.
+    const calls = (await api.sessionCalls?.(nodeSession.get(node.id)!).catch(() => [])) ?? []
     const seen = consumed.get(node.id) ?? new Set<string>()
     let decision: ReturnType<typeof parseDispatch> | undefined
+    let phantom: { name: string; read: ReturnType<typeof parseDispatch> } | undefined
     for (const call of calls) {
       // Only calls this turn made. The orchestrator is re-prompted into the
       // session it already holds, so every earlier turn's calls are still in
       // the history — without this a turn that called nothing would act on the
       // previous turn's dispatch a second time.
       if (seen.has(call.id)) continue
-      decision ??= fromToolCall(call.name, call.input, children, { needsPlan })
+      if (toolChannel) decision ??= fromToolCall(call.name, call.input, children, { needsPlan })
+      if (phantom) continue
+      const read = fromPhantomCall(call.name, call.input, children, { needsPlan })
+      if (read && read.kind !== "error") phantom = { name: call.name, read }
     }
     for (const call of calls) seen.add(call.id)
     consumed.set(node.id, seen)
-    return decision ?? parseDispatch(outputs.get(node.id) ?? "", children, { needsPlan })
+    if (decision) return decision
+    const text = parseDispatch(outputs.get(node.id) ?? "", children, { needsPlan })
+    if (text.kind !== "error" || !phantom) return text
+    hooks.onNotice?.(
+      "info",
+      `${entry(node.id).role} called a tool named "${phantom.name}" — its arguments were read as the control block`,
+    )
+    return phantom.read
   }
 
   /** A leaf card: one turn, one assignment, no protocol to speak. */
