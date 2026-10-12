@@ -31,6 +31,7 @@
   location: { origin: process.env.OPENFLOW_ORIGIN ?? "http://127.0.0.1:5174" },
 }
 
+import { herkunft } from "./of-heilung"
 import { start } from "../src/server/engine"
 import * as api from "../src/server/client"
 import { agentBlock } from "../src/server/store"
@@ -73,6 +74,7 @@ let name = rest[0]
 let input = rest.slice(1).join(" ")
 const initialResume: Record<string, string> = {}
 const initialSessions: Record<string, string> = {}
+let resumeCheckpoint: { id?: string; origin?: string } | undefined
 /**
  * Seeds a continuation from a run log: done cards keep their output, and every
  * card that held a session names it. A done card's session is not reopened in
@@ -98,6 +100,7 @@ if (resumeRef !== undefined) {
     console.error(`checkpoint unlesbar (${path}): ${String(error)} — Checkpoint neu anlegen oder Run neu starten`)
     process.exit(2)
   }
+  resumeCheckpoint = { id: log.id, origin: log.origin }
   name = log.pipeline
   if (!input) input = log.input ?? ""
   seedFrom(log, initialResume, initialSessions)
@@ -210,6 +213,10 @@ for (let attempt = 1; attempt <= attemptsMax; attempt++) {
     onRun: (current: any) => {
       // Wer den Run hält: of-reap beendet einen lebenden, aber stummen Prozess.
       current.host = { pid: process.pid }
+      // Herkunft ab dem ERSTEN Checkpoint jedes Versuchs (Abnahme 12.10.2026:
+      // stand sie nur im letzten Log, sah Versuch 1 eines Resume wie ein
+      // Ursprung aus, und of-loop heilte Heilungsläufe im 5-Minuten-Takt).
+      Object.assign(current, herkunft({ resumeRef, checkpoint: resumeCheckpoint, vorige: predecessors }))
       log = current
       void Bun.write(`/tmp/openflow-checkpoint-${current.id}.json`, JSON.stringify(current, null, 2)).catch(() => undefined)
       void flow(`runs/${encodeURIComponent(current.id)}`, {
@@ -232,10 +239,9 @@ for (let attempt = 1; attempt <= attemptsMax; attempt++) {
 // sie) und als Block ausdrucken — die 10/10-Frage ist damit pro Run messbar.
 const scorecard = buildScorecard(log, predecessors.length, predecessors.slice(0, -1), startedMs)
 log.scorecard = scorecard
-// Tiefen-Grenze für Heilungsketten: dieser Run ist aus <resumeRef> entstanden —
-// of-loop startet keine Heilung für Nachkommen (sonst repetiert ein endgültig
-// kaputter Task im 5-Minuten-Takt bis zum 24h-Fenster).
-if (resumeRef !== undefined) log.resumeOf = resumeRef
+// Herkunft (resumeOf/retryOf/origin) steht seit onRun in jedem Versuch;
+// hier nur nachgezogen, falls run.done ein Objekt ohne sie liefert.
+Object.assign(log, herkunft({ resumeRef, checkpoint: resumeCheckpoint, vorige: predecessors.slice(0, -1) }))
 void flow(`runs/${encodeURIComponent(log.id)}`, {
   method: "PUT",
   headers: { "content-type": "application/json" },
