@@ -147,9 +147,12 @@ const rotatedTotal = existsSync(LOG_ROTATED)
 
 // ------------------------------------------ 3./4. Scorecard + Loop (Sub-Sonden)
 
-function probe(cmd: string[]): string {
+// `ok`: Exit-Codes, deren stdout gilt. of-loopcheck meldet ROT mit Exit 1 —
+// genau dann muss seine Zeile wörtlich durch, sonst stand hier „lieferte
+// nichts", sobald der Loop ROT war (gemessen 12.10.2026, offener I5-Alert).
+function probe(cmd: string[], ok: number[] = [0]): string {
   const p = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" })
-  if (p.exitCode !== 0 || !p.stdout) return ""
+  if (!ok.includes(p.exitCode ?? -1) || !p.stdout) return ""
   return p.stdout.toString()
 }
 
@@ -162,7 +165,7 @@ const scorecardHead = (cut >= 0 ? scLines.slice(0, cut) : scLines).map((l) => l.
 const ri = scLines.findIndex((l) => l.startsWith("## Regeltreue"))
 const regeltreue = ri >= 0 ? scLines.slice(ri).map((l) => l.trimEnd()).filter((l) => l !== "") : []
 
-const loopRaw = probe([BUN, join(SCRIPTS, "of-loopcheck.ts")])
+const loopRaw = probe([BUN, join(SCRIPTS, "of-loopcheck.ts")], [0, 1])
 const loopLines = loopRaw.split("\n")
 const loopZeile = loopLines.find((l) => l.startsWith("OpenFlow-Loop:")) ?? "OpenFlow-Loop: ? (of-loopcheck lieferte nichts)"
 const loopProbleme = loopLines.filter((l) => l.trim().startsWith("!!"))
