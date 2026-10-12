@@ -343,6 +343,21 @@ describe("orchestration prompts", () => {
     expect(text).not.toContain('"dispatch"')
   })
 
+  // R8, 12.10.2026: worker-1 got part A and answered A and B; worker-2 got
+  // part B and appended A. The run's task rode along as context unmarked.
+  test("a leaf is told to deliver only its own part of the run's task", () => {
+    const graph = tree()
+    const text = subagentPrompt(graph, at(graph, "reviewer"), at(graph, "boss"), "part A only", "part A and part B")
+
+    expect(text).toContain("Deliver only your assignment, not the run's whole task")
+    expect(text).toContain("Other cards may be doing the other")
+    const context = text.indexOf("# What the run is for")
+    expect(text.slice(context)).toStartWith(
+      "# What the run is for\n\nContext only — your part of it is the assignment below.\n\npart A and part B",
+    )
+    expect(text.indexOf("# Your assignment\n\npart A only")).toBeGreaterThan(context)
+  })
+
   test("results come back with the remaining budget, and a failure says what to do about it", () => {
     const graph = tree()
     const text = dispatchResultPrompt(
@@ -398,6 +413,16 @@ describe("the parked tool channel", () => {
     expect(text).toContain("there is no dispatch tool")
     expect(text).toContain("```openflow")
     expect(text).toContain('{ "final": "the answer to the task" }')
+  })
+
+  // R8, 12.10.2026: the boss called a tool named after the fence label —
+  // `Unknown tool: openflow</arg_value>`, twice in one run.
+  test("the fence label is named as a block label, not a tool", () => {
+    const graph: Pipeline = { ...pipeline("boss->a"), mode: "orchestration" }
+    const text = orchestratorPrompt(graph, graph.nodes[0], "do it")
+
+    expect(text).toContain("`openflow` is the label of the block, not a tool")
+    expect(text).toContain("There is no tool named `openflow`")
   })
 
   test("the forced answer names no tool either", () => {

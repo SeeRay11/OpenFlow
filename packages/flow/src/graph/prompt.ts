@@ -391,6 +391,11 @@ export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode, skills:
           "message — nothing after it is read. Think out loud above it as much as you like; only the",
           "block is an instruction. Do not reach for a tool to do this: there is no dispatch tool,",
           "and calling one spends a turn to be told it does not exist.",
+          // Measured (R8, 12.10.2026): models read the fence label as a tool
+          // name and called `openflow` beside the block — two rejected calls
+          // in one run, `Unknown tool: openflow</arg_value>`.
+          `\`${FENCE}\` is the label of the block, not a tool: type the block as text in your message.`,
+          `There is no tool named \`${FENCE}\`, and a call to one is rejected.`,
           "",
           "To hand work out — the cards you name run at the same time, so only batch work that does",
           "not depend on itself:",
@@ -631,6 +636,12 @@ export function subagentPrompt(
       "- Do the assignment below and stop. If it is impossible or underspecified, say exactly what",
       "  is missing rather than guessing broadly — the card that dispatched you can fix it and",
       "  dispatch you again.",
+      // Measured (R8, 12.10.2026): two workers each got one of two independent
+      // parts and both answered the whole run's task. The run's task is shown
+      // as context; nothing said it was not theirs to answer.
+      "- Deliver only your assignment, not the run's whole task. Other cards may be doing the other",
+      "  parts of it at the same time; answering their parts too is work paid twice and can",
+      "  contradict theirs. If your assignment is the whole task, the whole task is yours.",
       // Measured: one round left seven helper scripts in the deliverable —
       // check.js, verify.js, verify_final2.js, fix_sync.js, apply_fix.js and a
       // file called `[object Object]`. Cards write scratch files whatever a bar
@@ -643,7 +654,10 @@ export function subagentPrompt(
     ].join("\n"),
   ]
   if (node.agent.prompt.trim()) sections.push(node.agent.prompt.trim())
-  if (input.trim()) sections.push(`# What the run is for\n\n${input.trim()}`)
+  if (input.trim())
+    sections.push(
+      `# What the run is for\n\nContext only — your part of it is the assignment below.\n\n${input.trim()}`,
+    )
   const unreadable = withheld(skipped)
   if (unreadable) sections.push(unreadable)
   sections.push(`# Your assignment\n\n${task.trim()}`)
