@@ -41,6 +41,13 @@ if [ "${1:-}" = "--loop" ]; then shift; exec "$BUN" "$ROOT/packages/flow/scripts
 if [ "${1:-}" = "--loop-check" ]; then shift; exec "$BUN" "$ROOT/packages/flow/scripts/of-loopcheck.ts" "$@"; fi
 if [ "${1:-}" = "--nutzung" ]; then shift; exec "$BUN" "$ROOT/packages/flow/scripts/of-nutzung.ts" "$@"; fi
 
+# Riegel gegen verschachtelte Runs (Abnahme 12.10.2026: eine Boss-Karte
+# startete drei weitere Runs, Kosten x4). Karten-Shells erben die Umgebung der
+# dauerhaft laufenden Engine, nicht die des Runs — deshalb prüft of-guard.ts die
+# Herkunft (OPENFLOW_ENGINE bzw. Engine als Vorfahre), keine Run-Variable.
+# Monitoring oben (--scorecard/--reap/--loop/--loop-check/--nutzung) bleibt frei.
+"$BUN" "$ROOT/packages/flow/scripts/of-guard.ts" || exit $?
+
 MODE=detached
 RESUME_ARGS=()
 if [ "${1:-}" = "--wait" ]; then MODE=wait; shift; fi

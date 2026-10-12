@@ -186,7 +186,10 @@ export function createSupervisor(spec: ServeCommand, log: (line: string) => void
     const [file, ...args] = spec.command
     const next = spawn(file, args, {
       cwd: spec.cwd,
-      env: process.env,
+      // OPENFLOW_ENGINE markiert jede Karten-Shell als Teil der Fabrik —
+      // of-run.sh lehnt daraus verschachtelte Runs ab (lib/fabrik-guard.ts),
+      // das fabrik-gate-Plugin injiziert dort keinen Pflichtweg.
+      env: { ...process.env, OPENFLOW_ENGINE: "1" },
       stdio: "inherit",
       // POSIX: own process group, so `killTree` can take the whole thing.
       detached: process.platform !== "win32",
