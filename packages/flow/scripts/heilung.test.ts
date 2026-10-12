@@ -114,3 +114,22 @@ describe("planeHeilung — Fehlerserie stoppt mit EINEM Alarm", () => {
     expect(planeHeilung(logs, opts()).heilen).toEqual([])
   })
 })
+
+describe("familien — Lauf-IDs mit Zufallssuffix (Kollisionsfix 12.10.2026)", () => {
+  // Seit runId() trägt jede ID ein Suffix: run-<ISO>Z-<6 base36>. Ein Resume
+  // nennt seinen Vorgänger als Checkpoint-PFAD; idAusRef muss das Suffix
+  // mitnehmen, sonst zerfällt die Familie und of-loop heilt den Heilungslauf.
+  test("(F1) resumeOf als Checkpoint-Pfad einer Suffix-ID verbindet die Familie", () => {
+    const A = run("run-2026-10-12T14-30-01-552Z-k3t9za", "error", { fehler: "x" })
+    const B = run("run-2026-10-12T14-35-01-810Z-0abc12", "error", { fehler: "y", resumeOf: "/tmp/openflow-checkpoint-run-2026-10-12T14-30-01-552Z-k3t9za.json" })
+    expect(familien([A, B])).toHaveLength(1)
+  })
+  test("(F2) zwei Läufe derselben Millisekunde bleiben getrennte Familien", () => {
+    const A = run("run-2026-10-12T14-30-01-552Z-aaaaaa", "error", { fehler: "x" })
+    const B = run("run-2026-10-12T14-30-01-552Z-bbbbbb", "error", { fehler: "x" })
+    const C = run("run-2026-10-12T14-40-00-000Z-cccccc", "error", { fehler: "x", resumeOf: "run-2026-10-12T14-30-01-552Z-bbbbbb" })
+    const f = familien([A, B, C]).map((g) => g.map((l) => l.id).sort())
+    expect(f).toHaveLength(2)
+    expect(f).toContainEqual(["run-2026-10-12T14-30-01-552Z-aaaaaa"])
+  })
+})

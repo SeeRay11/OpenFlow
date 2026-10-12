@@ -350,6 +350,22 @@ export type QuestionRequest = {
 }
 
 /**
+ * A run's id: `run-<ISO, ':' and '.' as '-'>-<6 base36>`.
+ *
+ * The timestamp alone collided (12.10.2026: of-loop started two resumes in the
+ * same millisecond, both became `run-2026-10-12T14-30-01-552Z`, and the later
+ * writer overwrote the other's checkpoint and store file). The suffix is random
+ * rather than a pid because the engine also runs in the page. It stays lower
+ * case and dash-joined, so the store's slug leaves it alone and ids still sort
+ * by start time.
+ */
+export function runId(now = new Date()) {
+  const bytes = crypto.getRandomValues(new Uint8Array(6))
+  const suffix = Array.from(bytes, (b) => (b % 36).toString(36)).join("")
+  return `run-${now.toISOString().replace(/[:.]/g, "-")}-${suffix}`
+}
+
+/**
  * Executes a canvas over `opencode serve`.
  *
  * One node = one primary session, whatever the mode. Everything a session needs
@@ -486,7 +502,7 @@ export function start(
   })
 
   const log: RunLog = {
-    id: `run-${new Date().toISOString().replace(/[:.]/g, "-")}`,
+    id: runId(),
     pipeline: pipeline.name,
     pipelineID: pipeline.id,
     input,

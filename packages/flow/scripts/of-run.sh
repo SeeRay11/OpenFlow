@@ -23,7 +23,9 @@
 # default 1) and end with a SCORECARD block on stdout.
 #
 # Prints LOG=<path> so a caller picks results up without knowing the internals;
-# the run's own "checkpoint: <path>" line inside the log names the JSON to read.
+# the run's own "checkpoint: <path>" line is the LAST line of the log (stdout,
+# after every card output) and names the JSON to read — take the last match,
+# a card's model text can carry a line of the same shape (Befund (c)).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
