@@ -63,7 +63,11 @@ export function herkunft(opts: { resumeRef?: string; checkpoint?: { id?: string;
   return out
 }
 
-const idAusRef = (ref: string) => ref.match(/(run-[0-9T:.-]+Z)/i)?.[1] ?? ref
+// Lauf-ID aus Ref oder Checkpoint-Pfad. Seit 12.10.2026 trägt die ID ein
+// Zufallssuffix (runId() in engine.ts: run-<ISO>Z-<6 base36>); ohne die
+// optionale Gruppe fiele es weg und die Familie zerfiele. Alt-IDs ohne Suffix
+// matchen unverändert.
+const idAusRef = (ref: string) => ref.match(/(run-[0-9T:.-]+Z(?:-[a-z0-9]+)?)/i)?.[1] ?? ref
 
 /** Fehlertext eines Laufs, normalisiert (Leerraum), für den Serienvergleich. */
 export function fehlertext(log: RunLog): string {

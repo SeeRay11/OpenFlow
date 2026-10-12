@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, setSystemTime, test } from "bun:test"
 import { pipeline } from "../graph/test-support"
 import type { Attachment, NodeEvent, Pipeline, RunLog, StepUsage } from "../graph/types"
 import type { BusEvent, PermissionReply, QuestionInfo } from "./client"
@@ -2989,5 +2989,26 @@ describe("resume in orchestration mode", () => {
     expect(h.dispatched).toContain("a")
     expect(log.nodes.find((node) => node.id === "a")!.reused).toBeUndefined()
     expect(log.status).toBe("done")
+  })
+})
+
+describe("run id", () => {
+  // Befund 12.10.2026: of-loop startete zwei Resumes im selben Tick, beide
+  // bekamen run-2026-10-12T14-30-01-552Z — derselbe Checkpoint
+  // (/tmp/openflow-checkpoint-<id>.json) und dieselbe Store-Datei, der
+  // spätere Schreiber überschrieb den früheren.
+  test("two runs started in the same millisecond get different ids", async () => {
+    setSystemTime(new Date("2026-10-12T14:30:01.552Z"))
+    try {
+      const h = harness()
+      const first = h.run(pipeline("a"), "x")
+      const second = h.run(pipeline("a"), "x")
+      const [a, b] = [await first.done, await second.done]
+      expect(a.id.startsWith("run-2026-10-12T14-30-01-552Z")).toBe(true)
+      expect(b.id.startsWith("run-2026-10-12T14-30-01-552Z")).toBe(true)
+      expect(a.id).not.toBe(b.id)
+    } finally {
+      setSystemTime()
+    }
   })
 })
