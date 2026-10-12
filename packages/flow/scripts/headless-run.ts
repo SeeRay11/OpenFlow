@@ -35,6 +35,15 @@ import { start } from "../src/server/engine"
 import * as api from "../src/server/client"
 import { agentBlock } from "../src/server/store"
 import { isPipeline } from "../src/graph/pipeline-io"
+import { ABLEHNUNG, verschachtelterStart, vorfahrenAus } from "../lib/fabrik-guard"
+
+// Riegel gegen verschachtelte Runs auch für den direkten Aufruf ohne of-run.sh
+// (Begründung in lib/fabrik-guard.ts).
+const verschachtelt = verschachtelterStart(process.env, vorfahrenAus(process.pid))
+if (verschachtelt) {
+  console.error(`headless-run: ${ABLEHNUNG} — ${verschachtelt}`)
+  process.exit(3)
+}
 
 const origin = process.env.OPENFLOW_ORIGIN ?? "http://127.0.0.1:5174"
 
