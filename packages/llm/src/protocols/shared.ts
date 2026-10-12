@@ -2,10 +2,15 @@ import { Buffer } from "node:buffer"
 import { Effect, Schema, Stream } from "effect"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { Headers, HttpClientRequest } from "effect/unstable/http"
+import { isContextOverflow } from "../provider-error"
 import {
   InvalidProviderOutputReason,
   InvalidRequestReason,
   LLMError,
+  ProviderInternalReason,
+  QuotaExceededReason,
+  RateLimitReason,
+  UnknownProviderReason,
   type ContentPart,
   type LLMRequest,
   type MediaPart,
@@ -93,6 +98,61 @@ export const eventError = (route: string, message: string, raw?: string) =>
     method: "stream",
     reason: new InvalidProviderOutputReason({ route, message, raw }),
   })
+
+const RETRYABLE_STREAM_ERROR_TYPE = /server_error|service_unavailable|overloaded|internal_error|rate_limit|too_many_requests/i
+const RATE_LIMIT_STREAM_ERROR_TYPE = /rate_limit|too_many_requests/i
+const QUOTA_STREAM_ERROR_TYPE = /insufficient[-_\s]?quota|quota[-_\s]?exceeded/i
+
+/**
+ * A provider (or a router in front of it) can fail mid-stream by sending an
+ * OpenAI-style error packet `{"error":{"message","type","code"}}` after HTTP
+ * 200 is already committed. That is a provider failure, not a protocol
+ * violation: classify it like an HTTP status failure so the retry policy sees
+ * it (429/5xx, server_error/overloaded/rate_limit types, unknown type with a
+ * 5xx code are retryable). The status and type are written into the message
+ * because session-level retry matches on the message text.
+ */
+export const streamErrorPacket = (error: unknown) => {
+  const fields = isRecord(error) ? error : { message: typeof error === "string" ? error : undefined }
+  const text = typeof fields.message === "string" && fields.message !== "" ? fields.message : "unknown error"
+  const type = typeof fields.type === "string" ? fields.type : undefined
+  const codeText = typeof fields.code === "string" ? fields.code : undefined
+  const numeric = Number(fields.code ?? fields.status)
+  const sent = Number.isInteger(numeric) && numeric >= 100 && numeric <= 599 ? numeric : undefined
+  const kind = [type, codeText !== undefined && codeText !== String(sent) ? codeText : undefined]
+    .filter((value): value is string => value !== undefined)
+    .join("/")
+  const klass = QUOTA_STREAM_ERROR_TYPE.test(kind)
+    ? "quota"
+    : sent === 429 || RATE_LIMIT_STREAM_ERROR_TYPE.test(kind)
+      ? "rate-limit"
+      : (sent !== undefined && sent >= 500) || RETRYABLE_STREAM_ERROR_TYPE.test(kind)
+        ? "internal"
+        : isContextOverflow(text)
+          ? "overflow"
+          : sent !== undefined && sent >= 400 && sent < 500
+            ? "invalid"
+            : "unknown"
+  // The effective status leads the label, so a text-matching consumer (the
+  // OpenFlow engine's card retry) sees `(500 …)` / `(429 …)` for every
+  // retryable packet, also when the provider sent only a type.
+  const status = sent ?? (klass === "internal" ? 500 : klass === "rate-limit" ? 429 : undefined)
+  const label = [status, kind || undefined].filter((value) => value !== undefined).join(" ")
+  const message = `Provider stream error${label ? ` (${label})` : ""}: ${text}`
+  const reason =
+    klass === "quota"
+      ? new QuotaExceededReason({ message })
+      : klass === "rate-limit"
+        ? new RateLimitReason({ message })
+        : klass === "internal"
+          ? new ProviderInternalReason({ message, status: status ?? 500 })
+          : klass === "overflow"
+            ? new InvalidRequestReason({ message, classification: "context-overflow" })
+            : klass === "invalid"
+              ? new InvalidRequestReason({ message })
+              : new UnknownProviderReason({ message, status })
+  return new LLMError({ module: "ProviderShared", method: "stream", reason })
+}
 
 export const parseJson = (route: string, input: string, message: string) =>
   Effect.try({
