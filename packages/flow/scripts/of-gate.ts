@@ -67,6 +67,15 @@ const DIREKT_SIGNALS: { re: RegExp; name: string }[] = [
   { re: /\bmerge|squash-merge|pr mergen\b/i, name: "merge" },
   { re: /\bpush(en)? zu (main|master|origin)\b/i, name: "push" },
   { re: /\b(löschen|loeschen|delete|drop)\b.{0,30}\b(produktiv|prod|live|datenbank)\b/i, name: "destruktiv-prod" },
+  // Erklär-/Verständnisfrage (K2, 12.10.2026): beginnt der Text mit einer
+  // Erklär-Eröffnung und benennt KEIN Deliverable (Schreib-/Erstell-Verb,
+  // „in/als einem Bericht|Artikel|Report", Umfang in Wörtern/Seiten), ist es
+  // ein Einzelschritt — auch ohne „?" und auch wenn Signalwörter wie
+  // „Recherche"/„Audit" nur als Gegenstand der Frage vorkommen.
+  {
+    re: /^(?![\s\S]*(\b(schreib|erstell|verfass|write|create|draft)|\b(in|als|as)\s+(einem|einer|ein|eine|a|an)\b[^.!?]{0,40}\b(bericht|artikel|report|blogpost|dossier|whitepaper|article)|\d+[- ]?(wörter|woerter|words|seiten|pages)\b))\s*(bitte\s+|please\s+)?(erklär|erklaer|explain|beschreib|describe|ich frage mich|i wonder|kannst du (mir )?(erklär|erklaer|beschreib)|can you (explain|describe)|wie (funktioniert|arbeitet|läuft|laeuft)|how (does|do|is)\b|was (macht|tut|passiert)\b|what (does|happens)\b)/i,
+    name: "erklaerfrage",
+  },
 ]
 
 function classify(textRaw: string) {

@@ -110,6 +110,57 @@ describe("of-gate classify — Sicherheit schlägt Effizienz", () => {
   })
 })
 
+describe("of-gate classify — Erklärfragen ohne Deliverable (K2)", () => {
+  // Erklär-/Verständnisfragen sind Einzelschritte (Nein-Fall), auch ohne „?"
+  // und auch wenn Fabrik-Signalwörter nur Gegenstand der Frage sind.
+  // Vor dem Fix (gemessen 12.10.2026): die ersten vier GRAUZONE, die mit
+  // zwei Signalwörtern FABRIK.
+  const erklaerfragen = [
+    "Erkläre, wie der Router den Failover macht",
+    "Ich frage mich, wie X funktioniert",
+    "Beschreib kurz, was Y tut",
+    "wie funktioniert der Cache",
+    "Erklär mal, wie der Review-Prozess abläuft",
+    "Kannst du mir erklären, wie die Recherche-Pipeline parallel arbeitet",
+    "Explain how the benchmark and audit scripts work",
+    "Erkläre, was der Analyse-Schritt im Bericht macht",
+    "Was macht der Vergleich in der Testsuite",
+    "Beschreib kurz, wie das Audit für jede Datei läuft",
+    "How does the review step compare variants",
+    "Erklär mir, wie die parallele Recherche zusammenfasst",
+  ]
+  for (const task of erklaerfragen) {
+    test(`(7) Erklärfrage → DIREKT: ${task}`, async () => {
+      const r = await classify(task)
+      expect(r.entscheidung).toBe("DIREKT")
+      expect(r.signale).toEqual(["erklaerfrage"])
+    })
+  }
+
+  // Abwägung: Wer eine Erklärung als DELIVERABLE bestellt (Schreib-/
+  // Erstell-Verb, „in einem Bericht/Artikel", Umfang in Wörtern), hat einen
+  // Ja-Fall — das bleibt FABRIK.
+  const auftraege = [
+    "Schreibe einen Artikel, der erklärt, wie der Router den Failover macht, mit Recherche zu 5 Anbietern",
+    "Erkläre in einem 3000-Wörter-Bericht mit Recherche zu 5 Anbietern, wie Failover funktioniert",
+    "Erkläre in einem Bericht mit Recherche, wie die 5 Anbieter Failover machen",
+    "Explain in a report with research and a benchmark of 5 providers how failover works",
+  ]
+  for (const task of auftraege) {
+    test(`(8) Erklär-Auftrag mit Deliverable bleibt FABRIK: ${task}`, async () => {
+      const r = await classify(task)
+      expect(r.entscheidung).toBe("FABRIK")
+      expect(r.signale).not.toContain("erklaerfrage")
+    })
+  }
+
+  test("(9) Erklär-Wort mitten im Auftrag ist keine Erklärfrage", async () => {
+    const r = await classify("Recherchiere parallel und erkläre die Unterschiede")
+    expect(r.entscheidung).toBe("FABRIK")
+    expect(r.signale).not.toContain("erklaerfrage")
+  })
+})
+
 describe("of-gate CLI-Verhalten", () => {
   test("classify gibt genau eine JSON-Zeile aus", async () => {
     const { stdout } = await runGate(["classify", "--text", "parallel Research-Fächer"])
