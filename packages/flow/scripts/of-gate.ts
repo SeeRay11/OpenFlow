@@ -37,6 +37,7 @@
  * Usage:
  *   echo "<task>" | bun of-gate.ts classify        # Text via stdin
  *   bun of-gate.ts classify --text "<task>"        # Text als Arg
+ *   bun of-gate.ts classify --llm [--text "<task>"] # kombiniert: Grauzone → LLM-Urteiler (K2e)
  *   bun of-gate.ts log <entscheidung> "<task>" "<grund>" [--event task|fabrik_run]
  *                                              [--task-ref <gate_id>] [--monitoring]
  *
@@ -100,6 +101,15 @@ const DIREKT_SIGNALS: { re: RegExp; name: string }[] = [
   { re: /\bmerge|squash-merge|pr mergen\b/i, name: "merge" },
   { re: /\bpush(en)? zu (main|master|origin)\b/i, name: "push" },
   { re: /\b(löschen|loeschen|delete|drop)\b.{0,30}\b(produktiv|prod|live|datenbank)\b/i, name: "destruktiv-prod" },
+  // K2e (13.10.2026, Abnahme R16): LÖSCHEN ist ein Nein-Fall, auch ohne „prod“ —
+  // „Lösche die Branches k2a, k2b und k2c lokal und auf origin und erstelle eine
+  // Liste …“ bekam FABRIK. Imperativ/Infinitiv als eigenes Wort („lösche“,
+  // „löschen“, „delete“, „rm -rf“, „branch -D“, „push --delete“); Komposita
+  // („Löschberichte“) und Partizipien („gelöschten“) zählen nicht.
+  {
+    re: /(?<![\p{L}-])(?:lösch|loesch)(?:e|en|t|st)?(?![\p{L}])|\b(?:delete|deleting|purge|wipe)\b|\bdrop\s+(?:table|database|index)\b|\brm\s+-[a-z]*r|\bbranch\s+-D\b|--delete\b/iu,
+    name: "loeschen",
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -630,14 +640,19 @@ export function erkenneAuftrag(textRaw: string): { verb: string; objekt: string;
   return null
 }
 
-export function classify(textRaw: string) {
-  // Nur den NUTZERTEXT bewerten: guard.ts & Co. reichern den Prompt mit
-  // Vertragsblöcken an („[Guard: TASK-VERTRAG] … RÜCKFRAGEN: …"), deren
-  // Stichworte nichts über den Auftrag aussagen. Gemessen 26.09.2026 im
-  // E2E-Test: der Vertrag allein kippte einen FABRIK-Fall auf DIREKT.
+/**
+ * Nur den NUTZERTEXT bewerten: guard.ts & Co. reichern den Prompt mit
+ * Vertragsblöcken an („[Guard: TASK-VERTRAG] … RÜCKFRAGEN: …"), deren
+ * Stichworte nichts über den Auftrag aussagen. Gemessen 26.09.2026 im
+ * E2E-Test: der Vertrag allein kippte einen FABRIK-Fall auf DIREKT.
+ */
+export function nutzerText(textRaw: string): string {
   const firstHook = textRaw.search(/\n\[(?:Guard|FABRIK-GATE)[:\]]/)
-  const text = (firstHook > 0 ? textRaw.slice(0, firstHook) : textRaw).trim()
-  const trimmed = text
+  return (firstHook > 0 ? textRaw.slice(0, firstHook) : textRaw).trim()
+}
+
+export function classify(textRaw: string) {
+  const trimmed = nutzerText(textRaw)
   const lower = trimmed.replace(/^["„“»]/, "").toLowerCase()
   const prefix = lower.startsWith("fabrik:") ? "fabrik" : lower.startsWith("direkt:") ? "direkt" : null
 
@@ -680,6 +695,131 @@ export function classify(textRaw: string) {
   return { entscheidung: "GRAUZONE", signale: [], prefix, grund: "keine Signale — Eskalationsleiter entscheidet, Begründung Pflicht", auftrag, injizieren: false }
 }
 
+// ---------------------------------------------------------------------------
+// LLM-URTEILER IN DER GRAUZONE (K2e, 13.10.2026, Abnahme R16 6/10)
+// ---------------------------------------------------------------------------
+// Die Wortregel erkennt ~38 % der Fan-out-Aufträge. R16 maß einen NEUTRALEN
+// LLM-Urteiler über dharma/fast: 46/62 erkannt bei 3 falschen JA; „Wortregel
+// ODER LLM nur in der Grauzone“ 55/77 bei 7 falschen JA. Der Prompt unten ist
+// WÖRTLICH der der Abnahme (abnahme16/k2label/llm_neutral.py) — nicht auf
+// Prüfmengen nachgeschärft. Ein früherer Versuch scheiterte an „Im Zweifel
+// NEIN“ und an max_tokens 16 (leere/abgeschnittene Antworten).
+//
+// Fail-open: Fehler, Zeitüberschreitung, leere oder unklare Antwort → null
+// (= kein Hinweis). Ein Urteiler, der ausfällt, darf nie selbst injizieren.
+
+export const LLM_PROMPT = `Entscheide, ob der folgende Auftrag in die "Subagenten-Fabrik" gehört (parallele Bearbeitung durch mehrere Agenten).
+Definition des Betreibers: Aufgaben, die in ≥2 unabhängige Teile zerfallen ODER ein abgeschlossenes Deliverable haben, laufen über die Fabrik. Ja-Fälle: Research-Fächer, Multi-Review, Varianten, Artikel/Analysen, Testsuiten — alles mit klarem Endprodukt. Nein-Fälle: kontextgebundene Aufgaben (bezieht sich auf Material dieser Sitzung), Rückfragen an den Nutzer nötig, Einzelschritte unter 1 Minute, Geldpfad/Deploys, reine Fragen/Erklärungen.
+Antworte mit genau einem Wort: JA oder NEIN.
+
+Auftrag: `
+
+export const LLM_URL = "https://dharma.mcp-hub.stream/v1/chat/completions"
+export const LLM_MODELL = "fast"
+export const LLM_MAX_TOKENS = 64
+export const LLM_TIMEOUT_MS = 4000
+const LLM_KEYFILE = join(homedir(), ".config/opencode/.secrets/dharma.key")
+const USER_AGENT = "openflow-of-gate/K2e (+fabrik-gate)"
+
+export type LlmOpts = {
+  /** Für Tests: gemocktes fetch. */
+  fetch?: typeof fetch
+  timeoutMs?: number
+  /** Pfad der Schlüsseldatei — der Schlüssel selbst ist nie Argument. */
+  keyFile?: string
+}
+export type LlmDetail = { urteil: boolean | null; ms: number; fehler: string | null }
+
+/**
+ * Antworttext → JA/NEIN/null. dharma hängt eine Fußzeile `⎯⎯ modell · stufe ·
+ * anbieter ⎯⎯` an; sie wird abgeschnitten, ebenso ein `<think>`-Block. Gewertet
+ * wird die erste nicht-leere Zeile, führende Satzzeichen/Markdown ignoriert.
+ */
+export function parseLlmAntwort(roh: unknown): boolean | null {
+  if (typeof roh !== "string") return null
+  let t = roh.replace(/<think>[\s\S]*?<\/think>/gi, "")
+  const fuss = t.indexOf("⎯⎯")
+  if (fuss >= 0) t = t.slice(0, fuss)
+  const zeile = t.split("\n").map((z) => z.trim()).find(Boolean)
+  if (!zeile) return null
+  const w = zeile.replace(/^[^\p{L}]+/u, "").toUpperCase()
+  if (/^JA(?![\p{L}])/u.test(w)) return true
+  if (/^NEIN(?![\p{L}])/u.test(w)) return false
+  return null
+}
+
+/** Wie urteileMitLlm, aber mit Dauer und Fehlergrund (für Ledger/Messung). */
+export async function urteileMitLlmDetail(text: string, opts: LlmOpts = {}): Promise<LlmDetail> {
+  const t0 = performance.now()
+  const fertig = (urteil: boolean | null, fehler: string | null): LlmDetail => ({ urteil, ms: Math.round(performance.now() - t0), fehler })
+  let key: string
+  try {
+    key = readFileSync(opts.keyFile ?? LLM_KEYFILE, "utf8").trim()
+  } catch {
+    return fertig(null, "schluessel_fehlt")
+  }
+  if (!key) return fertig(null, "schluessel_fehlt")
+  const f = opts.fetch ?? fetch
+  try {
+    const res = await f(LLM_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "User-Agent": USER_AGENT },
+      body: JSON.stringify({
+        model: LLM_MODELL,
+        temperature: 0,
+        max_tokens: LLM_MAX_TOKENS,
+        // Kein Denken für ein Ein-Wort-Urteil: gemessen 13.10.2026 routete
+        // dharma/fast auf qwen3.8-27b (yolo) — ohne Feld 101–196 Reasoning-
+        // Tokens und 4,7–9,1 s, mit "none" 0 Tokens und ~3,5 s. Parameter, kein
+        // Prompt-Zusatz; ein Upstream, der es ablehnt, ergibt null (fail-open).
+        reasoning_effort: "none",
+        messages: [{ role: "user", content: LLM_PROMPT + text }],
+      }),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? LLM_TIMEOUT_MS),
+    })
+    if (!res.ok) return fertig(null, `http_${res.status}`)
+    const j: any = await res.json()
+    const inhalt = j?.choices?.[0]?.message?.content
+    if (typeof inhalt !== "string" || !inhalt.trim()) return fertig(null, "leer")
+    const u = parseLlmAntwort(inhalt)
+    return fertig(u, u === null ? "unklar" : null)
+  } catch (e: any) {
+    const name = String(e?.name ?? "")
+    return fertig(null, name === "TimeoutError" || name === "AbortError" ? "timeout" : "netz")
+  }
+}
+
+/** Neutraler LLM-Urteiler: true = JA (Fabrik), false = NEIN, null = kein Hinweis. */
+export async function urteileMitLlm(text: string, opts: LlmOpts = {}): Promise<boolean | null> {
+  return (await urteileMitLlmDetail(text, opts)).urteil
+}
+
+/**
+ * DIE kombinierte Entscheidung (K2e) — EINE Stelle, das Plugin entscheidet nichts:
+ *   1. Nein-Signale (Deploy, Geld, Secrets, Löschen …) und Prefix — wie classify,
+ *      DIREKT ruft nie das LLM.
+ *   2. Wortregel-Auftrag (FABRIK) → injizieren, ohne LLM-Aufruf.
+ *   3. GRAUZONE → LLM-Urteiler; JA → injizieren, NEIN/null → nicht.
+ * Rückgabe = classify-Verdikt + `llm` (true/false/null), `llm_ms` (null, wenn
+ * nicht aufgerufen), `llm_fehler`.
+ */
+export async function entscheide(textRaw: string, opts: LlmOpts = {}) {
+  const v = classify(textRaw)
+  if (v.entscheidung !== "GRAUZONE") return { ...v, llm: null, llm_ms: null, llm_fehler: null }
+  const d = await urteileMitLlmDetail(nutzerText(textRaw), opts)
+  if (d.urteil === true)
+    return {
+      ...v,
+      entscheidung: "FABRIK",
+      grund: `Grauzone, LLM-Urteiler (dharma/${LLM_MODELL}): JA — Wortregel ohne belegten Auftrag${v.signale.length ? ` (Signale: ${v.signale.join(", ")})` : ""}`,
+      injizieren: true,
+      llm: true,
+      llm_ms: d.ms,
+      llm_fehler: null,
+    }
+  return { ...v, llm: d.urteil, llm_ms: d.ms, llm_fehler: d.fehler }
+}
+
 if (import.meta.main) {
   const argv = process.argv.slice(2)
   const cmd = argv[0]
@@ -687,7 +827,8 @@ if (import.meta.main) {
   if (cmd === "classify") {
     const i = argv.indexOf("--text")
     const text = i >= 0 ? argv[i + 1] : readFileSync(0, "utf8")
-    console.log(JSON.stringify(classify(text)))
+    // --llm: kombinierte Entscheidung (Grauzone → LLM-Urteiler), K2e.
+    console.log(JSON.stringify(argv.includes("--llm") ? await entscheide(text) : classify(text)))
     process.exit(0)
   }
 
