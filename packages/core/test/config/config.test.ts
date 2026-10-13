@@ -1,7 +1,7 @@
 import path from "path"
 import fs from "fs/promises"
 import { describe, expect } from "bun:test"
-import { Effect, Layer, Schema } from "effect"
+import { Cause, Effect, Layer, Schema } from "effect"
 import { FastCheck } from "effect/testing"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigProvider } from "@opencode-ai/core/config/provider"
@@ -9,6 +9,7 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ConfigMigrateV1 } from "@opencode-ai/core/v1/config/migrate"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import { ConfigErrorV1 } from "@opencode-ai/core/v1/config/error"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
 import { Location } from "@opencode-ai/core/location"
@@ -206,6 +207,99 @@ describe("Config", () => {
           }).pipe(Effect.provide(testLayer(tmp.path)))
         }),
       ),
+    ),
+  )
+
+  // K9: the core loader is the path agent sessions (OpenFlow cards) read
+  // providers from. It used to parse raw JSONC, so `{file:…}` reached the
+  // provider verbatim as its apiKey and every card got 401 (12.10.2026).
+  const withConfig = <A, E>(
+    contents: (dir: string) => string,
+    body: (dir: string) => Effect.Effect<A, E, Config.Service>,
+    setup: (dir: string) => Promise<unknown> = async () => {},
+  ) =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(async () => {
+            await setup(tmp.path)
+            await fs.writeFile(path.join(tmp.path, "opencode.jsonc"), contents(tmp.path))
+          })
+          return yield* body(tmp.path).pipe(Effect.provide(testLayer(tmp.path)))
+        }),
+      ),
+    )
+  const v1Provider = (apiKey: string) => `{
+    // v1 shape, as in ~/.config/opencode/opencode.jsonc; {file:} in a comment stays put
+    "provider": {
+      "dharma": {
+        "npm": "@ai-sdk/openai-compatible",
+        "options": { "baseURL": "https://dharma.example", "apiKey": "${apiKey}" },
+      },
+    },
+  }`
+  const settingsOf = (entries: Config.Entry[]) =>
+    entries.filter((entry): entry is Config.Document => entry.type === "document")[0]?.info.providers?.dharma?.api
+
+  it.live("resolves a relative {file:} apiKey on the core config path", () =>
+    withConfig(
+      () => v1Provider("{file:./.secrets/dharma.key}"),
+      () =>
+        Effect.gen(function* () {
+          const api = settingsOf(yield* (yield* Config.Service).entries())
+          expect(api).toMatchObject({ type: "aisdk", settings: { apiKey: "geheim-relativ" } })
+        }),
+      async (dir) => {
+        await fs.mkdir(path.join(dir, ".secrets"))
+        await fs.writeFile(path.join(dir, ".secrets", "dharma.key"), "geheim-relativ\n")
+      },
+    ),
+  )
+
+  it.live("resolves an absolute {file:} apiKey on the core config path", () =>
+    withConfig(
+      (dir) => v1Provider(`{file:${path.join(dir, "abs.key")}}`),
+      () =>
+        Effect.gen(function* () {
+          const api = settingsOf(yield* (yield* Config.Service).entries())
+          expect(api).toMatchObject({ settings: { apiKey: "geheim-absolut" } })
+        }),
+      (dir) => fs.writeFile(path.join(dir, "abs.key"), "geheim-absolut"),
+    ),
+  )
+
+  it.live("resolves an {env:} apiKey on the core config path", () => {
+    process.env.K9_TEST_DHARMA_KEY = "geheim-env"
+    return withConfig(
+      () => v1Provider("{env:K9_TEST_DHARMA_KEY}"),
+      () =>
+        Effect.gen(function* () {
+          const api = settingsOf(yield* (yield* Config.Service).entries())
+          expect(api).toMatchObject({ settings: { apiKey: "geheim-env" } })
+        }),
+    ).pipe(Effect.ensuring(Effect.sync(() => delete process.env.K9_TEST_DHARMA_KEY)))
+  })
+
+  it.live("fails loudly on a missing {file:} instead of passing the reference on", () =>
+    withConfig(
+      () => v1Provider("{file:./.secrets/fehlt.key}"),
+      () =>
+        Effect.gen(function* () {
+          return yield* (yield* Config.Service).entries()
+        }),
+    ).pipe(
+      Effect.exit,
+      Effect.map((exit) => {
+        expect(exit._tag).toBe("Failure")
+        const error = exit._tag === "Failure" ? Cause.squash(exit.cause) : undefined
+        expect(error).toBeInstanceOf(ConfigErrorV1.InvalidError)
+        const message = (error as InstanceType<typeof ConfigErrorV1.InvalidError>).data.message ?? ""
+        expect(message).toContain('bad file reference: "{file:./.secrets/fehlt.key}"')
+        expect(message).toContain("fehlt.key does not exist")
+      }),
     ),
   )
 
