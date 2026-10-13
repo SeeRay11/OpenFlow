@@ -296,6 +296,8 @@ describe("of-scorecard — Ledger-Sektion (Regeltreue)", () => {
           "{kaputt",
           { event: "task", entscheidung: "DIREKT" },
           { event: "task", entscheidung: "GRAUZONE" },
+          { event: "task", quelle: "subagent", entscheidung: "GRAUZONE" },
+          { event: "user_prompt", entscheidung: "FABRIK" },
           { event: "fabrik_run" },
           "",
         ],
@@ -303,13 +305,18 @@ describe("of-scorecard — Ledger-Sektion (Regeltreue)", () => {
       },
     )
     expect(p.ledger).not.toBeNull()
-    expect(p.ledger!.eintraege).toBe(4)
-    expect(p.ledger!.taskBewertungen).toBe(3)
+    expect(p.ledger!.eintraege).toBe(6)
+    expect(p.ledger!.taskBewertungen).toBe(4)
+    expect(p.ledger!.subagentNutzung).toBe(1)
     expect(p.ledger!.fabrikKandidaten).toBe(1)
+    expect(p.ledger!.fanoutKandidaten).toBe(2) // task FABRIK + user_prompt FABRIK
     expect(p.ledger!.direktEmpfohlen).toBe(1)
-    expect(p.ledger!.grauzone).toBe(1)
+    expect(p.ledger!.grauzone).toBe(2)
     expect(p.ledger!.fabrikAufrufe).toBe(1)
-    expect(p.ledger!.regeltreue).toBe(100) // 1 Aufruf / 1 Kandidat, capped bei 100
+    // Fan-out-Abdeckung (13.10.2026): Stufe 1 (subagent) + Stufe 2 (fabrik_run)
+    // gegen alle Kandidaten: (1+1)/2 = 100 %
+    expect(p.ledger!.fanoutAbdeckung).toBe(100)
+    expect(p.ledger!.regeltreueFabrik).toBe(100) // alte, enge Definition: 1 Fabrik-Aufruf / 1 task-Kandidat
   })
 })
 

@@ -138,14 +138,30 @@ if (existsSync(LEDGER)) {
   const tasks = entries.filter((e) => e.event === "task")
   const fabrikRuns = entries.filter((e) => e.event === "fabrik_run")
   const fabrikKandidaten = tasks.filter((e) => e.entscheidung === "FABRIK")
+  // Regeltreue neu (13.10.2026): Fan-out gilt als ABGEDECKT, wenn die Session
+  // STUFE 1 (`subagent`-Tool, REGEL 1) ODER STUFE 2 (of-run.sh, REGEL 4)
+  // genutzt hat. Kandidaten = als FABRIK bewertete Fan-out-Prompts (task +
+  // user_prompt). Noch ohne Session-Matching (session_id erst seit heute im
+  // Ledger) — Näherung über Gesamtzahlen; Matching folgt, sobald Daten anliegen.
+  const userPrompts = entries.filter((e) => e.event === "user_prompt")
+  const fanoutKandidaten = fabrikKandidaten.length + userPrompts.filter((e) => e.entscheidung === "FABRIK").length
+  const subagentNutzung = tasks.filter((e) => e.quelle === "subagent").length
+  const abgedeckt = fabrikRuns.length + subagentNutzung
   ledger = {
     eintraege: entries.length,
     taskBewertungen: tasks.length,
+    subagentNutzung,
+    fanoutKandidaten,
     fabrikKandidaten: fabrikKandidaten.length,
     direktEmpfohlen: tasks.filter((e) => e.entscheidung === "DIREKT").length,
     grauzone: tasks.filter((e) => e.entscheidung === "GRAUZONE").length,
     fabrikAufrufe: fabrikRuns.length,
-    regeltreue:
+    fanoutAbdeckung:
+      fanoutKandidaten > 0
+        ? +Math.min(100, (abgedeckt / fanoutKandidaten) * 100).toFixed(1)
+        : null,
+    // alte, enge Definition (nur Stufe 2/Fabrik) bleibt als Vergleichswert:
+    regeltreueFabrik:
       fabrikKandidaten.length > 0
         ? +Math.min(100, (fabrikRuns.length / fabrikKandidaten.length) * 100).toFixed(1)
         : null,
@@ -183,9 +199,11 @@ if (JSON_OUT) {
     console.log(`| Kennzahl | Wert |`)
     console.log(`|---|---|`)
     console.log(`| Task-Bewertungen | ${ledger.taskBewertungen} |`)
-    console.log(`| FABRIK-Kandidaten | ${ledger.fabrikKandidaten} |`)
-    console.log(`| echte Fabrik-Aufrufe | ${ledger.fabrikAufrufe} |`)
-    console.log(`| Regeltreue-Quote | ${ledger.regeltreue !== null ? ledger.regeltreue + " %" : "noch keine Kandidaten"} |`)
+    console.log(`| Subagent-Nutzung (Stufe 1, quelle=subagent) | ${ledger.subagentNutzung} |`)
+    console.log(`| Fan-out-Kandidaten (FABRIK bewertet) | ${ledger.fanoutKandidaten} |`)
+    console.log(`| echte Fabrik-Aufrufe (Stufe 2) | ${ledger.fabrikAufrufe} |`)
+    console.log(`| Fan-out-Abdeckung (Stufe 1+2 vs Kandidaten) | ${ledger.fanoutAbdeckung !== null ? ledger.fanoutAbdeckung + " %" : "noch keine Kandidaten"} |`)
+    console.log(`| davon Fabrik-only (alte Definition) | ${ledger.regeltreueFabrik !== null ? ledger.regeltreueFabrik + " %" : "noch keine Kandidaten"} |`)
   } else {
     console.log("")
     console.log(`Regeltreue: noch keine Ledger-Daten (fabrik-gate-Plugin/of-gate log schreiben sie)`)
