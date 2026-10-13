@@ -82,9 +82,17 @@ describe("serveCommand", () => {
 })
 
 describe("ownership", () => {
+  /**
+   * A url nothing answers on. Was the fixed `127.0.0.1:1`, which assumed port 1
+   * is refused at once; on this WSL host it is filtered, every probe ran into
+   * the 5 s test timeout (gemessen 13.10.2026: curl rc=28 nach 3 s, ein frei
+   * gewordener Port rc=7 nach 23 ms). A port just released is refused anywhere.
+   */
+  const dead = async () => `http://127.0.0.1:${await freePort()}`
+
   test("does not manage the engine unless asked", async () => {
     const supervisor = await supervisorFor(
-      { command: ["opencode", "serve"], cwd: process.cwd(), url: "http://127.0.0.1:1" },
+      { command: ["opencode", "serve"], cwd: process.cwd(), url: await dead() },
       {},
     )
     const status = await supervisor.status()
@@ -111,7 +119,7 @@ describe("ownership", () => {
   })
 
   test("an unmanaged supervisor hands back the command instead of restarting", async () => {
-    const supervisor = unmanaged({ command: ["opencode", "serve", "--port", "4096"], cwd: ".", url: "http://127.0.0.1:1" }, "not ours")
+    const supervisor = unmanaged({ command: ["opencode", "serve", "--port", "4096"], cwd: ".", url: await dead() }, "not ours")
     expect((await supervisor.status()).command).toBe("opencode serve --port 4096")
     expect(supervisor.restart()).rejects.toThrow(/opencode serve --port 4096/)
   })
@@ -119,7 +127,7 @@ describe("ownership", () => {
   test("both supervisors report the directory the command has to run from", async () => {
     // The UI prints `cd <cwd>` above the command because the from-source command
     // is relative; without this it invented a checkout name.
-    const spec = { command: ["opencode", "serve", "--port", "4096"], cwd: "/repo/root", url: "http://127.0.0.1:1" }
+    const spec = { command: ["opencode", "serve", "--port", "4096"], cwd: "/repo/root", url: await dead() }
     expect((await unmanaged(spec, "not ours").status()).cwd).toBe("/repo/root")
     // Nothing is spawned — `status()` only probes the (dead) url.
     expect((await createSupervisor(spec).status()).cwd).toBe("/repo/root")
