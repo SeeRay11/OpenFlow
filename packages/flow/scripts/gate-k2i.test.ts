@@ -73,3 +73,24 @@ describe("K2i — echte Fan-out-Aufträge werden weiter erkannt", () => {
     expect(v.injizieren).toBe(true)
   })
 })
+
+// Nach dem Fix ergänzt (die Fallmengen oben bleiben unverändert):
+describe("K2i — LLM-Frist 6 s, triviale Prompts weiter ohne LLM", () => {
+  test("LLM_TIMEOUT_MS = 6000", () => {
+    expect(g.LLM_TIMEOUT_MS).toBe(6000)
+  })
+  test.each([
+    "Was ist ein Checkpoint?",
+    "Warum steht zai-pay in der fast-Kette am Ende?",
+    "Erklär mir, wie der ROUTER_AUTH_KEY geprüft wird.",
+    "Wie viele parallele Anfragen verträgt dharma?",
+    "Ist der Euro-Betrag in VERTRAEGE.md brutto oder netto?",
+    "danke",
+  ])("Vorfilter spart den Aufruf: %s", async (t) => {
+    const { f, bodies } = zaehler("JA")
+    const v = await g.entscheide(t, { fetch: f, keyFile: KEY })
+    expect(bodies).toHaveLength(0)
+    expect(v.injizieren).toBe(false)
+    if (v.quelle !== "nein_signal") expect(["kurz", "reine_frage", "kein_fanout_indiz"]).toContain(v.llm_uebersprungen)
+  })
+})
