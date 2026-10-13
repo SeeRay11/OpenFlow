@@ -158,7 +158,7 @@ const DIREKT_SIGNALS: { re: { test(s: string): boolean }; name: string }[] = [
 // „lade … um 20 € auf.“), kaufen, bezahlen/überweisen, kündigen, Abo,
 // Rechnung; top up, buy, purchase, pay the …, cancel … subscription/plan,
 // unsubscribe. Geprüft über den ganzen Text, wie seit K2f.
-const GELD_VERB_EIGEN = /(?<![\p{L}-])(?:auflad(?:e|en|t|st)?|(?:ein|ver|zu)?kauf(?:e|en|t|st)?|bezahl(?:e|en|t|st)?|(?:überweis|ueberweis)(?:e|en|t)?|(?:kündig|kuendig)(?:e|en|t|st|ung)?|abo|abos|abonnements?|abonnier(?:e|en|t)?|rechnung(?:en)?)(?![\p{L}])|(?<![\p{L}-])lad(?:e)?\s+(?:[^.!?\n]|\.(?=\S)){1,80}?\sauf(?=\s*(?:[.!?,;]|$|\s+(?:und|dann|and|then)\b))|\btop[- ]?up\b|\b(?:buy|purchase|recharge)\b|\bpay\s+(?:the|for|an?|our|my|this|that|\d)|\bcancel\s+(?:the|my|our|this)\s+(?:[\w-]+\s+){0,2}?(?:subscription|plan|account|membership|contract)\b|\bunsubscribe\b/iu
+const GELD_VERB_EIGEN = /(?<![\p{L}-])(?:auflad(?:e|en|t|st)?|(?:ein|ver|zu)?kauf(?:e|en|t|st)?|bezahl(?:e|en|t|st)?|(?:überweis|ueberweis)(?:e|en|t)?|(?:kündig|kuendig)(?:e|en|t|st|ung)?|abo|abos|abonnements?|abonnier(?:e|en|t)?|rechnung(?:en)?)(?![\p{L}])|(?<![\p{L}-])lad(?:e)?\s+(?:[^.!?\n]|\.(?=\S)){1,80}?\sauf(?=\s*(?:[.!?,;]|$|\s+(?:und|dann|and|then)\b))|\btop[- ]?up\b|\b(?:buy|purchase|recharge)\b|(?<![\p{L}-])pay\s+(?:the|for|an?|our|my|this|that|\d)(?![\p{L}])|\bcancel\s+(?:the|my|our|this)\s+(?:[\w-]+\s+){0,2}?(?:subscription|plan|account|membership|contract)\b|\bunsubscribe\b/iu
 // Währung als eigenes Wort (nach einer Zahl) — NIE eine Einheitenmenge.
 export const WAEHRUNG =
   "(?:€|\\$|eur|euros?|usd|dollars?|cents?|ct|sats?|satoshis?|bsv|chf|gbp|credits?)"
@@ -217,6 +217,9 @@ function geldAuftrag(text: string): boolean {
 }
 
 // --- K2h: geheimnis --------------------------------------------------------
+// K2i: Präfixe, mit denen „-key“ ein DATENschlüssel ist, kein Geheimnis.
+const DATEN_SCHLUESSEL =
+  "primary|foreign|sort|cache|partition|json|map|hash|object|dict|kv|r2|lookup|composite|unique|index|shortcut|hot|tasten|row|cursor|idempotency|dedup|group|join|natural|surrogate|monk|tur|whis|jock|hock|donk"
 // Schlüssel als Gegenstand: deutsche Komposita („API-Schlüssel“,
 // „Zugangstoken“), englisch als eigenes Wort („API keys“, „access token“),
 // Umgebungs-Bezeichner (ROUTER_AUTH_KEY, ZAI_PAY_KEY), `secret put`. Nicht
@@ -224,7 +227,10 @@ function geldAuftrag(text: string): boolean {
 const GEHEIMNIS_OBJ = new RegExp(
   "(?<![\\p{L}_])[\\p{L}-]*?(?:schlüssel|schluessel|token|passwort|passwörter|passwoerter|zugangsdaten|kennwort)(?:s|n|e)?(?![\\p{L}_-])" +
     // englisch „key“/„token“ nur mit Bestimmung — „JSON keys“, „max tokens“ sind keine Geheimnisse
-    "|(?<![\\p{L}_])(?:api|access|auth|secret|ssh|private|signing|deploy|oauth|bearer|refresh|session|router|device|service)[- ]?(?:keys?|tokens?)(?![\\p{L}_-])" +
+    "|(?<![\\p{L}_])(?:api|access|auth|secret|ssh|private|signing|deploy|oauth|bearer|refresh|session|router|device|service|admin|master|root|app|client|webhook|encryption|bot|worker|mcp|personal|license|registration|publish|npm|github|account|user|project|install)[- ]?(?:keys?|tokens?)(?![\\p{L}_-])" +
+    // K2i: Komposita auf -Key/-key aller Art („Admin-Key“, „Geräte-Key“, „mcp_-Key“,
+    // „Masterkey“) — nicht Datenschlüssel („Primary-Key“, „Cache-Key“, „KV-Key“, „Hotkey“).
+    `|(?<![\\p{L}\\d_-])(?!(?:${DATEN_SCHLUESSEL})-?keys?(?![\\p{L}]))[\\p{L}\\d_]+-?keys?(?![\\p{L}\\d_-])` +
     "|(?<![\\p{L}_])(?:[\\p{L}]+-)?(?:secrets?|credentials?|passwords?|passphrases?)(?![\\p{L}_-])" +
     "|\\bsecret\\s+put\\b",
   "iu",
@@ -239,7 +245,7 @@ const GEHEIMNIS_VERB = new RegExp(
       "neu\\s+erzeug", "neu\\s+generier", "ausstell", "anleg", "entzieh", "invalidier",
     ].join("|") +
     ")(?:e|en)?(?![\\p{L}])" +
-    "|\\b(?:rotate|regenerate|renew|reset|set|put|replace|revoke|invalidate|reissue|issue|create|generate|change|update|swap|roll)\\b",
+    "|\\b(?:rotate|regenerate|renew|reset|set|put|replace|revoke|invalidate|reissue|issue|create|generate|change|update|swap|roll|mint|provision)\\b",
   "iu",
 )
 // Trennbar: „tausch … aus“, „leg … an“, „stell … aus“, „setz … neu“.
@@ -250,11 +256,25 @@ const GEHEIMNIS_TRENNBAR: [RegExp, RegExp][] = [
   [/(?<![\p{L}-])zieh(?:e)?(?![\p{L}])/iu, /(?<![\p{L}-])zurück|zurueck(?![\p{L}])/iu],
 ]
 
+// K2i (Abnahme R20): Beschaffen/Herstellen eines NEUEN Schlüssels mit
+// Allerweltsverben („mach nen frischen Deploy-Token“, „hol dir je einen neuen
+// Worker-Key“, „erstell einen Admin-Key“, „spin up new API tokens“). Das Verb
+// allein ist zu breit („erstell eine Liste der Admin-Keys“) — es zählt nur,
+// wenn der Schlüssel unbestimmt oder als NEU benannt das Objekt ist.
+const GEHEIMNIS_HERSTELL_VERB =
+  /(?<![\p{L}-])(?<!(?:das|des|beim|zum|vom)\s)(?:erstell|mach|bau|hol|besorg|beschaff|gib|zieh|leg)(?:e|en)?(?![\p{L}])|\b(?:make|get|give|grab|cut|spin\s+up|set\s+up|add)\b/iu
+const GEHEIMNIS_UNBESTIMMT = new RegExp(
+  "(?<![\\p{L}'])(?:ein|eine|einen|nen|'nen|neue[nmrs]?|frische[nmrs]?|weitere[nmrs]?|zusätzliche[nmrs]?|zusaetzliche[nmrs]?|a|an|new|fresh|another|additional)\\s+" +
+    "(?:[\\p{L}\\d_-]+\\s+)?[\\p{L}\\d_-]*(?:keys?|tokens?|schlüssel|schluessel|secrets?|passw(?:o|ö|oe)rt(?:er)?|passwords?)(?![\\p{L}\\d_-])",
+  "iu",
+)
+
 function geheimnisAuftrag(text: string): boolean {
   return auftragsSaetze(text).some((satz) => {
     const s = ohneNebensatz(satz)
     if (!GEHEIMNIS_OBJ.test(s) && !GEHEIMNIS_BEZEICHNER.test(s)) return false
     if (GEHEIMNIS_VERB.test(s)) return true
+    if (GEHEIMNIS_HERSTELL_VERB.test(s) && GEHEIMNIS_UNBESTIMMT.test(s)) return true
     return GEHEIMNIS_TRENNBAR.some(([stamm, partikel]) => {
       const m = stamm.exec(s)
       return !!m && partikel.test(s.slice(m.index + m[0].length))
@@ -348,9 +368,31 @@ const LAST_A_KOPF = new RegExp(`^${LASTTEST}\\s*:\\s*(?:\\d|(?:gegen|auf|an|agai
 // K2h: ≥ 10 gleichzeitige/parallele Anfragen AN/GEGEN ein Ziel — auch ohne
 // Auslöseverb („200 parallele Anfragen an memex“). Nicht mit Artikel davor
 // („die 300 gleichzeitigen Anfragen an rille von gestern“ verweist auf Bestand).
-const LAST_C = /(?<![\d.,])(?<!(?:der|die|den|dem|des|diese[nrms]?|jene[nrms]?|the|these|those|this|that)\s+)(?:\d{2,}|\d{1,3}(?:[.,]\d{3})+)\s+(?:gleichzeitige[nr]?|parallele[nr]?|simultane[nr]?|concurrent|parallel|simultaneous)\s+(?:[\p{L}-]+\s+)?(?:anfragen|requests?|aufrufe[n]?|abrufe[n]?|calls|zugriffe[n]?|hits|verbindungen|connections)(?![\p{L}])(?:[^.!?\n]){0,40}?(?<![\p{L}-])(?:an|gegen|auf|against|to|at|on)(?![\p{L}])/iu
+const LAST_C = /(?<![\d.,])(?<!(?:der|die|den|dem|des|diese[nrms]?|jene[nrms]?|the|these|those|this|that|bei|unter|under)\s+)(?:\d{2,}|\d{1,3}(?:[.,]\d{3})+)\s+(?:gleichzeitige[nr]?|parallele[nr]?|simultane[nr]?|concurrent|parallel|simultaneous)\s+(?:[\p{L}-]+\s+)?(?:anfragen|requests?|aufrufe[n]?|abrufe[n]?|calls|zugriffe[n]?|hits|verbindungen|connections)(?![\p{L}])(?:[^.!?\n]){0,40}?(?<![\p{L}-])(?:an|gegen|auf|against|to|at|on)(?![\p{L}])/iu
 const LAST_MENGE = /(?<![\d.,])(?:\d{2,}|\d{1,3}(?:[.,]\d{3})+)\s+(?:[\p{L}-]+\s+){0,2}?(?:anfragen|requests?|aufrufe|abrufe|calls|zugriffe|hits|verbindungen|connections|rps)(?![\p{L}])/iu
-const LAST_B_VERB = /(?<![\p{L}-])(?:schieß|schiess|feuer|schick|send|lass|start|fahr|feur|jag|hit|fire|blast|hammer|run|send|issue|launch|flood|bombard)(?:e|en|t)?(?![\p{L}])/iu
+// K2i (Abnahme R20): auch umgangssprachlich („hau“, „baller“, „knall“,
+// „schmeiß“, „pump“, „slam“, „shoot“, „spam“).
+const LAST_B_VERB = /(?<![\p{L}-])(?:schieß|schiess|feuer|schick|send|lass|start|fahr|feur|jag|hau|baller|ballr|knall|schmeiß|schmeiss|pump|spam|hit|fire|blast|hammer|slam|shoot|throw|run|send|issue|launch|flood|bombard|bombardier)(?:e|en|t|n)?(?![\p{L}])/iu
+// K2i: ≥ 10 Anfragen + Gleichzeitigkeit in BELIEBIGER Stellung („1000
+// Requests parallel gegen thoth“, „gleichzeitig 50 Calls an rille“, „in
+// parallel against …“) + Ziel (gegen/an/auf/at/against/to/on/durch + Wort)
+// ODER Startverb. Mit Ziel ohne Startverb nicht, wenn die Zahl als Bestand
+// („die 500 parallelen Requests von gestern“) oder Bedingung („bei 100
+// parallelen Calls“) eingeleitet ist. Nebensätze („…, wenn 1000 Requests
+// parallel gegen thoth laufen“) zählen nicht.
+const LAST_GLEICHZEITIG =
+  /(?<![\p{L}])(?:parallel(?:e[nrsm]?)?|gleichzeitig(?:e[nrsm]?)?|simultan(?:e[nrsm]?)?|zeitgleich(?:e[nrsm]?)?|concurrent(?:ly)?|simultaneous(?:ly)?|auf\s+einmal|at\s+once)(?![\p{L}])/iu
+const LAST_ZIEL = /(?<![\p{L}-])(?:gegen|an|auf|durch|at|against|to|on|through)\s+[\p{L}\d/]/iu
+const LAST_MENGE_BESTAND = /(?<!(?:der|die|den|dem|des|diese[nrms]?|jene[nrms]?|the|these|those|this|that|bei|unter|under|von|vom|aus|of|from)\s+)(?<![\d.,])(?:\d{2,}|\d{1,3}(?:[.,]\d{3})+)\s+(?:[\p{L}-]+\s+){0,2}?(?:anfragen|requests?|aufrufe|abrufe|calls|zugriffe|hits|verbindungen|connections)(?![\p{L}])/iu
+const LAST_NEBENSATZ = /,\s*(?:wenn|falls|sobald|dass|weil|als|if|when|once|because|that)\b/iu
+
+function lastFreieStellung(satz: string): boolean {
+  const i = satz.search(LAST_NEBENSATZ)
+  const s = ohneNebensatz(i >= 0 ? satz.slice(0, i) : satz)
+  if (!LAST_MENGE.test(s) || !LAST_GLEICHZEITIG.test(s)) return false
+  if (LAST_B_VERB.test(s)) return true
+  return LAST_MENGE_BESTAND.test(s) && LAST_ZIEL.test(s)
+}
 
 function lastGegenZiel(text: string): boolean {
   return auftragsSaetze(text).some(
@@ -359,7 +401,8 @@ function lastGegenZiel(text: string): boolean {
       LAST_A_ANFANG.test(s) ||
       LAST_A_KOPF.test(s) ||
       LAST_C.test(s) ||
-      (LAST_MENGE.test(s) && LAST_B_VERB.test(s)),
+      (LAST_MENGE.test(s) && LAST_B_VERB.test(s)) ||
+      lastFreieStellung(s),
   )
 }
 
@@ -824,6 +867,35 @@ const ARBEIT = new Set([
   "research", "compare", "summarize", "summarise", "analyze", "analyse", "document", "evaluate", "audit",
   "assess", "investigate",
 ])
+// K2i (Abnahme R20): „Fass die Preise der drei Anbieter kurz zusammen.“ bekam
+// die PFLICHT — Einheiten „drei Anbieter“ + Arbeitsverb „fass … zusammen“, und
+// bei Arbeitsverben galt das Verb selbst als Ergebnis. Zusammenfassen/
+// Zusammenstellen ist aber n→1: aus mehreren Gegenständen wird EIN Ergebnis,
+// es zerfällt nicht in unabhängige Teile. Als eigenes Ergebnis zählt ein
+// Aggregationsverb deshalb nur, wenn der Auftrag VERTEILT ist („für jeden …“,
+// „je Anbieter“, „pro Version“, „each of …“, „einzeln/getrennt“). Ein bestelltes
+// Artefakt („in einer Tabelle“, „in docs/x.md“) und andere Arbeitsverben im
+// selben Auftrag („Recherchier … und fass zusammen“) tragen weiter.
+const AGGREGAT_STAMM = new Set(["fass", "trag", "stell", "führ", "fuehr", "summarize", "summarise"])
+const VERTEILT_ADVERB =
+  /(?<![\p{L}])(?:jeweils|einzeln|separat|getrennt|unabhängig|unabhaengig|respectively|separately|individually|independently)(?![\p{L}])/iu
+const VERTEILT_QUANTOR =
+  /(?<![\p{L}])(?:je|pro|per|für\s+jede[nrsm]?|fuer\s+jede[nrsm]?|for\s+(?:each|every)|each|every|jede[nrsm]?)\s+(?:(?:der|des|von|of|of\s+the|the)\s+)?([\p{L}\d][\p{L}\d.-]*)/giu
+function verteilt(text: string): boolean {
+  if (VERTEILT_ADVERB.test(text)) return true
+  for (const m of text.matchAll(VERTEILT_QUANTOR)) {
+    const w = m[1].replace(/[.]+$/, "")
+    if (!UMFANG_NOMEN.test(w) && !AUSNAHME_JE.test(w)) return true
+  }
+  return false
+}
+function istAggregat(v: Treffer): boolean {
+  const stamm = v.verb.toLowerCase().replace(/(?:en|e|n)$/, "")
+  if (!AGGREGAT_STAMM.has(stamm)) return false
+  // „führ … durch“ ist Ausführen, nicht Zusammenführen.
+  return /^summari[sz]/.test(stamm) || /\bzusammen\b/i.test(v.rest)
+}
+
 const BEDARF_RAHMEN =
   /\b(?:(?:ich|wir)\s+(?:brauche|brauchen|hätte gerne?|haette gerne?|hätten gerne?|will|wollen|möchte|möchten|moechte|moechten)|(?:i|we)\s+(?:need|want|'d like|would like))\b/i
 
@@ -879,8 +951,9 @@ export function erkenneAuftrag(textRaw: string): { verb: string; objekt: string;
   for (const v of verben.filter((v) => v.stark)) {
     const stamm = v.verb.toLowerCase().replace(/(?:en|e|n)$/, "")
     const arbeit = ARBEIT.has(v.verb.toLowerCase()) || ARBEIT.has(stamm)
+    const verbAlsErgebnis = arbeit && !(istAggregat(v) && !verteilt(text))
     const o =
-      ergebnisObjekt(text) ?? (v.kreation ? artefaktObjekt(text) : null) ?? mengenArtefakt(text) ?? (arbeit ? v.verb : null)
+      ergebnisObjekt(text) ?? (v.kreation ? artefaktObjekt(text) : null) ?? mengenArtefakt(text) ?? (verbAlsErgebnis ? v.verb : null)
     if (o) return { verb: v.verb, objekt: o.trim(), einheiten }
   }
   // Erklärverb: nur mit Ergebnisobjekt im eigenen Hauptsatz („Erkläre in
@@ -984,7 +1057,10 @@ Auftrag: `
 export const LLM_URL = "https://dharma.mcp-hub.stream/v1/chat/completions"
 export const LLM_MODELL = "fast"
 export const LLM_MAX_TOKENS = 64
-export const LLM_TIMEOUT_MS = 4000
+// K2i (Abnahme R20): 4 s ließen 3 von 8 Ja-Fällen in die Frist laufen; 6 s
+// (Plugin-Aufruf 6,5 s). Triviale Prompts kostet das nichts — die K2f-
+// Vorfilter fragen das LLM dort gar nicht.
+export const LLM_TIMEOUT_MS = 6000
 const LLM_KEYFILE = join(homedir(), ".config/opencode/.secrets/dharma.key")
 const USER_AGENT = "openflow-of-gate/K2e (+fabrik-gate)"
 
