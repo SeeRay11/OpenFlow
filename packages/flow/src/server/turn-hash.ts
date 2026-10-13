@@ -92,6 +92,13 @@ export function recordedTurns(node: {
   output?: string
   turns?: RecordedTurn[]
 }): RecordedTurn[] | undefined {
+  // A card that was still working (or stopped, or failed) when the run ended
+  // offers the turns it FINISHED — each entry is written only once its answer
+  // is in. Abnahme R18 K7 (a): the boss killed on its results turn offered
+  // nothing, was re-briefed, wrote its dispatch anew, and every worker it had
+  // already been answered by ran again. The old-log fallback stays for done
+  // cards: a last prompt without its answer proves nothing.
+  if (Array.isArray(node.turns) && node.turns.length && node.turns.every((turn) => !turn.legacy)) return node.turns
   if (node.status !== "done") return undefined
   if (Array.isArray(node.turns) && node.turns.length) return node.turns
   if (typeof node.prompt !== "string" || typeof node.output !== "string") return undefined

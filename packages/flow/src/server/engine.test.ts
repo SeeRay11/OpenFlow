@@ -3083,6 +3083,87 @@ describe("resume by input hash (K7)", () => {
     expect(log.nodes.find((node) => node.id === "b")!.output).toBe("b NEW")
   })
 
+  /**
+   * Abnahme R18 K7 (a), 13.10.2026: a run killed while the boss was on its
+   * results turn (workers done, `[boss] running`) was resumed with "3 card(s)
+   * kept, 1 continued in session" — and worker-1..3 ran again in new sessions
+   * (00:17:24 instead of 00:15:35), scorecard `reused 0`. The continued boss
+   * was re-briefed in its held session, wrote its dispatch anew in other
+   * words, and every worker prompt hashed differently. Soll: the boss's
+   * finished turns replay by hash like anyone's, so it hands out the very
+   * batch it handed out before and the finished workers are taken over; only
+   * the turn it was killed in runs, in the session it held.
+   */
+  async function killedInBossPhase() {
+    const h = first()
+    const snapshots: RunLog[] = []
+    h.hooks.onRun = (log) => snapshots.push(structuredClone(log))
+    const done = await h.run(tree("root->a", "root->b"), "do the thing").done
+    expect(done.status).toBe("done")
+    // What a SIGKILL leaves behind: the last checkpoint written while the boss
+    // was in its second turn, both workers finished.
+    const killed = snapshots.findLast((log) => {
+      const [root, a, b] = ["root", "a", "b"].map((id) => log.nodes.find((node) => node.id === id)!)
+      return root.status === "running" && root.turns?.length === 1 && a.status === "done" && b.status === "done"
+    })
+    expect(killed).toBeDefined()
+    // Session ids are unique on a real server; the harness counts from s1 in
+    // every run, so the killed run's ids are renamed to keep them apart.
+    for (const node of killed!.nodes) if (node.sessionID) node.sessionID = `killed-${node.sessionID}`
+    return killed!
+  }
+
+  test("R18 K7(a): killed in the boss phase — the continued boss replays its dispatch and the finished workers are taken over", async () => {
+    const killed = await killedInBossPhase()
+    const seeds = await from(killed)
+    expect(Object.keys(seeds.resume).sort()).toEqual(["a", "b"])
+    expect(seeds.sessions.root).toBeDefined()
+
+    // The boss as a model behaves: shown its cards' results it answers; asked
+    // anything else (re-briefed in its held session, as before the fix) it
+    // writes its dispatch afresh — in other words, as the R18 boss did.
+    const h = again([])
+    const transcript = h.deps.api.transcript
+    h.deps.api.transcript = async (sessionID: string) => {
+      if (h.sessionOf.get("root") !== sessionID) return transcript(sessionID)
+      const asked = h.prompts.get("root") ?? ""
+      return {
+        text: asked.includes("# What your cards returned")
+          ? final("NEW answer")
+          : dispatch(["a", "do a, reworded"], ["b", "do b, reworded"]),
+      }
+    }
+    const log = await h.run(tree("root->a", "root->b"), "do the thing", seeds as any).done
+
+    expect(log.status).toBe("done")
+    // Only the turn the boss was killed in runs — in the session it held.
+    expect(h.dispatched).toEqual(["root"])
+    expect(h.created()).toBe(0)
+    expect(log.nodes.find((node) => node.id === "root")!.sessionID).toBe(seeds.sessions.root)
+    expect(h.prompts.get("root")).toContain("interrupted")
+    expect(h.prompts.get("root")).toContain("a from last time")
+    expect(h.prompts.get("root")).toContain("b from last time")
+    expect(log.nodes.find((node) => node.id === "a")).toMatchObject({ reused: true, output: "a from last time" })
+    expect(log.nodes.find((node) => node.id === "b")).toMatchObject({ reused: true, output: "b from last time" })
+    // K11: what the scorecard counts as reused is exactly the finished workers;
+    // the boss replayed one turn but answered this run's, so it is not.
+    expect(log.nodes.filter((node) => node.reused).map((node) => node.id)).toEqual(["a", "b"])
+    // Worker timestamps are the takeover's, but the output and the hash chain are the old run's.
+    const before = killed.nodes.find((node) => node.id === "a")!.turns!
+    expect(log.nodes.find((node) => node.id === "a")!.turns).toEqual(before)
+  })
+
+  test("R18 K7(a), Gegenprobe: killed in the boss phase but resumed with another input — the boss and every worker run again", async () => {
+    const killed = await killedInBossPhase()
+    const h = again([dispatch(["a", "do a"], ["b", "do b"]), final("NEW answer")])
+    const log = await h.run(tree("root->a", "root->b"), "do another thing", (await from(killed)) as any).done
+
+    expect(log.status).toBe("done")
+    expect([...h.dispatched].sort()).toEqual(["a", "b", "root", "root"])
+    expect(log.nodes.filter((node) => node.reused).length).toBe(0)
+    expect(log.nodes.find((node) => node.id === "a")!.output).toBe("a NEW")
+  })
+
   test("a resumed run records the turns again, so a resume of the resume is complete too", async () => {
     const old = await first().run(tree("root->a", "root->b"), "do the thing").done
     const mid = await again([]).run(tree("root->a", "root->b"), "do the thing", (await from(old)) as any).done

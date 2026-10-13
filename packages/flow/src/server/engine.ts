@@ -478,8 +478,21 @@ export function start(
    * buy a bill; those are dropped here.
    */
   const carried = new Set<string>()
+  /**
+   * Cards that were working when the run ended AND recorded finished turns
+   * (K7). They are not carried up front: their finished turns replay by hash
+   * first, exactly like a done card's, and the session is picked up only at
+   * the first turn that does not match — the one they were interrupted in.
+   * Carried up front, the boss of R18 K7 (a) was re-briefed in its session,
+   * worded its dispatch anew, and every finished worker ran again.
+   */
+  const deferredCarry = new Set<string>()
   for (const [id, sessionID] of Object.entries(options.sessions ?? {})) {
     if (resume[id] !== undefined || !sessionID) continue
+    if (options.turns?.[id]?.some((turn) => !turn.legacy)) {
+      deferredCarry.add(id)
+      continue
+    }
     nodeSession.set(id, sessionID)
     sessions.set(sessionID, id)
     carried.add(id)
@@ -866,10 +879,23 @@ export function start(
       // history, so its next turn goes there rather than into a blank one.
       unreplayed.delete(node.id)
       const held = options.sessions?.[node.id]
+      // A card that was working when the run ended continues here, in the
+      // turn it was interrupted in — told so, as any carried card is. One
+      // whose very first turn diverges has a session built on another input,
+      // and starts afresh instead.
+      const interruptedHere = deferredCarry.delete(node.id)
       if (link.history && !nodeSession.has(node.id) && held) {
         nodeSession.set(node.id, held)
         sessions.set(held, node.id)
         reuse = true
+        if (interruptedHere) carried.add(node.id)
+        // The log names the session the card answers in, or the next
+        // interruption has nothing to carry forward.
+        patch(node.id, { sessionID: held })
+        // Every call already in the held session belongs to the old run; only
+        // what this turn calls may decide it.
+        const old = (await api.sessionCalls?.(held).catch(() => [])) ?? []
+        consumed.set(node.id, new Set(old.map((call) => call.id)))
       }
     }
     // A card carried over from an interrupted run is prompted into the session
