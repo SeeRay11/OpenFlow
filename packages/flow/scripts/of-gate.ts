@@ -11,7 +11,8 @@
  *               Sitzung („oben“, „dieser“, „den letzten …“). Nur dann
  *               `injizieren: true`. Signalwörter sind seit K2c nur Messung.
  *   DIREKT    — klarer Nein-Fall (Geldpfad, Deploy, Secrets, Rückfragen,
- *               Einzelschritt <1 min) oder Nutzer-Prefix "direkt:"
+ *               Einzelschritt <1 min, Wirkung auf Produktion, Last gegen
+ *               ein Ziel) oder Nutzer-Prefix "direkt:"
  *   GRAUZONE  — alles andere: Fragen, Erklärwünsche, Aufträge ohne
  *               Einheitenmenge/Ergebnis oder an Kontext gebunden. Nur Messung.
  *
@@ -92,7 +93,7 @@ const FABRIK_SIGNALS: { re: RegExp; name: string }[] = [
 ]
 
 // Nein-Fall-Signale: kontextgebunden, gefährlich, dialogisch, trivial.
-const DIREKT_SIGNALS: { re: RegExp; name: string }[] = [
+const DIREKT_SIGNALS: { re: { test(s: string): boolean }; name: string }[] = [
   { re: /\bdeploy|deployment|rollout\b/i, name: "deploy" },
   { re: /\bgeld|payment|stripe|abrechnung|invoice\b/i, name: "geldpfad" },
   { re: /\bsecret|passwort|password|api[- ]key|token rotat|credentials\b/i, name: "secrets" },
@@ -141,7 +142,103 @@ const DIREKT_SIGNALS: { re: RegExp; name: string }[] = [
     re: /(?<![\p{L}-])(?:auflad(?:e|en|t|st)?|(?:ein|ver|zu)?kauf(?:e|en|t|st)?|bezahl(?:e|en|t|st)?|(?:überweis|ueberweis)(?:e|en|t)?|(?:kündig|kuendig)(?:e|en|t|st|ung)?|abo|abos|abonnements?|abonnier(?:e|en|t)?|rechnung(?:en)?)(?![\p{L}])|(?<![\p{L}-])lad(?:e)?\s+(?:[^.!?\n]|\.(?=\S)){1,80}?\sauf(?=\s*(?:[.!?,;]|$|\s+(?:und|dann|and|then)\b))|\btop[- ]?up\b|\b(?:buy|purchase|recharge)\b|\bpay\s+(?:the|for|an?|our|my|this|that|\d)|\bcancel\s+(?:the|my|our|this)\s+(?:[\w-]+\s+){0,2}?(?:subscription|plan|account|membership|contract)\b|\bunsubscribe\b/iu,
     name: "geld-auftrag",
   },
+  // K2g (13.10.2026, Abnahme R18): Wirkung auf die PRODUKTION und LAST gegen
+  // ein Ziel bekamen einen weichen Fabrik-Hinweis („Migrier die Prod-D1 …,
+  // alle drei“, „Starte den Lasttest mit 500 parallelen Anfragen gegen
+  // dharma“). Satzweise geprüft, Fragesätze ohne Bitt-Rahmen zählen nicht.
+  // Fälle: gate-k2g-faelle.ts (PROD_NEIN / LAST_NEIN / KONTROLLE / FANOUT).
+  { re: { test: produktionsWirkung }, name: "produktion" },
+  { re: { test: lastGegenZiel }, name: "last-gegen-ziel" },
 ]
+
+// --- K2g: produktion -------------------------------------------------------
+// Es zählt die WIRKUNG auf die Produktion: eine Umgebungs-Benennung UND ein
+// Wirkverb (Imperativ/Infinitiv) im selben Satz. Lesen, Prüfen, Analysieren,
+// Zusammenfassen ÜBER die Produktion zählt nicht (keine Wirkverben), ebenso
+// wenig Komposita, die keine Umgebung benennen („Produktionsreife“,
+// „Produktionsplanung“, „Prod-Checkliste“, „production-readiness“, „Live-Log“)
+// und Partizipien („migriert“, „neu gestartet“).
+const UMGEBUNG = "(?:datenbank|db|d1|kv|r2|worker|umgebung|server|system|instanz|bucket|namespace|schema|tabellen?|cluster|daten|bestand)"
+const PROD_ZIEL = new RegExp(
+  [
+    // „Prod“, „auf Prod“, „prod D1“ — eigenständig, nicht „Prod-Checkliste“
+    "(?<![\\p{L}-])prod(?![\\p{L}-])",
+    // „Prod-D1“, „Prod-KV“, „Produktions-D1“, „Produktionsdatenbank“, „Live-Datenbank“, „Live-Worker“
+    `(?<![\\p{L}-])(?:prod-|produktions-?|live-)${UMGEBUNG}(?![\\p{L}-])`,
+    // „Produktion“ als Wort (nicht „Produktionsreife“)
+    "(?<![\\p{L}-])produktion(?![\\p{L}-])",
+    // englisch: „production“ (nicht „production-readiness“), „live database/workers/system“
+    "(?<![\\p{L}-])production(?![\\p{L}-])",
+    "(?<![\\p{L}-])live\\s+(?:database|db|d1|kv|workers?|system|environment|servers?|instances?)(?![\\p{L}])",
+    // Werkzeug-Schalter
+    "(?<![\\w-])--remote\\b",
+    "(?<![\\w-])--env[= ](?:prod|production)\\b",
+  ].join("|"),
+  "iu",
+)
+// Wirkverben, die allein wirken („migriere“, „setz“, „apply“ …).
+const PROD_WIRK_EINFACH = new RegExp(
+  "(?<![\\p{L}-])(?:" +
+    [
+      "migrier", "anwend", "einspiel", "ausführ", "ausfuehr", "änder", "aender", "setz", "aktualisier",
+      "updat", "importier", "befüll", "befuell", "zurückroll", "zurueckroll", "neustart", "neu\\s+start",
+      "abschalt", "ausschalt", "einschalt", "umschalt", "deaktivier", "aktivier", "überschreib",
+      "ueberschreib", "ersetz", "backfill", "zurücksetz", "zuruecksetz", "wiederherstell", "hochlad",
+      "eintrag", "säe", "säen", "seed", "patch", "truncat",
+    ].join("|") +
+    ")(?:e|en|n)?(?![\\p{L}])" +
+    "|\\b(?:migrate|apply|run|execute|update|modify|change|alter|seed|restore|reset|restart|reboot|insert|import|upload|patch|enable|disable|toggle|backfill|truncate|overwrite|rollback|roll\\s+back|write\\s+to|push\\s+to)\\b",
+  "iu",
+)
+// Trennbare Verben: Stamm (Imperativ) vorne, Partikel als eigenes Wort danach.
+const PROD_WIRK_TRENNBAR: [RegExp, RegExp][] = [
+  [/(?<![\p{L}-])wend(?:e)?(?![\p{L}])/iu, /(?<![\p{L}-])an(?![\p{L}])/iu],
+  [/(?<![\p{L}-])spiel(?:e)?(?![\p{L}])/iu, /(?<![\p{L}-])ein(?![\p{L}])/iu],
+  [/(?<![\p{L}-])(?:führ|fuehr)(?:e)?(?![\p{L}])/iu, /(?<![\p{L}-])(?:aus|durch)(?![\p{L}])/iu],
+  [/(?<![\p{L}-])roll(?:e)?(?![\p{L}])/iu, /(?<![\p{L}-])(?:zurück|zurueck|aus)(?![\p{L}])/iu],
+  [/(?<![\p{L}-])start(?:e)?(?![\p{L}])/iu, /(?<![\p{L}-])neu(?![\p{L}])/iu],
+  [/(?<![\p{L}-])schalt(?:e)?(?![\p{L}])/iu, /(?<![\p{L}-])(?:aus|ab|ein|an|um)(?![\p{L}])/iu],
+  [/(?<![\p{L}-])(?:stell|setz)(?:e)?(?![\p{L}])/iu, /(?<![\p{L}-])(?:zurück|zurueck|her|um)(?![\p{L}])/iu],
+  [/(?<![\p{L}-])trag(?:e)?(?![\p{L}])/iu, /(?<![\p{L}-])ein(?![\p{L}])/iu],
+  [/(?<![\p{L}-])lad(?:e)?(?![\p{L}])/iu, /(?<![\p{L}-])hoch(?![\p{L}])/iu],
+]
+
+function auftragsSaetze(text: string): string[] {
+  return saetze(ohneZitate(text)).filter((s) => !FRAGE_ANFANG.test(s) || BITT_RAHMEN.test(s))
+}
+
+function produktionsWirkung(text: string): boolean {
+  return auftragsSaetze(text).some((s) => {
+    if (!PROD_ZIEL.test(s)) return false
+    if (PROD_WIRK_EINFACH.test(s)) return true
+    return PROD_WIRK_TRENNBAR.some(([stamm, partikel]) => {
+      const m = stamm.exec(s)
+      return !!m && partikel.test(s.slice(m.index + m[0].length))
+    })
+  })
+}
+
+// --- K2g: last-gegen-ziel --------------------------------------------------
+// (a) Last-/Stress-/Belastungstest wird AUSGELÖST: Auslöseverb ≤ 3 Wörter vor
+//     dem Test („Starte den Lasttest“, „Run a load test“) oder der Test steht
+//     als Befehl am Satzanfang („Lasttest gegen dharma …“, „Stress test the
+//     API …“). Nicht: „Lasttest-Ergebnisse“, „Bericht über den Lasttest“,
+//     „load testing tools“, „Plan einen Lasttest …“.
+// (b) ≥ 10 Anfragen/Requests/Calls + Auslöseverb im Satz („Feuer 1000
+//     Anfragen gegen …“, „Hit the router with 100 concurrent requests“).
+//     Nicht: „Die 500 Anfragen von gestern liefen …“ (kein Auslöseverb).
+const LASTTEST = "(?:(?:last|stress|belastungs|performance-?last)-?tests?|(?:load|stress|soak|spike)[- ]?test(?:s|ing)?)(?![\\p{L}-])"
+const LAST_AUSLOESER = "(?:start|fahr|mach|führ|fuehr|lass|lauf|run|execute|perform|launch|do|kick\\s+off|fire|trigger)"
+const LAST_A_VERB = new RegExp(`(?<![\\p{L}-])${LAST_AUSLOESER}(?:e|en|t)?\\s+(?:[\\p{L}\\d/.:-]+\\s+){0,3}?${LASTTEST}`, "iu")
+const LAST_A_ANFANG = new RegExp(`^${LASTTEST}\\s+(?:gegen|auf|against|on|the|our|all|each|every|mit|with)\\b`, "iu")
+const LAST_MENGE = /(?<![\d.,])(?:\d{2,}|\d{1,3}(?:[.,]\d{3})+)\s+(?:[\p{L}-]+\s+){0,2}?(?:anfragen|requests?|aufrufe|abrufe|calls|zugriffe|hits|verbindungen|connections|rps)(?![\p{L}])/iu
+const LAST_B_VERB = /(?<![\p{L}-])(?:schieß|schiess|feuer|schick|send|lass|start|fahr|feur|jag|hit|fire|blast|hammer|run|send|issue|launch|flood|bombard)(?:e|en|t)?(?![\p{L}])/iu
+
+function lastGegenZiel(text: string): boolean {
+  return auftragsSaetze(text).some(
+    (s) => LAST_A_VERB.test(s) || LAST_A_ANFANG.test(s) || (LAST_MENGE.test(s) && LAST_B_VERB.test(s)),
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Auftrag mit Ergebnisobjekt
