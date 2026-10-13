@@ -299,23 +299,31 @@ describe("of-scorecard — Ledger-Sektion (Regeltreue)", () => {
           { event: "task", quelle: "subagent", entscheidung: "GRAUZONE" },
           { event: "user_prompt", entscheidung: "FABRIK" },
           { event: "fabrik_run" },
+          // Session-Matching: Kandidat s1 wird durch subagent-Nutzung in s1
+          // binnen 5 min abgedeckt; s2 bleibt unbedeckt (andere Session).
+          { ts: "2026-10-13T10:00:00Z", event: "user_prompt", entscheidung: "FABRIK", session_id: "s1" },
+          { ts: "2026-10-13T10:05:00Z", event: "task", quelle: "subagent", entscheidung: "GRAUZONE", session_id: "s1" },
+          { ts: "2026-10-13T10:00:00Z", event: "user_prompt", entscheidung: "FABRIK", session_id: "s2" },
           "",
         ],
         order: ["ledger-run"],
       },
     )
     expect(p.ledger).not.toBeNull()
-    expect(p.ledger!.eintraege).toBe(6)
-    expect(p.ledger!.taskBewertungen).toBe(4)
-    expect(p.ledger!.subagentNutzung).toBe(1)
+    expect(p.ledger!.eintraege).toBe(9)
+    expect(p.ledger!.taskBewertungen).toBe(5)
+    expect(p.ledger!.subagentNutzung).toBe(2)
     expect(p.ledger!.fabrikKandidaten).toBe(1)
-    expect(p.ledger!.fanoutKandidaten).toBe(2) // task FABRIK + user_prompt FABRIK
+    expect(p.ledger!.fanoutKandidaten).toBe(4) // 1 task FABRIK + 3 user_prompt FABRIK
     expect(p.ledger!.direktEmpfohlen).toBe(1)
-    expect(p.ledger!.grauzone).toBe(2)
+    expect(p.ledger!.grauzone).toBe(3)
     expect(p.ledger!.fabrikAufrufe).toBe(1)
-    // Fan-out-Abdeckung (13.10.2026): Stufe 1 (subagent) + Stufe 2 (fabrik_run)
-    // gegen alle Kandidaten: (1+1)/2 = 100 %
-    expect(p.ledger!.fanoutAbdeckung).toBe(100)
+    // Session-Matching: Kandidat s1 durch subagent in s1 binnen 5 min bedeckt,
+    // s2 bleibt offen → 1/2 = 50 %.
+    expect(p.ledger!.fanoutKandidatenSession).toBe(2)
+    expect(p.ledger!.fanoutAbdeckungSession).toBe(50)
+    // Näherung ohne Matching: (1 fabrik_run + 2 subagent) / 4 Kandidaten = 75 %
+    expect(p.ledger!.fanoutAbdeckung).toBe(75)
     expect(p.ledger!.regeltreueFabrik).toBe(100) // alte, enge Definition: 1 Fabrik-Aufruf / 1 task-Kandidat
   })
 })

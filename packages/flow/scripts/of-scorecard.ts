@@ -147,6 +147,21 @@ if (existsSync(LEDGER)) {
   const fanoutKandidaten = fabrikKandidaten.length + userPrompts.filter((e) => e.entscheidung === "FABRIK").length
   const subagentNutzung = tasks.filter((e) => e.quelle === "subagent").length
   const abgedeckt = fabrikRuns.length + subagentNutzung
+  // Session-Matching (13.10.2026, OFFEN→FERTIG): Kandidaten mit session_id
+  // gelten als abgedeckt, wenn binnen 30 min im SELBEN Session-Kontext ein
+  // subagent-Aufruf (task) oder Fabrik-Start (fabrik_run) FOLGT. Alte Zeilen
+  // ohne session_id fallen weiter in die Globalzahlen-Näherung.
+  const FENSTER_MS = 30 * 60_000
+  const ts0 = (e: any) => Date.parse(e.ts)
+  const kandidatenSess = userPrompts.filter(
+    (e) => e.entscheidung === "FABRIK" && typeof e.session_id === "string",
+  )
+  const nutzungSess = [...tasks, ...fabrikRuns].filter((e) => typeof e.session_id === "string")
+  const abgedecktSess = kandidatenSess.filter((k) =>
+    nutzungSess.some(
+      (e) => e.session_id === k.session_id && ts0(e) >= ts0(k) && ts0(e) - ts0(k) <= FENSTER_MS,
+    ),
+  ).length
   ledger = {
     eintraege: entries.length,
     taskBewertungen: tasks.length,
@@ -156,6 +171,11 @@ if (existsSync(LEDGER)) {
     direktEmpfohlen: tasks.filter((e) => e.entscheidung === "DIREKT").length,
     grauzone: tasks.filter((e) => e.entscheidung === "GRAUZONE").length,
     fabrikAufrufe: fabrikRuns.length,
+    fanoutKandidatenSession: kandidatenSess.length,
+    fanoutAbdeckungSession:
+      kandidatenSess.length > 0
+        ? +((abgedecktSess / kandidatenSess.length) * 100).toFixed(1)
+        : null,
     fanoutAbdeckung:
       fanoutKandidaten > 0
         ? +Math.min(100, (abgedeckt / fanoutKandidaten) * 100).toFixed(1)
