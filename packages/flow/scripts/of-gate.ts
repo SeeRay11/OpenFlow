@@ -96,7 +96,9 @@ const FABRIK_SIGNALS: { re: RegExp; name: string }[] = [
 const DIREKT_SIGNALS: { re: { test(s: string): boolean }; name: string }[] = [
   { re: /\bdeploy|deployment|rollout\b/i, name: "deploy" },
   { re: /\bgeld|payment|stripe|abrechnung|invoice\b/i, name: "geldpfad" },
-  { re: /\bsecret|passwort|password|api[- ]key|token rotat|credentials\b/i, name: "secrets" },
+  // K2/R22: nur eine HANDLUNG am Geheimnis (setzen, ändern, rotieren, löschen, ausgeben,
+  // im Klartext zeigen, kopieren …) — Übersicht/Auflisten/Prüfen ist offen. Details bei `secretsHandlung`.
+  { re: { test: secretsHandlung }, name: "secrets" },
   { re: /\bssh|produktionsserver|prod-server\b/i, name: "server-zugriff" },
   { re: /\bmainnet|wallet|transaktion senden\b/i, name: "krypto-geldpfad" },
   { re: /\brückfrage|frage den nutzer|den nutzer fragen|nachfragen beim nutzer\b/i, name: "rueckfrage" },
@@ -214,6 +216,62 @@ function geldAuftrag(text: string): boolean {
     if (!GELD_VERB_KONTEXT.test(s)) return false
     return !ANDERES_TRENNVERB.test(s)
   })
+}
+
+// --- K2/R22: secrets (Erwähnung + Handlung) --------------------------------
+// Vorher feuerte jede ERWÄHNUNG („eine Übersicht, welche Secrets sie erwarten“).
+// Jetzt: Erwähnung UND im selben Auftragssatz (Hauptsatz) eine Handlung am
+// Geheimnis — Imperativ/Infinitiv, kein Partizip („gesetzt“), keine
+// Nominalisierung — oder ein Klartext-/Wert-Bezug („im Klartext“, „die Werte“).
+const SECRETS_ERWAEHNUNG = /\bsecret|passwort|password|api[- ]key|token rotat|credentials\b/i
+const SECRETS_VERB = new RegExp(
+  "(?<![\\p{L}-])(?<!(?:das|des|beim|zum|vom)\\s)(?:" +
+    [
+      "setz", "änder", "aender", "rotier", "lösch", "loesch", "entfern", "kopier", "teil", "commit", "push",
+      "einfüg", "einfueg", "widerruf", "erneuer", "tausch", "hinterleg", "speicher", "druck", "exportier",
+      "veröffentlich", "veroeffentlich", "ausgeb", "verschick", "schick", "send",
+    ].join("|") +
+    ")(?:e|en)?(?![\\p{L}])" +
+    "|(?<![\\p{L}-])gib(?![\\p{L}])(?:[^.!?\\n])*?\\saus(?![\\p{L}])" +
+    "|\\b(?:set|change|rotate|delete|remove|revoke|copy|share|send|paste|commit|push|upload|store|print|echo|dump|export|reveal|expose|leak|output)\\b",
+  "iu",
+)
+const SECRETS_KLARTEXT = /klartext|plain[ -]?text|unmaskiert|unmasked|(?<![\p{L}])(?:werte?|values?|inhalt)(?![\p{L}])/iu
+function secretsHandlung(text: string): boolean {
+  return auftragsSaetze(text).some((satz) => {
+    const s = ohneNebensatz(satz)
+    if (!SECRETS_ERWAEHNUNG.test(s)) return false
+    return SECRETS_VERB.test(s) || SECRETS_KLARTEXT.test(s)
+  })
+}
+
+// --- K2/R22: Dateinamen, Pfade, Inline-Code-Dateinamen ausblenden ----------
+// Nein-Signale feuerten auf DATEINAMEN („Unit-Tests für parse.ts, format.ts und
+// merge.ts“ → `merge`). Vor der Nein-Signal-Prüfung (und NUR dort) werden
+// solche Tokens durch einen neutralen Platzhalter ersetzt; die Einheiten-
+// Erkennung sieht den Originaltext. Inline-Code wird nur ausgeblendet, wenn er
+// selbst ein Dateiname/Pfad ist — „`wrangler deploy`“ bleibt sichtbar (ein
+// Befehl im Code-Span ist eine Handlung, kein Name).
+const DATEI_ENDUNG =
+  "(?:[cm]?[jt]sx?|py|sh|bash|zsh|md|mdx|json|jsonc|ya?ml|toml|sql|go|rs|rb|java|kt|swift|cpp|hpp|css|scss|html?|txt|csv|svelte|vue|astro|ipynb|lock)"
+const DATEI_TOKEN = new RegExp(
+  `(?<![\\p{L}\\d_./~-])(?:\\.{1,2}/|~/)?(?:[\\p{L}\\d_.-]+/)*[\\p{L}\\d_-][\\p{L}\\d_.-]*\\.${DATEI_ENDUNG}(?![\\p{L}\\d_-])`,
+  "gu",
+)
+// Pfad ohne Endung: beginnt mit ./ ../ ~/ oder hat ≥ 2 Trenner („packages/flow/src“) —
+// „Deploy/Rollback“ (ein Trenner, Wortalternative) bleibt sichtbar; keine URLs.
+const PFAD_TOKEN = /(?<![\p{L}\d_./~:-])(?:(?:\.{1,2}|~)\/[\p{L}\d_.-]+(?:\/[\p{L}\d_.-]+)*|[\p{L}\d_.-]+(?:\/[\p{L}\d_.-]+){2,})\/?(?![\p{L}\d_-])/gu
+const PLATZHALTER = "DATEI"
+export function ohneDateinamen(text: string): string {
+  return text
+    .replace(/`([^`\n]+)`/g, (m, inhalt: string) => {
+      const t = inhalt.trim()
+      if (/\s/.test(t)) return m
+      const rest = t.replace(DATEI_TOKEN, "").replace(PFAD_TOKEN, "")
+      return rest === "" ? PLATZHALTER : m
+    })
+    .replace(DATEI_TOKEN, PLATZHALTER)
+    .replace(PFAD_TOKEN, PLATZHALTER)
 }
 
 // --- K2h: geheimnis --------------------------------------------------------
@@ -995,7 +1053,9 @@ export function classify(textRaw: string) {
   const prefix = lower.startsWith("fabrik:") ? "fabrik" : lower.startsWith("direkt:") ? "direkt" : null
 
   const fabrik = FABRIK_SIGNALS.filter((s) => s.re.test(trimmed)).map((s) => s.name)
-  const direkt = DIREKT_SIGNALS.filter((s) => s.re.test(trimmed)).map((s) => s.name)
+  // K2/R22: Nein-Signale sehen den Text ohne Dateinamen/Pfade (EINE Stelle).
+  const ohneNamen = ohneDateinamen(trimmed)
+  const direkt = DIREKT_SIGNALS.filter((s) => s.re.test(ohneNamen)).map((s) => s.name)
 
   // Nutzer-Prefix ist Wille, kein Rat.
   if (prefix === "fabrik")
