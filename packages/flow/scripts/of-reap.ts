@@ -24,7 +24,7 @@
  * als Hänger gezählt.
  *
  * Reap = Ehrlichkeit, kein Datenverlust: status "stopped", error-Begründung,
- * finished=now, reaped-Block mit Messwerten. Atomic via temp+rename, damit
+ * finished=letzte Aktivität (die Abräumzeit steht in reaped.at), reaped-Block mit Messwerten. Atomic via temp+rename, damit
  * der Canvas-Store nie eine halbe JSON liest.
  *
  * Usage:
@@ -105,7 +105,13 @@ for (const file of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json")).sort
   const id = log.id ?? file.replace(/\.json$/, "")
   const checkpoint = `/tmp/openflow-checkpoint-${id}.json`
   const startedMs = typeof log.started === "number" ? log.started : 0
+  // Letzte Aktivität: Checkpoint-mtime oder der späteste Zeitstempel einer
+  // Karte — was zuletzt geschah. Sie ist auch das Ende des Laufs (R18 K11:
+  // finished = Abräumzeit machte aus ~98 s eine Dauer von 955 s).
   let lastActivityMs = startedMs
+  for (const node of Array.isArray(log.nodes) ? log.nodes : []) {
+    for (const t of [node?.started, node?.finished]) if (typeof t === "number" && t > lastActivityMs) lastActivityMs = t
+  }
   let hasCheckpoint = false
   if (existsSync(checkpoint)) {
     hasCheckpoint = true
@@ -131,7 +137,7 @@ for (const file of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json")).sort
 
   log.status = "stopped"
   log.error = `reaped: ${reason}`
-  log.finished = now
+  log.finished = lastActivityMs
   log.reaped = {
     at: new Date(now).toISOString(),
     reason,

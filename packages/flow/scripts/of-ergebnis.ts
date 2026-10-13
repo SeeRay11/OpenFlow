@@ -93,6 +93,22 @@ export function uebernimm(log: any, outputs: Record<string, string>, held: Recor
   return n
 }
 
+/**
+ * K11 (R18): was die Startzeile „angeboten" hat, gegen das, was die Engine
+ * wirklich übernommen hat (`reused`). Ein Resume meldete „3 card(s) kept" und
+ * die SCORECARD `reused 0` — die Worker liefen neu. Die Zahl hier IST die der
+ * SCORECARD (dieselbe Eigenschaft), und neu Gerechnetes steht namentlich da.
+ */
+export function uebernahme(log: any, angeboten: string[]) {
+  const reused = new Set((log?.nodes ?? []).filter((n: any) => n?.reused).map((n: any) => n.id as string))
+  const uebernommen = (log?.nodes ?? []).filter((n: any) => n?.reused).map((n: any) => n.id as string)
+  const neu = angeboten.filter((id) => !reused.has(id))
+  const zeile = angeboten.length
+    ? `übernommen: ${uebernommen.length} von ${angeboten.length} angebotenen Karte(n)${neu.length ? ` — neu gerechnet: ${neu.join(", ")}` : ""}`
+    : ""
+  return { uebernommen, neu, zeile }
+}
+
 export function buildScorecard(log: any, attempts: number, predecessors: string[], startedMs: number, now = Date.now()): Scorecard {
   const nodes: any[] = Array.isArray(log.nodes) ? log.nodes : []
   const count = (s: string) => nodes.filter((n) => n?.status === s).length

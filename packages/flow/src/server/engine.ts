@@ -478,8 +478,21 @@ export function start(
    * buy a bill; those are dropped here.
    */
   const carried = new Set<string>()
+  /**
+   * Cards that were working when the run ended AND recorded finished turns
+   * (K7). They are not carried up front: their finished turns replay by hash
+   * first, exactly like a done card's, and the session is picked up only at
+   * the first turn that does not match — the one they were interrupted in.
+   * Carried up front, the boss of R18 K7 (a) was re-briefed in its session,
+   * worded its dispatch anew, and every finished worker ran again.
+   */
+  const deferredCarry = new Set<string>()
   for (const [id, sessionID] of Object.entries(options.sessions ?? {})) {
     if (resume[id] !== undefined || !sessionID) continue
+    if (options.turns?.[id]?.some((turn) => !turn.legacy)) {
+      deferredCarry.add(id)
+      continue
+    }
     nodeSession.set(id, sessionID)
     sessions.set(sessionID, id)
     carried.add(id)
@@ -839,6 +852,8 @@ export function start(
         unreplayed.delete(node.id)
         outputs.set(node.id, want.output)
         const at = Date.now()
+        // The times the turn really ran at, where the record has them.
+        const ran = { started: want.started ?? at, finished: want.finished ?? at }
         activity.note(
           node.id,
           link.k === 1 ? `reused:${node.id}` : `reused:${node.id}:${link.k}`,
@@ -851,10 +866,13 @@ export function start(
           output: want.output,
           prompt: text,
           activity: undefined,
-          ...(link.k === 1 ? { started: at } : {}),
-          finished: at,
+          ...(link.k === 1 ? { started: ran.started } : {}),
+          finished: ran.finished,
           reused: true,
-          turns: [...(entry(node.id).turns ?? []), { hash, output: want.output }],
+          turns: [
+            ...(entry(node.id).turns ?? []),
+            { hash, output: want.output, ...(want.started !== undefined ? ran : {}) },
+          ],
         })
         return
       }
@@ -866,10 +884,23 @@ export function start(
       // history, so its next turn goes there rather than into a blank one.
       unreplayed.delete(node.id)
       const held = options.sessions?.[node.id]
+      // A card that was working when the run ended continues here, in the
+      // turn it was interrupted in — told so, as any carried card is. One
+      // whose very first turn diverges has a session built on another input,
+      // and starts afresh instead.
+      const interruptedHere = deferredCarry.delete(node.id)
       if (link.history && !nodeSession.has(node.id) && held) {
         nodeSession.set(node.id, held)
         sessions.set(held, node.id)
         reuse = true
+        if (interruptedHere) carried.add(node.id)
+        // The log names the session the card answers in, or the next
+        // interruption has nothing to carry forward.
+        patch(node.id, { sessionID: held })
+        // Every call already in the held session belongs to the old run; only
+        // what this turn calls may decide it.
+        const old = (await api.sessionCalls?.(held).catch(() => [])) ?? []
+        consumed.set(node.id, new Set(old.map((call) => call.id)))
       }
     }
     // A card carried over from an interrupted run is prompted into the session
@@ -996,6 +1027,7 @@ export function start(
           )
         }
         const hash = extend(text)
+        const settled = Date.now()
         outputs.set(node.id, answer)
         link.hash = hash
         link.k++
@@ -1004,8 +1036,8 @@ export function start(
           status: "done",
           output: answer,
           activity: undefined,
-          finished: Date.now(),
-          turns: [...(entry(node.id).turns ?? []), { hash, output: answer }],
+          finished: settled,
+          turns: [...(entry(node.id).turns ?? []), { hash, output: answer, started: turnStarted, finished: settled }],
         })
       } catch (error) {
         if (error instanceof StopError || controller.signal.aborted) {

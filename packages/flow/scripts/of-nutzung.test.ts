@@ -56,14 +56,23 @@ function newCase() {
   }
 }
 
+/**
+ * Fester Bezugszeitpunkt (Abnahme R18 (4)): Mit der echten Uhr lagen die
+ * Zeilen „heute T07:00Z" zwischen 00:00 und 07:30 UTC in der Zukunft und
+ * fielen dem Selbst-Beobachtungsfilter zum Opfer. 12:00Z liegt nach jeder
+ * Testzeile von heute ausser der absichtlichen Zukunftszeile 23:59:59.999Z.
+ */
+const JETZT = "2026-10-13T12:00:00.000Z"
+const JETZT_MS = Date.parse(JETZT)
+
 function day(offsetDays: number): string {
-  return new Date(Date.now() - offsetDays * 86_400_000).toISOString().slice(0, 10)
+  return new Date(JETZT_MS - offsetDays * 86_400_000).toISOString().slice(0, 10)
 }
 const ts = (offsetDays: number, time = "T12:00:00.000Z") => day(offsetDays) + time
 
 async function nutzung(paths: { ledger: string; log: string; logRotated: string; runsDir: string }, tage = 6) {
   const proc = Bun.spawn(
-    ["bun", SCRIPT, String(tage), "--ledger", paths.ledger, "--log", paths.log, "--log-rotated", paths.logRotated, "--runs-dir", paths.runsDir, "--json"],
+    ["bun", SCRIPT, String(tage), "--jetzt", JETZT, "--ledger", paths.ledger, "--log", paths.log, "--log-rotated", paths.logRotated, "--runs-dir", paths.runsDir, "--json"],
     { stdout: "pipe", stderr: "pipe" },
   )
   const stdout = await new Response(proc.stdout).text()

@@ -67,8 +67,12 @@ function scoreRun(log: any): Row {
         : status === "stopped"
           ? "STOPPED"
           : status.toUpperCase()
+  // Ein gereapter Lauf endete bei seiner letzten Aktivität, nicht beim
+  // Abräumen; Logs von vor R18 K11 tragen die Abräumzeit in `finished`.
+  const zuletzt = typeof log?.reaped?.lastActivity === "string" ? Date.parse(log.reaped.lastActivity) : NaN
+  const ende = Number.isFinite(zuletzt) && typeof log?.finished === "number" ? Math.min(log.finished, zuletzt) : log?.finished
   const durationSec =
-    typeof log?.finished === "number" && typeof log?.started === "number" ? Math.round((log.finished - log.started) / 1000) : null
+    typeof ende === "number" && typeof log?.started === "number" ? Math.round((ende - log.started) / 1000) : null
   return {
     id: (log?.id ?? "?").slice(0, 24),
     started: new Date(log?.started ?? 0).toISOString().slice(0, 16),

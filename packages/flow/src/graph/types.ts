@@ -285,7 +285,7 @@ export type RunNodeLog = {
    * Every turn the card settled in this run: chained input hash + answer, in
    * order (K7, see `server/turn-hash.ts`). What a resume compares against.
    */
-  turns?: { hash: string; output: string }[]
+  turns?: { hash: string; output: string; started?: number; finished?: number }[]
   /** What this node's session reported using, priced. */
   usage?: Spend
   /** Per-step usage behind `usage`, kept so a run log can be re-priced later. */

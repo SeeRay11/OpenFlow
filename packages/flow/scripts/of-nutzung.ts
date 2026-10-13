@@ -24,7 +24,7 @@
  * Sonde mit Exit 0 (die Analyse soll liefern, nicht scheitern).
  *
  * Usage:
- *   bun of-nutzung.ts [TAGE] [--ledger FILE] [--log FILE] [--runs-dir DIR] [--json]
+ *   bun of-nutzung.ts [TAGE] [--ledger FILE] [--log FILE] [--runs-dir DIR] [--json] [--jetzt ISO]
  *   of-run.sh --nutzung [TAGE]
  */
 import { existsSync, readFileSync } from "node:fs"
@@ -34,14 +34,22 @@ import { homedir } from "node:os"
 // Selbst-Beobachtungsfilter: das live-Log wird während des Laufs weiter
 // geschrieben — alles ab jetzt gehört der laufenden Sitzung, nicht der
 // Vergangenheit, und zählt nicht.
-const START_MS = Date.now()
-const START_ISO = new Date(START_MS).toISOString()
-
 const argv = process.argv.slice(2)
 const flag = (name: string, fallback?: string) => {
   const i = argv.indexOf(name)
   return i >= 0 ? argv[i + 1] : fallback
 }
+// `--jetzt <ISO>` fixiert den Startzeitpunkt — nur für Tests (Abnahme R18 (4):
+// der Log-Test schlug zwischen 00:00 und 07:30 UTC fehl, weil seine Zeilen
+// „heute T07:00Z" vor der Uhrzeit des Laufs in der Zukunft lagen). Ein Test
+// fängt die Zeit per Subprozess nicht mit setSystemTime ein; daher der Schalter.
+const JETZT = flag("--jetzt")
+const START_MS = JETZT !== undefined ? Date.parse(JETZT) : Date.now()
+if (!Number.isFinite(START_MS)) {
+  console.error(`of-nutzung: --jetzt ${JETZT} ist kein ISO-Zeitpunkt`)
+  process.exit(2)
+}
+const START_ISO = new Date(START_MS).toISOString()
 const JSON_OUT = argv.includes("--json")
 const BUN = process.execPath || "bun"
 const SCRIPTS = import.meta.dir

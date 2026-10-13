@@ -11,7 +11,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { bericht, buildScorecard, seedFrom, turnsFrom, uebernimm, vorgaenger } from "./of-ergebnis.ts"
+import { bericht, buildScorecard, seedFrom, turnsFrom, uebernahme, uebernimm, vorgaenger } from "./of-ergebnis.ts"
 import { turnNext, turnRoot } from "../src/server/turn-hash.ts"
 
 const W1 = "worker eins liefert sieben Wörter Bericht hier"
@@ -173,5 +173,48 @@ describe("K7 — turnsFrom: Eingabe-Hashes aus dem Checkpoint", () => {
     expect(turns.boss).toEqual([{ hash: "h1", output: "o1" }, { hash: "h2", output: "o2" }])
     expect(turns.w).toEqual([{ hash: turnNext(turnRoot("dharma/auto"), "brief"), output: "answer", legacy: true }])
     expect(turns.x).toBeUndefined()
+  })
+})
+
+describe("K11 (R18) — übernommen heißt übernommen", () => {
+  // Abnahme R18: „resuming … 3 card(s) kept, 1 continued in session", die
+  // SCORECARD meldete `reused 0` — die Worker liefen neu. Die Startzeile
+  // verspricht nichts mehr („angeboten"), die Schlusszeile zählt, was die
+  // Engine wirklich übernommen hat, und nennt, was neu gerechnet wurde.
+  test("Schlusszeile = Zahl der Karten mit reused, neu Gerechnetes namentlich", () => {
+    const log = {
+      nodes: [
+        { id: "boss", status: "done" },
+        { id: "worker-1", status: "done", reused: true },
+        { id: "worker-2", status: "done", reused: true },
+        { id: "worker-3", status: "done" },
+      ],
+    }
+    const u = uebernahme(log, ["worker-1", "worker-2", "worker-3"])
+    expect(u.uebernommen).toEqual(["worker-1", "worker-2"])
+    expect(u.neu).toEqual(["worker-3"])
+    expect(u.zeile).toBe("übernommen: 2 von 3 angebotenen Karte(n) — neu gerechnet: worker-3")
+    const sc = buildScorecard(log, 1, [], 0, 0)
+    expect(sc.nodes.reused).toBe(u.uebernommen.length)
+  })
+
+  test("alle angebotenen übernommen → keine Neu-Liste; nichts angeboten → keine Zeile", () => {
+    const log = { nodes: [{ id: "a", status: "done", reused: true }, { id: "b", status: "done" }] }
+    expect(uebernahme(log, ["a"]).zeile).toBe("übernommen: 1 von 1 angebotenen Karte(n)")
+    expect(uebernahme(log, []).zeile).toBe("")
+  })
+
+  test("turnsFrom bietet die fertigen Züge einer laufenden Karte an (Boss im Ergebnis-Zug abgebrochen)", () => {
+    const log = {
+      nodes: [
+        { id: "boss", status: "running", sessionID: "s1", output: "x", turns: [{ hash: "h1", output: "dispatch" }] },
+        { id: "w", status: "done", output: "w", turns: [{ hash: "h2", output: "w" }] },
+        { id: "neu", status: "running", sessionID: "s3" },
+      ],
+    }
+    const turns: Record<string, any> = {}
+    turnsFrom(log, turns)
+    expect(Object.keys(turns).sort()).toEqual(["boss", "w"])
+    expect(turns.boss).toEqual([{ hash: "h1", output: "dispatch" }])
   })
 })

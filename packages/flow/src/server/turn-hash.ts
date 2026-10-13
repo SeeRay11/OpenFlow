@@ -18,7 +18,12 @@
  * so it was briefed afresh and handed out new work. No hash existed anywhere.
  */
 /** `legacy`: derived from an old log's last prompt, not recorded per turn. */
-export type RecordedTurn = { hash: string; output: string; legacy?: boolean }
+/**
+ * `started`/`finished`: when the turn ran (R18 K7 (a)). A takeover keeps them,
+ * so a worker taken over from the interrupted run shows the time it worked,
+ * not the moment it was taken over. Absent in records written before.
+ */
+export type RecordedTurn = { hash: string; output: string; legacy?: boolean; started?: number; finished?: number }
 
 /**
  * SHA-256, synchronous and dependency-free. Synchronous on purpose: an await
@@ -92,6 +97,13 @@ export function recordedTurns(node: {
   output?: string
   turns?: RecordedTurn[]
 }): RecordedTurn[] | undefined {
+  // A card that was still working (or stopped, or failed) when the run ended
+  // offers the turns it FINISHED — each entry is written only once its answer
+  // is in. Abnahme R18 K7 (a): the boss killed on its results turn offered
+  // nothing, was re-briefed, wrote its dispatch anew, and every worker it had
+  // already been answered by ran again. The old-log fallback stays for done
+  // cards: a last prompt without its answer proves nothing.
+  if (Array.isArray(node.turns) && node.turns.length && node.turns.every((turn) => !turn.legacy)) return node.turns
   if (node.status !== "done") return undefined
   if (Array.isArray(node.turns) && node.turns.length) return node.turns
   if (typeof node.prompt !== "string" || typeof node.output !== "string") return undefined

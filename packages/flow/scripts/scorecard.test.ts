@@ -169,6 +169,24 @@ describe("of-scorecard — Aggregate inkl. attempts & reaped", () => {
     expect(t.stdout).toContain("(gereapte Leiche)")
   })
 
+  test("(5c) R18 K11: gereapter Alt-Log (finished = Abräumzeit) → Dauer bis zur letzten Aktivität", async () => {
+    newCase()
+    // Messwerte von run-2026-10-13T00-14-05-710Z-8uustv (vor dem Fix gereapt).
+    const p = await measure(
+      [
+        {
+          id: "reaped-8uustv",
+          status: "stopped",
+          started: Date.parse("2026-10-13T00:14:05.710Z"),
+          finished: Date.parse("2026-10-13T00:30:01.107Z"),
+          reaped: { reason: "zombie", at: "2026-10-13T00:30:01.107Z", lastActivity: "2026-10-13T00:15:43.299Z" },
+        },
+      ],
+      { order: ["reaped-8uustv"] },
+    )
+    expect(p.runs[0].durationSec).toBe(98)
+  })
+
   test("(5b) STOPPED-Breakdown: mit reaped.reason vs. ohne (reaped:true hat keinen Grund)", async () => {
     newCase()
     const p = await measure(

@@ -32,7 +32,7 @@
 }
 
 import { herkunft } from "./of-heilung"
-import { bericht, buildScorecard, seedFrom, turnsFrom, uebernimm, vorgaenger } from "./of-ergebnis"
+import { bericht, buildScorecard, seedFrom, turnsFrom, uebernahme, uebernimm, vorgaenger } from "./of-ergebnis"
 import { start } from "../src/server/engine"
 import type { RecordedTurn } from "../src/server/turn-hash"
 import * as api from "../src/server/client"
@@ -97,7 +97,10 @@ if (resumeRef !== undefined) {
   seedFrom(log, initialResume, initialSessions)
   turnsFrom(log, initialTurns)
   console.error(
-    `resuming ${log.id} - ${Object.keys(initialResume).length} card(s) kept, ${continued(initialResume, initialSessions)} continued in session`,
+    // „angeboten", nicht „kept": ob eine Karte übernommen wird, entscheidet ihr
+    // Eingabe-Hash im Lauf (K7). Was wirklich übernommen wurde, steht am Ende
+    // (`übernommen: N von M`) und ist dieselbe Zahl wie SCORECARD `reused`.
+    `resuming ${log.id} - ${Object.keys(initialResume).length} card(s) offered for reuse, ${continued(initialResume, initialSessions)} continued in session`,
   )
 }
 if (!name) {
@@ -160,7 +163,7 @@ for (let attempt = 1; attempt <= attemptsMax; attempt++) {
     seedFrom(log, resumeOutputs, resumeSessions)
     turnsFrom(log, resumeTurns)
     console.error(
-      `auto-retry ${attempt}/${attemptsMax}: ${Object.keys(resumeOutputs).length} Karte(n) gehalten, ${continued(resumeOutputs, resumeSessions)} in Session weiter — vorheriger Fehler: ${log.status}`,
+      `auto-retry ${attempt}/${attemptsMax}: ${Object.keys(resumeOutputs).length} Karte(n) zur Übernahme angeboten, ${continued(resumeOutputs, resumeSessions)} in Session weiter — vorheriger Fehler: ${log.status}`,
     )
   }
   // Seeds are run OPTIONS, the fourth argument. They used to ride in the hooks
@@ -212,5 +215,7 @@ void flow(`runs/${encodeURIComponent(log.id)}`, {
 }).catch((error) => console.error(`scorecard save failed: ${String(error)}`))
 await Bun.write(`/tmp/openflow-checkpoint-${log.id}.json`, JSON.stringify(log, null, 2)).catch(() => undefined)
 // Checkpoint-Zeile zuletzt, auf stdout nach allen Modelltexten (Befund (c)).
+const angeboten = uebernahme(log, Object.keys(initialResume))
+if (angeboten.zeile) console.error(angeboten.zeile)
 bericht(log, scorecard, { out: (s) => console.log(s), err: (s) => console.error(s) })
 process.exit(log.status === "done" ? 0 : 1)
