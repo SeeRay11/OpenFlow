@@ -22,6 +22,7 @@ import { ConfigPlugin } from "./config/plugin"
 import { ConfigProvider } from "./config/provider"
 import { ConfigReference } from "./config/reference"
 import { ConfigToolOutput } from "./config/tool-output"
+import { ConfigVariable } from "./config/variable"
 import { ConfigWatcher } from "./config/watcher"
 import { ConfigV1 } from "./v1/config/config"
 import { ConfigMigrateV1 } from "./v1/config/migrate"
@@ -145,8 +146,15 @@ const layer = Layer.effect(
     const decodeV1Info = Schema.decodeUnknownOption(ConfigV1.Info, decodeOptions)
 
     const loadFile = Effect.fnUntraced(function* (filepath: string) {
-      const text = yield* fs.readFileStringSafe(filepath)
-      if (!text) return
+      const raw = yield* fs.readFileStringSafe(filepath)
+      if (!raw) return
+      // Resolve {env:} and {file:} exactly like opencode's own loader does. A
+      // missing referenced file fails loudly instead of handing the reference
+      // itself to a provider as its key.
+      const text = yield* Effect.tryPromise({
+        try: () => ConfigVariable.substitute({ text: raw, type: "path", path: filepath }),
+        catch: (error) => error,
+      })
 
       const errors: ParseError[] = []
       const input: unknown = parse(text, errors, { allowTrailingComma: true })
