@@ -85,7 +85,7 @@ const FABRIK_SIGNALS: { re: RegExp; name: string }[] = [
   // Fan-out über eine benannte Menge („drei Varianten“, „die 13 Worker“, „five
   // providers“) — Texteinheiten („drei Sätze“) zählen nicht.
   {
-    re: /\b(?:drei|vier|fünf|fuenf|sechs|sieben|acht|neun|zehn|elf|zwölf|zwoelf|zwanzig|[3-9]|[1-9]\d|three|four|five|six|seven|eight|nine|ten|twelve|twenty)\s+(?:\p{L}+\s+)?(?!(?:sätze|saetze|zeilen|wörter|woerter|absätze|absaetze|stichpunkte|punkte|minuten|sekunden|stunden|tage|wochen|sentences|lines|words|paragraphs|bullets|minutes|seconds|hours|days|weeks)\b)(?:\p{Lu}[\p{L}-]*|[a-z-]{3,}s)\b/u,
+    re: /\b(?:drei|vier|fünf|fuenf|sechs|sieben|acht|neun|zehn|elf|zwölf|zwoelf|zwanzig|[3-9]|[1-9]\d|three|four|five|six|seven|eight|nine|ten|twelve|twenty)\s+(?:\p{L}+\s+)?(?!(?:sätze|saetze|zeilen|wörter|woerter|absätze|absaetze|stichpunkte|punkte|minuten|sekunden|stunden|tage|wochen|sentences|lines|words|paragraphs|bullets|minutes|seconds|hours|days|weeks|euros?|dollars?|cents?|credits?|sats?|satoshis?|usd|eur|bsv|chf|gbp)\b)(?:\p{Lu}[\p{L}-]*|[a-z-]{3,}s)\b/u,
     name: "mengenangabe",
   },
   { re: /\bparallel(?!e leitung)/i, name: "parallel" },
@@ -135,13 +135,15 @@ const DIREKT_SIGNALS: { re: { test(s: string): boolean }; name: string }[] = [
     re: /(?<![\p{L}-])(?:ab|los|ver|zu|weiter|raus|rüber|rueber)?(?:schick|send)(?:e|en|t|st)?(?![\p{L}])(?!\s+(?:mir|uns|me|us)\b)|(?<![\p{L}-])(?:e-?)?mail(?:e|en|t|st)(?![\p{L}])(?!\s+(?:mir|uns)\b)|(?<![\p{L}-])(?<!\b(?:an?|the|this|that|your|my)\s+)(?:e-?mail|mail)\s+(?:it|this|that|them|him|her|the|our|to)\b|(?<![\p{L}-])post(?:e|en|et|est)\s+(?!(?:mir|uns)\b)(?=\p{L})|(?<!\b(?:blog|guest|an?|the|this|that|each|every|one|new|first|last)\s+)\bpost\s+(?:it|this|that|them|the|our|my|on|to)\b/iu,
     name: "senden",
   },
-  {
-    // Geld als Auftrag: aufladen (auch trennbar „lade … um 20 € auf.“), kaufen,
-    // bezahlen/überweisen, kündigen, Abo, Rechnung; top up, buy, purchase,
-    // pay the …, cancel … subscription/plan, unsubscribe.
-    re: /(?<![\p{L}-])(?:auflad(?:e|en|t|st)?|(?:ein|ver|zu)?kauf(?:e|en|t|st)?|bezahl(?:e|en|t|st)?|(?:überweis|ueberweis)(?:e|en|t)?|(?:kündig|kuendig)(?:e|en|t|st|ung)?|abo|abos|abonnements?|abonnier(?:e|en|t)?|rechnung(?:en)?)(?![\p{L}])|(?<![\p{L}-])lad(?:e)?\s+(?:[^.!?\n]|\.(?=\S)){1,80}?\sauf(?=\s*(?:[.!?,;]|$|\s+(?:und|dann|and|then)\b))|\btop[- ]?up\b|\b(?:buy|purchase|recharge)\b|\bpay\s+(?:the|for|an?|our|my|this|that|\d)|\bcancel\s+(?:the|my|our|this)\s+(?:[\w-]+\s+){0,2}?(?:subscription|plan|account|membership|contract)\b|\bunsubscribe\b/iu,
-    name: "geld-auftrag",
-  },
+  // K2h (13.10.2026, Abnahme R19): Geld zuerst. Neben den Geldverben (unten,
+  // GELD_VERB_EIGEN) zählt jedes Handlungsverb, das mit einem Betrag/einer
+  // Währung oder einem Geldwort im selben Auftragssatz steht („Setz das
+  // zai-pay-Guthaben auf 50 Dollar“, „Buche … das Pro-Paket“). Details bei
+  // `geldAuftrag`.
+  { re: { test: geldAuftrag }, name: "geld-auftrag" },
+  // K2h: Schlüssel/Secrets/Token rotieren, setzen, erneuern, widerrufen.
+  // Lesen/Prüfen/Auflisten über Schlüssel zählt nicht. Details bei `geheimnisAuftrag`.
+  { re: { test: geheimnisAuftrag }, name: "geheimnis" },
   // K2g (13.10.2026, Abnahme R18): Wirkung auf die PRODUKTION und LAST gegen
   // ein Ziel bekamen einen weichen Fabrik-Hinweis („Migrier die Prod-D1 …,
   // alle drei“, „Starte den Lasttest mit 500 parallelen Anfragen gegen
@@ -150,6 +152,115 @@ const DIREKT_SIGNALS: { re: { test(s: string): boolean }; name: string }[] = [
   { re: { test: produktionsWirkung }, name: "produktion" },
   { re: { test: lastGegenZiel }, name: "last-gegen-ziel" },
 ]
+
+// --- K2h: geld-auftrag -----------------------------------------------------
+// Geldverben, die allein ein Geldauftrag sind (K2f): aufladen (auch trennbar
+// „lade … um 20 € auf.“), kaufen, bezahlen/überweisen, kündigen, Abo,
+// Rechnung; top up, buy, purchase, pay the …, cancel … subscription/plan,
+// unsubscribe. Geprüft über den ganzen Text, wie seit K2f.
+const GELD_VERB_EIGEN = /(?<![\p{L}-])(?:auflad(?:e|en|t|st)?|(?:ein|ver|zu)?kauf(?:e|en|t|st)?|bezahl(?:e|en|t|st)?|(?:überweis|ueberweis)(?:e|en|t)?|(?:kündig|kuendig)(?:e|en|t|st|ung)?|abo|abos|abonnements?|abonnier(?:e|en|t)?|rechnung(?:en)?)(?![\p{L}])|(?<![\p{L}-])lad(?:e)?\s+(?:[^.!?\n]|\.(?=\S)){1,80}?\sauf(?=\s*(?:[.!?,;]|$|\s+(?:und|dann|and|then)\b))|\btop[- ]?up\b|\b(?:buy|purchase|recharge)\b|\bpay\s+(?:the|for|an?|our|my|this|that|\d)|\bcancel\s+(?:the|my|our|this)\s+(?:[\w-]+\s+){0,2}?(?:subscription|plan|account|membership|contract)\b|\bunsubscribe\b/iu
+// Währung als eigenes Wort (nach einer Zahl) — NIE eine Einheitenmenge.
+export const WAEHRUNG =
+  "(?:€|\\$|eur|euros?|usd|dollars?|cents?|ct|sats?|satoshis?|bsv|chf|gbp|credits?)"
+const WAEHRUNG_WORT = new RegExp(`^${WAEHRUNG}$`, "iu")
+// Betrag: „50 Dollar“, „40 €“, „40€“, „$50“, „0,60 USD“, „5000 sat“.
+const BETRAG = new RegExp(
+  `(?<![\\p{L}\\d])\\d+(?:[.,]\\d+)?\\s*${WAEHRUNG}(?![\\p{L}-])|(?<![\\p{L}\\d])[$€]\\s*\\d`,
+  "iu",
+)
+// Geldwörter: Guthaben, Prepaid, Budget (nicht „Token-Budget“, „--budget“,
+// „Budget-Warnung“), Tarif, Abo/Subscription, Vertrag, Ausgabenlimit,
+// Bezahl-Stufen („Pro-Paket“, „Max plan“, „nächsthöhere Paket“).
+const GELD_WORT = new RegExp(
+  [
+    "guthaben", "prepaid(?:-[\\p{L}]+)?", "(?<![\\p{L}-])budgets?(?![\\p{L}-])", "tarife?", "(?<![\\p{L}])abo(?:s|nnements?)?(?![\\p{L}])",
+    "(?<![\\p{L}])subscriptions?", "(?<![\\p{L}])vertr(?:a|ä|ae)ge?s?(?![\\p{L}])", "(?<![\\p{L}])contracts?(?![\\p{L}])",
+    "ausgabenlimit", "spend(?:ing)?\\s+limit", "(?<![\\p{L}])billing", "(?<![\\p{L}])balance(?![\\p{L}])",
+    "(?<![\\p{L}])(?:pro|plus|premium|team|business|enterprise|max|ultra)[- ]?(?:paket|package|plan|tarif|abo|tier)(?![\\p{L}])",
+    "(?:nächst|naechst)?(?:höher|hoeher|größer|groesser|teurer)e[nms]?\\s+(?:paket|plan|tarif|abo)(?![\\p{L}])",
+    "(?<![\\p{L}])(?:next|higher|bigger)\\s+(?:package|plan|tier)(?![\\p{L}])",
+  ].join("|"),
+  "iu",
+)
+// Handlungsverben, die NUR mit Betrag/Geldwort ein Geldauftrag sind
+// (Imperativ/Infinitiv, kein Partizip, keine Nominalisierung „das Setzen“).
+const GELD_VERB_KONTEXT = new RegExp(
+  "(?<![\\p{L}-])(?<!(?:das|des|beim|zum|vom)\\s)(?:" +
+    [
+      "setz", "stell", "buch", "upgrad", "downgrad", "erhöh", "erhoeh", "senk", "reduzier", "änder",
+      "aender", "anpass", "verlänger", "verlaenger", "abschließ", "abschliess", "schließ", "schliess",
+      "gib", "geb", "wechsel", "aktivier", "bestell", "abonnier", "verbuch", "belast", "zahl",
+    ].join("|") +
+    ")(?:e|en)?(?![\\p{L}])" +
+    "|\\b(?:set|raise|increase|lower|reduce|change|adjust|top|add|charge|book|order|subscribe|upgrade|downgrade|renew|extend|activate|spend|pay|load|fund)\\b",
+  "iu",
+)
+
+// Hauptsatz vor einem indirekten Fragesatz: „Schreib … einen Bericht, wie man
+// das Budget erhöht“ — die Handlung im Nebensatz ist Thema, kein Auftrag.
+const NEBENSATZ = /,\s*(?:wie|ob|wann|warum|wieso|weshalb|welche[rsmn]?|was|wofür|wofuer|how|whether|when|why|which|what)\b/iu
+function ohneNebensatz(s: string): string {
+  const i = s.search(NEBENSATZ)
+  return i >= 0 ? s.slice(0, i) : s
+}
+// „setz … ein“, „stell … dar/zusammen“ sind andere Verben (einsetzen, darstellen).
+const ANDERES_TRENNVERB = /(?<![\p{L}-])(?:setz|stell)(?:e)?(?![\p{L}])(?:[^.!?\n]|\.(?=\S))*?\s(?:ein|zusammen|fest|dar|bereit|vor)\s*[.!?]?\s*$/iu
+
+function geldAuftrag(text: string): boolean {
+  if (GELD_VERB_EIGEN.test(text)) return true
+  return auftragsSaetze(text).some((satz) => {
+    const s = ohneNebensatz(satz)
+    if (!(BETRAG.test(s) || GELD_WORT.test(s))) return false
+    if (!GELD_VERB_KONTEXT.test(s)) return false
+    return !ANDERES_TRENNVERB.test(s)
+  })
+}
+
+// --- K2h: geheimnis --------------------------------------------------------
+// Schlüssel als Gegenstand: deutsche Komposita („API-Schlüssel“,
+// „Zugangstoken“), englisch als eigenes Wort („API keys“, „access token“),
+// Umgebungs-Bezeichner (ROUTER_AUTH_KEY, ZAI_PAY_KEY), `secret put`. Nicht
+// „Schlüsselwort“, „Token-Budget“, „max_tokens“.
+const GEHEIMNIS_OBJ = new RegExp(
+  "(?<![\\p{L}_])[\\p{L}-]*?(?:schlüssel|schluessel|token|passwort|passwörter|passwoerter|zugangsdaten|kennwort)(?:s|n|e)?(?![\\p{L}_-])" +
+    // englisch „key“/„token“ nur mit Bestimmung — „JSON keys“, „max tokens“ sind keine Geheimnisse
+    "|(?<![\\p{L}_])(?:api|access|auth|secret|ssh|private|signing|deploy|oauth|bearer|refresh|session|router|device|service)[- ]?(?:keys?|tokens?)(?![\\p{L}_-])" +
+    "|(?<![\\p{L}_])(?:[\\p{L}]+-)?(?:secrets?|credentials?|passwords?|passphrases?)(?![\\p{L}_-])" +
+    "|\\bsecret\\s+put\\b",
+  "iu",
+)
+const GEHEIMNIS_BEZEICHNER = /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:KEY|SECRET|TOKEN|WIF|PASSPHRASE|PASSWORD)\b/
+// Wirkverben auf Schlüssel (Imperativ/Infinitiv).
+const GEHEIMNIS_VERB = new RegExp(
+  "(?<![\\p{L}-])(?<!(?:das|des|beim|zum|vom)\\s)(?:" +
+    [
+      "rotier", "erneuer", "tausch", "austausch", "setz", "widerruf", "sperr", "generier", "erzeug",
+      "hinterleg", "ersetz", "wechsel", "änder", "aender", "zurücksetz", "zuruecksetz", "neu\\s+setz",
+      "neu\\s+erzeug", "neu\\s+generier", "ausstell", "anleg", "entzieh", "invalidier",
+    ].join("|") +
+    ")(?:e|en)?(?![\\p{L}])" +
+    "|\\b(?:rotate|regenerate|renew|reset|set|put|replace|revoke|invalidate|reissue|issue|create|generate|change|update|swap|roll)\\b",
+  "iu",
+)
+// Trennbar: „tausch … aus“, „leg … an“, „stell … aus“, „setz … neu“.
+const GEHEIMNIS_TRENNBAR: [RegExp, RegExp][] = [
+  [/(?<![\p{L}-])tausch(?:e)?(?![\p{L}])/iu, /(?<![\p{L}-])aus(?![\p{L}])/iu],
+  [/(?<![\p{L}-])leg(?:e)?(?![\p{L}])/iu, /(?<![\p{L}-])an(?![\p{L}])/iu],
+  [/(?<![\p{L}-])stell(?:e)?(?![\p{L}])/iu, /(?<![\p{L}-])(?:aus|neu)(?![\p{L}])/iu],
+  [/(?<![\p{L}-])zieh(?:e)?(?![\p{L}])/iu, /(?<![\p{L}-])zurück|zurueck(?![\p{L}])/iu],
+]
+
+function geheimnisAuftrag(text: string): boolean {
+  return auftragsSaetze(text).some((satz) => {
+    const s = ohneNebensatz(satz)
+    if (!GEHEIMNIS_OBJ.test(s) && !GEHEIMNIS_BEZEICHNER.test(s)) return false
+    if (GEHEIMNIS_VERB.test(s)) return true
+    return GEHEIMNIS_TRENNBAR.some(([stamm, partikel]) => {
+      const m = stamm.exec(s)
+      return !!m && partikel.test(s.slice(m.index + m[0].length))
+    })
+  })
+}
 
 // --- K2g: produktion -------------------------------------------------------
 // Es zählt die WIRKUNG auf die Produktion: eine Umgebungs-Benennung UND ein
@@ -231,12 +342,24 @@ const LASTTEST = "(?:(?:last|stress|belastungs|performance-?last)-?tests?|(?:loa
 const LAST_AUSLOESER = "(?:start|fahr|mach|führ|fuehr|lass|lauf|run|execute|perform|launch|do|kick\\s+off|fire|trigger)"
 const LAST_A_VERB = new RegExp(`(?<![\\p{L}-])${LAST_AUSLOESER}(?:e|en|t)?\\s+(?:[\\p{L}\\d/.:-]+\\s+){0,3}?${LASTTEST}`, "iu")
 const LAST_A_ANFANG = new RegExp(`^${LASTTEST}\\s+(?:gegen|auf|against|on|the|our|all|each|every|mit|with)\\b`, "iu")
+// K2h: „Lasttest: 300 Anfragen …“, „Stresstest: gegen dharma …“ — Kopfzeile mit
+// Doppelpunkt, danach Zahl oder Ziel (nicht „Lasttest: Ergebnisse von gestern“).
+const LAST_A_KOPF = new RegExp(`^${LASTTEST}\\s*:\\s*(?:\\d|(?:gegen|auf|an|against|on|at|to|mit|with)\\b)`, "iu")
+// K2h: ≥ 10 gleichzeitige/parallele Anfragen AN/GEGEN ein Ziel — auch ohne
+// Auslöseverb („200 parallele Anfragen an memex“). Nicht mit Artikel davor
+// („die 300 gleichzeitigen Anfragen an rille von gestern“ verweist auf Bestand).
+const LAST_C = /(?<![\d.,])(?<!(?:der|die|den|dem|des|diese[nrms]?|jene[nrms]?|the|these|those|this|that)\s+)(?:\d{2,}|\d{1,3}(?:[.,]\d{3})+)\s+(?:gleichzeitige[nr]?|parallele[nr]?|simultane[nr]?|concurrent|parallel|simultaneous)\s+(?:[\p{L}-]+\s+)?(?:anfragen|requests?|aufrufe[n]?|abrufe[n]?|calls|zugriffe[n]?|hits|verbindungen|connections)(?![\p{L}])(?:[^.!?\n]){0,40}?(?<![\p{L}-])(?:an|gegen|auf|against|to|at|on)(?![\p{L}])/iu
 const LAST_MENGE = /(?<![\d.,])(?:\d{2,}|\d{1,3}(?:[.,]\d{3})+)\s+(?:[\p{L}-]+\s+){0,2}?(?:anfragen|requests?|aufrufe|abrufe|calls|zugriffe|hits|verbindungen|connections|rps)(?![\p{L}])/iu
 const LAST_B_VERB = /(?<![\p{L}-])(?:schieß|schiess|feuer|schick|send|lass|start|fahr|feur|jag|hit|fire|blast|hammer|run|send|issue|launch|flood|bombard)(?:e|en|t)?(?![\p{L}])/iu
 
 function lastGegenZiel(text: string): boolean {
   return auftragsSaetze(text).some(
-    (s) => LAST_A_VERB.test(s) || LAST_A_ANFANG.test(s) || (LAST_MENGE.test(s) && LAST_B_VERB.test(s)),
+    (s) =>
+      LAST_A_VERB.test(s) ||
+      LAST_A_ANFANG.test(s) ||
+      LAST_A_KOPF.test(s) ||
+      LAST_C.test(s) ||
+      (LAST_MENGE.test(s) && LAST_B_VERB.test(s)),
   )
 }
 
@@ -584,6 +707,8 @@ function mengeImSatz(satz: string, englisch: boolean): string | null {
     if (kopf < 0) continue
     const gruppe = ws.slice(s, kopf + 1).map((w) => w.w.replace(/[.:]+$/, ""))
     if (gruppe.some((w) => UMFANG_NOMEN.test(w))) continue
+    // K2h: Geldbeträge („50 Dollar“, „40 €“, „5000 sat“) sind nie Einheiten.
+    if (gruppe.some((w) => WAEHRUNG_WORT.test(w.split("/")[0]))) continue // „sat/kB“
     return ws.slice(i, kopf + 1).map((w) => w.w).join(" ").replace(/[.:]+$/, "")
   }
   return null
