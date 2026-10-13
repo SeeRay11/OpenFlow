@@ -43,7 +43,8 @@
  *
  * Ausgabe classify: eine JSON-Zeile
  *   {entscheidung, signale, prefix, grund, auftrag: {verb, objekt, einheiten} | null, injizieren,
- *    quelle: praefix|nein_signal|wortregel|llm|keine}; mit --llm zusätzlich llm, llm_ms, llm_fehler.
+ *    quelle: praefix|nein_signal|wortregel|llm|keine}; mit --llm zusätzlich llm, llm_ms, llm_fehler
+ *   und — wenn ein K2f-Vorfilter den Aufruf gespart hat — llm_uebersprungen: kurz|reine_frage|kein_fanout_indiz.
  * log hängt an ${OPENFLOW_LEDGER:-~/.openflow/gate-ledger.jsonl}.
  *
  * --task-ref (Hebel 2, 10.10.2026): gate_id der Task-Bewertung, auf die sich
@@ -110,6 +111,35 @@ const DIREKT_SIGNALS: { re: RegExp; name: string }[] = [
   {
     re: /(?<![\p{L}-])(?:lösch|loesch)(?:e|en|t|st)?(?![\p{L}])|\b(?:delete|deleting|purge|wipe)\b|\bdrop\s+(?:table|database|index)\b|\brm\s+-[a-z]*r|\bbranch\s+-D\b|--delete\b/iu,
     name: "loeschen",
+  },
+  // K2f (13.10.2026, Abnahme R17): zerstörerische und nach außen wirkende
+  // Aufträge sowie Geld bekamen einen weichen Fabrik-Hinweis („Leer den
+  // R2-Bucket …“, „Schick dem Support eine Mail …“, „Prepaid aufladen“,
+  // „Abo kündigen“). Wie bei `loeschen`: Imperativ/Infinitiv als eigenes Wort;
+  // Komposita („Leerzustand“, „Sendeleistung“, „Kündigungsfrist“) und
+  // Partizipien („geleert“, „geschickt“, „aufgeladen“) zählen nicht.
+  // Fälle: gate-k2f-faelle.ts (NEIN_NEU / NEIN_KONTROLLE).
+  {
+    // „leer(e) den …“ (Imperativ mit Begleiter — „leere Alben“ ist ein
+    // Adjektiv), „leeren“ ohne folgendes Substantiv („die leeren Alben“ nicht),
+    // ent-/ausleeren, purgen/flushen/wipen, „empty the …“, „flush the …“.
+    // Ohne i-Flag: \p{Lu} trüge sonst Groß- UND Kleinbuchstaben.
+    re: /(?<![\p{L}-])(?:[Ll]eer(?:e|t|st)?\s+(?:den|die|das|dem|alle[ns]?|sämtliche|saemtliche|komplett|vollständig|vollstaendig|bitte|mal|jetzt|beide[ns]?|unsere[nm]?|meine[nm]?)(?![\p{L}])|[Ll]eeren(?![\p{L}])(?!\s+\p{Lu})|(?:[Ee]nt|[Aa]us)leer(?:e|en|t)?(?![\p{L}])|(?:[Pp]urg|[Ff]lush|[Ww]ip)(?:e|en)(?![\p{L}])|(?:[Ee]mpty|EMPTY|[Ff]lush|FLUSH)\s+(?:the|all|our|my|both)(?![\p{L}]))/u,
+    name: "leeren",
+  },
+  {
+    // schicken/senden/versenden/verschicken/mailen/posten — nicht „schick
+    // mir …“/„send me …“ (das Ergebnis geht an den Nutzer, nicht nach außen),
+    // nicht „Mail“/„Post“ als Substantiv, nicht „blog post“, nicht „POST /v1“.
+    re: /(?<![\p{L}-])(?:ab|los|ver|zu|weiter|raus|rüber|rueber)?(?:schick|send)(?:e|en|t|st)?(?![\p{L}])(?!\s+(?:mir|uns|me|us)\b)|(?<![\p{L}-])(?:e-?)?mail(?:e|en|t|st)(?![\p{L}])(?!\s+(?:mir|uns)\b)|(?<![\p{L}-])(?<!\b(?:an?|the|this|that|your|my)\s+)(?:e-?mail|mail)\s+(?:it|this|that|them|him|her|the|our|to)\b|(?<![\p{L}-])post(?:e|en|et|est)\s+(?!(?:mir|uns)\b)(?=\p{L})|(?<!\b(?:blog|guest|an?|the|this|that|each|every|one|new|first|last)\s+)\bpost\s+(?:it|this|that|them|the|our|my|on|to)\b/iu,
+    name: "senden",
+  },
+  {
+    // Geld als Auftrag: aufladen (auch trennbar „lade … um 20 € auf.“), kaufen,
+    // bezahlen/überweisen, kündigen, Abo, Rechnung; top up, buy, purchase,
+    // pay the …, cancel … subscription/plan, unsubscribe.
+    re: /(?<![\p{L}-])(?:auflad(?:e|en|t|st)?|(?:ein|ver|zu)?kauf(?:e|en|t|st)?|bezahl(?:e|en|t|st)?|(?:überweis|ueberweis)(?:e|en|t)?|(?:kündig|kuendig)(?:e|en|t|st|ung)?|abo|abos|abonnements?|abonnier(?:e|en|t)?|rechnung(?:en)?)(?![\p{L}])|(?<![\p{L}-])lad(?:e)?\s+(?:[^.!?\n]|\.(?=\S)){1,80}?\sauf(?=\s*(?:[.!?,;]|$|\s+(?:und|dann|and|then)\b))|\btop[- ]?up\b|\b(?:buy|purchase|recharge)\b|\bpay\s+(?:the|for|an?|our|my|this|that|\d)|\bcancel\s+(?:the|my|our|this)\s+(?:[\w-]+\s+){0,2}?(?:subscription|plan|account|membership|contract)\b|\bunsubscribe\b/iu,
+    name: "geld-auftrag",
   },
 ]
 
@@ -809,6 +839,76 @@ export async function urteileMitLlm(text: string, opts: LlmOpts = {}): Promise<b
   return (await urteileMitLlmDetail(text, opts)).urteil
 }
 
+// ---------------------------------------------------------------------------
+// K2f (13.10.2026, Abnahme R17): ganzer Text + LLM-Vorfilter
+// ---------------------------------------------------------------------------
+// R17: (1) Das Plugin schnitt den Prompt auf 2000 Zeichen, BEVOR das Gate ihn
+// sah — „<lange Logs> … deployen und Prepaid aufladen“ verlor sein Nein-Signal
+// am Ende. Jetzt bekommt das Gate den ganzen Text; gekürzt wird nur die
+// LLM-Eingabe, und zwar auf Anfang UND Ende (dort stehen Auftrag und Schluss-
+// anweisung, dazwischen meist eingefügtes Material).
+// (3) Fast jeder Prompt kostete ~3 s LLM-Wartezeit, auch „Was ist ein
+// Checkpoint?“. Drei Vorfilter sparen den Aufruf, wo das LLM nichts zu
+// entscheiden hat. Sie wirken NUR in der Grauzone und NUR auf den Aufruf:
+// das Verdikt bleibt `injizieren: false`, wie bei einem LLM-Ausfall.
+export const LLM_KOPF_ZEICHEN = 1500
+export const LLM_KURZ_ZEICHEN = 60
+export const LLM_KURZ_WOERTER = 8
+
+/** LLM-Eingabe: bis 2×1500 Zeichen unverändert, sonst Anfang + Ende mit Auslassungsmarke. */
+export function llmText(t: string): string {
+  if (t.length <= 2 * LLM_KOPF_ZEICHEN) return t
+  const weg = t.length - 2 * LLM_KOPF_ZEICHEN
+  return `${t.slice(0, LLM_KOPF_ZEICHEN)}\n[… ${weg} Zeichen ausgelassen …]\n${t.slice(-LLM_KOPF_ZEICHEN)}`
+}
+
+// Spur einer Mehrzahl/Aufzählung/Menge oder eines Ergebnisses — bewusst WEIT:
+// ein falsches „Indiz da“ kostet nur einen LLM-Aufruf, ein falsches „kein
+// Indiz“ einen übersehenen Auftrag. Schon „und“/„and“ zählt.
+const MENGEN_SPUR = new RegExp(
+  `(?<![\\p{L}])(?:und|oder|sowie|plus|and|or|nor|beide[nrs]?|both|alle[nrs]?|all|jede[nrsm]?|each|every|je|pro|per|jeweils|respectively|mehrere[nr]?|several|multiple|various|verschiedene[nrs]?|einzeln|getrennt|separat|separate(?:ly)?|unabhängig|unabhaengig|independent(?:ly)?|${ZAHL})(?![\\p{L}])|&|\\b\\d+\\s+\\p{L}`,
+  "iu",
+)
+const ARTEFAKT_SPUR = new RegExp(`(?:${ARTEFAKT_DE}|${ARTEFAKT_EN})(?![\\p{L}])`, "iu")
+
+function fanoutIndiz(text: string): boolean {
+  if (MENGEN_SPUR.test(text) || ARTEFAKT_SPUR.test(text)) return true
+  if (FABRIK_SIGNALS.some((s) => s.re.test(text))) return true
+  if (saetze(text).some((s) => (s.match(/,/g) ?? []).length >= 2)) return true
+  return erkenneEinheiten(text) !== null
+}
+
+/**
+ * Grund, das LLM NICHT zu fragen, oder null:
+ *   kurz             — < 60 Zeichen oder < 8 Wörter, ohne Einheitenmenge/Aufzählung
+ *   reine_frage      — jeder Satz ist eine Frage (Fragewort am Anfang oder „?“),
+ *                      ohne Erstell-/Arbeitsverb und ohne Bedarfs-Rahmen; ein
+ *                      Bitt-Rahmen („Kannst du …?“) zählt nur mit Erklärverb
+ *                      als Frage, ohne erkanntes Verb ist er ein Auftrag
+ *   kein_fanout_indiz — weder Mehrzahl-/Aufzählungs-/Mengenspur noch Artefakt
+ *                      noch Ja-Fall-Signal
+ */
+export function llmVorfilter(textRaw: string): string | null {
+  const text = ohneZitate(nutzerText(textRaw))
+  const woerter = text.split(/\s+/).filter(Boolean).length
+  // Telegramm-Aufzählung „A, B und C“ hält auch einen kurzen Prompt im LLM-Weg —
+  // erkenneEinheiten verlangt Nomen, klein geschriebene Namen („rille,
+  // wortwert und memex“) erkennt es nicht.
+  const aufzaehlung = /[^\s,]+\s*,\s*[^\s,]+(?:\s*,\s*[^\s,]+)*\s+(?:und|and|sowie|&)\s+\S/i.test(text)
+  if ((text.length < LLM_KURZ_ZEICHEN || woerter < LLM_KURZ_WOERTER) && !aufzaehlung && erkenneEinheiten(text) === null) return "kurz"
+  const ss = saetze(text)
+  const frage = (s: string) => {
+    if (!/\?\s*$/.test(s) && !FRAGE_ANFANG.test(s)) return false
+    const vs = findeVerben(s)
+    if (vs.some((v) => v.stark)) return false
+    if (BITT_RAHMEN.test(s) && vs.length === 0) return false
+    return true
+  }
+  if (ss.length > 0 && ss.every(frage) && !BEDARF_RAHMEN.test(text)) return "reine_frage"
+  if (!fanoutIndiz(text)) return "kein_fanout_indiz"
+  return null
+}
+
 /**
  * DIE kombinierte Entscheidung (K2e) — EINE Stelle, das Plugin entscheidet nichts:
  *   1. Nein-Signale (Deploy, Geld, Secrets, Löschen …) und Prefix — wie classify,
@@ -820,9 +920,15 @@ export async function urteileMitLlm(text: string, opts: LlmOpts = {}): Promise<b
  * gesagt hat (bei Ausfall bleibt `keine`).
  */
 export async function entscheide(textRaw: string, opts: LlmOpts = {}) {
+  // Nein-Signale, Prefix und Wortregel sehen IMMER den ganzen Text (K2f) —
+  // gekürzt wird nur, was ans LLM geht (llmText).
   const v = classify(textRaw)
   if (v.entscheidung !== "GRAUZONE") return { ...v, llm: null, llm_ms: null, llm_fehler: null }
-  const d = await urteileMitLlmDetail(nutzerText(textRaw), opts)
+  // K2f-Vorfilter: spart NUR den LLM-Aufruf — das Verdikt bleibt das der
+  // Grauzone (injizieren: false). Ein Vorfilter kann nie injizieren.
+  const sprung = llmVorfilter(textRaw)
+  if (sprung) return { ...v, llm: null, llm_ms: null, llm_fehler: null, llm_uebersprungen: sprung }
+  const d = await urteileMitLlmDetail(llmText(nutzerText(textRaw)), opts)
   if (d.urteil === true)
     return {
       ...v,
