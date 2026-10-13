@@ -8,7 +8,7 @@
  * in echte Runs, $HOME oder ~/.openflow geschrieben.
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, utimesSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, utimesSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
@@ -56,6 +56,46 @@ function reap(args: string[]) {
 }
 
 describe("of-reap", () => {
+  it("R18 K11: Dauer eines gereapten Laufs endet bei der letzten Aktivität, nicht beim Abräumen", () => {
+    // Anlass: run-2026-10-13T00-14-05-710Z-8uustv — gestartet 00:14:05.710,
+    // letzter Checkpoint 00:15:43.299, gereapt 00:30:01.107 → Dauer 955 s
+    // statt ~98 s.
+    const id = uniqId()
+    const file = join(runsDir, `${id}.json`)
+    const started = Date.now() - 120 * 60_000
+    writeRun(file, { id, status: "running", started, nodes: [{ id: "boss", status: "running", started: started + 1_000 }] })
+    const cp = setCheckpoint(id, 60) // letzte Aktivität vor 60 min
+    const letzte = Math.round(statSync(cp).mtimeMs)
+    const r = reap(["--min-age-min", "30", "--grace-min", "5"])
+    expect(r.code).toBe(0)
+    const log = JSON.parse(readFileSync(file, "utf8"))
+    expect(log.status).toBe("stopped")
+    expect(Math.abs(log.finished - letzte)).toBeLessThan(1_000)
+    expect(Math.round((log.finished - log.started) / 60_000)).toBe(60)
+    expect(Date.parse(log.reaped.at)).toBeGreaterThan(Date.now() - 60_000) // Abräumzeit bleibt erhalten
+  })
+
+  it("R18 K11: ohne Checkpoint zählt der späteste Karten-Zeitstempel als letzte Aktivität", () => {
+    const id = uniqId()
+    const file = join(runsDir, `${id}.json`)
+    const started = Date.now() - 60 * 60_000
+    writeRun(file, {
+      id,
+      status: "running",
+      started,
+      nodes: [
+        { id: "boss", status: "running", started: started + 1_000 },
+        { id: "w", status: "done", started: started + 2_000, finished: started + 90_000 },
+      ],
+    })
+    const r = reap(["--min-age-min", "30", "--grace-min", "5"])
+    expect(r.code).toBe(0)
+    const log = JSON.parse(readFileSync(file, "utf8"))
+    expect(log.status).toBe("stopped")
+    expect(log.finished).toBe(started + 90_000)
+    expect(log.reaped.lastActivity).toBe(new Date(started + 90_000).toISOString())
+  })
+
   it("lässt frischen Checkpoint stehen (kein Reap)", () => {
     const id = uniqId()
     const file = join(runsDir, `${id}.json`)
