@@ -61,12 +61,23 @@ SPREAD_ARGS=()
 if [ "${1:-}" = "--spread" ]; then SPREAD_ARGS=(--spread); shift; fi
 
 PIPELINE="${1:-}"
+# Unbekannter Schalter ist keine Pipeline (Abnahme R18 K10: `of-run.sh
+# --status` startete einen Lauf mit der Pipeline "--status", 404 und
+# uncaughtException im Log). Abgelehnt, bevor irgendetwas startet.
+case "$PIPELINE" in
+  -*)
+    echo "of-run.sh: unbekannter Schalter '$PIPELINE'" >&2
+    echo "usage: of-run.sh [--wait] [--resume <checkpoint|run-id>] [--spread] <pipeline> <task...>" >&2
+    echo "       of-run.sh --scorecard|--reap|--loop|--loop-check|--nutzung [flags]" >&2
+    exit 2
+    ;;
+esac
 [ $# -gt 0 ] && shift
 # --resume ohne Pipeline-Aufruf: der Name dient nur dem Log; headless-run
 # überschreibt ihn mit log.pipeline aus dem Checkpoint.
 if [ -z "$PIPELINE" ]; then PIPELINE="resume"; fi
 STAMP=$(date +%Y%m%d-%H%M%S)-$$
-LOG="/tmp/of-run-${PIPELINE}-${STAMP}.log"
+LOG="${OPENFLOW_LOG_DIR:-/tmp}/of-run-${PIPELINE}-${STAMP}.log"
 
 # Zombie-Reap vor jedem Start: 15 Minuten stummer Checkpoint = Prozessor tot.
 # Sichtbar gescheitert ist besser als still gescheitert: der Reap darf ins
