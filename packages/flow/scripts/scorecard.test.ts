@@ -304,26 +304,33 @@ describe("of-scorecard — Ledger-Sektion (Regeltreue)", () => {
           { ts: "2026-10-13T10:00:00Z", event: "user_prompt", entscheidung: "FABRIK", session_id: "s1" },
           { ts: "2026-10-13T10:05:00Z", event: "task", quelle: "subagent", entscheidung: "GRAUZONE", session_id: "s1" },
           { ts: "2026-10-13T10:00:00Z", event: "user_prompt", entscheidung: "FABRIK", session_id: "s2" },
+          // Fenster-Grenzfälle (13.10.): Nutzung erst nach 31 min (s3) bzw.
+          // NUTZUNG VOR Kandidat (s4) — beides darf NICHT als Abdeckung zählen.
+          { ts: "2026-10-13T11:00:00Z", event: "user_prompt", entscheidung: "FABRIK", session_id: "s3" },
+          { ts: "2026-10-13T11:31:00Z", event: "task", quelle: "subagent", entscheidung: "GRAUZONE", session_id: "s3" },
+          { ts: "2026-10-13T09:00:00Z", event: "task", quelle: "subagent", entscheidung: "GRAUZONE", session_id: "s4" },
+          { ts: "2026-10-13T09:05:00Z", event: "user_prompt", entscheidung: "FABRIK", session_id: "s4" },
           "",
         ],
         order: ["ledger-run"],
       },
     )
     expect(p.ledger).not.toBeNull()
-    expect(p.ledger!.eintraege).toBe(9)
-    expect(p.ledger!.taskBewertungen).toBe(5)
-    expect(p.ledger!.subagentNutzung).toBe(2)
+    expect(p.ledger!.eintraege).toBe(13)
+    expect(p.ledger!.taskBewertungen).toBe(7)
+    expect(p.ledger!.subagentNutzung).toBe(4)
     expect(p.ledger!.fabrikKandidaten).toBe(1)
-    expect(p.ledger!.fanoutKandidaten).toBe(4) // 1 task FABRIK + 3 user_prompt FABRIK
+    expect(p.ledger!.fanoutKandidaten).toBe(6) // 1 task FABRIK + 5 user_prompt FABRIK
     expect(p.ledger!.direktEmpfohlen).toBe(1)
-    expect(p.ledger!.grauzone).toBe(3)
+    expect(p.ledger!.grauzone).toBe(5)
     expect(p.ledger!.fabrikAufrufe).toBe(1)
-    // Session-Matching: Kandidat s1 durch subagent in s1 binnen 5 min bedeckt,
-    // s2 bleibt offen → 1/2 = 50 %.
-    expect(p.ledger!.fanoutKandidatenSession).toBe(2)
-    expect(p.ledger!.fanoutAbdeckungSession).toBe(50)
-    // Näherung ohne Matching: (1 fabrik_run + 2 subagent) / 4 Kandidaten = 75 %
-    expect(p.ledger!.fanoutAbdeckung).toBe(75)
+    // Session-Matching: s1 bedeckt (subagent in s1, +5 min); s2 offen (andere
+    // Session); s3 offen (Nutzung erst nach 31 min > Fenster); s4 offen
+    // (Nutzung VOR dem Kandidat) → 1/4 = 25 %.
+    expect(p.ledger!.fanoutKandidatenSession).toBe(4)
+    expect(p.ledger!.fanoutAbdeckungSession).toBe(25)
+    // Näherung ohne Matching: (1 fabrik_run + 4 subagent) / 6 Kandidaten = 83.3 %
+    expect(p.ledger!.fanoutAbdeckung).toBe(83.3)
     expect(p.ledger!.regeltreueFabrik).toBe(100) // alte, enge Definition: 1 Fabrik-Aufruf / 1 task-Kandidat
   })
 })
