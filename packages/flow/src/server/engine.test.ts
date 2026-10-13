@@ -3133,9 +3133,22 @@ describe("resume by input hash (K7)", () => {
           : dispatch(["a", "do a, reworded"], ["b", "do b, reworded"]),
       }
     }
-    const log = await h.run(tree("root->a", "root->b"), "do the thing", seeds as any).done
+    // The resume happens an hour later, so a takeover stamped with "now" shows.
+    setSystemTime(new Date(Date.now() + 3_600_000))
+    let log: RunLog
+    try {
+      log = await h.run(tree("root->a", "root->b"), "do the thing", seeds as any).done
+    } finally {
+      setSystemTime()
+    }
 
     expect(log.status).toBe("done")
+    // A taken-over worker keeps the times it ran at (R18: the workers of the
+    // resume carried 00:17:24 where they had run at 00:15:35).
+    for (const id of ["a", "b"]) {
+      const was = killed.nodes.find((node) => node.id === id)!
+      expect(log.nodes.find((node) => node.id === id)).toMatchObject({ started: was.started, finished: was.finished })
+    }
     // Only the turn the boss was killed in runs — in the session it held.
     expect(h.dispatched).toEqual(["root"])
     expect(h.created()).toBe(0)

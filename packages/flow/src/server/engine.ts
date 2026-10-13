@@ -852,6 +852,8 @@ export function start(
         unreplayed.delete(node.id)
         outputs.set(node.id, want.output)
         const at = Date.now()
+        // The times the turn really ran at, where the record has them.
+        const ran = { started: want.started ?? at, finished: want.finished ?? at }
         activity.note(
           node.id,
           link.k === 1 ? `reused:${node.id}` : `reused:${node.id}:${link.k}`,
@@ -864,10 +866,13 @@ export function start(
           output: want.output,
           prompt: text,
           activity: undefined,
-          ...(link.k === 1 ? { started: at } : {}),
-          finished: at,
+          ...(link.k === 1 ? { started: ran.started } : {}),
+          finished: ran.finished,
           reused: true,
-          turns: [...(entry(node.id).turns ?? []), { hash, output: want.output }],
+          turns: [
+            ...(entry(node.id).turns ?? []),
+            { hash, output: want.output, ...(want.started !== undefined ? ran : {}) },
+          ],
         })
         return
       }
@@ -1022,6 +1027,7 @@ export function start(
           )
         }
         const hash = extend(text)
+        const settled = Date.now()
         outputs.set(node.id, answer)
         link.hash = hash
         link.k++
@@ -1030,8 +1036,8 @@ export function start(
           status: "done",
           output: answer,
           activity: undefined,
-          finished: Date.now(),
-          turns: [...(entry(node.id).turns ?? []), { hash, output: answer }],
+          finished: settled,
+          turns: [...(entry(node.id).turns ?? []), { hash, output: answer, started: turnStarted, finished: settled }],
         })
       } catch (error) {
         if (error instanceof StopError || controller.signal.aborted) {
