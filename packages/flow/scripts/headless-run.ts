@@ -32,6 +32,7 @@
 }
 
 import { herkunft } from "./of-heilung"
+import { vorgaengerStoppen } from "./of-lauf"
 import { bericht, buildScorecard, seedFrom, turnsFrom, uebernahme, uebernimm, vorgaenger } from "./of-ergebnis"
 import { start } from "../src/server/engine"
 import type { RecordedTurn } from "../src/server/turn-hash"
@@ -78,6 +79,7 @@ const initialResume: Record<string, string> = {}
 const initialSessions: Record<string, string> = {}
 const initialTurns: Record<string, RecordedTurn[]> = {}
 let resumeCheckpoint: { id?: string; origin?: string } | undefined
+let resumeLog: any
 const continued = (outputs: Record<string, string>, held: Record<string, string>) =>
   Object.keys(held).filter((id) => outputs[id] === undefined).length
 if (resumeRef !== undefined) {
@@ -92,6 +94,7 @@ if (resumeRef !== undefined) {
     process.exit(2)
   }
   resumeCheckpoint = { id: log.id, origin: log.origin }
+  resumeLog = log
   name = log.pipeline
   if (!input) input = log.input ?? ""
   seedFrom(log, initialResume, initialSessions)
@@ -146,6 +149,25 @@ if (spread) {
 const AUTO_RETRY = Math.max(0, Number(process.env.OPENFLOW_AUTO_RETRY ?? "1"))
 const attemptsMax = 1 + AUTO_RETRY
 
+// K11 (Abnahme R20): Der abgebrochene Vorgänger eines Resume stand bis zum
+// nächsten Reaper-Durchgang (30 min) als RUNNING in der Scorecard. Beim ersten
+// Checkpoint des Nachfolgers wird er geschlossen — `stopped`, mit Verweis auf
+// den Nachfolger —, sofern sein Prozess nicht mehr lebt. Maßgeblich ist die
+// Store-Fassung (die liest die Scorecard); ohne sie der Checkpoint.
+let vorgaengerGeschlossen = resumeCheckpoint?.id === undefined
+async function schliesseVorgaenger(nachfolgerId: string) {
+  if (!resumeCheckpoint?.id) return
+  const gespeichert = await flow<any>(`runs/${encodeURIComponent(resumeCheckpoint.id)}`).catch(() => undefined)
+  const neu = vorgaengerStoppen(gespeichert ?? resumeLog, nachfolgerId)
+  if (!neu) return
+  await flow(`runs/${encodeURIComponent(resumeCheckpoint.id)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(neu),
+  })
+  console.error(`Vorgänger ${resumeCheckpoint.id}: running → stopped (fortgesetzt als ${nachfolgerId})`)
+}
+
 const startedMs = Date.now()
 const predecessors: string[] = []
 let log: any
@@ -182,6 +204,10 @@ for (let attempt = 1; attempt <= attemptsMax; attempt++) {
       // Ursprung aus, und of-loop heilte Heilungsläufe im 5-Minuten-Takt).
       Object.assign(current, herkunft({ resumeRef, checkpoint: resumeCheckpoint, vorige: predecessors }))
       log = current
+      if (!vorgaengerGeschlossen) {
+        vorgaengerGeschlossen = true
+        void schliesseVorgaenger(current.id).catch((error) => console.error(`Vorgänger nicht geschlossen: ${String(error)}`))
+      }
       void Bun.write(`/tmp/openflow-checkpoint-${current.id}.json`, JSON.stringify(current, null, 2)).catch(() => undefined)
       void flow(`runs/${encodeURIComponent(current.id)}`, {
         method: "PUT",

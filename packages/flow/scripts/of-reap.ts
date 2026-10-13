@@ -33,17 +33,8 @@
  */
 
 import { readdirSync, readFileSync, existsSync, statSync, writeFileSync, renameSync } from "node:fs"
+import { lebenderLauf, letzteAktivitaet } from "./of-lauf"
 
-/** Der Prozess lebt und ist ein headless-run — eine fremde, wiederverwendete PID wird nie getroffen. */
-function lebenderLauf(pid: unknown): number | undefined {
-  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 1) return undefined
-  try {
-    const cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8")
-    return cmd.includes("headless-run.ts") ? pid : undefined
-  } catch {
-    return undefined
-  }
-}
 import { join } from "node:path"
 import { homedir } from "node:os"
 
@@ -108,10 +99,7 @@ for (const file of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json")).sort
   // Letzte Aktivität: Checkpoint-mtime oder der späteste Zeitstempel einer
   // Karte — was zuletzt geschah. Sie ist auch das Ende des Laufs (R18 K11:
   // finished = Abräumzeit machte aus ~98 s eine Dauer von 955 s).
-  let lastActivityMs = startedMs
-  for (const node of Array.isArray(log.nodes) ? log.nodes : []) {
-    for (const t of [node?.started, node?.finished]) if (typeof t === "number" && t > lastActivityMs) lastActivityMs = t
-  }
+  let lastActivityMs = letzteAktivitaet(log)
   let hasCheckpoint = false
   if (existsSync(checkpoint)) {
     hasCheckpoint = true
