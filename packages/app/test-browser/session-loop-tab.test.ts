@@ -481,21 +481,23 @@ describe("createSessionLoopController", () => {
 // E4 cap) the tests above drive through mock store + events; the [Apply]
 // action is the pure href builder verified below.
 describe("T-05: next-move section and [Apply] action", () => {
-  test("[Apply] builds the prefill href for legacy and server routes (no auto-send)", () => {
+  test("[Apply] builds the prefill href on the session root route (no session ID, no auto-send)", () => {
     const schritt = "PR mergen, nachdem Thomas ihn sich angesehen hat."
     const prompt = encodeURIComponent(schritt)
 
-    const legacy = nextMoveHref({ schritt, sessionID: "s1", directory: "/dir" })
-    expect(legacy).toBe(`/${base64Encode("/dir")}/session/s1?prompt=${prompt}`)
+    const href = nextMoveHref({ schritt, directory: "/dir" })
+    expect(href).toBe(`/${base64Encode("/dir")}/session?prompt=${prompt}`)
+  })
 
-    const serverKey = base64Encode("https://example.com")
-    const server = nextMoveHref({ schritt, sessionID: "s1", serverKey, directory: "/dir" })
-    expect(server).toBe(`/server/${serverKey}/session/s1?prompt=${prompt}`)
+  test("[Apply] href targets the root route the composer consumes (no ID segment)", () => {
+    const href = nextMoveHref({ schritt: "x", directory: "/dir" })
+    expect(href).not.toMatch(/\/session\//)
+    expect(href.endsWith("/session?prompt=x")).toBe(true)
   })
 
   test("[Apply] survives steps that carry query-looking characters", () => {
     const schritt = "Run `bun test --grep 'a&b=c'` and check ?prompt= handling"
-    const href = nextMoveHref({ schritt, sessionID: "s1", directory: "/dir" })
+    const href = nextMoveHref({ schritt, directory: "/dir" })
     expect(href.endsWith(`?prompt=${encodeURIComponent(schritt)}`)).toBe(true)
   })
 })

@@ -102,18 +102,14 @@ export function SessionLoopTab() {
     )
   }
 
-  // [Übernehmen] consumes the card and pre-fills the prompt of the session
-  // (spec §2: no auto-send — the user reviews and sends themselves).
+  // [Übernehmen] consumes the card and pre-fills the prompt of a NEW session
+  // in the same directory (spec §2: no auto-send — the user reviews and sends
+  // themselves). The href targets the session root route: only there does the
+  // composer actually consume ?prompt= (the session page skips it for
+  // existing sessions, the new layout creates a prefilled draft instead).
   const applyNextMove = (card: NextMoveCard) => {
     controller.consumeNextMove(card.sessionID)
-    navigate(
-      nextMoveHref({
-        schritt: card.schritt,
-        sessionID: card.sessionID,
-        serverKey: params.serverKey,
-        directory: sdk().directory,
-      }),
-    )
+    navigate(nextMoveHref({ schritt: card.schritt, directory: sdk().directory }))
   }
 
   const copySchritt = (card: NextMoveCard) => {
