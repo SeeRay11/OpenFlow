@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import {
+  COMPACTING_FRESH_WINDOW_MS,
   UNKNOWN_FRESH_WINDOW_MS,
+  compactingIsFresh,
   deriveSessionStatus,
   mapEventToStatus,
   unknownIsFresh,
@@ -118,5 +120,58 @@ describe("unknownIsFresh", () => {
     expect(unknownIsFresh(now - UNKNOWN_FRESH_WINDOW_MS, now)).toBe(false)
     expect(unknownIsFresh(now - 10 * UNKNOWN_FRESH_WINDOW_MS, now)).toBe(false)
     expect(unknownIsFresh(undefined, now)).toBe(false)
+  })
+})
+
+describe("compactingIsFresh (E7)", () => {
+  test("counts stamps inside the 120s window as compacting", () => {
+    const now = 1_000_000
+    expect(compactingIsFresh(now - COMPACTING_FRESH_WINDOW_MS + 1, now)).toBe(true)
+    expect(compactingIsFresh(now, now)).toBe(true)
+  })
+
+  test("stale or missing stamps never count", () => {
+    const now = 1_000_000
+    expect(compactingIsFresh(now - COMPACTING_FRESH_WINDOW_MS, now)).toBe(false)
+    expect(compactingIsFresh(now - 10 * COMPACTING_FRESH_WINDOW_MS, now)).toBe(false)
+    expect(compactingIsFresh(undefined, now)).toBe(false)
+  })
+
+  test("fresh stamp derives compacting, stale stamp falls back", () => {
+    const now = 1_000_000
+    expect(deriveSessionStatus({ timeCompacting: now - 1_000, now })).toEqual({ state: "compacting" })
+    expect(deriveSessionStatus({ timeCompacting: now - 10 * COMPACTING_FRESH_WINDOW_MS, now })).toEqual({
+      state: "unknown",
+    })
+    // No event, store idle → completed wins over nothing, but compacting beats it.
+    expect(
+      deriveSessionStatus({ timeCompacting: now - 1_000, now, storeStatus: { type: "idle" } }).state,
+    ).toBe("compacting")
+  })
+
+  test("working event outranks a fresh compacting stamp", () => {
+    const now = 1_000_000
+    expect(
+      deriveSessionStatus({
+        eventStatus: mapEventToStatus(event("session.status", { status: { type: "busy" } }))!,
+        timeCompacting: now - 1_000,
+        now,
+      }).state,
+    ).toBe("working")
+    // needs_input still outranks compacting, and a settled event status loses to it.
+    expect(
+      deriveSessionStatus({
+        permissionPending: true,
+        timeCompacting: now - 1_000,
+        now,
+      }).state,
+    ).toBe("needs_input")
+    expect(
+      deriveSessionStatus({
+        eventStatus: { state: "completed" },
+        timeCompacting: now - 1_000,
+        now,
+      }).state,
+    ).toBe("compacting")
   })
 })

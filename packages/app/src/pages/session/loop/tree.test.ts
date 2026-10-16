@@ -76,6 +76,24 @@ describe("buildSessionTree", () => {
     expect(tree.truncated).toBe(true)
   })
 
+  // The cap hits an INNER node (root → a → b → c…): its un-walked descendants
+  // must still show up in total, since total counts the cluster, not the walk.
+  test("cap inside the tree keeps total counting the full cluster", () => {
+    const sessions = [
+      session("root"),
+      session("a", "root", 1),
+      ...Array.from({ length: 8 }, (_, i) => session(`d${i}`, i === 0 ? "a" : `d${i - 1}`, 2 + i)),
+    ]
+    const tree = buildSessionTree({ rootID: "root", sessions, max: 3 })
+
+    // Walk stops at the third node; d0…d7 hang below the cut-off subtree.
+    expect(tree.nodes.map((node) => node.session.id)).toEqual(["root", "a", "d0"])
+    expect(tree.truncated).toBe(true)
+    expect(tree.total).toBe(10)
+    // The node list ends at the cap even though the cluster is larger.
+    expect(tree.nodes.length).toBe(3)
+  })
+
   test("cycle-guarded: mutually linked descendants never enter the cluster", () => {
     // a↔b point at each other, so neither resolves to an orphan nor a root
     // child; the guard must keep them out of the walk entirely.

@@ -211,4 +211,44 @@ describe("createSessionTabs", () => {
       dispose()
     })
   })
+
+  test("keeps the loop tab active and closable", () => {
+    createRoot((dispose) => {
+      const [state] = createStore({
+        active: "loop" as string | undefined,
+        all: ["loop"],
+      })
+      const tabs = createMemo(() => ({ active: () => state.active, all: () => state.all }))
+      const result = createSessionTabs({
+        tabs,
+        pathFromTab: () => undefined,
+        normalizeTab: (tab) => tab,
+      })
+
+      expect(result.panelTabs()).toEqual(["loop"])
+      expect(result.activeTab()).toBe("loop")
+      expect(result.activeFileTab()).toBe("loop")
+      expect(result.closableTab()).toBe("loop")
+      dispose()
+    })
+  })
+
+  test("keeps a loop-only active tab active but not closable when unlisted", () => {
+    createRoot((dispose) => {
+      const [state] = createStore({
+        active: "loop" as string | undefined,
+        all: [],
+      })
+      const tabs = createMemo(() => ({ active: () => state.active, all: () => state.all }))
+      const result = createSessionTabs({
+        tabs,
+        pathFromTab: () => undefined,
+        normalizeTab: (tab) => tab,
+      })
+
+      expect(result.activeTab()).toBe("loop")
+      expect(result.closableTab()).toBeUndefined()
+      dispose()
+    })
+  })
 })

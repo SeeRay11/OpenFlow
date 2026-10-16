@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { createRoot } from "solid-js"
+import { createRoot, createSignal } from "solid-js"
 import type { Session } from "@opencode-ai/sdk/v2"
 import { createSessionLoopController, type SessionLoopDeps } from "@/pages/session/loop/controller"
 import { UNKNOWN_FRESH_WINDOW_MS } from "@/pages/session/loop/status"
@@ -87,8 +87,9 @@ const emit = (fixture: Fixture, type: string, properties: Record<string, unknown
 }
 
 const flush = async () => {
-  await Promise.resolve()
-  await Promise.resolve()
+  // One macrotask: drains every pending microtask, including the whole
+  // fetch → then → catch → finally chain of the controller's refresh round.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
 }
 
 describe("createSessionLoopController", () => {
@@ -195,6 +196,55 @@ describe("createSessionLoopController", () => {
       expect(controller.tree().nodes.length).toBe(50)
       expect(controller.tree().total).toBe(60)
       expect(controller.tree().truncated).toBe(true)
+
+      dispose()
+    })
+  })
+
+  // E5: the store drops a session row (session.deleted apply) → the node and
+  // its count vanish from the tree. The fixture's deps are overridden with a
+  // reactive sessions accessor, mirroring the solid-store read in production.
+  test("E5: store delete removes the session's node from the tree", async () => {
+    await createRoot(async (dispose) => {
+      const [sessions, setSessions] = createSignal<Session[]>([
+        session("root"),
+        session("c1", "root", 100),
+        session("c2", "root", 200),
+      ])
+      const fixture = createFixture([])
+      const deps: SessionLoopDeps = { ...fixture.deps, sessions: () => sessions() }
+
+      const controller = createSessionLoopController(deps)
+      await flush()
+
+      expect(controller.ready()).toBe(true)
+      expect(controller.tree().total).toBe(3)
+      expect(controller.tree().nodes.map((n) => n.session.id)).toEqual(["root", "c2", "c1"])
+
+      setSessions((list) => list.filter((s) => s.id !== "c2"))
+
+      expect(controller.tree().total).toBe(2)
+      expect(controller.tree().nodes.map((n) => n.session.id)).toEqual(["root", "c1"])
+
+      dispose()
+    })
+  })
+
+  // Fallback-fetch failure must surface as fetchError (with ready set), not
+  // silently mimic the empty state.
+  test("fallback fetch failure sets fetchError while staying ready", async () => {
+    await createRoot(async (dispose) => {
+      const fixture = createFixture([session("root"), session("c1", "root", 100)])
+      const deps: SessionLoopDeps = {
+        ...fixture.deps,
+        fetchSessions: () => Promise.reject(new Error("network down")),
+      }
+
+      const controller = createSessionLoopController(deps)
+      await flush()
+
+      expect(controller.ready()).toBe(true)
+      expect(controller.fetchError()).toBe(true)
 
       dispose()
     })
