@@ -358,16 +358,19 @@ describe("createSessionLoopController", () => {
       const controller = createSessionLoopController(fixture.deps)
       await flush()
 
-      // DFS order: root first, then children newest-first; the backfill cap stops the rest.
+      // Backfill picks the newest sessions by session time (updated == created
+      // in this fixture): c12…c3. root (time 0) and the two oldest children
+      // stay out — structural DFS order no longer decides the cap.
       expect(fixture.lastTextCalls.length).toBe(10)
-      expect(fixture.lastTextCalls).toContain("root")
+      expect(fixture.lastTextCalls).toContain("c12")
+      expect(new Set(fixture.lastTextCalls).has("root")).toBe(false)
       expect(new Set(fixture.lastTextCalls).has("c1")).toBe(false)
-      expect(new Set(fixture.lastTextCalls).has("c3")).toBe(false)
+      expect(new Set(fixture.lastTextCalls).has("c2")).toBe(false)
 
       expect(controller.nextMoves().length).toBe(10)
       expect(controller.nextMoves()[0]).toMatchObject({ sessionID: "c12", at: 12_000 })
       expect(controller.nextMoves()[8]).toMatchObject({ sessionID: "c4", at: 4_000 })
-      expect(controller.nextMoves()[9]).toMatchObject({ sessionID: "root", at: 0 })
+      expect(controller.nextMoves()[9]).toMatchObject({ sessionID: "c3", at: 3_000 })
 
       // Display cap (E4): 12 live cards resolve to the newest 10 by completion time.
       for (let i = 1; i <= 12; i++) {
@@ -427,11 +430,12 @@ describe("createSessionLoopController", () => {
       const controller = createSessionLoopController(fixture.deps)
       await flush()
 
-      expect(fixture.lastTextCalls).toEqual(["root", "c1"])
+      // Newest-first by session time: c1 (100) before root (0).
+      expect(fixture.lastTextCalls).toEqual(["c1", "root"])
       emit(fixture, "session.execution.succeeded", { sessionID: "c1" })
       await flush()
       // The empty key suppresses the refetch; a live event can still override.
-      expect(fixture.lastTextCalls).toEqual(["root", "c1"])
+      expect(fixture.lastTextCalls).toEqual(["c1", "root"])
       expect(controller.nextMoves()).toEqual([])
       dispose()
     })
@@ -444,7 +448,8 @@ describe("createSessionLoopController", () => {
       const controller = createSessionLoopController(fixture.deps)
       await flush()
 
-      expect(fixture.lastTextCalls).toEqual(["root", "c1"])
+      // Newest-first by session time: c1 (100) before root (0).
+      expect(fixture.lastTextCalls).toEqual(["c1", "root"])
       expect(controller.nextMoves()).toEqual([])
 
       fixture.setFailLastText(false)
@@ -452,7 +457,7 @@ describe("createSessionLoopController", () => {
       emit(fixture, "session.execution.succeeded", { sessionID: "c1" })
       await flush()
       // Both sessions failed on the first pass, so both retry on the next round.
-      expect(fixture.lastTextCalls).toEqual(["root", "c1", "root", "c1"])
+      expect(fixture.lastTextCalls).toEqual(["c1", "root", "c1", "root"])
       expect(controller.nextMoves().map((c) => c.sessionID)).toEqual(["c1"])
       dispose()
     })

@@ -221,9 +221,16 @@ export function createSessionLoopController(deps: SessionLoopDeps) {
 
   // Backfill (spec §2b): only the newest completed sessions, only sessions
   // whose text was never seen — recordNextMove dedups via textKeys.
+  // "Newest" is by session time (updated, else created) — the tree order is
+  // structural and does not reflect recency.
+  const sessionTime = (node: SessionTreeNode) =>
+    node.session.time.updated || node.session.time.created
   createEffect(() => {
     if (!ready()) return
-    for (const node of groups().completed.slice(0, NEXT_MOVES_BACKFILL)) {
+    const newest = [...groups().completed]
+      .sort((a, b) => sessionTime(b) - sessionTime(a))
+      .slice(0, NEXT_MOVES_BACKFILL)
+    for (const node of newest) {
       void backfillNextMove(node.session.id)
     }
   })
