@@ -54,6 +54,7 @@ import {
   type Sizing,
 } from "@/pages/session/helpers"
 import { setSessionHandoff } from "@/pages/session/handoff"
+import { SessionLoopTab } from "@/pages/session/session-loop-tab"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { SessionFileBrowserTab, type SessionFileBrowserState } from "@/pages/session/v2/session-file-browser-tab"
 
@@ -238,7 +239,7 @@ export function SessionSidePanel(props: {
   })
   const fileBrowserVisible = createMemo(() => {
     const active = activeTab()
-    return active !== "review" && active !== "context" && active !== "empty"
+    return active !== "review" && active !== "context" && active !== "loop" && active !== "empty"
   })
   const openFileKeybind = createMemo(() => command.keybindParts("file.open"))
   const closeTabKeybind = createMemo(() => command.keybindParts("tab.close"))
@@ -391,6 +392,9 @@ export function SessionSidePanel(props: {
                                   </div>
                                 </Tabs.Trigger>
                               </Show>
+                              <Tabs.Trigger value="loop">
+                                <div>{language.t("session.tab.loop")}</div>
+                              </Tabs.Trigger>
                               <SortableProvider ids={openedTabs()}>
                                 <For each={panelTabs()}>
                                   {(tab) => (
@@ -494,6 +498,14 @@ export function SessionSidePanel(props: {
                             <Tabs.Content value="context" class="flex flex-col h-full overflow-hidden contain-strict">
                               <div class="relative pt-2 flex-1 min-h-0 overflow-hidden">
                                 <SessionContextTab />
+                              </div>
+                            </Tabs.Content>
+                          </Show>
+
+                          <Show when={activeTab() === "loop"}>
+                            <Tabs.Content value="loop" class="flex flex-col h-full overflow-hidden contain-strict">
+                              <div class="relative pt-2 flex-1 min-h-0 overflow-hidden">
+                                <SessionLoopTab />
                               </div>
                             </Tabs.Content>
                           </Show>
@@ -605,6 +617,9 @@ export function SessionSidePanel(props: {
                                 </div>
                               </Tabs.Trigger>
                             </Show>
+                            <Tabs.Trigger value="loop">
+                              <div>{language.t("session.tab.loop")}</div>
+                            </Tabs.Trigger>
                             <For each={panelTabs()}>
                               {(tab) => (
                                 <Show
@@ -722,6 +737,14 @@ export function SessionSidePanel(props: {
                           <Tabs.Content value="context" class="flex flex-col h-full overflow-hidden contain-strict">
                             <div class="relative pt-2 flex-1 min-h-0 overflow-hidden">
                               <SessionContextTab />
+                            </div>
+                          </Tabs.Content>
+                        </Show>
+
+                        <Show when={activeTab() === "loop"}>
+                          <Tabs.Content value="loop" class="flex flex-col h-full overflow-hidden contain-strict">
+                            <div class="relative pt-2 flex-1 min-h-0 overflow-hidden">
+                              <SessionLoopTab />
                             </div>
                           </Tabs.Content>
                         </Show>

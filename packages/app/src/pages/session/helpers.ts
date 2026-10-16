@@ -62,6 +62,7 @@ export const createSessionTabs = (input: TabsInput) => {
   const activeTab = createMemo(() => {
     const active = input.tabs().active()
     if (active === "context") return active
+    if (active === "loop") return active
     if (active === SESSION_OPEN_FILE_TAB && openFileOpen()) return active
     if (active === "review" && review()) return active
     if (active && input.pathFromTab(active)) return input.normalizeTab(active)
