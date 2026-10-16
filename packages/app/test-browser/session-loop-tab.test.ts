@@ -17,6 +17,14 @@ const session = (id: string, parentID?: string, created = 0): Session => ({
 
 const NOW = 10_000_000
 
+// Vertragszeilen-Beispiele (R14): letzte (Mensch)-Zeile gewinnt, dharma-Fußzeile wird abgezogen.
+const MENSCH =
+  "\n\nNEXT MOVE (Mensch): PR mergen, nachdem Thomas ihn sich angesehen hat.\n\n⎯⎯ gpt-oss-20b · fast · nvidia ⎯⎯"
+const MENSCH_ALT = "\n\nNEXT MOVE (Mensch): Abstimmen mit dem Security-Team, danach mergen."
+const KEIN_VERTRAG = "Alle Schritte abgeschlossen, nichts weiter offen.\n\n⎯⎯ gpt-oss-20b · fast · nvidia ⎯⎯"
+
+type LastText = { text: string; textKey: string; at?: number } | null
+
 type Fixture = {
   deps: SessionLoopDeps
   store: { sessions: Session[]; status: Record<string, Session["version"]> }
@@ -24,6 +32,9 @@ type Fixture = {
   questions: Record<string, number>
   events: { fired: Array<{ type: string; sessionID?: string; properties?: Record<string, unknown> }> }
   fetched: Session[]
+  lastTexts: Record<string, LastText>
+  lastTextCalls: string[]
+  setFailLastText: (v: boolean) => void
 }
 
 // Fake sync store in the shape the controller consumes: sessions/status read
@@ -36,6 +47,9 @@ function createFixture(initial: Session[] = []): Fixture {
   const questions: Record<string, number> = {}
   const handlers = new Set<(event: never) => void>()
   const fetched: Session[] = []
+  const lastTexts: Record<string, LastText> = {}
+  const lastTextCalls: string[] = []
+  let failLastText = false
 
   const fixture: Fixture = {
     fetched,
@@ -44,6 +58,11 @@ function createFixture(initial: Session[] = []): Fixture {
     questions,
     events: {
       fired: [],
+    },
+    lastTexts,
+    lastTextCalls,
+    setFailLastText: (v) => {
+      failLastText = v
     },
     deps: {
       rootID: () => "root",
@@ -60,6 +79,11 @@ function createFixture(initial: Session[] = []): Fixture {
         return Promise.resolve(sessions)
       },
       remember: () => {},
+      lastAssistantText: (sessionID) => {
+        lastTextCalls.push(sessionID)
+        if (failLastText) return Promise.reject(new Error("down"))
+        return Promise.resolve(lastTexts[sessionID] ?? null)
+      },
       now: () => NOW,
     },
   }
@@ -246,6 +270,203 @@ describe("createSessionLoopController", () => {
       expect(controller.ready()).toBe(true)
       expect(controller.fetchError()).toBe(true)
 
+      dispose()
+    })
+  })
+
+  // ---- Stufe 2: NEXT moves (T-03 cache/dedup, T-04 backfill, E4/E5/E7/E9) ----
+
+  test("T-03: shows a card for a (Mensch) line; identical textKey never resurrects a consumed card", async () => {
+    await createRoot(async (dispose) => {
+      const fixture = createFixture([session("root"), session("c1", "root", 100)])
+      fixture.store.status["c1"] = { type: "idle" } as never
+      const controller = createSessionLoopController(fixture.deps)
+      await flush()
+
+      emit(fixture, "session.next.text.ended", { textID: "msg_1", timestamp: 5_000, text: `Arbeit fertig.${MENSCH}` })
+      expect(controller.nextMoves().map((c) => c.sessionID)).toEqual(["c1"])
+      expect(controller.nextMoves()[0]!.schritt).toBe("PR mergen, nachdem Thomas ihn sich angesehen hat.")
+      expect(controller.nextMoves()[0]!.at).toBe(5_000)
+
+      emit(fixture, "session.next.text.ended", { textID: "msg_1", timestamp: 5_000, text: `Arbeit fertig.${MENSCH}` })
+      expect(controller.nextMoves().length).toBe(1)
+
+      controller.consumeNextMove("c1")
+      expect(controller.nextMoves()).toEqual([])
+      emit(fixture, "session.next.text.ended", { textID: "msg_1", timestamp: 5_000, text: `Arbeit fertig.${MENSCH}` })
+      expect(controller.nextMoves()).toEqual([])
+      dispose()
+    })
+  })
+
+  test("T-03: a newer text without a contract line clears the card (gone)", async () => {
+    await createRoot(async (dispose) => {
+      const fixture = createFixture([session("root"), session("c1", "root", 100)])
+      const controller = createSessionLoopController(fixture.deps)
+      await flush()
+
+      emit(fixture, "session.next.text.ended", { textID: "msg_1", timestamp: 5_000, text: `fertig.${MENSCH}` })
+      expect(controller.nextMoves().length).toBe(1)
+
+      emit(fixture, "session.next.text.ended", { textID: "msg_2", timestamp: 6_000, text: KEIN_VERTRAG })
+      expect(controller.nextMoves()).toEqual([])
+      dispose()
+    })
+  })
+
+  test("T-03: the LAST (Mensch) line wins (E5); a fresh textKey replaces the step and re-surfaces after consume", async () => {
+    await createRoot(async (dispose) => {
+      const fixture = createFixture([session("root"), session("c1", "root", 100)])
+      const controller = createSessionLoopController(fixture.deps)
+      await flush()
+
+      const doppelt = `Erster Entwurf.\n\nNEXT MOVE (Mensch): PR mergen, nachdem Thomas ihn sich angesehen hat.${MENSCH_ALT}`
+      emit(fixture, "session.next.text.ended", { textID: "msg_1", timestamp: 5_000, text: doppelt })
+      expect(controller.nextMoves()[0]!.schritt).toBe("Abstimmen mit dem Security-Team, danach mergen.")
+
+      controller.consumeNextMove("c1")
+      emit(fixture, "session.next.text.ended", { textID: "msg_2", timestamp: 6_000, text: `neu${MENSCH}` })
+      expect(controller.nextMoves().length).toBe(1)
+      expect(controller.nextMoves()[0]!.textKey).toBe("msg_2")
+      expect(controller.nextMoves()[0]!.schritt).toBe("PR mergen, nachdem Thomas ihn sich angesehen hat.")
+      dispose()
+    })
+  })
+
+  test("T-03: events without textID/timestamp are ignored", async () => {
+    await createRoot(async (dispose) => {
+      const fixture = createFixture([session("root"), session("c1", "root", 100)])
+      const controller = createSessionLoopController(fixture.deps)
+      await flush()
+
+      emit(fixture, "session.next.text.ended", { text: `x${MENSCH}` })
+      expect(controller.nextMoves()).toEqual([])
+      dispose()
+    })
+  })
+
+  test("T-04: backfills only the newest completed sessions and caps the cards (E4)", async () => {
+    await createRoot(async (dispose) => {
+      const kids = Array.from({ length: 12 }, (_, i) => session(`c${i + 1}`, "root", i + 1))
+      const fixture = createFixture([session("root"), ...kids])
+      fixture.lastTexts["root"] = { text: `Root done.${MENSCH}`, textKey: "m_root", at: 0 }
+      for (let i = 1; i <= 12; i++) {
+        fixture.lastTexts[`c${i}`] = { text: `Done ${i}.${MENSCH}`, textKey: `m_${i}`, at: i * 1000 }
+      }
+      const controller = createSessionLoopController(fixture.deps)
+      await flush()
+
+      // DFS order: root first, then children newest-first; the backfill cap stops the rest.
+      expect(fixture.lastTextCalls.length).toBe(10)
+      expect(fixture.lastTextCalls).toContain("root")
+      expect(new Set(fixture.lastTextCalls).has("c1")).toBe(false)
+      expect(new Set(fixture.lastTextCalls).has("c3")).toBe(false)
+
+      expect(controller.nextMoves().length).toBe(10)
+      expect(controller.nextMoves()[0]).toMatchObject({ sessionID: "c12", at: 12_000 })
+      expect(controller.nextMoves()[8]).toMatchObject({ sessionID: "c4", at: 4_000 })
+      expect(controller.nextMoves()[9]).toMatchObject({ sessionID: "root", at: 0 })
+
+      // Display cap (E4): 12 live cards resolve to the newest 10 by completion time.
+      for (let i = 1; i <= 12; i++) {
+        emit(fixture, "session.next.text.ended", { sessionID: `c${i}`, textID: `live_${i}`, timestamp: 20_000 + i, text: `live ${i}.${MENSCH}` })
+      }
+      expect(controller.nextMoves().length).toBe(10)
+      expect(controller.nextMoves()[0]).toMatchObject({ sessionID: "c12", at: 20_012 })
+      expect(controller.nextMoves()[9]).toMatchObject({ sessionID: "c3", at: 20_003 })
+      dispose()
+    })
+  })
+
+  test("T-04: hides the card while working, shows it once completed (E7)", async () => {
+    await createRoot(async (dispose) => {
+      const fixture = createFixture([session("root"), session("c1", "root", 100)])
+      fixture.store.status["c1"] = { type: "busy" } as never
+      const controller = createSessionLoopController(fixture.deps)
+      await flush()
+
+      // Busy sessions are not backfilled; the settled root is (and yields no card).
+      expect(fixture.lastTextCalls).toEqual(["root"])
+      emit(fixture, "session.next.text.ended", { textID: "msg_1", timestamp: 5_000, text: `x${MENSCH}` })
+      expect(controller.nextMoves()).toEqual([])
+
+      emit(fixture, "session.execution.succeeded")
+      expect(controller.nextMoves().map((c) => c.sessionID)).toEqual(["c1"])
+      dispose()
+    })
+  })
+
+  test("T-04: unknown-fresh hides the card until the session settles; needs_input still shows it (E7)", async () => {
+    await createRoot(async (dispose) => {
+      const kids = [session("c1", "root", 100), session("c2", "root", 200)]
+      kids[1].time.updated = NOW
+      const fixture = createFixture([session("root"), ...kids])
+      const controller = createSessionLoopController(fixture.deps)
+      await flush()
+
+      // c2 is fresh-unknown → hidden despite a live suggestion.
+      emit(fixture, "session.next.text.ended", { sessionID: "c2", textID: "msg_2", timestamp: 5_000, text: `x${MENSCH}` })
+      expect(controller.nextMoves()).toEqual([])
+
+      emit(fixture, "session.execution.succeeded", { sessionID: "c2" })
+      expect(controller.nextMoves().map((c) => c.sessionID)).toEqual(["c2"])
+
+      // needs_input is not an activity state — the card stays visible.
+      emit(fixture, "permission.asked", { sessionID: "c1" })
+      emit(fixture, "session.next.text.ended", { sessionID: "c1", textID: "msg_1", timestamp: 6_000, text: `y${MENSCH_ALT}` })
+      expect(controller.nextMoves().map((c) => c.sessionID)).toEqual(["c1", "c2"])
+      dispose()
+    })
+  })
+
+  test("T-04: no assistant text — one fetch, no card, no refetch on later rounds (E9)", async () => {
+    await createRoot(async (dispose) => {
+      const fixture = createFixture([session("root"), session("c1", "root", 100)])
+      const controller = createSessionLoopController(fixture.deps)
+      await flush()
+
+      expect(fixture.lastTextCalls).toEqual(["root", "c1"])
+      emit(fixture, "session.execution.succeeded", { sessionID: "c1" })
+      await flush()
+      // The empty key suppresses the refetch; a live event can still override.
+      expect(fixture.lastTextCalls).toEqual(["root", "c1"])
+      expect(controller.nextMoves()).toEqual([])
+      dispose()
+    })
+  })
+
+  test("T-04: backfill fetch failure stays silent and retries on the next round", async () => {
+    await createRoot(async (dispose) => {
+      const fixture = createFixture([session("root"), session("c1", "root", 100)])
+      fixture.setFailLastText(true)
+      const controller = createSessionLoopController(fixture.deps)
+      await flush()
+
+      expect(fixture.lastTextCalls).toEqual(["root", "c1"])
+      expect(controller.nextMoves()).toEqual([])
+
+      fixture.setFailLastText(false)
+      fixture.lastTexts["c1"] = { text: `x${MENSCH}`, textKey: "m_1", at: 1234 }
+      emit(fixture, "session.execution.succeeded", { sessionID: "c1" })
+      await flush()
+      // Both sessions failed on the first pass, so both retry on the next round.
+      expect(fixture.lastTextCalls).toEqual(["root", "c1", "root", "c1"])
+      expect(controller.nextMoves().map((c) => c.sessionID)).toEqual(["c1"])
+      dispose()
+    })
+  })
+
+  test("T-04: cards are per session (E5) — consuming one leaves the others", async () => {
+    await createRoot(async (dispose) => {
+      const fixture = createFixture([session("root"), session("c1", "root", 100), session("c2", "root", 200)])
+      fixture.lastTexts["c1"] = { text: `x${MENSCH}`, textKey: "m_1", at: 1000 }
+      fixture.lastTexts["c2"] = { text: `y${MENSCH_ALT}`, textKey: "m_2", at: 2000 }
+      const controller = createSessionLoopController(fixture.deps)
+      await flush()
+
+      expect(controller.nextMoves().map((c) => c.sessionID)).toEqual(["c2", "c1"])
+      controller.consumeNextMove("c2")
+      expect(controller.nextMoves().map((c) => c.sessionID)).toEqual(["c1"])
       dispose()
     })
   })

@@ -11,6 +11,8 @@ export type LoopStatus = {
  * The event shape this module maps from. Deliberately structural: tests and
  * the controller can feed any object carrying `type`, `properties.sessionID`
  * and the few fields read below, without importing the full event union.
+ * `text`/`textID`/`timestamp` carry `session.next.text.ended` payloads for the
+ * NEXT-MOVE queue (Stufe 2); the status mapping ignores them.
  */
 export type LoopEventLike = {
   type: string
@@ -18,6 +20,9 @@ export type LoopEventLike = {
     sessionID?: string
     status?: SessionStatus
     attempt?: number
+    text?: string
+    textID?: string
+    timestamp?: number
   }
 }
 
