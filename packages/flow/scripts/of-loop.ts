@@ -276,7 +276,11 @@ async function cycle(): Promise<{ ts: string; gereapt: number; geheilt: string[]
   // O4 — Herzschlag: EINE Zeile, je Tick überschrieben (Frische-Messung für
   // of-loopcheck ohne 99,4 % Leerzeilen in der State-Datei).
   try {
-    writeFileSync(HEARTBEAT, JSON.stringify({ ts, gereapt, geheilt_n: geheilt.length, alerts_n: alertsAktiv.length }) + "\n")
+    // Atomar wie markLoop (Temp+Rename): eine halbe Herzschlag-Datei wäre
+    // für die Sonde (letzterTick) ein Catch-Fallback auf Altdaten.
+    const tmp = `${HEARTBEAT}.tmp`
+    writeFileSync(tmp, JSON.stringify({ ts, gereapt, geheilt_n: geheilt.length, alerts_n: alertsAktiv.length }) + "\n")
+    renameSync(tmp, HEARTBEAT)
   } catch { /* Herzschlag ist best effort */ }
   // O4/O1 — State-Datei nur noch Ereigniszeilen: gereapt>0, Heilung, neuer
   // bzw. nach 24 h bestätigter Alert (mit erstes_ts/art). Unveränderte

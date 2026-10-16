@@ -101,16 +101,23 @@ export function computeI3(entries: any[], now: number): I3Ergebnis {
 }
 
 /**
- * dedupAlerts — aktive Alerts nur melden, wenn es Neues gibt (O1).
+ * dedupAlerts — aktive Alerts nur melden, wenn es Neues gibt (O1; Schlüssel
+ * nur invariante, Zustandswechsel-Logik seit 17.10.2026).
  *
- *   - invariante+wert-Kombination neu (oder geändert) → art "neu",
- *     erstes_ts startet neu, wird gemeldet.
- *   - unverändert innerhalb 24 h seit letzter Meldung → stumm (kein
- *     Tick-/State-Eintrag, keine Wiederholung wie bei den 13x in 1 h).
- *   - unverändert, aber >= 24 h seit letzter Meldung → art "bestaetigt"
- *     („besteht seit"), wird einmal gemeldet, dann wieder stumm.
- *   - Alert nicht mehr aktiv → Eintrag fällt aus dem Zustand (kommt er
- *     später zurück, gilt er wieder als neu).
+ *   - invariante nicht im Zustand (Zustandswechsel grün→rot: der Alert war
+ *     weg und kommt zurück) → art "neu", erstes_ts startet neu, gemeldet.
+ *   - im Zustand (bleibt ROT): Wert-Änderungen lösen KEINE Meldung aus —
+ *     der I3-wert enthält Zähler (gemessen: 24→25-Wechsel innerhalb 90 min),
+ *     sonst umging jede Zähleränderung die 24-h-Drossel. Der Wert wird im
+ *     Zustand geführt, erstes_ts und letzte_bestaetigung bleiben.
+ *   - innerhalb 24 h seit letzter Meldung → stumm (kein Tick-/State-Eintrag,
+ *     keine Wiederholung wie bei den 13x in 1 h).
+ *   - >= 24 h seit letzter Meldung → art "bestaetigt" („besteht seit"),
+ *     wird einmal gemeldet, dann wieder stumm.
+ *   - unparsebare oder zukünftige letzte_bestaetigung (NaN, Uhr-Rücklauf)
+ *     gilt als „nie bestätigt" → art "neu", nicht Dauerstille.
+ *   - Alert nicht mehr aktiv (rot→grün) → Eintrag fällt aus dem Zustand
+ *     (kommt er später zurück, gilt er wieder als neu).
  *
  * Rein: gibt gemeldete KOPIEN zurück, mutiert die Eingaben nicht. Der
  * zurückgegebene Zustand ersetzt den bisherigen als Ganzes.
@@ -140,17 +147,26 @@ export function dedupAlerts(
   const zustand: Record<string, AlertDedupEintrag> = {}
   for (const a of aktive) {
     const alt = zustandAlt[a.invariante]
-    if (!alt || alt.wert !== a.wert) {
+    if (!alt) {
+      // Zustandswechsel grün→rot: neu
       melden.push({ ...a, erstes_ts: a.ts, art: "neu" })
       zustand[a.invariante] = { wert: a.wert, erstes_ts: a.ts, letzte_bestaetigung: a.ts }
       continue
     }
     const letzte = Date.parse(alt.letzte_bestaetigung)
-    if (Number.isFinite(letzte) && now - letzte >= bestaetigungAbstandMs) {
+    // Unparsebar (NaN) oder in der Zukunft (Uhr-Rücklauf) = nie bestätigt:
+    // art neu, nicht Dauerstille.
+    if (!Number.isFinite(letzte) || letzte > now) {
+      melden.push({ ...a, erstes_ts: alt.erstes_ts, art: "neu" })
+      zustand[a.invariante] = { wert: a.wert, erstes_ts: alt.erstes_ts, letzte_bestaetigung: new Date(now).toISOString() }
+      continue
+    }
+    if (now - letzte >= bestaetigungAbstandMs) {
       melden.push({ ...a, erstes_ts: alt.erstes_ts, art: "bestaetigt" })
-      zustand[a.invariante] = { wert: alt.wert, erstes_ts: alt.erstes_ts, letzte_bestaetigung: new Date(now).toISOString() }
+      zustand[a.invariante] = { wert: a.wert, erstes_ts: alt.erstes_ts, letzte_bestaetigung: new Date(now).toISOString() }
     } else {
-      zustand[a.invariante] = alt
+      // Stumm: Wert (Zähler) wird geführt, Beginn und Drossel bleiben.
+      zustand[a.invariante] = { wert: a.wert, erstes_ts: alt.erstes_ts, letzte_bestaetigung: alt.letzte_bestaetigung }
     }
   }
   return { melden, zustand }

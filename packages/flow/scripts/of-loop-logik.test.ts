@@ -90,6 +90,31 @@ describe("computeI3 (O6: 7-Tage-Fenster, user_prompt-Kandidaten, non-monitoring-
     expect(e.kandidaten).toBe(3)
     expect(e.fanouts).toBe(2)
   })
+
+  test("Edge: Run-ts exakt GLEICH Kandidat-ts matcht NICHT (strikt danach, runs[j] <= k)", () => {
+    const entries = [
+      run(NOW - 3 * TAG + MIN), // strikt nach k1
+      run(NOW - 2 * TAG), // exakt gleich k2: zählt nicht
+      run(NOW - 1 * TAG + MIN), // strikt nach k3
+      kandidat(NOW - 3 * TAG),
+      kandidat(NOW - 2 * TAG),
+      kandidat(NOW - 1 * TAG),
+    ]
+    const e = computeI3(entries, NOW)
+    expect(e.kandidaten).toBe(3)
+    expect(e.matches).toBe(2) // der exakt-gleiche Run matcht k2 nicht
+  })
+
+  test("Edge: Kandidat exakt am Fensterrand (now - 7d) zählt NOCH (>=)", () => {
+    const entries = [
+      kandidat(NOW - 7 * TAG), // exakt Fensterrand
+      kandidat(NOW - 2 * TAG),
+      kandidat(NOW - 1 * TAG),
+    ]
+    const e = computeI3(entries, NOW)
+    expect(e.kandidaten).toBe(3)
+    expect(e.bewertet).toBe(true)
+  })
 })
 
 describe("dedupAlerts (O1: neu / stumm / Bestätigung nach 24 h)", () => {
@@ -124,14 +149,48 @@ describe("dedupAlerts (O1: neu / stumm / Bestätigung nach 24 h)", () => {
     expect(r.zustand["I3-regeltreue"].letzte_bestaetigung).toBe(iso(NOW))
   })
 
-  test("T5d: Wertänderung (invariante+wert-Kombination ändert sich) → erneut neu", () => {
+  test("T5d: Wert ändert sich (Zähler 0/3 → 1/4), Alert bleibt ROT → stumm (keine Drossel-Umgehung)", () => {
     const alt: Record<string, AlertDedupEintrag> = {
       "I3-regeltreue": { wert: "0/3", erstes_ts: iso(NOW - 5 * TAG), letzte_bestaetigung: iso(NOW - 3_600_000) },
     }
     const r = dedupAlerts([alert("1/4", NOW)], alt, NOW)
+    expect(r.melden).toHaveLength(0)
+    expect(r.zustand["I3-regeltreue"].wert).toBe("1/4") // Wert geführt
+    expect(r.zustand["I3-regeltreue"].erstes_ts).toBe(iso(NOW - 5 * TAG)) // Beginn bleibt
+    expect(r.zustand["I3-regeltreue"].letzte_bestaetigung).toBe(iso(NOW - 3_600_000)) // Drossel läuft weiter
+  })
+
+  test("rot→grün→rot: verschwundener Alert kehrt zurück → art neu (Zustandswechsel)", () => {
+    const alt: Record<string, AlertDedupEintrag> = {
+      "I3-regeltreue": { wert: "0/3", erstes_ts: iso(NOW - 2 * TAG), letzte_bestaetigung: iso(NOW - 1 * TAG) },
+    }
+    const weg = dedupAlerts([], alt, NOW) // grün: fällt aus dem Zustand
+    expect(weg.melden).toHaveLength(0)
+    expect(weg.zustand["I3-regeltreue"]).toBeUndefined()
+    const zurueck = dedupAlerts([alert("0/3", NOW)], weg.zustand, NOW) // wieder rot → neu
+    expect(zurueck.melden).toHaveLength(1)
+    expect(zurueck.melden[0].art).toBe("neu")
+    expect(zurueck.melden[0].erstes_ts).toBe(iso(NOW))
+  })
+
+  test("unparsebare letzte_bestaetigung (NaN) → wie nie bestätigt: art neu, nicht Dauerstille", () => {
+    const alt: Record<string, AlertDedupEintrag> = {
+      "I3-regeltreue": { wert: "0/3", erstes_ts: iso(NOW - 2 * TAG), letzte_bestaetigung: "kein-datum" },
+    }
+    const r = dedupAlerts([alert("0/3", NOW)], alt, NOW)
     expect(r.melden).toHaveLength(1)
     expect(r.melden[0].art).toBe("neu")
-    expect(r.melden[0].erstes_ts).toBe(iso(NOW))
+    expect(r.zustand["I3-regeltreue"].letzte_bestaetigung).toBe(iso(NOW))
+  })
+
+  test("letzte_bestaetigung in der Zukunft (Uhr-Rücklauf) → wie nie bestätigt: art neu", () => {
+    const alt: Record<string, AlertDedupEintrag> = {
+      "I3-regeltreue": { wert: "0/3", erstes_ts: iso(NOW - 2 * TAG), letzte_bestaetigung: iso(NOW + 3_600_000) },
+    }
+    const r = dedupAlerts([alert("0/3", NOW)], alt, NOW)
+    expect(r.melden).toHaveLength(1)
+    expect(r.melden[0].art).toBe("neu")
+    expect(r.zustand["I3-regeltreue"].letzte_bestaetigung).toBe(iso(NOW))
   })
 
   test("nicht mehr aktiver Alert fällt aus dem Zustand", () => {

@@ -20,7 +20,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
-import { letzterTick } from "./of-loop-logik.ts"
+import { computeI3, letzterTick } from "./of-loop-logik.ts"
 
 const argv = process.argv.slice(2)
 const MAX_TICK_MIN = Number(argv.includes("--max-tick-min") ? argv[argv.indexOf("--max-tick-min") + 1] : "12")
@@ -86,16 +86,24 @@ if (existsSync(RUNS_DIR)) {
 facts.zombies = zombies
 if (zombies > 0) problems.push(`I1-zombies: ${zombies} running-Run(s) mit stummem Checkpoint — Reaper versagt?`)
 
-// 5 — Regeltreue (nur ab n>=3 Kandidaten bewerten)
+// 5 — Regeltreue (O6): die Mess-Regel steht in of-loop-logik.ts (rein,
+//     getestet) — user_prompt|FABRIK-Kandidaten im 7-Tage-Fenster gegen
+//     non-monitoring fabrik_run strikt danach gematcht (computeI3).
+//     Vorher hier alt gemessen (task|FABRIK als Kandidaten, alle fabrik_run,
+//     kein Fenster, kein Matching) — 11/24 = 46 % < 50 % → dauerhaft ROT.
 if (existsSync(LEDGER)) {
   const entries = readFileSync(LEDGER, "utf8").trim().split("\n").filter(Boolean).map((l) => {
     try { return JSON.parse(l) } catch { return null }
   }).filter(Boolean) as any[]
-  const kandidaten = entries.filter((e) => e?.event === "task" && e?.entscheidung === "FABRIK").length
-  const runs = entries.filter((e) => e?.event === "fabrik_run").length
-  facts.fabrikKandidaten = kandidaten
-  facts.fabrikAufrufe = runs
-  if (kandidaten >= 3 && runs / kandidaten < 0.5) problems.push(`I3-regeltreue: ${runs}/${kandidaten} — FABRIK-Empfehlungen ohne Folgen`)
+  const i3 = computeI3(entries, Date.now())
+  facts.fabrikKandidaten = i3.kandidaten
+  facts.fabrikAufrufe = i3.fabrikAufrufe
+  facts.fabrikMatches = i3.matches
+  facts.fabrikFanouts = i3.fanouts
+  if (i3.alert) {
+    const zusatz = i3.fanouts > 0 ? ` + ${i3.fanouts} Stufe-1-Fan-out-Signale (task|FABRIK) nicht gezählt` : ""
+    problems.push(`I3-regeltreue: ${i3.matches}/${i3.kandidaten} — FABRIK-Empfehlungen ohne Folgen${zusatz}`)
+  }
 }
 
 const gruen = problems.length === 0
@@ -106,7 +114,7 @@ if (JSON_OUT) {
 } else {
   console.log(`OpenFlow-Loop: ${gruen ? "GRÜN" : "ROT"}`)
   for (const t of (facts.letzteTicks as string[]) ?? []) console.log(`  tick ${t}`)
-  console.log(`  letzter Tick: ${facts.letzterTickMin ?? "?"} min her · Zombies: ${zombies} · Fabrik-Kandidaten: ${facts.fabrikKandidaten ?? 0} → Aufrufe: ${facts.fabrikAufrufe ?? 0}`)
+  console.log(`  letzter Tick: ${facts.letzterTickMin ?? "?"} min her · Zombies: ${zombies} · I3: ${facts.fabrikMatches ?? 0}/${facts.fabrikKandidaten ?? 0} matches · Aufrufe: ${facts.fabrikAufrufe ?? 0}`)
   for (const p of problems) console.log(`  !! ${p}`)
 }
 process.exit(gruen ? 0 : 1)
