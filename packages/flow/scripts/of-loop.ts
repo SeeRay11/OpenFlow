@@ -14,8 +14,17 @@
  *   4. DIGEST: einmal täglich (State ~/.openflow/digest-last.date) das
  *      Gate-Ledger der letzten 7 Tage scannen — FABRIK/GRAUZONE-Empfehlungen
  *      ohne Fabrik-Run als digest-YYYY-MM-DD.md + Konsolen-Zeile melden.
- *   5. BERICHTEN: eine Zeile in /tmp/of-loop-state.jsonl; der letzte Zustand
+ *   5. BERICHTEN: Herzschlag (EINE Zeile, je Tick überschrieben) in
+ *      /tmp/opencode/of-loop-heartbeat; in of-loop-state.jsonl nur noch
+ *      Ereigniszeilen (gereapt>0, Heilung, neuer/bestätigter Alert,
+ *      Gap-Marker) — ereignisleere Ticks erzeugen keine Zeile mehr
+ *      (vor O4: 99,4 % leere Ticks, 390 KB/21 Tage). Der letzte Zustand
  *      steht in /tmp/of-loop-last.json.
+ *
+ * Loop-Start: liegt seit der letzten Aktivität (Herzschlag, sonst State)
+ * mehr als 15 min Stillstand, schreibt der Start EINE Gap-Zeile
+ * {"event":"loop_gap","luecke_min":N} — Stille wird sichtbar statt
+ * stillschweigend (Beweis: 15.10.2026, ~20 h ohne Tick, ohne Vermerk).
  *
  * Guardrails:
  *   - Bewusst OHNE flock: Zyklen stapeln sich nicht praktisch (Timer 5 min,
@@ -40,6 +49,7 @@ import { homedir } from "node:os"
 import { spawn } from "node:child_process"
 import { runDailyDigest } from "./of-digest.ts"
 import { planeHeilung, HEIL_MAX, SERIE_GLEICH, type RunLog } from "./of-heilung.ts"
+import { computeI3, dedupAlerts, gapLueckeMin, letzterTick, type AlertLike, type AlertDedupEintrag } from "./of-loop-logik.ts"
 
 const argv = process.argv.slice(2)
 const flag = (name: string, fallback?: string) => {
@@ -55,6 +65,16 @@ const STATE_DIR = flag("--state-dir", "/tmp")
 const STATE = join(STATE_DIR, "of-loop-state.jsonl")
 const LAST = join(STATE_DIR, "of-loop-last.json")
 const ALERTS = join(STATE_DIR, "of-loop-alerts.jsonl")
+// O4 — Herzschlag: EINE Zeile, je Tick überschrieben; Ticks verlassen die
+// State-Datei (99,4 % ereignisleere Zeilen dort vor O4). Pfad wie gefordert
+// fest verdrahtet, per --heartbeat für Tests überschreibbar.
+const HEARTBEAT = flag("--heartbeat", "/tmp/opencode/of-loop-heartbeat")
+// O1 — Dedup-Zustand: kleine Hilfsdatei statt state.jsonl-Tail. Wahl begründet:
+// Der Zustand ist eine flache Map (invariante → erstes_ts/letzte Bestätigung),
+// O(1) lesbar; ein Tail über state.jsonl müsste rückwärts durch eine
+// wachsende Datei parsen (390 KB/21 Tage vor O4). Fehlt die Datei, gilt
+// jeder Alert als neu — kein Altdaten-Schaden.
+const ALERTS_AKTIV = join(STATE_DIR, "of-loop-alerts-aktiv.json")
 // --dry-run: planen, markieren und berichten, aber keinen Resume starten.
 const DRY_RUN = argv.includes("--dry-run")
 // Hebel 3 — Kandidaten-Digest: einmal täglich FABRIK/GRAUZONE-Empfehlungen
@@ -156,25 +176,57 @@ function checkInvariants(): Alert[] {
     }
   }
 
-  // I3 — Regeltreue: FABRIK-Empfehlungen müssen zu Fabrik-Aufrufen führen.
-  // Erst ab n>=3 Kandidaten aussagekräftig (frühe Warnung wäre Rauschen).
+  // I3 — Regeltreue (O6, korrigiert 17.10.2026): die Mess-Regel steht in
+  // of-loop-logik.ts (rein, getestet) — user_prompt|FABRIK-Kandidaten im
+  // 7-Tage-Fenster gegen non-monitoring fabrik_run DANACH gematcht;
+  // Definition + Forensik (alt 11/24 = 46 % falsch gemessen, 13x Alert in
+  // 1 h; task|FABRIK sind REGEL-4-Stufe-1-Fan-outs) dort im Kommentarblock.
   {
     const LEDGER_LOCAL = process.env.OPENFLOW_LEDGER ?? join(homedir(), ".openflow/gate-ledger.jsonl")
     if (existsSync(LEDGER_LOCAL)) {
       const entries = readFileSync(LEDGER_LOCAL, "utf8").trim().split("\n").filter(Boolean).map((l) => {
         try { return JSON.parse(l) } catch { return null }
       }).filter(Boolean) as any[]
-      const kandidaten = entries.filter((e) => e?.event === "task" && e?.entscheidung === "FABRIK").length
-      const runs = entries.filter((e) => e?.event === "fabrik_run").length
-      if (kandidaten >= 3 && runs / kandidaten < 0.5) {
-        alerts.push({ ts: new Date().toISOString(), invariante: "I3-regeltreue", wert: `${runs} Fabrik-Aufrufe zu ${kandidaten} FABRIK-Kandidaten`, schwelle: ">=50% ab n>=3" })
+      const i3 = computeI3(entries, Date.now())
+      if (i3.alert) {
+        const zusatz = i3.fanouts > 0 ? ` + ${i3.fanouts} Stufe-1-Fan-out-Signale (task|FABRIK) nicht gezählt` : ""
+        alerts.push({
+          ts: new Date().toISOString(),
+          invariante: "I3-regeltreue",
+          wert: `${i3.matches}/${i3.kandidaten} Fabrik-Runs zu user_prompt-FABRIK-Kandidaten (7 Tage)${zusatz}`,
+          schwelle: ">=50% ab n>=3",
+        })
       }
     }
   }
   return alerts
 }
 
-async function cycle(): Promise<{ ts: string; gereapt: number; geheilt: string[]; alerts: Alert[] }> {
+// O1 — Dedup-Zustand lesen/schreiben (Hilfsdatei, Begründung oben bei ALERTS_AKTIV)
+function ladeAlertsZustand(): Record<string, AlertDedupEintrag> {
+  try { return JSON.parse(readFileSync(ALERTS_AKTIV, "utf8")) } catch { return {} }
+}
+
+function speichereAlertsZustand(z: Record<string, AlertDedupEintrag>): void {
+  try { writeFileSync(ALERTS_AKTIV, JSON.stringify(z, null, 2)) } catch { /* best effort */ }
+}
+
+// O5 — Gap-Marker, EINMAL beim Loop-Start: letzte Aktivität (Herzschlag,
+// Fallback State-Datei) gegen die Schwelle (15 min) prüfen; darüber EINE
+// Ereigniszeile {"event":"loop_gap","luecke_min":N} in state.jsonl. Ohne
+// jede Vorgeschichte (frische Installation) gibt es nichts zu markieren.
+function schreibeGapMarker(): void {
+  const letzter = letzterTick(HEARTBEAT, STATE, existsSync, readFileSync)
+  if (!letzter) return
+  const luecke = gapLueckeMin(letzter.ms, Date.now())
+  if (luecke === null) return
+  try {
+    appendFileSync(STATE, JSON.stringify({ event: "loop_gap", luecke_min: luecke, ts: new Date().toISOString() }) + "\n")
+  } catch { /* best effort */ }
+  console.error(`of-loop: Gap-Marker — ${luecke} min Stillstand seit letzter Aktivität (Quelle: ${letzter.quelle}, Schwelle 15 min)`)
+}
+
+async function cycle(): Promise<{ ts: string; gereapt: number; geheilt: string[]; alerts: AlertLike[]; alerts_aktiv: number }> {
   // Überlappungs-Schutz bewusst ohne Lock: Ein Doppelzyklus wäre harmlos —
   // markLoop ist atomar pro Run (Temp+Rename), ein zweiter Resume-Start
   // für denselben Run fliegt am loop.resumedAt-Kriterium vorbei. Der
@@ -191,7 +243,7 @@ async function cycle(): Promise<{ ts: string; gereapt: number; geheilt: string[]
     geheilt.push(h.quelle)
     console.error(`of-loop: heile ${h.quelle} (Ursprung ${h.ursprung}, Heilung ${h.heilung}/${HEIL_MAX}) via checkpoint-resume (detached)`)
   }
-  const alerts = checkInvariants()
+  const alertsAktiv: AlertLike[] = checkInvariants()
   // I5 — Fehlerserie: die Heilung dieses Ursprungs ist beendet, EIN Alarm
   // (Marker loop.alarm am Ursprung verhindert Wiederholung), sichtbar in
   // Konsole, Alerts (of-loopcheck wird rot) und Gate-Ledger.
@@ -199,12 +251,18 @@ async function cycle(): Promise<{ ts: string; gereapt: number; geheilt: string[]
     const at = new Date().toISOString()
     const file = datei.get(a.ursprung)
     if (!file || !markLoop(file, { alarm: { at, fehler: a.fehler, anzahl: a.anzahl } })) continue
-    alerts.push({ ts: at, invariante: "I5-fehlerserie", wert: `${a.ursprung}: ${a.anzahl}x "${a.fehler.slice(0, 120)}" — Heilung gestoppt`, schwelle: `${SERIE_GLEICH} gleiche Fehlschläge in Folge` })
+    alertsAktiv.push({ ts: at, invariante: "I5-fehlerserie", wert: `${a.ursprung}: ${a.anzahl}x "${a.fehler.slice(0, 120)}" — Heilung gestoppt`, schwelle: `${SERIE_GLEICH} gleiche Fehlschläge in Folge` })
     try {
       appendFileSync(DIGEST_LEDGER, JSON.stringify({ ts: at, event: "heilung_gestoppt", ursprung: a.ursprung, fehler: a.fehler, anzahl: a.anzahl }) + "\n")
     } catch { /* Ledger ist best effort, die Alarmzeile steht trotzdem */ }
   }
-  for (const a of alerts) console.error(`of-loop ALERT [${a.invariante}] ${a.wert} (Schwelle: ${a.schwelle})`)
+  // O1 — Alert-Dedup: nur neue bzw. nach 24 h bestätigte Alerts werden
+  // gemeldet; unveränderte bleiben stumm (vorher: 13x identischer I3-Alert
+  // in 1 h, of-loop-state.jsonl:5452-5464). gemeldete Kopien tragen
+  // erstes_ts + art ("neu" | "bestaetigt").
+  const { melden, zustand } = dedupAlerts(alertsAktiv, ladeAlertsZustand(), Date.now())
+  speichereAlertsZustand(zustand)
+  for (const a of melden) console.error(`of-loop ALERT [${a.invariante}] ${a.wert} (Schwelle: ${a.schwelle})`)
   // Hebel 3 — einmal täglich: Kandidaten-Digest (FABRIK/GRAUZONE ohne Run).
   // Läuft im selben Zyklus, ist aber über digest-last.date selbst gedrosselt;
   // ein Doppelzyklus schreibt nichts doppelt. Best effort wie der Bericht.
@@ -214,20 +272,40 @@ async function cycle(): Promise<{ ts: string; gereapt: number; geheilt: string[]
   } catch (e) {
     console.error(`of-loop: Digest fehlgeschlagen: ${e instanceof Error ? e.message : String(e)}`)
   }
-  const state = { ts: new Date().toISOString(), gereapt, geheilt, alerts }
+  const ts = new Date().toISOString()
+  // O4 — Herzschlag: EINE Zeile, je Tick überschrieben (Frische-Messung für
+  // of-loopcheck ohne 99,4 % Leerzeilen in der State-Datei).
   try {
-    appendFileSync(STATE, JSON.stringify(state) + "\n")
-    writeFileSync(LAST, JSON.stringify(state, null, 2))
-    if (alerts.length > 0) appendFileSync(ALERTS, alerts.map((a) => JSON.stringify(a)).join("\n") + "\n")
-  } catch { /* Bericht ist best effort */ }
-  return state
+    writeFileSync(HEARTBEAT, JSON.stringify({ ts, gereapt, geheilt_n: geheilt.length, alerts_n: alertsAktiv.length }) + "\n")
+  } catch { /* Herzschlag ist best effort */ }
+  // O4/O1 — State-Datei nur noch Ereigniszeilen: gereapt>0, Heilung, neuer
+  // bzw. nach 24 h bestätigter Alert (mit erstes_ts/art). Unveränderte
+  // Alerts bleiben stumm; LAST (of-loop-last.json) wird JEDEM Tick frisch
+  // gehalten, damit Altdaten-Liveness (mtime) weiter funktioniert.
+  const gemeldet = melden.length > 0
+  if (gereapt > 0 || geheilt.length > 0 || gemeldet) {
+    const state = { ts, gereapt, geheilt, alerts: melden }
+    try {
+      appendFileSync(STATE, JSON.stringify(state) + "\n")
+      // ALERTS = offene-Alerts-Warteschlange (of-loopcheck zählt sie):
+      // nur echte neue Alerts hinein, Bestätigungen nicht (sonst zählte
+      // die Sonde Bestätigungen als offene Alerts).
+      const neue = melden.filter((a) => a.art === "neu")
+      if (neue.length > 0) appendFileSync(ALERTS, neue.map((a) => JSON.stringify(a)).join("\n") + "\n")
+    } catch { /* Bericht ist best effort */ }
+  }
+  try {
+    writeFileSync(LAST, JSON.stringify({ ts, gereapt, geheilt, alerts: alertsAktiv, alerts_aktiv: alertsAktiv.length }, null, 2))
+  } catch { /* best effort */ }
+  return { ts, gereapt, geheilt, alerts: melden, alerts_aktiv: alertsAktiv.length }
 }
 
+schreibeGapMarker()
 if (INTERVAL > 0) {
   console.error(`of-loop watch: alle ${INTERVAL}s ein Zyklus (PID ${process.pid})`)
   while (true) {
     const s = await cycle()
-    console.error(`of-loop: reaped=${s.gereapt} geheilt=${s.geheilt.length} alerts=${s.alerts.length}`)
+    console.error(`of-loop: reaped=${s.gereapt} geheilt=${s.geheilt.length} alerts_aktiv=${s.alerts_aktiv} gemeldet=${s.alerts.length}`)
     await new Promise((r) => setTimeout(r, INTERVAL * 1000))
   }
 } else {

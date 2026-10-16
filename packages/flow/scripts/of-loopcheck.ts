@@ -20,27 +20,40 @@
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
+import { letzterTick } from "./of-loop-logik.ts"
 
 const argv = process.argv.slice(2)
 const MAX_TICK_MIN = Number(argv.includes("--max-tick-min") ? argv[argv.indexOf("--max-tick-min") + 1] : "12")
 const JSON_OUT = argv.includes("--json")
 
-const LAST = "/tmp/of-loop-last.json"
+// O4: LAST (/tmp/of-loop-last.json) wird vom Loop weiter je Tick geschrieben,
+// ist aber NICHT mehr Liveness-Quelle: Fallback ist die State-Datei (Altdaten)
+// wie beauftragt, Primärquelle der Herzschlag.
 const STATE = "/tmp/of-loop-state.jsonl"
 const ALERTS = "/tmp/of-loop-alerts.jsonl"
+// O4 — Herzschlag: seit O4 schreibt der Loop jeden Tick EINE überschriebene
+// Zeile hierher; die State-Datei enthält nur noch Ereigniszeilen. Pfad wie
+// im Loop fest verdrahtet (--heartbeat überschreibbar, für Tests).
+const HEARTBEAT = argv.includes("--heartbeat") ? argv[argv.indexOf("--heartbeat") + 1] : "/tmp/opencode/of-loop-heartbeat"
 const RUNS_DIR = join(homedir(), "workspace/flow-lab/.openflow/runs")
 const LEDGER = process.env.OPENFLOW_LEDGER ?? join(homedir(), ".openflow/gate-ledger.jsonl")
 
 const problems: string[] = []
 const facts: Record<string, unknown> = {}
 
-// 1 — Loop-Liveness: letzter Tick frisch?
-if (!existsSync(LAST)) {
-  problems.push("I4-loop: kein /tmp/of-loop-last.json — der Loop lief noch nie oder wurde neu installiert")
-} else {
-  const ageMin = (Date.now() - statSync(LAST).mtimeMs) / 60_000
-  facts.letzterTickMin = Math.round(ageMin * 10) / 10
-  if (ageMin > MAX_TICK_MIN) problems.push(`I4-loop: letzter Tick vor ${Math.round(ageMin)} min (Schwelle ${MAX_TICK_MIN}) — cron of-loop tot?`)
+// 1 — Loop-Liveness: letzter Herzschlag frisch? (O4) Herzschlag-Datei
+//     bevorzugt; Fallback letzte ts aus der State-Datei für Altdaten (vor
+//     O4 enthielt sie jeden Tick). Regel in of-loop-logik.ts (rein, getestet).
+{
+  const letzter = letzterTick(HEARTBEAT, STATE, existsSync, (p) => readFileSync(p, "utf8"))
+  if (!letzter) {
+    problems.push(`I4-loop: kein Herzschlag (${HEARTBEAT}) und keine State-Historie (${STATE}) — der Loop lief noch nie oder wurde neu installiert`)
+  } else {
+    const ageMin = (Date.now() - letzter.ms) / 60_000
+    facts.letzterTickMin = Math.round(ageMin * 10) / 10
+    facts.letzteTickQuelle = letzter.quelle
+    if (ageMin > MAX_TICK_MIN) problems.push(`I4-loop: letzter Herzschlag vor ${Math.round(ageMin)} min (Schwelle ${MAX_TICK_MIN}, Quelle ${letzter.quelle}) — cron of-loop tot?`)
+  }
 }
 
 // 2 — letzte Ticks (Historie sichtbar machen)
