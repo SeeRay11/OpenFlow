@@ -46,6 +46,8 @@ const statusLabel = (language: ReturnType<typeof useLanguage>, status: LoopStatu
       return status.attempt
         ? language.t("session.loop.status.retry.attempt", { attempt: status.attempt })
         : language.t("session.loop.status.retry")
+    case "compacting":
+      return language.t("session.loop.status.compacting")
     case "completed":
       return language.t("session.loop.status.completed")
     case "unknown":
@@ -96,11 +98,24 @@ export function SessionLoopTab() {
   return (
     <div class="flex flex-col h-full overflow-y-auto">
       <Show
-        when={controller.tree().nodes.length > 1}
+        when={controller.ready()}
         fallback={
-          <div class="p-4 text-14-regular text-text-weak">{language.t("session.loop.empty")}</div>
+          <div class="p-4 text-14-regular text-text-weak">{language.t("session.loop.loading")}</div>
         }
       >
+        <Show
+          when={controller.tree().nodes.length > 1}
+          fallback={
+            <Show
+              when={controller.fetchError()}
+              fallback={
+                <div class="p-4 text-14-regular text-text-weak">{language.t("session.loop.empty")}</div>
+              }
+            >
+              <div class="p-4 text-14-regular text-text-weak">{language.t("session.loop.error")}</div>
+            </Show>
+          }
+        >
         <For each={sections()}>
           {(section) => (
             <div class="pb-2">
@@ -132,6 +147,7 @@ export function SessionLoopTab() {
           <div class="px-4 py-1.5 text-12-regular text-text-weak">
             {language.t("session.loop.truncated", { count: controller.tree().total })}
           </div>
+        </Show>
         </Show>
       </Show>
     </div>

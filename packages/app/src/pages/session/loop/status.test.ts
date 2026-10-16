@@ -23,7 +23,9 @@ describe("mapEventToStatus", () => {
   })
 
   test("maps retry, execution and step events", () => {
-    expect(mapEventToStatus(event("session.retry.scheduled", { attempt: 2 }))).toEqual({ state: "retry", attempt: 2 })
+    // Not part of the v2 event union and not emitted by the fork server —
+    // retry reaches this tab via session.status/session.next.retried instead.
+    expect(mapEventToStatus(event("session.retry.scheduled", { attempt: 2 }))).toBeUndefined()
     expect(mapEventToStatus(event("session.next.retried", { attempt: 5 }))).toEqual({ state: "retry", attempt: 5 })
     expect(mapEventToStatus(event("session.execution.started"))).toEqual({ state: "working" })
     expect(mapEventToStatus(event("session.next.step.started"))).toEqual({ state: "working" })

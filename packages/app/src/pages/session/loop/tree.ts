@@ -49,15 +49,29 @@ export function buildSessionTree(input: { rootID: string; sessions: Session[]; m
   }
   childrenOf.set(input.rootID, [...(childrenOf.get(input.rootID) ?? []), ...orphans])
 
+  // `total` counts the whole reachable cluster up front — independent of the
+  // node cap. The walk below stops early once `max` nodes are collected, so a
+  // cap hitting an inner node must not undercount its descendants.
+  const counted = new Set<string>([input.rootID])
+  const queue = [input.rootID]
+  while (queue.length > 0) {
+    const id = queue.pop()!
+    for (const child of childrenOf.get(id) ?? []) {
+      if (!counted.has(child.id)) {
+        counted.add(child.id)
+        queue.push(child.id)
+      }
+    }
+  }
+  const total = counted.size
+
   const nodes: SessionTreeNode[] = []
   const visited = new Set<string>()
-  let total = 0
   let truncated = false
 
   const walk = (session: Session, depth: number): SessionTreeNode | undefined => {
     if (visited.has(session.id)) return undefined
     visited.add(session.id)
-    total++
     if (nodes.length >= max) {
       truncated = true
       return undefined

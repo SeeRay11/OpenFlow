@@ -1,6 +1,6 @@
 import type { SessionStatus } from "@opencode-ai/sdk/v2"
 
-export type LoopSessionState = "working" | "needs_input" | "retry" | "completed" | "unknown"
+export type LoopSessionState = "working" | "needs_input" | "retry" | "compacting" | "completed" | "unknown"
 
 export type LoopStatus = {
   state: LoopSessionState
@@ -43,7 +43,6 @@ export function mapEventToStatus(event: LoopEventLike): LoopStatus | undefined {
     if (status.type === "retry") return { state: "retry", attempt: status.attempt }
     return { state: "completed" }
   }
-  if (type === "session.retry.scheduled") return { state: "retry", attempt: event.properties.attempt }
   if (type === "session.next.retried") return { state: "retry", attempt: event.properties.attempt }
   if (type === "session.execution.started" || type === "session.next.step.started") return { state: "working" }
   if (COMPLETED_EVENTS.has(type)) return { state: "completed" }
@@ -59,19 +58,26 @@ export type DeriveSessionStatusInput = {
   questionPending?: boolean
   eventStatus?: LoopStatus
   storeStatus?: SessionStatus
+  timeCompacting?: number
+  now?: number
 }
 
 /**
  * Derives the displayed status for one session.
  *
- * Priority: pending permission/question wins (needs_input), then the
- * last-mapped event status, then the sync-store session_status entry, then
- * unknown. `completed` is only ever derived from a real store idle entry or a
- * completion event — absence of a store entry never fakes idle.
+ * Priority: pending permission/question wins (needs_input), then a live
+ * event status that still means activity (needs_input/working/retry), then a
+ * fresh compaction stamp (compacting), then any other folded event status,
+ * then the sync-store session_status entry, then unknown. `completed` is only
+ * ever derived from a real store idle entry or a completion event — absence of
+ * a store entry never fakes idle.
  */
 export function deriveSessionStatus(input: DeriveSessionStatusInput): LoopStatus {
   if (input.permissionPending || input.questionPending) return { state: "needs_input" }
-  if (input.eventStatus) return input.eventStatus
+  const event = input.eventStatus
+  if (event?.state === "needs_input" || event?.state === "working" || event?.state === "retry") return event
+  if (compactingIsFresh(input.timeCompacting, input.now ?? Date.now())) return { state: "compacting" }
+  if (event) return event
   const store = input.storeStatus
   if (store?.type === "busy") return { state: "working" }
   if (store?.type === "retry") return { state: "retry", attempt: store.attempt }
@@ -81,6 +87,19 @@ export function deriveSessionStatus(input: DeriveSessionStatusInput): LoopStatus
 
 /** Unknown sessions updated within this window count as still working. */
 export const UNKNOWN_FRESH_WINDOW_MS = 60_000
+
+/** A session whose `time.compacting` stamp is younger than this is compacting. */
+export const COMPACTING_FRESH_WINDOW_MS = 120_000
+
+/**
+ * Weak signal for compacting sessions (spec E7): the server stamps
+ * `time.compacting` while a compaction runs; anything older than the window
+ * is stale and no longer counts.
+ */
+export function compactingIsFresh(timeCompacting: number | undefined, now: number): boolean {
+  if (timeCompacting === undefined) return false
+  return now - timeCompacting < COMPACTING_FRESH_WINDOW_MS
+}
 
 /**
  * Weak signal for unknown sessions: a session whose `time.updated` is younger
