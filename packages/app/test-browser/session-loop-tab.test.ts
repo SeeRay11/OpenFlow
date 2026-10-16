@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import { createRoot, createSignal } from "solid-js"
 import type { Session } from "@opencode-ai/sdk/v2"
+import { base64Encode } from "@opencode-ai/core/util/encode"
 import { createSessionLoopController, type SessionLoopDeps } from "@/pages/session/loop/controller"
+import { nextMoveHref } from "@/pages/session/loop/href"
 import { UNKNOWN_FRESH_WINDOW_MS } from "@/pages/session/loop/status"
 
 const session = (id: string, parentID?: string, created = 0): Session => ({
@@ -469,5 +471,31 @@ describe("createSessionLoopController", () => {
       expect(controller.nextMoves().map((c) => c.sessionID)).toEqual(["c1"])
       dispose()
     })
+  })
+})
+
+// T-05 (section + action): the component itself cannot be mounted in this
+// suite — bun transforms solid TSX as React JSX ("React is not defined"), so
+// no DOM rendering is possible here. The section renders straight from
+// controller.nextMoves(), whose card data (session/step/time, E7 hiding,
+// E4 cap) the tests above drive through mock store + events; the [Apply]
+// action is the pure href builder verified below.
+describe("T-05: next-move section and [Apply] action", () => {
+  test("[Apply] builds the prefill href for legacy and server routes (no auto-send)", () => {
+    const schritt = "PR mergen, nachdem Thomas ihn sich angesehen hat."
+    const prompt = encodeURIComponent(schritt)
+
+    const legacy = nextMoveHref({ schritt, sessionID: "s1", directory: "/dir" })
+    expect(legacy).toBe(`/${base64Encode("/dir")}/session/s1?prompt=${prompt}`)
+
+    const serverKey = base64Encode("https://example.com")
+    const server = nextMoveHref({ schritt, sessionID: "s1", serverKey, directory: "/dir" })
+    expect(server).toBe(`/server/${serverKey}/session/s1?prompt=${prompt}`)
+  })
+
+  test("[Apply] survives steps that carry query-looking characters", () => {
+    const schritt = "Run `bun test --grep 'a&b=c'` and check ?prompt= handling"
+    const href = nextMoveHref({ schritt, sessionID: "s1", directory: "/dir" })
+    expect(href.endsWith(`?prompt=${encodeURIComponent(schritt)}`)).toBe(true)
   })
 })

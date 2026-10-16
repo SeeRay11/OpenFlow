@@ -15,6 +15,7 @@ import {
   type NextMoveMessageLike,
   type SessionLoopDeps,
 } from "@/pages/session/loop/controller"
+import { nextMoveHref } from "@/pages/session/loop/href"
 import type { LoopEventLike, LoopStatus } from "@/pages/session/loop/status"
 
 // Spec surface: the controller is part of this module's public API.
@@ -86,7 +87,9 @@ export function SessionLoopTab() {
     fetchSessions: () => listAllSessions(sdk().api.session, { directory: sdk().directory, order: "desc" }),
     remember: (session) => sync().session.remember(session),
     lastAssistantText: async (sessionID) => {
-      const response = await sdk().api.session.messages({ sessionID, limit: 20 })
+      // `api` (CompatibleApi) does not type `messages`; the raw v2 client does
+      // (same call pattern as server-session.ts fetchMessages).
+      const response = await sdk().client.session.messages({ sessionID, limit: 20 })
       return pickLastAssistantText((response.data ?? []) as unknown as NextMoveMessageLike[])
     },
   })
@@ -103,11 +106,13 @@ export function SessionLoopTab() {
   // (spec §2: no auto-send — the user reviews and sends themselves).
   const applyNextMove = (card: NextMoveCard) => {
     controller.consumeNextMove(card.sessionID)
-    const prompt = encodeURIComponent(card.schritt)
     navigate(
-      params.serverKey
-        ? `${sessionHref(requireServerKey(params.serverKey), card.sessionID)}?prompt=${prompt}`
-        : `${legacySessionHref(sdk().directory, card.sessionID)}?prompt=${prompt}`,
+      nextMoveHref({
+        schritt: card.schritt,
+        sessionID: card.sessionID,
+        serverKey: params.serverKey,
+        directory: sdk().directory,
+      }),
     )
   }
 
@@ -117,8 +122,14 @@ export function SessionLoopTab() {
     clip
       .writeText(card.schritt)
       .then(() => {
-        setCopied(card.textKey, true)
-        setTimeout(() => setCopied(card.textKey, false), 1_500)
+        setCopied((prev) => new Set(prev).add(card.textKey))
+        setTimeout(() => {
+          setCopied((prev) => {
+            const next = new Set(prev)
+            next.delete(card.textKey)
+            return next
+          })
+        }, 1_500)
       })
       .catch(() => {})
   }
