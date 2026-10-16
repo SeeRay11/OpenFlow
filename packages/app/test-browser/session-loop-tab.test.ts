@@ -383,6 +383,23 @@ describe("createSessionLoopController", () => {
     })
   })
 
+  test("T-04: backfill orders by updated time, not creation time (E4)", async () => {
+    await createRoot(async (dispose) => {
+      const stale = session("stale", "root", 9_000)
+      const fresh = session("fresh", "root", 1_000)
+      fresh.time.updated = 9_500
+      const fixture = createFixture([session("root"), stale, fresh])
+      const controller = createSessionLoopController(fixture.deps)
+      await flush()
+
+      // fresh (updated 9_500) beats stale (created 9_000): the sort key is
+      // session time (updated, else created) — creation order alone would
+      // put stale first.
+      expect(fixture.lastTextCalls).toEqual(["fresh", "stale", "root"])
+      dispose()
+    })
+  })
+
   test("T-04: hides the card while working, shows it once completed (E7)", async () => {
     await createRoot(async (dispose) => {
       const fixture = createFixture([session("root"), session("c1", "root", 100)])
