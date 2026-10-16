@@ -113,11 +113,21 @@ export function SessionLoopTab() {
   }
 
   const copySchritt = (card: NextMoveCard) => {
+    const fail = () =>
+      setCopyFailed((prev) => new Set(prev).add(card.textKey))
     const clip = navigator.clipboard
-    if (!clip) return
+    if (!clip) {
+      fail()
+      return
+    }
     clip
       .writeText(card.schritt)
       .then(() => {
+        setCopyFailed((prev) => {
+          const next = new Set(prev)
+          next.delete(card.textKey)
+          return next
+        })
         setCopied((prev) => new Set(prev).add(card.textKey))
         setTimeout(() => {
           setCopied((prev) => {
@@ -127,11 +137,12 @@ export function SessionLoopTab() {
           })
         }, 1_500)
       })
-      .catch(() => {})
+      .catch(fail)
   }
 
   const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set())
   const [copied, setCopied] = createSignal<ReadonlySet<string>>(new Set())
+  const [copyFailed, setCopyFailed] = createSignal<ReadonlySet<string>>(new Set())
   const toggleExpanded = (textKey: string) =>
     setExpanded((prev) => {
       const next = new Set(prev)
@@ -213,6 +224,7 @@ export function SessionLoopTab() {
               {(card) => {
                 const isExpanded = () => expanded().has(card.textKey)
                 const wasCopied = () => copied().has(card.textKey)
+                const copyErrored = () => copyFailed().has(card.textKey)
                 return (
                   <div class="px-4 py-2 border-b border-border-weak">
                     <div class="flex items-center justify-between gap-2">
@@ -222,6 +234,7 @@ export function SessionLoopTab() {
                       </span>
                     </div>
                     <p
+                      title={card.schritt}
                       classList={{
                         "text-14-regular whitespace-pre-wrap": true,
                         "line-clamp-3": !isExpanded(),
@@ -247,6 +260,7 @@ export function SessionLoopTab() {
                       <button
                         type="button"
                         class="text-12-regular text-text-weak rounded px-1.5 py-0.5 hover:bg-background-stronger"
+                        title={copyErrored() ? language.t("session.loop.nextmoves.copyError") : undefined}
                         onClick={() => copySchritt(card)}
                       >
                         {wasCopied()

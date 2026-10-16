@@ -689,6 +689,7 @@ export const dict = {
   "session.loop.nextmoves.open": "Open session",
   "session.loop.nextmoves.copy": "Copy step",
   "session.loop.nextmoves.copied": "Copied",
+  "session.loop.nextmoves.copyError": "Copy failed",
   "session.loop.nextmoves.expand": "Show more",
   "session.loop.nextmoves.collapse": "Show less",
   "session.panel.reviewAndFiles": "Review and files",
