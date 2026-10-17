@@ -138,11 +138,13 @@ if (existsSync(LEDGER)) {
   const tasks = entries.filter((e) => e.event === "task")
   const fabrikRuns = entries.filter((e) => e.event === "fabrik_run")
   const fabrikKandidaten = tasks.filter((e) => e.entscheidung === "FABRIK")
-  // Regeltreue neu (13.10.2026): Fan-out gilt als ABGEDECKT, wenn die Session
+  // Regeltreue (13.10.2026): Fan-out gilt als ABGEDECKT, wenn die Session
   // STUFE 1 (`subagent`-Tool, REGEL 1) ODER STUFE 2 (of-run.sh, REGEL 4)
   // genutzt hat. Kandidaten = als FABRIK bewertete Fan-out-Prompts (task +
-  // user_prompt). Noch ohne Session-Matching (session_id erst seit heute im
-  // Ledger) — Näherung über Gesamtzahlen; Matching folgt, sobald Daten anliegen.
+  // user_prompt). fanoutAbdeckungSession ist die gematchte Quote (30-min-
+  // Fenster je session_id); fanoutAbdeckung bleibt ungepaarte Globalzahlen-
+  // Näherung, nur noch Kontext (kappt bei mehr Nutzung als Kandidaten auf
+  // 100 % — aussagekräftig nur als Obergrenze).
   const userPrompts = entries.filter((e) => e.event === "user_prompt")
   const fanoutKandidaten = fabrikKandidaten.length + userPrompts.filter((e) => e.entscheidung === "FABRIK").length
   const subagentNutzung = tasks.filter((e) => e.quelle === "subagent").length
@@ -222,8 +224,10 @@ if (JSON_OUT) {
     console.log(`| Subagent-Nutzung (Stufe 1, quelle=subagent) | ${ledger.subagentNutzung} |`)
     console.log(`| Fan-out-Kandidaten (FABRIK bewertet) | ${ledger.fanoutKandidaten} |`)
     console.log(`| echte Fabrik-Aufrufe (Stufe 2) | ${ledger.fabrikAufrufe} |`)
-    console.log(`| Fan-out-Abdeckung (Stufe 1+2 vs Kandidaten) | ${ledger.fanoutAbdeckung !== null ? ledger.fanoutAbdeckung + " %" : "noch keine Kandidaten"} |`)
-    console.log(`| davon Fabrik-only (alte Definition) | ${ledger.regeltreueFabrik !== null ? ledger.regeltreueFabrik + " %" : "noch keine Kandidaten"} |`)
+    console.log(`| Fan-out-Kandidaten mit session_id | ${ledger.fanoutKandidatenSession} |`)
+    console.log(`| Fan-out-Abdeckung (session-gematcht, 30 min) | ${ledger.fanoutAbdeckungSession !== null ? ledger.fanoutAbdeckungSession + " %" : "noch keine Kandidaten mit session_id"} |`)
+    console.log(`| Fan-out-Abdeckung (Globalzahlen-Näherung, ungepaart) | ${ledger.fanoutAbdeckung !== null ? ledger.fanoutAbdeckung + " %" : "noch keine Kandidaten"} |`)
+    console.log(`| davon Fabrik-only (Globalzahlen, nur Stufe 2) | ${ledger.regeltreueFabrik !== null ? ledger.regeltreueFabrik + " %" : "noch keine Kandidaten"} |`)
   } else {
     console.log("")
     console.log(`Regeltreue: noch keine Ledger-Daten (fabrik-gate-Plugin/of-gate log schreiben sie)`)
