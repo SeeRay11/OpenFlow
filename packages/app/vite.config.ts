@@ -24,7 +24,18 @@ const sentry =
 // forwards /api, /global and /event to the running `opencode serve`, so no CORS
 // or password plumbing is needed. Dev-only: production/desktop paths unchanged.
 const server = process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096"
-const forward = { target: server, changeOrigin: true, ws: false }
+
+// The engine may sit behind basic auth (OPENCODE_SERVER_PASSWORD) — same hop as
+// the canvas (mirrors `authorize()` in flow/server.ts): this proxy carries the
+// password so the browser never sees a login prompt.
+const authorized = (() => {
+  const password = process.env.OPENCODE_SERVER_PASSWORD
+  if (!password) return {}
+  const username = process.env.OPENCODE_SERVER_USERNAME ?? "opencode"
+  return { headers: { authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}` } }
+})()
+
+const forward = { target: server, changeOrigin: true, ws: false, ...authorized }
 
 export default defineConfig({
   plugins: [desktopPlugin, sentry] as any,
