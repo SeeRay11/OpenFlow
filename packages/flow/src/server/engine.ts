@@ -1113,9 +1113,20 @@ export function start(
    * failures this way since 0.6.18). `@opencode-ai/llm` classifies the packet
    * (`streamErrorPacket`) and writes `Provider stream error (<status> …)`; a
    * 5xx status there is a provider-side failure, not a fault of the turn.
+   *
+   * The two packet-less stream failures join this policy: the transport lost
+   * the response body (`Failed to read … stream`, packages/llm transport
+   * http.ts) and a non-JSON frame arrived (`Invalid … stream event`, llm
+   * route client.ts — proxy garbage, no status to classify). Measured in the
+   * run archive 2026-09-18 to 2026-10-12: 14 error runs died on these two
+   * with no retry, because only the classified packet counted as transient.
    */
   function streamFailed(reason: string) {
-    return /Provider stream error \(5\d\d\b/.test(reason)
+    return (
+      /Provider stream error \(5\d\d\b/.test(reason) ||
+      /Failed to read \S+\/\S+ stream/.test(reason) ||
+      /Invalid \S+\/\S+ stream event/.test(reason)
+    )
   }
 
   /** Seeds from the interrupted run not yet taken — each answers exactly one turn. */

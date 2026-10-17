@@ -2579,6 +2579,60 @@ describe("gauntlet mode", () => {
     expect(log.status).toBe("done")
   })
 
+  test("a card the transport dropped mid-stream is retried", async () => {
+    // Measured 2026-09-18/09-20/10-12: `Failed to read dharma/… stream` killed
+    // 5 runs without a retry — the response body broke off (connection lost),
+    // no error packet ever arrived to classify.
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { outputs: [dispatch("reviewer"), final("shipped")] },
+        reviewer: {
+          errors: ["Failed to read dharma/openai-compatible-chat stream"],
+          output: "ours wins",
+        },
+      },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"]), "do the thing", {
+      rateLimitBackoff: 1,
+    }).done
+
+    const reviewer = log.nodes.find((node) => node.id === "reviewer")!
+    expect(reviewer.status).toBe("done")
+    expect(reviewer.output).toBe("ours wins")
+    expect(
+      h.activity.some((row) => row.node === "reviewer" && row.event.title.includes("provider error — retrying")),
+    ).toBe(true)
+    expect(log.status).toBe("done")
+  })
+
+  test("a card fed a malformed stream frame is retried", async () => {
+    // Measured 2026-09-26/10-12: `Invalid dharma/… stream event` killed 10
+    // nodes without a retry — a non-JSON frame (proxy garbage, no error
+    // packet, no status) hit the fatal path in the llm route client.
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { outputs: [dispatch("reviewer"), final("shipped")] },
+        reviewer: {
+          errors: ["Invalid dharma/openai-compatible-chat stream event"],
+          output: "ours wins",
+        },
+      },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"]), "do the thing", {
+      rateLimitBackoff: 1,
+    }).done
+
+    const reviewer = log.nodes.find((node) => node.id === "reviewer")!
+    expect(reviewer.status).toBe("done")
+    expect(reviewer.output).toBe("ours wins")
+    expect(
+      h.activity.some((row) => row.node === "reviewer" && row.event.title.includes("provider error — retrying")),
+    ).toBe(true)
+    expect(log.status).toBe("done")
+  })
+
   test("a non-retryable stream error packet still fails the card", async () => {
     const h = harness({
       models: ["openai/gpt-x"],
