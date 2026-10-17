@@ -333,6 +333,31 @@ describe("of-scorecard — Ledger-Sektion (Regeltreue)", () => {
     expect(p.ledger!.fanoutAbdeckung).toBe(83.3)
     expect(p.ledger!.regeltreueFabrik).toBe(100) // alte, enge Definition: 1 Fabrik-Aufruf / 1 task-Kandidat
   })
+
+  test("(10) Injektions-Wirksamkeit: nur injiziert=true zählt, gleiche Session + Fenster", async () => {
+    newCase()
+    const p = await measure(
+      [{ id: "ledger-run", status: "done" }],
+      {
+        ledger: [
+          // s1: injizierter Hinweis, subagent folgt binnen 10 min → abgedeckt
+          { ts: "2026-10-17T21:00:00Z", event: "user_prompt", entscheidung: "FABRIK", injiziert: true, session_id: "s1" },
+          { ts: "2026-10-17T21:10:00Z", event: "task", quelle: "subagent", entscheidung: "GRAUZONE", session_id: "s1" },
+          // s2: injizierter Hinweis, keine Nutzung → offen
+          { ts: "2026-10-17T22:00:00Z", event: "user_prompt", entscheidung: "FABRIK", injiziert: true, session_id: "s2" },
+          // s3: FABRIK-Urteil OHNE Injektion — Kandidat für die Abdeckung,
+          // aber kein Injektionsfall
+          { ts: "2026-10-17T23:00:00Z", event: "user_prompt", entscheidung: "FABRIK", injiziert: false, session_id: "s3" },
+        ],
+        order: ["ledger-run"],
+      },
+    )
+    expect(p.ledger!.injizierteFanoutHinweise).toBe(2)
+    expect(p.ledger!.injektionsWirksamkeit).toBe(50)
+    // die allgemeine Abdeckung bleibt unangetastet: 1/3 Kandidaten = 33.3 %
+    expect(p.ledger!.fanoutKandidatenSession).toBe(3)
+    expect(p.ledger!.fanoutAbdeckungSession).toBe(33.3)
+  })
 })
 
 describe("of-scorecard — Textausgabe (--limit)", () => {

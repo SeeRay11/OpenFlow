@@ -165,6 +165,19 @@ if (existsSync(LEDGER)) {
       (e) => e.session_id === k.session_id && ts0(e) >= ts0(k) && ts0(e) - ts0(k) <= FENSTER_MS,
     ),
   ).length
+  // Injektions-Wirksamkeit (18.10.2026): Der Gate injiziert bei FABRIK-Urteil
+  // einen Pflicht-/Hinweistext in den User-Prompt (injiziert=true). Gemessen
+  // wird, ob binnen desselben Fensters im SELBEN Session-Kontext Stufe 1
+  // (subagent) oder Stufe 2 (fabrik_run) folgt. Feldmessung bis 18.10.2026:
+  // 0 von 30 Injektionen führten zur Nutzung — deshalb die eigene Kennzahl
+  // (die fanoutAbdeckungSession misst alle FABRIK-Kandidaten, auch ohne
+  // Injektion, und verwässert damit die Gate-Wirksamkeit).
+  const injizierteSess = kandidatenSess.filter((e) => e.injiziert === true)
+  const injizierteAbgedeckt = injizierteSess.filter((k) =>
+    nutzungSess.some(
+      (e) => e.session_id === k.session_id && ts0(e) >= ts0(k) && ts0(e) - ts0(k) <= FENSTER_MS,
+    ),
+  ).length
   ledger = {
     eintraege: entries.length,
     taskBewertungen: tasks.length,
@@ -187,6 +200,11 @@ if (existsSync(LEDGER)) {
     regeltreueFabrik:
       fabrikKandidaten.length > 0
         ? +Math.min(100, (fabrikRuns.length / fabrikKandidaten.length) * 100).toFixed(1)
+        : null,
+    injizierteFanoutHinweise: injizierteSess.length,
+    injektionsWirksamkeit:
+      injizierteSess.length > 0
+        ? +((injizierteAbgedeckt / injizierteSess.length) * 100).toFixed(1)
         : null,
   }
 }
@@ -227,6 +245,7 @@ if (JSON_OUT) {
     console.log(`| echte Fabrik-Aufrufe (Stufe 2) | ${ledger.fabrikAufrufe} |`)
     console.log(`| Fan-out-Kandidaten mit session_id | ${ledger.fanoutKandidatenSession} |`)
     console.log(`| Fan-out-Abdeckung (session-gematcht, 30 min) | ${ledger.fanoutAbdeckungSession !== null ? ledger.fanoutAbdeckungSession + " %" : "noch keine Kandidaten mit session_id"} |`)
+    console.log(`| Injektions-Wirksamkeit (injiziert=true → Stufe 1/2, 30 min, session) | ${ledger.injektionsWirksamkeit !== null ? ledger.injektionsWirksamkeit + " %" : "keine injizierten Fälle"} — ${ledger.injizierteFanoutHinweise} Hinweise |`)
     console.log(`| Fan-out-Abdeckung (Globalzahlen-Näherung, ungepaart) | ${ledger.fanoutAbdeckung !== null ? ledger.fanoutAbdeckung + " %" : "noch keine Kandidaten"} |`)
     console.log(`| davon Fabrik-only (Globalzahlen, nur Stufe 2) | ${ledger.regeltreueFabrik !== null ? ledger.regeltreueFabrik + " %" : "noch keine Kandidaten"} |`)
   } else {
