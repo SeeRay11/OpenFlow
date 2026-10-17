@@ -98,8 +98,14 @@ if (!(root instanceof HTMLElement) && import.meta.env.DEV) {
 
 const getCurrentUrl = () => {
   if (location.hostname.includes("opencode.ai")) return "http://localhost:4096"
-  if (import.meta.env.DEV)
+  if (import.meta.env.DEV) {
+    // Dev without an explicit server env: stay same-origin. The vite dev proxy
+    // (vite.config.ts) forwards /api, /global, /event to the running opencode
+    // serve — the canvas pattern, no CORS or auth prompt in the browser.
+    if (!import.meta.env.VITE_OPENCODE_SERVER_HOST && !import.meta.env.VITE_OPENCODE_SERVER_PORT)
+      return location.origin
     return `http://${import.meta.env.VITE_OPENCODE_SERVER_HOST ?? "localhost"}:${import.meta.env.VITE_OPENCODE_SERVER_PORT ?? "4096"}`
+  }
   return location.origin
 }
 

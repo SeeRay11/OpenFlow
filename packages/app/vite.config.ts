@@ -19,12 +19,24 @@ const sentry =
       })
     : false
 
+// The opencode server the app talks to in dev — same pattern as the Flow canvas
+// (packages/flow/vite.config.ts). The browser speaks same-origin; the dev proxy
+// forwards /api, /global and /event to the running `opencode serve`, so no CORS
+// or password plumbing is needed. Dev-only: production/desktop paths unchanged.
+const server = process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096"
+const forward = { target: server, changeOrigin: true, ws: false }
+
 export default defineConfig({
   plugins: [desktopPlugin, sentry] as any,
   server: {
     host: "0.0.0.0",
     allowedHosts: true,
     port: 3000,
+    proxy: {
+      "/api": forward,
+      "/global": forward,
+      "/event": forward,
+    },
   },
   build: {
     target: "esnext",
