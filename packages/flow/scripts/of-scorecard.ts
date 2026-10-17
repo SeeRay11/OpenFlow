@@ -97,7 +97,8 @@ if (!existsSync(RUNS_DIR)) {
 }
 
 const files = readdirSync(RUNS_DIR)
-  .filter((f) => f.endsWith(".json"))
+  // .index.json ist der Run-Index, kein Run selbst (Nebenfund 17.10.: Phantom-Row id:"?")
+  .filter((f) => f.endsWith(".json") && !f.startsWith("."))
   .sort()
 const rows = files.map((f) => {
   try {
