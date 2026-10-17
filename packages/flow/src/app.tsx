@@ -163,20 +163,20 @@ function namesEngine(text: string) {
 }
 
 /**
- * Whether the sessions column was left open.
+ * Whether the sessions column is open.
  *
- * Closed by default: the canvas is the app, and a first run should get the full
- * width rather than 240px of empty history. Storage is best-effort in both
- * directions — the signal is the source of truth, so `bun test` (which has no
- * `localStorage`) and a private window both behave, they just do not remember.
+ * Open by default; only an explicit "0" — written by the toggle — keeps it
+ * closed across reloads. Storage is best-effort in both directions — the
+ * signal is the source of truth, so `bun test` (which has no `localStorage`)
+ * and a private window both behave, they just do not remember.
  */
 const SESSIONS_KEY = "openflow.sessionsOpen.v1"
 
 function readShowSessions() {
   try {
-    return localStorage.getItem(SESSIONS_KEY) === "1"
+    return localStorage.getItem(SESSIONS_KEY) !== "0"
   } catch {
-    return false
+    return true
   }
 }
 
