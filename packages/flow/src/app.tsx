@@ -170,7 +170,7 @@ function namesEngine(text: string) {
  * signal is the source of truth, so `bun test` (which has no `localStorage`)
  * and a private window both behave, they just do not remember.
  */
-const SESSIONS_KEY = "openflow.sessionsOpen.v1"
+const SESSIONS_KEY = "openflow.sessionsOpen.v2" // v2: alter "0"-Eintrag unter v1 soll das neue Default-Offen nicht blockieren
 
 function readShowSessions() {
   try {
