@@ -3149,22 +3149,30 @@ describe("resume by input hash (K7)", () => {
    * the turn it was killed in runs, in the session it held.
    */
   async function killedInBossPhase() {
-    const h = first()
-    const snapshots: RunLog[] = []
-    h.hooks.onRun = (log) => snapshots.push(structuredClone(log))
-    const done = await h.run(tree("root->a", "root->b"), "do the thing").done
-    expect(done.status).toBe("done")
-    // What a SIGKILL leaves behind: the last checkpoint written while the boss
-    // was in its second turn, both workers finished.
-    const killed = snapshots.findLast((log) => {
-      const [root, a, b] = ["root", "a", "b"].map((id) => log.nodes.find((node) => node.id === id)!)
-      return root.status === "running" && root.turns?.length === 1 && a.status === "done" && b.status === "done"
-    })
-    expect(killed).toBeDefined()
-    // Session ids are unique on a real server; the harness counts from s1 in
-    // every run, so the killed run's ids are renamed to keep them apart.
-    for (const node of killed!.nodes) if (node.sessionID) node.sessionID = `killed-${node.sessionID}`
-    return killed!
+    // The first run runs on a pinned clock (the resume tests stamp +1h on top
+    // of this base): wall-clock jitter must not reach the first run's stamps,
+    // or takeover times flake against them.
+    setSystemTime(new Date("2026-10-12T14:30:00.000Z"))
+    try {
+      const h = first()
+      const snapshots: RunLog[] = []
+      h.hooks.onRun = (log) => snapshots.push(structuredClone(log))
+      const done = await h.run(tree("root->a", "root->b"), "do the thing").done
+      expect(done.status).toBe("done")
+      // What a SIGKILL leaves behind: the last checkpoint written while the boss
+      // was in its second turn, both workers finished.
+      const killed = snapshots.findLast((log) => {
+        const [root, a, b] = ["root", "a", "b"].map((id) => log.nodes.find((node) => node.id === id)!)
+        return root.status === "running" && root.turns?.length === 1 && a.status === "done" && b.status === "done"
+      })
+      expect(killed).toBeDefined()
+      // Session ids are unique on a real server; the harness counts from s1 in
+      // every run, so the killed run's ids are renamed to keep them apart.
+      for (const node of killed!.nodes) if (node.sessionID) node.sessionID = `killed-${node.sessionID}`
+      return killed!
+    } finally {
+      setSystemTime()
+    }
   }
 
   test("R18 K7(a): killed in the boss phase — the continued boss replays its dispatch and the finished workers are taken over", async () => {
@@ -3187,8 +3195,9 @@ describe("resume by input hash (K7)", () => {
           : dispatch(["a", "do a, reworded"], ["b", "do b, reworded"]),
       }
     }
-    // The resume happens an hour later, so a takeover stamped with "now" shows.
-    setSystemTime(new Date(Date.now() + 3_600_000))
+    // The resume happens an hour after the pinned base, so a takeover stamped
+    // with "now" shows.
+    setSystemTime(new Date("2026-10-12T15:30:00.000Z"))
     let log: RunLog
     try {
       log = await h.run(tree("root->a", "root->b"), "do the thing", seeds as any).done
