@@ -3,6 +3,18 @@
 All notable changes to OpenFlow are recorded here. OpenFlow lives in `packages/flow`;
 the rest of the repo is a vendored OpenCode fork and is not covered by this file.
 
+## [1.3.0] - 2026-10-18
+
+- Add the post-run coach: a dismissable strip under the runbar that reads a finished
+  run's own record and says how far to trust it — a pass from a critic that ran no
+  command against a command-shaped bar, an orchestrator that never dispatched, and
+  cards whose tool calls were rejected. Deterministic, no model, at most three findings.
+- Record on the run log whether a critic's judging turn made a shell call that
+  succeeded.
+- Stop throwing away a critic's verdict for writing into the run's scratch directory,
+  the place it was told to put its output.
+- Clear a card's earlier error when a later dispatch of it succeeds.
+
 ## [1.2.2] - 2026-09-07
 
 - Add the eval corpus: six fixed canvases run the same way each release, a scorer
