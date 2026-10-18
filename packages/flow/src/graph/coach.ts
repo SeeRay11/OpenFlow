@@ -31,7 +31,7 @@ const RANK = { error: 0, warn: 1, info: 2 }
 
 export function coach(log: RunLog, pipeline: Pipeline): Finding[] {
   // `sort` is stable, so findings of one severity keep detector order.
-  return [...unearnedPass(log, pipeline), ...neverDispatched(log, pipeline), ...toolFailures(log)]
+  return [...unearnedPass(log, pipeline), ...neverDispatched(log, pipeline), ...toolFailures(log, pipeline)]
     .sort((a, b) => RANK[a.severity] - RANK[b.severity])
     .slice(0, MAX_FINDINGS)
 }
@@ -106,9 +106,18 @@ function neverDispatched(log: RunLog, pipeline: Pipeline) {
     )
 }
 
-/** A card whose tool calls were rejected settles `done` with its edits missing. */
-function toolFailures(log: RunLog) {
+/**
+ * A card whose tool calls were rejected settles `done` with its edits missing.
+ *
+ * Only for cards expected to write: the engine refuses write tools to an
+ * orchestrator and a critic on purpose, so a rejection there is the rule
+ * working and "that card could not write" would blame the wrong thing.
+ */
+function toolFailures(log: RunLog, pipeline: Pipeline) {
+  const critics = new Set(pipeline.nodes.filter(isCritic).map((node) => node.id))
+  const shape = modeOf(pipeline) === "orchestration" ? orchestrationShape(pipeline) : undefined
   return log.nodes
+    .filter((node) => !critics.has(node.id) && !shape?.children(node.id).length)
     .filter((node) => (node.toolFailures ?? 0) > 0)
     .map((node) =>
       finding(

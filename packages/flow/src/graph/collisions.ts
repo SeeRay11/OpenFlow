@@ -388,3 +388,28 @@ export function normalizePath(path: string) {
     .replace(/\/+$/, "")
     .toLowerCase()
 }
+
+/**
+ * The writes that are not inside `dir`.
+ *
+ * For the run's scratch directory: a critic is handed it to put diagnostics in,
+ * so reading a redirect there as "changed the work" contradicts the briefing.
+ * Measured 2026-10-18 — a verdict thrown away over `> …/openflow-scratch/…`.
+ *
+ * Two spellings reach here. A normal path is matched on a directory boundary,
+ * so `run-10` is not inside `run-1`. A Windows path in an unquoted shell line
+ * arrives with its backslashes eaten (`C:UsersmeAppData…`), one run of
+ * characters with no separator left to find a boundary on, so that form is
+ * matched on the flattened prefix. Run ids are fixed-width timestamps, which
+ * is why the looser match cannot mistake one run's directory for another's.
+ */
+export function exceptUnder(writes: Write[], dir: string) {
+  if (!dir) return writes
+  const root = normalizePath(dir)
+  const flat = root.replace(/[/:]/g, "")
+  return writes.filter((write) => {
+    const path = normalizePath(write.path)
+    if (path.startsWith(`${root}/`)) return false
+    return path.includes("/") || !path.replace(/:/g, "").startsWith(flat)
+  })
+}

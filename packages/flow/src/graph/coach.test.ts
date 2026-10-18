@@ -139,6 +139,29 @@ describe("tool-failures", () => {
   test("absent toolFailures stays silent", () => {
     expect(coach(run([card("coder")]), pipeline("coder"))).toEqual([])
   })
+
+  // The engine refuses write tools to an orchestrator and a critic on purpose,
+  // so a rejected call there is the rule working, not a card that could not write.
+  test("an orchestrator's rejected calls are by design", () => {
+    expect(coach(run([card("lead", { toolFailures: 3 }), card("a"), card("b")]), orchestration())).toEqual([])
+  })
+
+  test("a critic's rejected calls are by design", () => {
+    expect(coach(run([card("lead"), card("builder"), card("reviewer", { toolFailures: 1 })]), gauntlet(BAR))).toEqual([])
+  })
+
+  test("a builder beside them still fires", () => {
+    const findings = coach(
+      run([card("lead", { toolFailures: 3 }), card("builder", { toolFailures: 2 }), card("reviewer", { toolFailures: 1 })]),
+      gauntlet(BAR),
+    )
+    expect(findings.map((entry) => entry.cards)).toEqual([["builder"]])
+  })
+
+  test("a card with downstream cards is not an orchestrator outside orchestration", () => {
+    const findings = coach(run([card("lead", { toolFailures: 1 }), card("a")]), pipeline("lead->a"))
+    expect(findings.map((entry) => entry.cards)).toEqual([["lead"]])
+  })
 })
 
 describe("coach", () => {

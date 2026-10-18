@@ -311,7 +311,10 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   does not pretend to be: what it removes is the *reason* to redirect into the project, since a
   card investigating something has to put the output somewhere and the only somewhere it had
   been given was the folder holding the deliverable. Deleted with the run's recording, alongside
-  its checkpoints.
+  its checkpoints. **A write into it is never "the critic changed the work"**: `exceptUnder` drops
+  it before the discard check, because discarding a verdict for obeying the briefing was measured
+  on the first live run. A Windows path in an unquoted shell line arrives with its backslashes
+  eaten, which is why that spelling is matched on the flattened prefix.
 - **A card that ignores its spent budget is stopped, not re-asked.** When the budget runs out
   the orchestrator gets one forced-answer turn; if it dispatches anyway the node fails. Without
   that check the loop never ends. A leaf goes through `runSubagent` and is never shown the
@@ -486,6 +489,9 @@ its verdict can be trusted — where a critic judges the *work*.
 - **Facts the engine already knows are recorded at run time, not re-derived.** `events` is a capped
   tail, so a detector rereading it can miss calls. Persist a small optional field instead.
 - **A stopped run is not a failed one.** `never-dispatched` skips `status: "stopped"`.
+- **A rule working is not a failure.** `tool-failures` skips critics and orchestrators: the engine
+  refuses them write tools on purpose, so "that card could not write" would blame the wrong thing.
+  Measured on the first live run (2026-10-18), where it fired on both.
 - **Known gap:** `unearned-pass` counts every critic with `ranShell === false`, including one that
   returned FAIL while another passed; narrowing needs the per-round verdicts in `rounds[].cards`.
 - Dismissal is in-memory, keyed `runId:findingId`. Adding a detector means a fire / no-fire /

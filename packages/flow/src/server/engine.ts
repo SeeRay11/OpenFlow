@@ -1,4 +1,4 @@
-import { collisionNote, collisionsIn, writesOf, type Write } from "../graph/collisions"
+import { collisionNote, collisionsIn, exceptUnder, writesOf, type Write } from "../graph/collisions"
 import { addDiff, attribute, deltaOf } from "../graph/diff"
 import { bestRound, ledgerNote, stalledRounds, verdictSummary, type LedgerRound } from "../graph/ledger"
 import { isolates, mergeNote } from "../graph/worktree"
@@ -1577,8 +1577,11 @@ export function start(
         for (const [index, result] of results.entries()) {
           const child = nodes.get(result.card)!
           if (!isCritic(child) || result.text === undefined) continue
-          const wrote = [child.id, ...descendants(child.id)].flatMap((id) =>
-            writesOf(events.get(id) ?? [], batchStarted),
+          // The scratch directory is where the critic was told to put its
+          // diagnostics, so a write there is not the work changing.
+          const wrote = exceptUnder(
+            [child.id, ...descendants(child.id)].flatMap((id) => writesOf(events.get(id) ?? [], batchStarted)),
+            scratchDir,
           )
           if (!wrote.length) continue
           const listed = wrote.map((write) => (write.probable ? `${write.path} (probable)` : write.path)).join(", ")

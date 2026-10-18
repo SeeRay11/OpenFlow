@@ -2929,6 +2929,69 @@ describe("gauntlet mode", () => {
     expect(h.promptLog.some((entry) => entry.node === "root" && entry.text.includes("Not yet"))).toBe(true)
   })
 
+  test("a critic's output into the scratch directory is not changing the work", async () => {
+    // The engine hands the critic this directory to put its diagnostics in, so
+    // counting a write there as touching the work contradicts its own briefing.
+    const h = harness({
+      models: ["openai/gpt-x"],
+      scratch: "/tmp/openflow-scratch/run-1",
+      behavior: {
+        root: { outputs: [dispatch("builder"), dispatch("reviewer"), final("shipped")] },
+        builder: { output: "built it" },
+        reviewer: { hold: true, output: "VERDICT: PASS" },
+      },
+    })
+    const run = h.run(gauntlet(["root->builder", "root->reviewer"]))
+    await flush()
+    await flush()
+    h.emit({
+      type: "session.next.tool.called",
+      data: {
+        sessionID: h.sessionOf.get("reviewer"),
+        callID: "reviewer-scratch",
+        tool: "bash",
+        input: { command: "node --check script.js > /tmp/openflow-scratch/run-1/check.txt" },
+      },
+    } as any)
+    h.release("reviewer")
+    const log = await run.done
+
+    const reviewer = log.nodes.find((node) => node.id === "reviewer")!
+    expect(reviewer.status).toBe("done")
+    expect(reviewer.error).toBeUndefined()
+  })
+
+  test("a critic that writes into the scratch directory and the project still loses its verdict", async () => {
+    const h = harness({
+      models: ["openai/gpt-x"],
+      scratch: "/tmp/openflow-scratch/run-1",
+      behavior: {
+        root: { outputs: [dispatch("builder"), dispatch("reviewer"), final("shipped"), final("shipped")] },
+        builder: { output: "built it" },
+        reviewer: { hold: true, output: "VERDICT: PASS" },
+      },
+    })
+    const run = h.run(gauntlet(["root->builder", "root->reviewer"]))
+    await flush()
+    await flush()
+    h.emit({
+      type: "session.next.tool.called",
+      data: {
+        sessionID: h.sessionOf.get("reviewer"),
+        callID: "reviewer-both",
+        tool: "bash",
+        input: { command: "sed -i 's/foo/bar/' src/game.ts && echo ok > /tmp/openflow-scratch/run-1/out.txt" },
+      },
+    } as any)
+    h.release("reviewer")
+    const log = await run.done
+
+    const reviewer = log.nodes.find((node) => node.id === "reviewer")!
+    expect(reviewer.status).toBe("error")
+    expect(reviewer.error).toContain("src/game.ts (probable)")
+    expect(reviewer.error).not.toContain("openflow-scratch")
+  })
+
   test("the card that assigns the work may not change it", async () => {
     const h = harness({
       models: ["openai/gpt-x"],

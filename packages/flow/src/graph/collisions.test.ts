@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { collisionNote, collisionsIn, shellWrites, TREE, writesOf, type Write } from "./collisions"
+import { collisionNote, collisionsIn, exceptUnder, shellWrites, TREE, writesOf, type Write } from "./collisions"
 import type { NodeEvent } from "./types"
 
 /** One tool call as the activity stream records it: title, and input as sent. */
@@ -152,6 +152,35 @@ describe("shellWrites", () => {
     expect(shellWrites("bun run build")).toEqual([])
     expect(shellWrites("node scripts/generate.js")).toEqual([])
     expect(shellWrites("python - <<'EOF'\nopen('x.txt','w').write('hi')\nEOF")).toEqual([])
+  })
+})
+
+describe("exceptUnder", () => {
+  const dir = "C:/Users/me/AppData/Local/Temp/openflow-scratch/run-1"
+
+  test("drops writes inside the directory and keeps the rest", () => {
+    const writes: Write[] = [{ path: `${dir}/out.txt`, probable: true }, { path: "src/game.ts", probable: true }]
+    expect(exceptUnder(writes, dir)).toEqual([{ path: "src/game.ts", probable: true }])
+  })
+
+  test("reads a Windows path spelled with backslashes", () => {
+    expect(exceptUnder([{ path: `${dir.replaceAll("/", "\\")}\\out.txt` }], dir)).toEqual([])
+  })
+
+  // A shell line eats the backslashes of an unquoted Windows path, so the write
+  // reaches here as one run of characters with no separators at all.
+  test("reads a path whose backslashes a shell line ate", () => {
+    expect(exceptUnder([{ path: "C:UsersmeAppDataLocalTempopenflow-scratchrun-1grep_out.txt", probable: true }], dir)).toEqual([])
+  })
+
+  test("a sibling directory that shares the prefix is not inside it", () => {
+    const sibling = { path: `${dir}0/out.txt` }
+    expect(exceptUnder([sibling], dir)).toEqual([sibling])
+  })
+
+  test("no directory leaves every write alone", () => {
+    const writes: Write[] = [{ path: `${dir}/out.txt` }]
+    expect(exceptUnder(writes, "")).toEqual(writes)
   })
 })
 
