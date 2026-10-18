@@ -358,6 +358,37 @@ describe("of-scorecard — Ledger-Sektion (Regeltreue)", () => {
     expect(p.ledger!.fanoutKandidatenSession).toBe(3)
     expect(p.ledger!.fanoutAbdeckungSession).toBe(33.3)
   })
+
+  test("(11) Injektions-Wirksamkeit pro Session: Split je session_id, sortiert nach Hinweisen", async () => {
+    newCase()
+    const p = await measure(
+      [{ id: "ledger-run", status: "done" }],
+      {
+        ledger: [
+          // s2: 2× injiziert, erste Injektion wird genutzt (+20 min) → 1/2 = 50 %
+          { ts: "2026-10-18T08:00:00Z", event: "user_prompt", entscheidung: "FABRIK", injiziert: true, session_id: "s2" },
+          { ts: "2026-10-18T08:10:00Z", event: "user_prompt", entscheidung: "FABRIK", injiziert: true, session_id: "s2" },
+          { ts: "2026-10-18T08:20:00Z", event: "task", quelle: "subagent", entscheidung: "GRAUZONE", session_id: "s2" },
+          // s1: 1× injiziert, fabrik_run folgt (+5 min) → 1/1 = 100 %
+          { ts: "2026-10-18T09:00:00Z", event: "user_prompt", entscheidung: "FABRIK", injiziert: true, session_id: "s1" },
+          { ts: "2026-10-18T09:05:00Z", event: "fabrik_run", session_id: "s1" },
+          // s3: FABRIK-Kandidat OHNE Injektion — darf NICHT im Array erscheinen
+          { ts: "2026-10-18T10:00:00Z", event: "user_prompt", entscheidung: "FABRIK", injiziert: false, session_id: "s3" },
+        ],
+        order: ["ledger-run"],
+      },
+    )
+    expect(p.ledger!.injektionProSession).toHaveLength(2)
+    // Sortierung: s2 (2 Hinweise) vor s1 (1 Hinweis)
+    expect(p.ledger!.injektionProSession[0].session).toBe("s2")
+    expect(p.ledger!.injektionProSession[0].hinweise).toBe(2)
+    expect(p.ledger!.injektionProSession[0].abgedeckt).toBe(1)
+    expect(p.ledger!.injektionProSession[0].quote).toBe(50)
+    expect(p.ledger!.injektionProSession[1].session).toBe("s1")
+    expect(p.ledger!.injektionProSession[1].hinweise).toBe(1)
+    expect(p.ledger!.injektionProSession[1].abgedeckt).toBe(1)
+    expect(p.ledger!.injektionProSession[1].quote).toBe(100)
+  })
 })
 
 describe("of-scorecard — Textausgabe (--limit)", () => {

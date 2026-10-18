@@ -178,6 +178,37 @@ if (existsSync(LEDGER)) {
       (e) => e.session_id === k.session_id && ts0(e) >= ts0(k) && ts0(e) - ts0(k) <= FENSTER_MS,
     ),
   ).length
+  // Pro-Session-Split (18.10.2026): Befolgung pro Instanz (z. B. mcp-workers
+  // vs. workspace) sichtbar machen — dieselbe Abdeckungs-Definition wie oben:
+  // task|fabrik_run, gleiche session_id, ts zwischen Kandidat und +FENSTER_MS.
+  // 1:1-Matching: jede Nutzung deckt höchstens EINEN Kandidat ab (frühester
+  // offener zuerst) — sonst deckte eine einzige Nutzung alle Folge-Injektionen
+  // „gratis" ab und blähte die Quote auf. Sortiert nach hinweise absteigend.
+  // Modell-Split erst, wenn das Gate Modell ins Ledger schreibt
+  // (user_prompt-Events haben kein Modellfeld).
+  const injektionProSession = [...new Set(injizierteSess.map((k) => k.session_id))]
+    .map((session) => {
+      const hier = injizierteSess.filter((k) => k.session_id === session)
+      const offen = nutzungSess
+        .filter((e) => e.session_id === session)
+        .map(ts0)
+        .sort((a, b) => a - b)
+      let abgedeckt = 0
+      for (const k of [...hier].sort((a, b) => ts0(a) - ts0(b))) {
+        const idx = offen.findIndex((t) => t >= ts0(k) && t - ts0(k) <= FENSTER_MS)
+        if (idx >= 0) {
+          abgedeckt++
+          offen.splice(idx, 1)
+        }
+      }
+      return {
+        session,
+        hinweise: hier.length,
+        abgedeckt,
+        quote: +((abgedeckt / hier.length) * 100).toFixed(1),
+      }
+    })
+    .sort((a, b) => b.hinweise - a.hinweise)
   ledger = {
     eintraege: entries.length,
     taskBewertungen: tasks.length,
@@ -206,6 +237,7 @@ if (existsSync(LEDGER)) {
       injizierteSess.length > 0
         ? +((injizierteAbgedeckt / injizierteSess.length) * 100).toFixed(1)
         : null,
+    injektionProSession,
   }
 }
 
@@ -246,6 +278,15 @@ if (JSON_OUT) {
     console.log(`| Fan-out-Kandidaten mit session_id | ${ledger.fanoutKandidatenSession} |`)
     console.log(`| Fan-out-Abdeckung (session-gematcht, 30 min) | ${ledger.fanoutAbdeckungSession !== null ? ledger.fanoutAbdeckungSession + " %" : "noch keine Kandidaten mit session_id"} |`)
     console.log(`| Injektions-Wirksamkeit (injiziert=true → Stufe 1/2, 30 min, session) | ${ledger.injektionsWirksamkeit !== null ? ledger.injektionsWirksamkeit + " %" : "keine injizierten Fälle"} — ${ledger.injizierteFanoutHinweise} Hinweise |`)
+    if (ledger.injektionProSession.length > 0) {
+      for (const s of ledger.injektionProSession.slice(0, 5)) {
+        // Kurzform: erste 8 Zeichen nach ses_ (ohne ses_-Präfix: erste 8 Zeichen)
+        const kurz = s.session.startsWith("ses_") ? s.session.slice(4, 12) : s.session.slice(0, 8)
+        console.log(`| Injektion pro Session: ${kurz} | ${s.abgedeckt}/${s.hinweise} (${s.quote} %) |`)
+      }
+    } else {
+      console.log("| Injektion pro Session: keine injizierten Fälle mit session_id |")
+    }
     console.log(`| Fan-out-Abdeckung (Globalzahlen-Näherung, ungepaart) | ${ledger.fanoutAbdeckung !== null ? ledger.fanoutAbdeckung + " %" : "noch keine Kandidaten"} |`)
     console.log(`| davon Fabrik-only (Globalzahlen, nur Stufe 2) | ${ledger.regeltreueFabrik !== null ? ledger.regeltreueFabrik + " %" : "noch keine Kandidaten"} |`)
   } else {
