@@ -2952,9 +2952,11 @@ describe("gauntlet mode", () => {
         input: { command: "sed -i 's/foo/bar/' src/game.ts" },
       },
     } as any)
-    h.release("reviewer")
+    // Let a millisecond pass so the second dispatch's batch starts after this
+    // write. Events at or after a batch's start count against it, and a real
+    // model turn takes far longer than the whole re-dispatch does here.
     await flush()
-    await flush()
+    // A gate resolves once, so the second dispatch is not held again.
     h.release("reviewer")
     const log = await run.done
 
