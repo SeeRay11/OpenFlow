@@ -2929,6 +2929,40 @@ describe("gauntlet mode", () => {
     expect(h.promptLog.some((entry) => entry.node === "root" && entry.text.includes("Not yet"))).toBe(true)
   })
 
+  test("a critic that recovers after a discarded verdict carries no leftover error", async () => {
+    // Measured on the first live run: the reviewer finished `done` on its
+    // second dispatch while its log still read "its verdict is discarded".
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { outputs: [dispatch("builder"), dispatch("reviewer"), dispatch("reviewer"), final("shipped")] },
+        builder: { output: "built it" },
+        reviewer: { hold: true, output: "VERDICT: PASS" },
+      },
+    })
+    const run = h.run(gauntlet(["root->builder", "root->reviewer"]))
+    await flush()
+    await flush()
+    h.emit({
+      type: "session.next.tool.called",
+      data: {
+        sessionID: h.sessionOf.get("reviewer"),
+        callID: "reviewer-sed",
+        tool: "bash",
+        input: { command: "sed -i 's/foo/bar/' src/game.ts" },
+      },
+    } as any)
+    h.release("reviewer")
+    await flush()
+    await flush()
+    h.release("reviewer")
+    const log = await run.done
+
+    const reviewer = log.nodes.find((node) => node.id === "reviewer")!
+    expect(reviewer.status).toBe("done")
+    expect(reviewer.error).toBeUndefined()
+  })
+
   test("a critic's output into the scratch directory is not changing the work", async () => {
     // The engine hands the critic this directory to put its diagnostics in, so
     // counting a write there as touching the work contradicts its own briefing.

@@ -1043,6 +1043,9 @@ export function start(
         patch(node.id, {
           status: "done",
           output: answer,
+          // A re-dispatched card keeps its log entry, so an error from an earlier
+          // dispatch would otherwise outlive the turn that cleared it.
+          error: undefined,
           activity: undefined,
           finished: Date.now(),
           ...(judging ? { ranShell: ran } : {}),
