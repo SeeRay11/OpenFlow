@@ -8,7 +8,8 @@ A canvas runs in one of three [modes](#modes): a **pipeline** in dependency orde
 a **swarm** of peers arguing over rounds until a synthesizer decides, or an
 **orchestration** where one card hands work to cards it can see. An orchestration
 can be run as a **gauntlet** — builders looped against fresh-context critics until
-the work clears a bar you wrote, bounded by money, wall clock and stall.
+the work clears a bar you wrote, bounded by money, wall clock and stall. When a run
+ends, a [coach](#after-a-run-the-coach) strip says how far to trust what it reported.
 
 OpenFlow is its own project, built on — and shipped as a fork of —
 [opencode](https://github.com/anomalyco/opencode), whose headless engine drives the
@@ -497,6 +498,11 @@ No vision: a critic reads source, runs builds and tests, and hits a dev server. 
 card with `bash` can drive a headless browser and capture the artifact itself,
 which is how the runtime lines of a bar have actually been judged here.
 
+The `reviewer` preset ships with `bash` switched off. A critic whose bar is made of
+commands needs it on, or it cannot run any of them; its edit tools are refused
+either way. A critic's shell output belongs in the run's scratch directory, which
+it is told about, and a write there is not counted as changing the work.
+
 ### Resuming an interrupted run
 
 The engine runs **in the page**, so a reload, a crash or a closed tab ends a run
@@ -517,6 +523,33 @@ silence re-answers what it already answered.
 
 **Re-run failed** is the neighbouring, narrower tool: it reuses the outputs of
 everything that finished and re-runs only what did not, in fresh sessions.
+
+### After a run: the coach
+
+When a run ends, a strip under the run bar can list up to three findings about how
+far to trust it. Each says what the run's own record shows and one thing to do about
+it. Dismiss one with its close button; reopening a past run from **Runs** shows its
+findings again, and a run with nothing to say shows no strip at all.
+
+The coach is not a model. It is deterministic code over the run log, so it costs
+nothing and gives the same answer every time. It audits the *run* — a critic judges
+the *work*.
+
+- **A pass that was not earned.** The run recorded a pass, but the critic's judging
+  turn made no shell call that succeeded, against a bar that names commands (a
+  backticked command, "exits 0", "0 failures"). A prose-only bar never triggers it,
+  since there is nothing to run. Fix: add "if you cannot run a check, the verdict
+  is FAIL" to the bar, or add a second critic.
+- **An orchestrator that never dispatched.** Every card below it is recorded
+  `skipped` and no round was recorded, so it answered without handing out any work.
+  Fix: put a stronger model in that seat, or re-run. A run you stopped is not
+  reported.
+- **Cards whose tool calls were rejected.** A card that could not write settles
+  `done` with its edits missing. Orchestrators and critics are not reported: their
+  write tools are refused on purpose.
+
+A finding appears only when the record has the evidence. Runs saved before 1.3.0 do
+not record whether a critic ran a command, so they never raise the first one.
 
 ## Files it writes
 
