@@ -1034,6 +1034,28 @@ input[type="checkbox"] {
   color: var(--v2-state-fg-danger);
 }
 
+.notice[data-kind="warn"] {
+  background: var(--v2-state-bg-warning);
+  border-bottom-color: var(--v2-state-border-warning);
+}
+
+.notice[data-kind="warn"] .notice-icon {
+  color: var(--v2-state-fg-warning);
+}
+
+/* coach strip: post-run findings, in normal flow between the runbar and main —
+   never an overlay, and never in an overflow container */
+.coach {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.coach-fix {
+  margin-left: 8px;
+  color: var(--v2-text-text-muted);
+}
+
 /* permission prompts ---------------------------------------------------- */
 
 .permissions {

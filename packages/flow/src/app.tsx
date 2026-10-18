@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
+import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { Canvas } from "./canvas/canvas"
 import {
   depthOf,
@@ -69,6 +69,8 @@ import {
 } from "./ui/icons"
 import { ActivityDrawer } from "./ui/activity-drawer"
 import { Attachments, filesFrom, readFiles } from "./ui/attachments"
+import { CoachStrip, dismissKey, visibleFindings } from "./ui/coach-strip"
+import { coach } from "./graph/coach"
 import { Inspector } from "./ui/inspector"
 import { McpPanel } from "./ui/mcp-panel"
 import { QuestionDialog } from "./ui/question-dialog"
@@ -721,6 +723,22 @@ export function App() {
   function canRerunFailed() {
     const nodes = state.run?.nodes ?? []
     return !state.running && nodes.length > 0 && nodes.some((node) => node.status !== "done")
+  }
+
+  /**
+   * Findings are derived, never stored: reopening a past run from the Runs menu
+   * recomputes them. Dismissal is keyed by run id, so a new run starts fresh.
+   */
+  const [dismissedFindings, setDismissedFindings] = createSignal<ReadonlySet<string>>(new Set())
+  const findings = createMemo(() =>
+    state.run && !state.running
+      ? visibleFindings(coach(state.run, state.pipeline), dismissedFindings(), state.run.id)
+      : [],
+  )
+  function dismissFinding(id: string) {
+    const run = state.run
+    if (!run) return
+    setDismissedFindings((prev) => new Set(prev).add(dismissKey(run.id, id)))
   }
 
   /**
@@ -1383,6 +1401,8 @@ export function App() {
           </button>
         </div>
       </div>
+
+      <CoachStrip findings={findings()} onDismiss={dismissFinding} />
 
       <Show when={state.notice}>
         {(banner) => (

@@ -2569,6 +2569,57 @@ describe("gauntlet mode", () => {
     expect(log.nodes.find((node) => node.id === "builder")!.output).not.toContain("without running anything")
   })
 
+  test("a critic that ran nothing is recorded as not having run a shell", async () => {
+    const h = harness({
+      behavior: {
+        root: { outputs: [dispatch("reviewer"), final("done")] },
+        reviewer: { output: "the ground plane is off\n\nVERDICT: FAIL" },
+      },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 5 })).done
+
+    expect(log.nodes.find((node) => node.id === "reviewer")!.ranShell).toBe(false)
+  })
+
+  test("a critic that ran a shell is recorded as having run one", async () => {
+    const h = harness({
+      behavior: {
+        root: { outputs: [dispatch("reviewer"), final("done")] },
+        reviewer: { hold: true, output: "the tests pass\n\nVERDICT: PASS" },
+      },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+    })
+    const run = h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 5 }))
+    await flush()
+    h.emit({
+      type: "session.next.tool.called",
+      data: { sessionID: h.sessionOf.get("reviewer"), callID: "b1", tool: "bash", input: { command: "bun test" } },
+    } as any)
+    h.emit({ type: "session.next.tool.success", data: { sessionID: h.sessionOf.get("reviewer"), callID: "b1" } } as any)
+    await flush()
+    h.release("reviewer")
+    const log = await run.done
+
+    expect(log.nodes.find((node) => node.id === "reviewer")!.ranShell).toBe(true)
+  })
+
+  test("a card that was not judging leaves whether it ran a shell unknown", async () => {
+    // Absent means unmeasured: a builder is never asked to run anything, so
+    // `false` on it would read as a critic that skipped the check.
+    const h = harness({
+      behavior: { root: { outputs: [dispatch("builder"), final("done")] }, builder: { output: "wrote the module" } },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+    })
+    const log = await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "b", stall: 5 })).done
+
+    expect(log.nodes.find((node) => node.id === "builder")!.ranShell).toBeUndefined()
+    expect(log.nodes.find((node) => node.id === "root")!.ranShell).toBeUndefined()
+  })
+
   test("the spend cap is what actually ends an hours-long run", async () => {
     const h = harness({
       behavior: {

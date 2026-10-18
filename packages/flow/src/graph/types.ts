@@ -299,6 +299,14 @@ export type RunNodeLog = {
    * card could not write.
    */
   toolFailures?: number
+  /**
+   * Whether this card's last judging turn made a `bash` call that did not error.
+   *
+   * Written only for a critic's turn (a gauntlet's, or a verifier's), and read
+   * by `graph/coach.ts`. Absent means unknown — a card that never judged, or a
+   * run recorded before this existed — and must never be read as `false`.
+   */
+  ranShell?: boolean
   status: NodeStatus
   sessionID?: string
   permissions?: PermissionDecision[]

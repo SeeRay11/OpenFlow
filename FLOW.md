@@ -470,6 +470,27 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   (the vite plugin and `server.ts`) so dev and built output cannot drift. Add new routes in
   one place only.
 
+## The post-run coach
+
+`graph/coach.ts` reads a finished `RunLog` and the pipeline and returns at most three `Finding`s,
+shown as a dismissable strip under the runbar (`ui/coach-strip.tsx`). It audits the *run* — how far
+its verdict can be trusted — where a critic judges the *work*.
+
+- **No model, ever.** Deterministic code over the record. An LLM coach would be one more thing that
+  can hallucinate, and the run log already carries what it needs.
+- **A finding states an observation and one fix, never an opinion of a model.** "The critic made no
+  shell call that succeeded" is evidence; "the critic is weak" is not, and would age badly.
+- **Missing evidence is silence.** `RunNodeLog.ranShell` absent means unknown, not `false` — same rule
+  as an unmeasured diff or an unpriced model. A detector must also check the claim applies: a prose
+  bar gives a critic nothing to run, so `unearned-pass` fires only on a `commandShaped` bar.
+- **Facts the engine already knows are recorded at run time, not re-derived.** `events` is a capped
+  tail, so a detector rereading it can miss calls. Persist a small optional field instead.
+- **A stopped run is not a failed one.** `never-dispatched` skips `status: "stopped"`.
+- **Known gap:** `unearned-pass` counts every critic with `ranShell === false`, including one that
+  returned FAIL while another passed; narrowing needs the per-round verdicts in `rounds[].cards`.
+- Dismissal is in-memory, keyed `runId:findingId`. Adding a detector means a fire / no-fire /
+  missing-evidence test in `coach.test.ts`.
+
 ## The eval corpus
 
 Six fixed canvases in `src/graph/corpus.ts`, run the same way each release, because three of

@@ -73,6 +73,8 @@ export type NodePatch = {
   usage?: Spend
   /** Lines this node put into the working tree and took out of it. */
   diff?: CardDiff
+  /** Whether the card's last judging turn ran a shell. Absent on any other card. */
+  ranShell?: boolean
 }
 
 export type EngineHooks = {
@@ -1036,7 +1038,15 @@ export function start(
           )
         }
         outputs.set(node.id, answer)
-        patch(node.id, { status: "done", output: answer, activity: undefined, finished: Date.now() })
+        // Recorded on judging turns only, so a card that was never asked to
+        // judge reads as unknown rather than as a critic that ran nothing.
+        patch(node.id, {
+          status: "done",
+          output: answer,
+          activity: undefined,
+          finished: Date.now(),
+          ...(judging ? { ranShell: ran } : {}),
+        })
       } catch (error) {
         if (error instanceof StopError || controller.signal.aborted) {
           failed.add(node.id)
