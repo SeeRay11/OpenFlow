@@ -97,8 +97,6 @@ export type CardSpec = {
   prompt?: string
   /** Tool toggles in OpenFlow's vocabulary (`toolMap`): read grep glob edit bash webfetch websearch todowrite skill question. Absent = every tool. */
   tools?: Record<string, boolean>
-  /** Allowlisted MCP server names; absent = every server omp has configured. */
-  mcp?: string[]
   /** Orchestrator cards get `openflow_dispatch` / `openflow_finish` as RPC host tools. */
   dispatch?: boolean
 }

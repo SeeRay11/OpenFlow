@@ -51,12 +51,6 @@ export type FlowAgent = {
   prompt: string
   /** Tool toggles in OpenFlow's vocabulary, folded by `toolMap` into the card's launch spec. */
   tools?: Record<string, boolean>
-  /**
-   * MCP servers this node may use, by config name. `undefined` means the node
-   * was authored before per-node MCP existed and inherits whatever the server
-   * offers; an empty array means "none", which is a different thing.
-   */
-  mcp?: string[]
   /** Files pinned to this node, sent with every run. */
   attachments?: Attachment[]
   /**

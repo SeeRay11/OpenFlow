@@ -40,6 +40,7 @@ const PIPELINE_KEYS = [
   MIGRATED,
 ]
 const NODE_KEYS = ["id", "role", "agent", "position"]
+// `mcp` is a retired field: still recognised so an old file loads without a note, then dropped by `migrateAgent`.
 const AGENT_KEYS = ["model", "prompt", "tools", "mcp", "attachments", "swarm", "uplift"]
 const EDGE_KEYS = ["id", "source", "target"]
 
@@ -172,8 +173,13 @@ function migrateAgent(
     if (problem) notes.push({ kind: "legacy-model", nodeId, message: problem })
   }
 
-  if (!("name" in agent)) return agent
+  // `mcp` was a per-card MCP allowlist; Omp has no per-session MCP selection, so
+  // nothing consumes it. It is known (never reported as unknown) and dropped, so
+  // it is not saved again.
+  if (!("name" in agent) && !("mcp" in agent)) return agent
   const next = { ...agent }
+  delete next.mcp
+  if (!("name" in agent)) return next
   delete next.name
   // An empty or null name meant "server default": nothing was chosen, so
   // nothing is lost by dropping it.

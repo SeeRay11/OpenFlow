@@ -13,8 +13,6 @@ import { costLabel, formatCost, formatTokens } from "../server/usage"
 
 export function Inspector(props: {
   providers: ProviderRow[]
-  /** MCP servers the project configures, by name. */
-  mcpServers: string[]
   onManageKeys?: (query?: string) => void
   onManageMcp?: () => void
 }) {
@@ -132,45 +130,16 @@ export function Inspector(props: {
 
               <div class="field-row field-row-stack">
                 <span class="field-label">mcp servers</span>
-                <Show
-                  when={props.mcpServers.length}
-                  fallback={
-                    <div class="row">
-                      <span class="hint">none configured for this project</span>
-                      <Show when={props.onManageMcp}>
-                        <button class="btn" type="button" onClick={() => props.onManageMcp!()}>
-                          add one
-                        </button>
-                      </Show>
-                    </div>
-                  }
-                >
-                  <div class="tools">
-                    <For each={props.mcpServers}>
-                      {(server) => (
-                        <label class="tool-check">
-                          <input
-                            type="checkbox"
-                            // No list on the node means "inherit everything",
-                            // which is what a graph authored before per-node
-                            // MCP existed asked for. Ticking any box writes an
-                            // explicit list from then on.
-                            checked={selected().agent.mcp?.includes(server) ?? true}
-                            onChange={(event) =>
-                              actions.toggleMcp(
-                                selected().id,
-                                server,
-                                event.currentTarget.checked,
-                                props.mcpServers,
-                              )
-                            }
-                          />
-                          {server}
-                        </label>
-                      )}
-                    </For>
-                  </div>
-                </Show>
+                <div class="row">
+                  <span class="hint">
+                    every card sees every MCP server configured in the Omp profile, plus any .mcp.json in the project
+                  </span>
+                  <Show when={props.onManageMcp}>
+                    <button class="btn" type="button" onClick={() => props.onManageMcp!()}>
+                      manage
+                    </button>
+                  </Show>
+                </div>
               </div>
 
               <div class="field-row field-row-stack">

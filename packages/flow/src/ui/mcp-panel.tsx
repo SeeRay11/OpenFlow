@@ -14,7 +14,6 @@ import { IconBack, IconClose, IconPlus, IconTrash } from "./icons"
 export function McpPanel(props: {
   onClose: () => void
   onNotice: (kind: "info" | "error", text: string) => void
-  onChanged?: () => void
 }) {
   const [servers, setServers] = createSignal<McpServer[]>([])
   const [editing, setEditing] = createSignal<Draft>()
@@ -108,7 +107,6 @@ export function McpPanel(props: {
         renamed = ` (renamed from ${draft.original})`
       }
       await refresh()
-      props.onChanged?.()
       setEditing(undefined)
       const backup = result.backup ? ` (backup ${result.backup})` : ""
       props.onNotice(
@@ -131,7 +129,6 @@ export function McpPanel(props: {
     try {
       await store.deleteMcpServer(draft.original)
       await refresh()
-      props.onChanged?.()
       setEditing(undefined)
       props.onNotice("info", `removed ${draft.original}. It is gone from the next card session.`)
     } catch (failure) {

@@ -563,28 +563,6 @@ export const actions = {
     )
   },
 
-  /**
-   * Which MCP servers a node may use. Writing the array — even empty — is what
-   * moves the node from "inherits everything" to an explicit allowlist.
-   */
-  toggleMcp(id: string, server: string, enabled: boolean, all: string[]) {
-    setState("dirty", true)
-    setState(
-      "pipeline",
-      "nodes",
-      (node) => node.id === id,
-      "agent",
-      "mcp",
-      (current) => {
-        const base = current ?? all
-        const next = new Set(base)
-        if (enabled) next.add(server)
-        else next.delete(server)
-        return [...next]
-      },
-    )
-  },
-
   /** Shows a question from an agent and resolves once someone answers or rejects it. */
   askQuestion(request: PendingQuestion) {
     return new Promise<string[][] | undefined>((resolve) => {

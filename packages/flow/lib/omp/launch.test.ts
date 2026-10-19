@@ -326,13 +326,6 @@ describe("describeLaunch", () => {
     const { notes } = describeLaunch(input({}, { card: { key: "k", role: "r", tools: { telepathy: false, bash: true } } }))
     expect(notes).toEqual(['tool toggle "telepathy" is off but has no omp equivalent; it stays enabled'])
   })
-
-  test("an MCP allowlist is reported as not enforceable through the overlay", () => {
-    const named = describeLaunch(input({}, { card: { key: "k", role: "r", mcp: ["github", "linear"] } })).notes
-    expect(named).toHaveLength(1)
-    expect(named[0]).toContain("github, linear")
-    expect(describeLaunch(input({}, { card: { key: "k", role: "r", mcp: [] } })).notes[0]).toContain("none")
-  })
 })
 
 describe("the environment of a real child process", () => {

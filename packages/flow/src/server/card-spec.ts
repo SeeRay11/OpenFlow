@@ -94,8 +94,6 @@ export function cardSpec(pipeline: Pipeline, node: FlowNode): CardSpec {
     // Absent means every tool: a card authored before toggles existed, or one
     // that names none, was never restricted and must not become so now.
     ...(Object.keys(tools).length ? { tools } : {}),
-    // `undefined` is "every server"; an empty array is "none" — a different thing.
-    ...(node.agent.mcp ? { mcp: [...node.agent.mcp] } : {}),
     ...(orchestrates ? { dispatch: true } : {}),
   }
 }

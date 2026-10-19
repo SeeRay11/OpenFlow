@@ -31,7 +31,7 @@ import { availableModels, providerRows, type ProviderRow } from "./server/provid
 import { setAvailableModels } from "./graph/default-model"
 import { hydrateCustomRoles, onRolesSyncError } from "./graph/roles"
 import { findRun, PRUNE_DAYS, RUN_DELETE, RUN_PRUNE, runMenuOptions } from "./server/runs"
-import { store, type McpServer, type PipelineEntry, type RunEntry } from "./server/store"
+import { store, type PipelineEntry, type RunEntry } from "./server/store"
 import { actions, state } from "./state"
 import {
   IconAlert,
@@ -253,10 +253,6 @@ export function App() {
   /** The host's sentence for why omp cannot run, with the fix; absent when omp is fine or nothing said. */
   const [ompProblem, setOmpProblem] = createSignal<string>()
   const [noticeMeta, setNoticeMeta] = createSignal<NoticeMeta>()
-  // `undefined` means the server list has not been read (yet, or at all), which
-  // is not the same as a project with no servers; the inspector offers the
-  // list, so an unread one must not look like an empty one.
-  const [mcpServers, setMcpServers] = createSignal<McpServer[] | undefined>(undefined)
   const [showProjectPicker, setShowProjectPicker] = createSignal(false)
   const [pickingProject, setPickingProject] = createSignal(false)
   const [pipelines, setPipelines] = createSignal<PipelineEntry[]>([])
@@ -571,11 +567,8 @@ export function App() {
     const entries = await store.pipelines().catch(() => [])
     setPipelines(entries)
     setRuns(await store.runs().catch(() => []))
-    setMcpServers(await store.mcpServers().catch(() => undefined))
     return entries
   }
-
-  const mcpNames = () => (mcpServers() ?? []).map((server) => server.name)
 
   /** Reads picked or pasted files into data URLs and attaches them to the run. */
   async function attachToRun(files: File[]) {
@@ -1508,7 +1501,6 @@ export function App() {
         <Canvas />
         <Inspector
           providers={providers()}
-          mcpServers={mcpNames()}
           onManageKeys={() => setShowOmp(true)}
           onManageMcp={() => setShowMcp(true)}
         />
@@ -1551,7 +1543,7 @@ export function App() {
       </Show>
 
       <Show when={showMcp()}>
-        <McpPanel onClose={() => setShowMcp(false)} onNotice={notice} onChanged={refresh} />
+        <McpPanel onClose={() => setShowMcp(false)} onNotice={notice} />
       </Show>
 
       {/*

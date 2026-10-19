@@ -76,13 +76,6 @@ export function describeLaunch(input: LaunchInput): { notes: string[] } {
     }
     if (name !== "skill" && !Object.hasOwn(OMP_TOOLS, name)) notes.push(`tool toggle "${name}" is off but has no omp equivalent; it stays enabled`)
   }
-  const mcp = input.session.card.mcp
-  if (mcp) {
-    notes.push(
-      `MCP allowlist (${mcp.length ? mcp.join(", ") : "none"}) is not enforced: omp has no settings-overlay switch for MCP servers; ` +
-        "server allow/deny lives in mcp.json of the omp profile",
-    )
-  }
   return { notes }
 }
 

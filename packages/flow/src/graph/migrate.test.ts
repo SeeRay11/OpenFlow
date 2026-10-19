@@ -94,7 +94,6 @@ describe("migratePipeline", () => {
       model: "anthropic/claude-sonnet-4-5",
       prompt: "Build it.",
       tools: { read: true, write: true },
-      mcp: ["github"],
     })
     expect("name" in agents(pipeline)[1]).toBe(false)
     expect(notes).toHaveLength(1)
@@ -102,6 +101,25 @@ describe("migratePipeline", () => {
     expect(notes[0].nodeId).toBe("n1")
     expect(notes[0].message).toContain("agent 'build'")
     expect(notes[0].message).toContain("OpenCode agent")
+  })
+
+  test("an old per-card mcp allowlist loads with no note, is dropped, and does not stamp the document", () => {
+    const raw = {
+      id: "p",
+      name: "old",
+      nodes: [
+        { id: "n1", role: "a", position: { x: 0, y: 0 }, agent: { prompt: "x", model: "anthropic/claude-sonnet-4-5", mcp: ["github"] } },
+        { id: "n2", role: "b", position: { x: 0, y: 0 }, agent: { prompt: "y", mcp: [] } },
+      ],
+      edges: [],
+    }
+    const before = JSON.stringify(raw)
+    const result = migratePipeline(raw)
+    expect(JSON.stringify(raw)).toBe(before)
+    expect(result.notes).toEqual([])
+    expect(isPipeline(result.pipeline)).toBe(true)
+    expect(agents(result.pipeline).map((agent) => "mcp" in agent)).toEqual([false, false])
+    expect("migratedFromOpencode" in rec(result.pipeline)).toBe(false)
   })
 
   test("a pipeline already on Omp models is returned unchanged with no notes", () => {

@@ -4632,7 +4632,6 @@ describe("what a session is created with", () => {
       prompt: "You write code.",
       model: "openai/gpt-x",
       tools: { write: true, bash: false, ghost: true },
-      mcp: ["docs"],
       // An agent name from before cards ran on Omp is tolerated and never used.
       name: "flow-a",
     }
@@ -4643,7 +4642,7 @@ describe("what a session is created with", () => {
       {
         runId: log.id,
         nodeId: "a",
-        card: { key: "test-coder-a", role: "Coder", prompt: "You write code.", tools: { edit: true, bash: false }, mcp: ["docs"] },
+        card: { key: "test-coder-a", role: "Coder", prompt: "You write code.", tools: { edit: true, bash: false } },
         model: "openai/gpt-x",
         directory: undefined,
         permissions: "manual",

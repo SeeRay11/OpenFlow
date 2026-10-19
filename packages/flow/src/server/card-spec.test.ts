@@ -56,7 +56,7 @@ describe("cardSpec", () => {
     })
   })
 
-  test("a blank role prompt, no tool map and no mcp list say nothing — every tool and server stays available", () => {
+  test("a blank role prompt and no tool map say nothing — every tool stays available", () => {
     const graph = pipeline("a")
     graph.nodes[0].agent.prompt = "   "
     graph.nodes[0].agent.tools = {}
@@ -73,14 +73,11 @@ describe("cardSpec", () => {
     expect(cardSpec(graph, graph.nodes[0]).tools).toEqual({ edit: false, read: true })
   })
 
-  test("an empty mcp allowlist means none and is not dropped; the list is copied", () => {
+  test("a card never carries an MCP selection, even when an old pipeline's agent still has one", () => {
     const graph = pipeline("a")
-    graph.nodes[0].agent.mcp = []
-    expect(cardSpec(graph, graph.nodes[0]).mcp).toEqual([])
-    graph.nodes[0].agent.mcp = ["docs"]
-    const spec = cardSpec(graph, graph.nodes[0])
-    expect(spec.mcp).toEqual(["docs"])
-    expect(spec.mcp).not.toBe(graph.nodes[0].agent.mcp)
+    // What a pipeline file saved before MCP became profile-wide may still hold in memory.
+    Object.assign(graph.nodes[0].agent, { mcp: ["docs"] })
+    expect(cardSpec(graph, graph.nodes[0])).not.toHaveProperty("mcp")
   })
 
   test("only a card with cards of its own, in an orchestration, gets the dispatch tools", () => {
