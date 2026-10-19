@@ -79,7 +79,7 @@ export function Inspector(props: {
               </label>
 
               <div class="field-row">
-                <span class="field-label" title="which model runs this card — blank uses Omp's default model">
+                <span class="field-label" title="which model runs this card — a card with no model cannot start">
                   model
                 </span>
                 <ModelPicker
@@ -90,7 +90,7 @@ export function Inspector(props: {
                 />
               </div>
               <div class="row">
-                <span class="hint">blank runs on Omp's default model</span>
+                <span class="hint">a card needs a model: pick one here, or set a default model in the picker</span>
                 <button
                   class="btn"
                   disabled={!selected().agent.model || testing()}

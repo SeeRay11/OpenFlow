@@ -146,10 +146,50 @@ export const MEMORY_ROUTES = {
   forget: "/flow/api/memory/forget",
 } as const
 
-/** Subject convention for everything OpenFlow writes. Lower-case, `/`-separated, at most 200 chars. */
-export function memorySubject(pipeline: string, run: string, card: string): string {
-  const clean = (value: string) => value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "x"
-  return `openflow/${clean(pipeline)}/${clean(run)}/${clean(card)}`.slice(0, 200)
+/** Longest each segment of a subject gets before it is shortened to `<head>-<hash>`. */
+const SEGMENT_LIMITS = { pipeline: 64, run: 48, card: 48 } as const
+const HASH_LENGTH = 11
+
+/** cyrb53: a small, stable, dependency-free 53-bit hash (this module also ships to the browser). */
+function stableHash(text: string): string {
+  let h1 = 0xdeadbeef
+  let h2 = 0x41c6ce57
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index)
+    h1 = Math.imul(h1 ^ code, 2654435761)
+    h2 = Math.imul(h2 ^ code, 1597334677)
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36).padStart(HASH_LENGTH, "0")
+}
+
+/**
+ * One subject segment: lower-cased, anything outside `[a-z0-9._-]` collapsed to `-`. A segment longer
+ * than its limit keeps its head and ends in a hash of the whole cleaned value, so two long names that
+ * share their first characters stay apart and the segments after it are never pushed out of the subject.
+ */
+function subjectSegment(value: string, limit: number): string {
+  const clean = value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "x"
+  if (clean.length <= limit) return clean
+  return `${clean.slice(0, limit - HASH_LENGTH - 1)}-${stableHash(clean)}`
+}
+
+/**
+ * Subject convention for everything OpenFlow writes: `openflow/<pipeline>/<run>/<card>[-d<n>]`.
+ * Lower-case, `/`-separated. Each segment is bounded on its own, so the whole subject (with the
+ * `-d<n>` ordinal of a re-dispatch and a `/retracted` marker after it) stays well under 200 chars
+ * and the run and card parts are always present.
+ */
+export function memorySubject(pipeline: string, run: string, card: string, dispatch = 1): string {
+  const suffix = Number.isInteger(dispatch) && dispatch > 1 ? `-d${dispatch}` : ""
+  return `openflow/${subjectSegment(pipeline, SEGMENT_LIMITS.pipeline)}/${subjectSegment(run, SEGMENT_LIMITS.run)}/${subjectSegment(card, SEGMENT_LIMITS.card)}${suffix}`
+}
+
+/** The subject prefix (with its trailing slash) of a pipeline's entries, or of one run's when `run` is given. */
+export function memorySubjectPrefix(pipeline: string, run?: string): string {
+  const base = `openflow/${subjectSegment(pipeline, SEGMENT_LIMITS.pipeline)}/`
+  return run === undefined ? base : `${base}${subjectSegment(run, SEGMENT_LIMITS.run)}/`
 }
 
 /** One row of the entries listing: what `read` would see, plus retraction markers and what is hidden. */

@@ -1524,6 +1524,7 @@ export function App() {
         open={terminalOpen()}
         onClose={() => setTerminal(false)}
         kind={terminalKind()}
+        project={project()}
         onOpenSettings={() => setShowOmp(true)}
       />
 

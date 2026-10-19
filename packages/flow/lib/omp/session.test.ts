@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import fs from "node:fs/promises"
 import path from "node:path"
-import type { BusEvent, WaitResult } from "../../shared/engine"
+import type { BusEvent, Turn, WaitResult } from "../../shared/engine"
 import { EMPTY_SWARM_COUNTS, type SwarmHost, type SwarmLaunch, type SwarmMode, type SwarmStatus, type SwarmTracker } from "../../shared/swarm"
 import { HttpError } from "../host/respond"
 import { DISPATCH_TOOL, FINISH_TOOL } from "../../src/graph/dispatch"
@@ -250,12 +250,15 @@ hosted("swarm", () => {
     expect(second.proc.of("set_subagent_subscription")).toHaveLength(1)
   })
 
-  test("off sends no subscription; a degraded swarm says why", async () => {
+  test("off sends no subscription; a degraded swarm says why once the first prompt is accepted", async () => {
     const swarm = swarmHost({ effective: "off", problems: true })
     await boot({ swarm: swarm.host })
-    const { proc } = await open({ ...BODY, swarm: "always" })
+    const { id, proc } = await open({ ...BODY, swarm: "always" })
     expect(proc.of("set_subagent_subscription")).toEqual([])
+    expect(events.filter((event) => event.type === "flow.notice")).toEqual([])
+    await host.prompt(id, { text: "go" })
     const notice = events.find((event) => event.type === "flow.notice")
+    expect(notice?.data?.sessionID).toBe(id)
     expect(notice?.data?.message).toContain("swarm is off for this card")
     expect(notice?.data?.message).toContain("Export SWARM_ED25519_KEY.")
   })
@@ -907,11 +910,33 @@ hosted("launch notes", () => {
   const WEBFETCH_OFF = { ...BODY, card: { ...BODY.card, tools: { webfetch: false } } }
   const notices = () => events.filter((event) => event.type === "flow.notice")
 
-  test("a toggle omp cannot enforce is announced once, as an info notice, when the session starts", async () => {
+  test("a toggle omp cannot enforce is announced once, as an info notice, after the session's first prompt is accepted", async () => {
     const { id } = await open(WEBFETCH_OFF)
+    // The browser only learns the id from the create response: a notice before it is dropped there.
+    expect(notices()).toEqual([])
+    await host.prompt(id, { text: "go" })
+    await host.prompt(id, { text: "and again" })
     expect(notices()).toHaveLength(1)
     expect(notices()[0]?.data).toMatchObject({ sessionID: id, level: "info" })
     expect(String(notices()[0]?.data?.message)).toContain("webfetch")
+  })
+
+  test("a refused first prompt keeps the notices for the next one", async () => {
+    const { id, proc } = await open(WEBFETCH_OFF)
+    proc.on("prompt", () => {
+      throw rpcError("prompt", "busy")
+    })
+    await failure(host.prompt(id, { text: "go" }))
+    expect(notices()).toEqual([])
+    proc.on("prompt", {})
+    await host.prompt(id, { text: "again" })
+    expect(notices()).toHaveLength(1)
+  })
+
+  test("a session disposed before any prompt drops its notices without saying them", async () => {
+    const { id } = await open(WEBFETCH_OFF)
+    await host.dispose(id)
+    expect(notices()).toEqual([])
   })
 
   test("a card whose toggles are all enforced says nothing", async () => {
@@ -921,11 +946,22 @@ hosted("launch notes", () => {
 
   test("a session resumed after the idle reaper does not repeat the note", async () => {
     await boot({ idleReapMs: 1000 })
-    const { id } = await open(WEBFETCH_OFF)
+    const { id, proc } = await open(WEBFETCH_OFF)
+    await host.prompt(id, { text: "first" })
+    finish(proc)
+    expect(notices()).toHaveLength(1)
     await host.maintain(Date.now() + 5000)
     await host.prompt(id, { text: "wake up" })
     expect(h.fake.procs).toHaveLength(2)
     expect(notices()).toHaveLength(1)
+  })
+
+  test("a session resumed by reuse never announces the card's tool notes", async () => {
+    const { id } = await open(WEBFETCH_OFF)
+    await host.dispose(id)
+    await host.create({ ...WEBFETCH_OFF, reuse: id })
+    await host.prompt(id, { text: "go on" })
+    expect(notices()).toEqual([])
   })
 })
 
@@ -1432,5 +1468,275 @@ hosted("private state", () => {
     const state = path.join(h.stateRoot, "run1", "n1")
     for (const dir of [h.stateRoot, path.join(h.stateRoot, "run1"), state, path.join(state, SESSION_SUBDIR)]) expect((await fs.stat(dir)).mode & 0o077).toBe(0)
     expect((await fs.stat(path.join(state, ".openflow-session.json"))).mode & 0o077).toBe(0)
+  })
+})
+
+/** A turn of conversation as omp streams it, then the prompt's result. */
+async function converse(id: string, proc: FakeProcess, question: string, answer: string) {
+  await host.prompt(id, { text: question })
+  proc.emit(frames.userMessage(`u-${question}`, question))
+  proc.emit(frames.messageEnd(`m-${question}`, assistantMessage({ texts: [answer] })))
+  finish(proc)
+}
+
+const nodeDir = (run: string, node = "n1") => path.join(h.stateRoot, safeSegment(run), safeSegment(node))
+
+hosted("resume from another run", () => {
+  test("a session saved under one run resumes from its own directory when a newer run asks for it", async () => {
+    const a = await open({ ...BODY, runId: "runA" })
+    await converse(a.id, a.proc, "first question", "first answer")
+    await host.releaseRun("runA")
+
+    const resumed = await host.create({ ...BODY, runId: "runB", reuse: a.id })
+    expect(resumed).toEqual({ id: a.id })
+    const proc = h.fake.procs[1] as FakeProcess
+    // omp's JSONL lives where the first run wrote it: that is the directory it is asked to open.
+    expect(proc.of("open_session")[0]?.sessionDir).toBe(path.join(nodeDir("runA"), SESSION_SUBDIR))
+    expect(h.launches[1]?.stateDir).toBe(nodeDir("runA"))
+    // New work belongs to the new run.
+    expect(h.launches[1]?.session.runId).toBe("runB")
+    expect(host.live()).toBe(1)
+    expect((await host.list(10)).filter((row) => row.id === a.id)).toHaveLength(1)
+    await expect(fs.stat(nodeDir("runB"))).rejects.toThrow()
+    // The metadata keeps naming the run that wrote it.
+    await host.prompt(a.id, { text: "second question" })
+    await host.releaseRun("runB")
+    expect(JSON.parse(await fs.readFile(path.join(nodeDir("runA"), ".openflow-session.json"), "utf8"))).toMatchObject({ id: a.id, runId: "runA", nodeId: "n1" })
+  })
+
+  test("what was said before the resume stays in front of the new turns until omp pages the history in", async () => {
+    const a = await open({ ...BODY, runId: "runA" })
+    await converse(a.id, a.proc, "first question", "first answer")
+    await host.releaseRun("runA")
+    await host.create({ ...BODY, runId: "runB", reuse: a.id })
+    const proc = h.fake.procs[1] as FakeProcess
+    await converse(a.id, proc, "second question", "second answer")
+    const expected: Turn[] = [
+      { role: "user", text: "first question" },
+      { role: "assistant", text: "first answer" },
+      { role: "user", text: "second question" },
+      { role: "assistant", text: "second answer" },
+    ]
+    expect(await host.turns(a.id, 10)).toEqual(expected)
+    // And on disk, so a later host reads the whole conversation rather than only the resumed part.
+    await host.releaseRun("runB")
+    expect(await host.turns(a.id, 10)).toEqual(expected)
+  })
+
+  test("the history omp pages in replaces the saved turns instead of doubling them", async () => {
+    const a = await open({ ...BODY, runId: "runA" })
+    await converse(a.id, a.proc, "q", "a")
+    await host.releaseRun("runA")
+    h.fake.setup((proc) => {
+      proc.on("open_session", { cancelled: false, resumed: true })
+      proc.on("get_messages_page", { messages: [{ role: "user", content: "q", timestamp: 1 }, assistantMessage({ texts: ["a"] })] })
+    })
+    await host.create({ ...BODY, runId: "runB", reuse: a.id })
+    expect(await host.turns(a.id, 10)).toEqual([
+      { role: "user", text: "q" },
+      { role: "assistant", text: "a" },
+    ])
+  })
+
+  test("the directory it lives in is held while the resumed session is, so a prune cannot take its files", async () => {
+    const a = await open({ ...BODY, runId: "runA" })
+    await host.releaseRun("runA")
+    expect(host.holds(safeSegment("runA"))).toBe(false)
+    await host.create({ ...BODY, runId: "runB", reuse: a.id })
+    expect(host.holds(safeSegment("runA"))).toBe(true)
+    expect(host.claim(safeSegment("runA"))).toBeUndefined()
+    await host.releaseRun("runB")
+    expect(host.holds(safeSegment("runA"))).toBe(false)
+  })
+
+  test("a run being pruned cannot be adopted: the usual 404, and nothing is spawned", async () => {
+    const a = await open({ ...BODY, runId: "runA" })
+    await host.releaseRun("runA")
+    const release = host.claim(safeSegment("runA"))
+    expect(release).toBeDefined()
+    const error = await failure(host.create({ ...BODY, runId: "runB", reuse: a.id }))
+    release?.()
+    expect(error.status).toBe(404)
+    expect(h.fake.procs).toHaveLength(1)
+  })
+
+  test("a session id only matches by its metadata: an id that is a path is a plain 404", async () => {
+    await open({ ...BODY, runId: "runA" })
+    for (const reuse of ["../run1", "..", "run1/n1", "s_000000000000"]) {
+      expect((await failure(host.create({ ...BODY, runId: "runB", reuse }))).status).toBe(404)
+    }
+    expect(h.fake.procs).toHaveLength(1)
+  })
+
+  test("two concurrent resumes of one saved session from different runs share one process", async () => {
+    const a = await open({ ...BODY, runId: "runA" })
+    await host.releaseRun("runA")
+    const both = await Promise.all([host.create({ ...BODY, runId: "runB", reuse: a.id }), host.create({ ...BODY, runId: "runC", reuse: a.id })])
+    expect(both).toEqual([{ id: a.id }, { id: a.id }])
+    expect(h.fake.procs).toHaveLength(2)
+    expect(host.live()).toBe(1)
+  })
+})
+
+hosted("history of finished sessions", () => {
+  async function released() {
+    const a = await open()
+    await converse(a.id, a.proc, "do it", "done")
+    await host.releaseRun("run1")
+    return a.id
+  }
+
+  test("a released session is listed and its conversation can be read, without starting a process", async () => {
+    const id = await released()
+    expect((await host.list(10)).map((row) => row.id)).toEqual([id])
+    expect(await host.turns(id, 10)).toEqual([
+      { role: "user", text: "do it" },
+      { role: "assistant", text: "done" },
+    ])
+    expect(await host.turns(id, 1)).toEqual([{ role: "assistant", text: "done" }])
+    // The engine's own reads (final, steps, calls) still end with the release: only the Sessions panel reads a finished conversation.
+    expect((await failure(host.final(id))).status).toBe(404)
+    expect(h.fake.procs).toHaveLength(1)
+    expect(host.live()).toBe(0)
+  })
+
+  test("it survives a host restart", async () => {
+    const id = await released()
+    await host.close()
+    const restarted = createSessionHost(h.deps, { emit: (event) => events.push(event), tickMs: 3_600_000 })
+    try {
+      expect((await restarted.list(10)).map((row) => row.id)).toEqual([id])
+      expect((await restarted.turns(id, 10)).map((turn) => turn.text)).toEqual(["do it", "done"])
+      expect(h.fake.procs).toHaveLength(1)
+    } finally {
+      await restarted.close()
+    }
+  })
+
+  test("a process that died keeps its conversation readable after a restart too", async () => {
+    const a = await open()
+    await converse(a.id, a.proc, "q", "partial")
+    a.proc.exit(1)
+    await a.proc.exited
+    await host.close()
+    const restarted = createSessionHost(h.deps, { emit: (event) => events.push(event), tickMs: 3_600_000 })
+    try {
+      expect((await restarted.turns(a.id, 10)).map((turn) => turn.text)).toEqual(["q", "partial"])
+    } finally {
+      await restarted.close()
+    }
+  })
+
+  test("a session whose history is gone is not listed and answers a clean 404", async () => {
+    const id = await released()
+    await fs.rm(path.join(nodeDir("run1"), ".openflow-turns.json"))
+    expect(await host.list(10)).toEqual([])
+    const error = await failure(host.turns(id, 10))
+    expect(error.status).toBe(404)
+    expect(error.code).toBe("session-not-found")
+  })
+
+  test("a pruned session answers 404", async () => {
+    const id = await released()
+    await fs.rm(path.join(h.stateRoot, safeSegment("run1")), { recursive: true })
+    expect((await failure(host.turns(id, 10))).status).toBe(404)
+    expect(await host.list(10)).toEqual([])
+  })
+
+  test("a damaged turns file is a 404, not a crash", async () => {
+    const id = await released()
+    await fs.writeFile(path.join(nodeDir("run1"), ".openflow-turns.json"), "{not json")
+    expect((await failure(host.turns(id, 10))).status).toBe(404)
+  })
+
+  test("the saved history is clipped and private to the user", async () => {
+    const a = await open()
+    await converse(a.id, a.proc, "q", "x".repeat(100_000))
+    await host.releaseRun("run1")
+    const file = path.join(nodeDir("run1"), ".openflow-turns.json")
+    expect((await fs.stat(file)).mode & 0o077).toBe(0)
+    const turns = await host.turns(a.id, 10)
+    expect(turns[1]?.text.length).toBeLessThan(100_000)
+  })
+
+  test("the latest conversation replaces the earlier one: reading after more turns shows them", async () => {
+    const a = await open()
+    await converse(a.id, a.proc, "one", "1")
+    await converse(a.id, a.proc, "two", "2")
+    await host.releaseRun("run1")
+    expect((await host.turns(a.id, 10)).map((turn) => turn.text)).toEqual(["one", "1", "two", "2"])
+  })
+})
+
+hosted("shutdown", () => {
+  /** Holds the first call of an fs function whose target satisfies `match`; every other call goes straight through. */
+  function hold(name: "mkdir" | "stat", match: (target: string) => boolean) {
+    const held = gate()
+    const real = fs[name] as (...args: unknown[]) => Promise<unknown>
+    let used = false
+    const spy = spyOn(fs, name).mockImplementation((async (...args: unknown[]) => {
+      if (!used && match(String(args[0]))) {
+        used = true
+        await held.hold()
+      }
+      return real(...args)
+    }) as never)
+    return { held, spy }
+  }
+
+  test("a create parked in its first mkdir does not launch after close returns", async () => {
+    const { held, spy } = hold("mkdir", (target) => target.startsWith(h.stateRoot))
+    try {
+      const creating = failure(host.create(BODY))
+      await held.reached
+      await host.close()
+      held.release()
+      const error = await creating
+      expect(error.status).toBe(409)
+      expect(error.code).toBe("session-closed")
+      expect(h.fake.procs).toHaveLength(0)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  test("a create still parsing its request does not launch after close returns", async () => {
+    const { held, spy } = hold("stat", (target) => target === h.project)
+    try {
+      const creating = failure(host.create(BODY))
+      await held.reached
+      await host.close()
+      held.release()
+      expect((await creating).code).toBe("session-closed")
+      expect(h.fake.procs).toHaveLength(0)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  test("after close every create and reuse is refused", async () => {
+    const { id } = await open()
+    await host.dispose(id)
+    await host.close()
+    expect((await failure(host.create(BODY))).code).toBe("session-closed")
+    expect((await failure(host.create({ ...BODY, reuse: id }))).code).toBe("session-closed")
+    expect(h.fake.procs).toHaveLength(1)
+    expect(host.live()).toBe(0)
+  })
+
+  test("a reuse parked while its metadata is read does not launch after close returns", async () => {
+    const { id } = await open()
+    await host.dispose(id)
+    const { held, spy } = hold("stat", (target) => target.endsWith(".openflow-turns.json"))
+    try {
+      const resuming = failure(host.create({ ...BODY, runId: "runB", reuse: id }))
+      await held.reached
+      await host.close()
+      held.release()
+      expect((await resuming).code).toBe("session-closed")
+      expect(h.fake.procs).toHaveLength(1)
+    } finally {
+      spy.mockRestore()
+    }
   })
 })

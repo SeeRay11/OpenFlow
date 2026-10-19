@@ -74,6 +74,8 @@ type Session = {
   reaper?: NodeJS.Timeout
   done: PromiseWithResolvers<PtyInfo>
   subscriptions: { dispose(): void }[]
+  /** Set once the group sweep (SIGHUP, then SIGKILL after the grace) is scheduled; resolves when it has run. */
+  reaped?: PromiseWithResolvers<void>
 }
 
 function signalName(signal: number | string | null | undefined): string | null {
@@ -89,7 +91,7 @@ function signalName(signal: number | string | null | undefined): string | null {
  * grandchild. Falls back to the child alone (Windows has no groups). Pids that
  * could be a group of someone else (<= 1) are never signalled.
  */
-function signalGroup(proc: PtyProcess, signal: "SIGHUP" | "SIGKILL") {
+function signalGroup(proc: PtyProcess, signal: "SIGHUP" | "SIGKILL", leaderGone = false) {
   if (!Number.isInteger(proc.pid) || proc.pid <= 1) return
   if (process.platform !== "win32") {
     try {
@@ -97,9 +99,22 @@ function signalGroup(proc: PtyProcess, signal: "SIGHUP" | "SIGKILL") {
       return
     } catch {}
   }
+  // A leader that already exited has no pid worth signalling: it may belong to someone else by now.
+  if (leaderGone) return
   try {
     proc.kill(signal)
   } catch {}
+}
+
+/** True while any member of the child's process group lives (the group id outlives the leader). */
+function groupAlive(proc: PtyProcess) {
+  if (!Number.isInteger(proc.pid) || proc.pid <= 1 || process.platform === "win32") return false
+  try {
+    process.kill(-proc.pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM"
+  }
 }
 
 export class TerminalHost {
@@ -110,6 +125,8 @@ export class TerminalHost {
   readonly #dying = new Set<Session>()
   #reserved = 0
   #disposed = false
+  /** Creates awaiting their spawn: `dispose` waits for them so none leaves a live PTY behind. */
+  readonly #starting = new Set<Promise<void>>()
   #hooks: { event: string; listener: () => void }[] = []
 
   constructor(spawn: PtySpawn, tuning: Partial<HostTuning> = {}) {
@@ -139,6 +156,8 @@ export class TerminalHost {
     }
     const { cols, rows } = clampSize(size.cols, size.rows)
     this.#reserved += 1
+    const starting = Promise.withResolvers<void>()
+    this.#starting.add(starting.promise)
     let proc: PtyProcess
     try {
       proc = await this.#spawn(plan.file, plan.args, { name: "xterm-256color", cols, rows, cwd: plan.cwd, env: plan.env })
@@ -146,6 +165,13 @@ export class TerminalHost {
       throw new HttpError(500, `could not start the terminal: ${error instanceof Error ? error.message : "spawn failed"}`, "spawn-failed")
     } finally {
       this.#reserved -= 1
+      this.#starting.delete(starting.promise)
+      starting.resolve()
+    }
+    if (this.#disposed) {
+      // Disposed while the spawn was in flight: nothing may outlive the host, and nobody holds this process yet.
+      signalGroup(proc, "SIGKILL")
+      throw new HttpError(409, "the terminal host is shutting down", "disposed")
     }
     this.#install()
     const info: PtyInfo = { id: crypto.randomUUID(), kind, pid: proc.pid, state: "running", cols, rows, createdAt: Date.now() }
@@ -232,7 +258,8 @@ export class TerminalHost {
     for (const session of sessions) this.#terminate(session)
     const bound = Promise.withResolvers<void>()
     const giveUp = setTimeout(bound.resolve, this.#tuning.killGraceMs + 3000)
-    await Promise.race([Promise.all([...this.#dying].map((session) => session.done.promise)), bound.promise])
+    const settled = [...this.#starting, ...[...this.#dying].flatMap((session) => [session.done.promise, session.reaped!.promise])]
+    await Promise.race([Promise.all(settled), bound.promise])
     clearTimeout(giveUp)
     this.#uninstall()
   }
@@ -269,7 +296,9 @@ export class TerminalHost {
     }
     session.sinks.clear()
     session.done.resolve({ ...session.info })
-    this.#dying.delete(session)
+    // The leader is gone; whatever it left in the group still gets the sweep (SIGHUP, grace, SIGKILL).
+    if (groupAlive(session.proc)) this.#reap(session)
+    else if (session.reaped) this.#finish(session)
     this.#trim()
   }
 
@@ -304,18 +333,36 @@ export class TerminalHost {
       } catch {}
     }
     session.sinks.clear()
-    if (session.info.state === "exited") return
+    if (session.info.state === "exited" && !groupAlive(session.proc)) return
+    this.#reap(session)
+  }
+
+  /**
+   * Schedules the group sweep once: SIGHUP now, SIGKILL when the grace ends. It
+   * is deliberately independent of the leader: the group id outlives a leader
+   * that exited on the hangup while a child that ignored it keeps running.
+   */
+  #reap(session: Session) {
+    if (session.reaped) return
+    session.reaped = Promise.withResolvers<void>()
     this.#dying.add(session)
-    signalGroup(session.proc, "SIGHUP")
-    session.reaper = setTimeout(() => signalGroup(session.proc, "SIGKILL"), this.#tuning.killGraceMs)
+    signalGroup(session.proc, "SIGHUP", session.info.state === "exited")
+    session.reaper = setTimeout(() => this.#finish(session), this.#tuning.killGraceMs)
     session.reaper.unref?.()
-    void session.done.promise.then(() => clearTimeout(session.reaper))
+  }
+
+  /** Ends the sweep: SIGKILL whatever is left of the group, whether or not the leader is still alive. */
+  #finish(session: Session) {
+    clearTimeout(session.reaper)
+    signalGroup(session.proc, "SIGKILL", session.info.state === "exited")
+    this.#dying.delete(session)
+    session.reaped?.resolve()
   }
 
   /** Synchronous last resort for process exit: nothing can wait there. */
   #sweep = () => {
     for (const session of [...this.#sessions.values(), ...this.#dying]) {
-      if (session.info.state === "running") signalGroup(session.proc, "SIGKILL")
+      if (session.info.state === "running" || this.#dying.has(session)) signalGroup(session.proc, "SIGKILL", session.info.state === "exited")
     }
   }
 

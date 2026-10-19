@@ -978,6 +978,27 @@ describe("mcp servers", () => {
       )
       expect(((await call("GET", "/mcp"))!.body as any[])[0].enabled).toBe(true)
     })
+
+    test("saving a forced-on server disabled takes it off enabledServers and keeps the other names, keys and a backup", async () => {
+      await fs.mkdir(profile, { recursive: true })
+      const original = JSON.stringify({
+        mcpServers: { a: { command: "a", enabled: false }, b: { command: "b" } },
+        enabledServers: ["a", "b"],
+        disabledServers: ["x"],
+        extra: { keep: true },
+      })
+      await fs.writeFile(configPath(), original)
+      expect(((await call("GET", "/mcp"))!.body as Array<{ enabled: boolean }>).map((entry) => entry.enabled)).toEqual([true, true])
+
+      await call("PUT", "/mcp/a", { body: { type: "local", command: ["a"], enabled: false } })
+
+      const saved = await config()
+      expect(saved.enabledServers).toEqual(["b"])
+      expect(saved.disabledServers).toEqual(["x"])
+      expect(saved.extra).toEqual({ keep: true })
+      expect(((await call("GET", "/mcp"))!.body as Array<{ enabled: boolean }>).map((entry) => entry.enabled)).toEqual([false, true])
+      expect(await read(`${configPath()}.bak`)).toBe(original)
+    })
   })
 
   test("refuses a server that could not start, rather than writing a config omp rejects", async () => {

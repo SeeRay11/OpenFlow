@@ -23,7 +23,7 @@ const DENY = "Deny"
 
 type AskQuestion = { id: string; question: string; header?: string; options: Array<{ label: string; description?: string }>; multi: boolean }
 
-type Pending = { kind: "permission"; sessionOption?: string } | { kind: "question"; questions: AskQuestion[] }
+type Pending = { kind: "permission"; sessionOption?: string; asked: BusEvent } | { kind: "question"; questions: AskQuestion[]; asked: BusEvent }
 
 export type UiRequestsOptions = {
   sessionID: string
@@ -42,6 +42,8 @@ export interface UiRequests {
   /** Cancels every open dialog, e.g. when the session is interrupted or closed. */
   cancelAll(): void
   pending(): number
+  /** The `*.asked` event of every dialog still open, as first emitted: replayed to an event stream that attaches after they were raised. */
+  asked(): BusEvent[]
 }
 
 function notFound(id: string, what: string): HttpError {
@@ -84,8 +86,9 @@ export function createUiRequests(options: UiRequestsOptions): UiRequests {
     const lines = title.slice(APPROVAL_PREFIX.length).split("\n")
     const action = (lines[0] ?? "").trim()
     const resources = lines.slice(1).filter((line) => line.trim().length > 0)
-    pending.set(id, { kind: "permission", sessionOption: choices.find((choice) => choice !== APPROVE && choice !== DENY) })
-    options.emit({ type: "permission.v2.asked", data: { id, sessionID, action, resources } })
+    const asked: BusEvent = { type: "permission.v2.asked", data: { id, sessionID, action, resources } }
+    pending.set(id, { kind: "permission", sessionOption: choices.find((choice) => choice !== APPROVE && choice !== DENY), asked })
+    options.emit(asked)
   }
 
   function onSelect(frame: OmpFrame, id: string) {
@@ -106,7 +109,6 @@ export function createUiRequests(options: UiRequestsOptions): UiRequests {
       options.send({ type: "extension_ui_response", id, cancelled: true })
       return
     }
-    pending.set(id, { kind: "question", questions })
     const info: QuestionInfo[] = questions.map((question) => ({
       question: question.question,
       header: question.header ?? "",
@@ -114,7 +116,9 @@ export function createUiRequests(options: UiRequestsOptions): UiRequests {
       multiple: question.multi,
       custom: true,
     }))
-    options.emit({ type: "question.v2.asked", data: { id, sessionID, questions: info } })
+    const asked: BusEvent = { type: "question.v2.asked", data: { id, sessionID, questions: info } }
+    pending.set(id, { kind: "question", questions, asked })
+    options.emit(asked)
   }
 
   return {
@@ -188,6 +192,10 @@ export function createUiRequests(options: UiRequestsOptions): UiRequests {
 
     pending() {
       return pending.size
+    },
+
+    asked() {
+      return [...pending.values()].map((entry) => entry.asked)
     },
   }
 }

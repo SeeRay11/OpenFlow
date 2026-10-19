@@ -1,9 +1,10 @@
 import { Show, createSignal, onCleanup, onMount } from "solid-js"
 import type { FitAddon, Ghostty, Terminal } from "ghostty-web"
 import { PTY_ROUTES } from "../../shared/terminal"
-import type { PtyKind, PtyTicket } from "../../shared/terminal"
+import type { PtyKind } from "../../shared/terminal"
 import { IconClose } from "./icons"
-import { decodeServerFrame, encodeResize, ptyHeaders, readProblem, socketUrl, ticketInit } from "./terminal-frames"
+import { createRemembered, requestTicket, singleFlight } from "./terminal-connect"
+import { decodeServerFrame, encodeResize, ptyHeaders, socketUrl, ticketInit } from "./terminal-frames"
 import { actionLabel, initialState, needsOmpSettings, reduce, statusText } from "./terminal-session"
 import type { SessionEvent, SessionState } from "./terminal-session"
 import "./terminal-dock.css"
@@ -13,8 +14,8 @@ const DEFAULT_HEIGHT = 0.35
 const MIN_HEIGHT = 0.15
 const MAX_HEIGHT = 0.7
 
-/** Sessions outlive the dock: closing it detaches, opening it attaches again. */
-const remembered: Partial<Record<PtyKind, string>> = {}
+/** Sessions outlive the dock: closing it detaches, opening it attaches again, per project and kind. */
+const remembered = createRemembered()
 
 type Emulator = { Terminal: typeof Terminal; FitAddon: typeof FitAddon; ghostty: Ghostty }
 
@@ -53,14 +54,17 @@ export type TerminalDockProps = {
   onClose(): void
   /** Which session to open first; the dock's own switch changes it afterwards. */
   kind?: PtyKind
+  /** The open project's path: sessions are remembered per project. */
+  project: string
   /** Shown as a link when omp is missing or too old. */
   onOpenSettings?(): void
 }
 
+/** Keyed by project: switching projects replaces the dock, so a terminal never keeps running in the previous repository. */
 export function TerminalDock(props: TerminalDockProps) {
   return (
-    <Show when={props.open}>
-      <Dock kind={props.kind ?? "omp"} onClose={props.onClose} onOpenSettings={props.onOpenSettings} />
+    <Show when={props.open && props.project} keyed>
+      {(project) => <Dock kind={props.kind ?? "omp"} project={project} onClose={props.onClose} onOpenSettings={props.onOpenSettings} />}
     </Show>
   )
 }
@@ -75,7 +79,7 @@ export function TerminalDock(props: TerminalDockProps) {
  * The emulator draws to a canvas, so a screen reader cannot read the grid: the
  * `aria-live` line carries connection and exit state, and the region is named.
  */
-function Dock(props: { kind: PtyKind; onClose(): void; onOpenSettings?(): void }) {
+function Dock(props: { kind: PtyKind; project: string; onClose(): void; onOpenSettings?(): void }) {
   const [view, setView] = createSignal<SessionState>(initialState(props.kind))
   const [height, setHeight] = createSignal(DEFAULT_HEIGHT)
   let current = view()
@@ -100,8 +104,8 @@ function Dock(props: { kind: PtyKind; onClose(): void; onOpenSettings?(): void }
     socket.send(encodeResize(term.cols, term.rows))
   }
 
-  async function ensureTerminal(): Promise<Terminal> {
-    if (term) return term
+  async function createTerminal(): Promise<Terminal> {
+    // Only reached through `startTerminal`, and only while there is no emulator.
     const emulator = await loadEmulator()
     if (disposed) throw new Error("closed")
     const created = new emulator.Terminal({
@@ -178,6 +182,9 @@ function Dock(props: { kind: PtyKind; onClose(): void; onOpenSettings?(): void }
     return created
   }
 
+  /** Two callers arriving while the emulator loads share one run: a second `Terminal` would double the paste listeners and leak. */
+  const startTerminal = singleFlight(createTerminal)
+
   function closeSocket() {
     clearTimeout(retry)
     const old = socket
@@ -198,7 +205,7 @@ function Dock(props: { kind: PtyKind; onClose(): void; onOpenSettings?(): void }
   async function connect(generation: number, recreateIfGone: boolean) {
     let terminal: Terminal
     try {
-      terminal = await ensureTerminal()
+      terminal = term ?? (await startTerminal())
     } catch (error) {
       if (generation !== attempt || disposed) return
       const reason = error instanceof Error ? error.message : "unknown error"
@@ -207,34 +214,39 @@ function Dock(props: { kind: PtyKind; onClose(): void; onOpenSettings?(): void }
     }
     if (generation !== attempt) return
 
-    let granted: PtyTicket
-    try {
-      const response = await fetch(
-        PTY_ROUTES.ticket,
-        ticketInit(current.id === undefined ? { create: { kind: current.kind, cols: terminal.cols, rows: terminal.rows } } : { id: current.id }),
-      )
-      if (generation !== attempt) return
-      if (!response.ok) {
-        const problem = await readProblem(response)
-        if (generation !== attempt) return
-        if (recreateIfGone && problem.status === 404 && problem.code === "gone") {
-          delete remembered[current.kind]
-          void begin(current.kind, true)
-          return
-        }
-        dispatch({ type: "failed", status: problem.status, problem: { message: problem.message, code: problem.code } })
-        return
-      }
-      granted = (await response.json()) as PtyTicket
-    } catch {
-      if (generation !== attempt) return
+    const id = current.id
+    const kind = current.kind
+    const outcome = await requestTicket(
+      () =>
+        fetch(
+          PTY_ROUTES.ticket,
+          ticketInit(id === undefined ? { create: { kind, cols: terminal.cols, rows: terminal.rows } } : { id }),
+        ),
+      () => generation === attempt,
+    )
+    if (outcome.type === "stale") {
+      // A reply to an abandoned attempt changes nothing, and a session it created has no owner: end it.
+      if (id === undefined && outcome.ticket) void fetch(PTY_ROUTES.session(outcome.ticket.id), { method: "DELETE", headers: ptyHeaders }).catch(() => undefined)
+      return
+    }
+    if (outcome.type === "network") {
       dispatch({ type: "failed", network: true, problem: { message: "the host is not reachable" } })
       scheduleRetry(generation)
       return
     }
+    if (outcome.type === "failed") {
+      if (recreateIfGone && outcome.status === 404 && outcome.code === "gone") {
+        remembered.forget(props.project, kind)
+        void begin(kind, true)
+        return
+      }
+      dispatch({ type: "failed", status: outcome.status, problem: { message: outcome.message, code: outcome.code } })
+      return
+    }
+    const granted = outcome.ticket
 
     dispatch({ type: "ticket", id: granted.id })
-    remembered[current.kind] = granted.id
+    remembered.set(props.project, kind, granted.id)
     const opened = new WebSocket(socketUrl(window.location, granted, current.cursor))
     opened.binaryType = "arraybuffer"
     socket = opened
@@ -267,7 +279,7 @@ function Dock(props: { kind: PtyKind; onClose(): void; onOpenSettings?(): void }
   async function begin(kind: PtyKind, fresh = false) {
     const generation = ++attempt
     closeSocket()
-    const id = fresh ? undefined : remembered[kind]
+    const id = fresh ? undefined : remembered.get(props.project, kind)
     dispatch({ type: "begin", kind, id })
     // A new session starts on a clean screen; a reconnect (no `begin`) never clears.
     term?.reset()
@@ -277,7 +289,7 @@ function Dock(props: { kind: PtyKind; onClose(): void; onOpenSettings?(): void }
   function restart() {
     const old = current.id
     if (old !== undefined) {
-      delete remembered[current.kind]
+      remembered.forget(props.project, current.kind)
       void fetch(PTY_ROUTES.session(old), { method: "DELETE", headers: ptyHeaders }).catch(() => undefined)
     }
     void begin(current.kind, true)

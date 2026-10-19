@@ -241,6 +241,63 @@ suite("no orphans", () => {
     expect(await goneWithin(info.pid!)).toBe(true)
   })
 
+  test("a child that ignores the hangup is still killed after the leader exited on it", async () => {
+    const terminals = host({ killGraceMs: 400 })
+    const { info, grandchild } = await withGrandchild(
+      terminals,
+      "trap 'exit 0' HUP; (trap '' HUP; exec sleep 300) & child=$!; sleep 0.3; echo CHILD:$child; while :; do sleep 0.1; done",
+    )
+    const exited = terminals.whenExited(info.id)!
+    terminals.kill(info.id)
+    await exited
+    // The leader is gone and the group sweep must still be pending: the child outlives the hangup.
+    expect(alive(grandchild)).toBe(true)
+    expect(await goneWithin(grandchild)).toBe(true)
+  })
+
+  test("a child left behind by a leader that exited by itself is swept too", async () => {
+    const terminals = host({ killGraceMs: 300 })
+    const { info, grandchild } = await withGrandchild(terminals, "(trap '' HUP; exec sleep 300) & echo CHILD:$!; sleep 0.3")
+    await terminals.whenExited(info.id)
+    expect(await goneWithin(grandchild)).toBe(true)
+  })
+
+  test("dispose waits for the sweep of a child that survived its leader", async () => {
+    const terminals = host({ killGraceMs: 300 })
+    const { grandchild } = await withGrandchild(
+      terminals,
+      "trap 'exit 0' HUP; (trap '' HUP; exec sleep 300) & child=$!; sleep 0.3; echo CHILD:$child; while :; do sleep 0.1; done",
+    )
+    await terminals.dispose()
+    expect(await goneWithin(grandchild, 500)).toBe(true)
+  })
+
+  test("a create still spawning when dispose runs leaves no live pty and is rejected", async () => {
+    const dir = await scratch()
+    const plan = await stub(dir, "sleep 300")
+    const gate = Promise.withResolvers<void>()
+    const spawned: number[] = []
+    const terminals = new TerminalHost(async (file, args, options) => {
+      await gate.promise
+      const proc = await defaultSpawn(file, args, options)
+      spawned.push(proc.pid)
+      return proc
+    })
+    hosts.push(terminals)
+    const creating = terminals.create("shell", plan, SIZE)
+    const outcome = creating.then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    const disposing = terminals.dispose()
+    gate.resolve()
+    expect(await outcome).toBeInstanceOf(HttpError)
+    await disposing
+    expect(spawned).toHaveLength(1)
+    expect(await goneWithin(spawned[0]!)).toBe(true)
+    expect(terminals.list()).toEqual([])
+  })
+
   test("dispose kills every session, refuses new ones, and is idempotent", async () => {
     const terminals = host()
     const a = await withGrandchild(terminals, "sleep 300 & echo CHILD:$!; wait")

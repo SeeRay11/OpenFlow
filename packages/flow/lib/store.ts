@@ -741,15 +741,19 @@ async function writeMcpServer(file: string, name: string, body: unknown) {
     const entry = buildMcpEntry(body, servers[name])
     const disabled = stringList(config.value.disabledServers)
     const lift = entry.enabled && disabled.includes(name)
+    // `enabledServers` outranks the entry's own `enabled: false`, so a disabled save must leave that list too.
+    const forced = stringList(config.value.enabledServers)
+    const unforce = !entry.enabled && forced.includes(name)
     // Saving a server the config already describes writes nothing, so a
     // pointless rewrite does not push the pre-OpenFlow `.bak` out of reach.
-    if (isDeepStrictEqual(servers[name], entry) && !lift) return { name, path: file, unchanged: true }
+    if (isDeepStrictEqual(servers[name], entry) && !lift && !unforce) return { name, path: file, unchanged: true }
     const next: Record<string, unknown> = {
       ...(config.raw?.trim() ? {} : { $schema: MCP_SCHEMA }),
       ...config.value,
       mcpServers: { ...servers, [name]: entry },
     }
     if (lift) next.disabledServers = disabled.filter((item) => item !== name)
+    if (unforce) next.enabledServers = forced.filter((item) => item !== name)
     const backup = await backupOnce(file, config.raw)
     await fs.mkdir(path.dirname(file), { recursive: true })
     await writeAtomic(file, jsonText(next, config.raw))

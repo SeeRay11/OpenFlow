@@ -96,6 +96,8 @@ export interface MessageStore {
    * Returns false when history was not available yet (busy), true otherwise.
    */
   loadHistory(proc: OmpProcess): Promise<boolean>
+  /** True once the persisted history was paged in: the store then holds the whole conversation, not only what streamed since this host adopted the session. */
+  loaded(): boolean
   recordCall(id: string, name: string, input: unknown): void
   /** The final assistant message of the latest turn: its text, and the provider error when it ended in one. */
   transcript(): Transcript
@@ -312,6 +314,10 @@ export function createMessageStore(options: { limit?: number } = {}): MessageSto
         if (text) turns.push({ role: message.role, text })
       }
       return turns.slice(Math.max(0, turns.length - max))
+    },
+
+    loaded() {
+      return historyLoaded
     },
 
     firstUserText() {

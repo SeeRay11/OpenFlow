@@ -25,7 +25,7 @@ import type {
   MemoryWriteRequest,
   MemoryWriteResult,
 } from "../../shared/memory"
-import { memorySubject } from "../../shared/memory"
+import { memorySubject, memorySubjectPrefix } from "../../shared/memory"
 import type { MemoryWriteReply, SubstrateClient, SubstrateEntry, SubstrateFailure, SubstrateResult } from "./client"
 import { createClient, parseBaseUrl, resolveToken, tokenAllowed, untrustedMessage } from "./client"
 import type { BlockEntry } from "./guard"
@@ -94,12 +94,6 @@ async function git(cwd: string, args: string[]): Promise<string | undefined> {
   }
 }
 
-/** `<runPrefix>` / `<pipelinePrefix>` of the subject convention, with the trailing slash. */
-function subjectPrefix(pipeline: string, run?: string): string {
-  if (run === undefined) return memorySubject(pipeline, "x", "x").slice(0, -"x/x".length)
-  return memorySubject(pipeline, run, "x").slice(0, -1)
-}
-
 function parseSubject(subject: string): { run?: string; card?: string } {
   const parts = subject.split("/")
   if (parts.length !== 4 || parts[0] !== "openflow") return {}
@@ -165,11 +159,13 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     }
   }
 
-  function addCutoff(prefix: string, at: number): Promise<void> {
+  /** Records a forget for one scope. Keys without a scope (written before cutoffs were scoped) are kept in the file but match nothing. */
+  function addCutoff(scope: string, prefix: string, at: number): Promise<void> {
     ignoreChain = ignoreChain.then(async () => {
       const path = ignorePath()
       const cutoffs = await readCutoffs()
-      cutoffs[prefix] = Math.max(cutoffs[prefix] ?? 0, at)
+      const key = `${scope}|${prefix}`
+      cutoffs[key] = Math.max(cutoffs[key] ?? 0, at)
       await mkdir(dirname(path), { recursive: true, mode: 0o700 })
       const temporary = `${path}.${process.pid}.tmp`
       await writeFile(temporary, `${JSON.stringify({ version: 1, cutoffs }, null, 2)}\n`, { mode: 0o600 })
@@ -178,9 +174,11 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     return ignoreChain
   }
 
-  function ignored(entry: SubstrateEntry, cutoffs: Record<string, number>): boolean {
+  /** Whether a forget on this host hides the entry: only cutoffs recorded for this very scope count (keys are `<scope>|<prefix>`). */
+  function ignored(entry: SubstrateEntry, scope: string, cutoffs: Record<string, number>): boolean {
     const created = Date.parse(entry.created)
-    return Object.entries(cutoffs).some(([prefix, at]) => entry.subject.startsWith(prefix) && !(created > at))
+    const head = `${scope}|`
+    return Object.entries(cutoffs).some(([key, at]) => key.startsWith(head) && entry.subject.startsWith(key.slice(head.length)) && !(created > at))
   }
 
   async function derivedRepo(project: string): Promise<string | undefined> {
@@ -220,10 +218,12 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
 
   type Connection = { client: SubstrateClient; repo: string; scope: string; context: GraphContext }
 
-  async function connect(settings: OmpSettings): Promise<Connection | { error: string }> {
+  async function connect(settings: OmpSettings): Promise<Connection | { error: string; repo?: string }> {
     if (disposed) return { error: "Shared memory is shut down." }
     const resolved = await resolve(settings)
-    if (!resolved.url || !resolved.token || !resolved.repo) return { error: resolved.problems[0] ?? "Shared memory is not configured." }
+    if (!resolved.url || !resolved.token || !resolved.repo) {
+      return { error: resolved.problems[0] ?? "Shared memory is not configured.", repo: resolved.repo }
+    }
     const client = createClient({ url: resolved.url, token: resolved.token, fetch: deps.fetch ?? fetch, env })
     const branch = await git(deps.project(), ["rev-parse", "--abbrev-ref", "HEAD"])
     const context: GraphContext = { client, repo: resolved.repo, branch: branch === "HEAD" ? undefined : branch }
@@ -303,7 +303,7 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     }
     const { client, scope, context } = connection
     const limit = request.limit ?? settings.memory.readLimit
-    const prefix = subjectPrefix(request.pipeline)
+    const prefix = memorySubjectPrefix(request.pipeline)
     const graphId = deps.runGraphs.graphId(request.runId)
     // The recall query (`request.query`) is not sent: Substrate ANDs every word of a full-text query,
     // so a task description would match nothing. The newest entries under the pipeline prefix are the recall.
@@ -337,7 +337,7 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
           !entry.expired &&
           !entry.subject.endsWith(RETRACTED) &&
           !marked.has(entry.subject) &&
-          !ignored(entry, cutoffs),
+          !ignored(entry, scope, cutoffs),
       )
       .sort((a, b) => Date.parse(b.created) - Date.parse(a.created))
     const briefed = brief.ok ? briefLines(brief.value.text) : []
@@ -413,8 +413,7 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     // A sub-agent dispatched again writes again: the ordinal keeps its subject and idempotency key apart from the first
     // answer's (the first dispatch keeps the bare ones, so entries written before this existed still match).
     const dispatch = request.dispatch !== undefined && Number.isInteger(request.dispatch) && request.dispatch > 1 ? request.dispatch : 1
-    const suffix = dispatch > 1 ? `-d${dispatch}` : ""
-    const subject = `${memorySubject(request.pipeline, request.runId, request.nodeId).slice(0, 200 - suffix.length)}${suffix}`
+    const subject = memorySubject(request.pipeline, request.runId, request.nodeId, dispatch)
     const base: MemoryWriteResult = { status: "skipped", scope, subject }
     return track(
       (async () => {
@@ -458,16 +457,18 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
   async function forget(request: MemoryForgetRequest): Promise<MemoryForgetResult> {
     const settings = await deps.settings()
     if (!settings.memory.enabled) return { status: "disabled", retracted: 0 }
-    const prefix = subjectPrefix(request.pipeline, request.runId)
+    const prefix = memorySubjectPrefix(request.pipeline, request.runId)
     const connection = await connect(settings)
     if ("error" in connection) {
-      await addCutoff(prefix, now())
+      // Without a repo there is no scope to ignore the entries under, so nothing is hidden.
+      if (!connection.repo) return { status: "unavailable", retracted: 0, error: `${connection.error} No retraction marker was written.` }
+      await addCutoff(`repo:${connection.repo}`, prefix, now())
       return { status: "unavailable", retracted: 0, error: `${connection.error} This host will ignore those entries, but no retraction marker was written.` }
     }
     const { client, scope } = connection
     const listing = await track(list(client, scope, prefix, 500))
     if (!listing.ok) {
-      await addCutoff(prefix, now())
+      await addCutoff(scope, prefix, now())
       return {
         status: "unavailable",
         retracted: 0,
@@ -475,7 +476,7 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
       }
     }
     const entries = listing.value.entries
-    await addCutoff(prefix, Math.max(now(), ...entries.map((entry) => Date.parse(entry.created) || 0)))
+    await addCutoff(scope, prefix, Math.max(now(), ...entries.map((entry) => Date.parse(entry.created) || 0)))
     const marked = markedSubjects(entries)
     const subjects = [...new Set(entries.map((entry) => entry.subject))].filter((subject) => !subject.endsWith(RETRACTED))
     const pending = subjects.filter((subject) => !marked.has(subject))
@@ -487,7 +488,7 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
             client.memoryWrite({
               scope,
               kind: "fact",
-              subject: `${subject}${RETRACTED}`.slice(0, 200),
+              subject: `${subject}${RETRACTED}`,
               text: `Retracted by OpenFlow forget: ignore the entry ${subject}.`,
               ttl: settings.memory.ttl,
               idempotency_key: `openflow-forget:${subject}`,
@@ -510,14 +511,14 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     if (!settings.memory.enabled) return { status: "disabled", items: [] }
     const connection = await connect(settings)
     if ("error" in connection) return { status: "unavailable", items: [], error: connection.error }
-    const listing = await track(list(connection.client, connection.scope, subjectPrefix(request.pipeline, request.runId), request.limit ?? 50))
+    const listing = await track(list(connection.client, connection.scope, memorySubjectPrefix(request.pipeline, request.runId), request.limit ?? 50))
     if (!listing.ok) return { status: "unavailable", items: [], error: describe(listing, "") }
     const at = now()
     const cutoffs = await readCutoffs()
     const marked = markedSubjects(listing.value.entries)
     const items = listing.value.entries.map((entry) => ({
       ...toItem(entry, at),
-      retracted: entry.subject.endsWith(RETRACTED) || marked.has(entry.subject) || ignored(entry, cutoffs),
+      retracted: entry.subject.endsWith(RETRACTED) || marked.has(entry.subject) || ignored(entry, connection.scope, cutoffs),
     }))
     return { status: items.length === 0 ? "empty" : "ok", items }
   }

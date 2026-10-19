@@ -1,4 +1,5 @@
 import { collisionNote, collisionsIn, exceptUnder, writesOf, type Write } from "../graph/collisions"
+import { DEFAULT_STREAM_RETRY, keepSubscribed, type StreamRetry } from "./stream"
 import { addDiff, attribute, deltaOf } from "../graph/diff"
 import { bestRound, ledgerNote, stalledRounds, verdictSummary, type LedgerRound } from "../graph/ledger"
 import { isolates, mergeNote } from "../graph/worktree"
@@ -160,6 +161,8 @@ export type RunOptions = {
    * killed at minute 25 still leaves what it had on disk.
    */
   checkpointEvery?: number
+  /** Delays between attempts to re-attach the event stream after it drops; only worth changing in tests. */
+  streamRetry?: StreamRetry
   /**
    * How long to wait before re-reading a model catalog that did not contain a
    * model some node names, in milliseconds. `0` disables the re-read, which is
@@ -424,6 +427,7 @@ export function start(
   const checkpointEvery = Math.max(1, options.checkpointEvery ?? DEFAULT_CHECKPOINT_EVERY)
   const catalogRetry = Math.max(0, options.catalogRetry ?? DEFAULT_CATALOG_RETRY)
   const rateLimitBackoff = Math.max(0, options.rateLimitBackoff ?? DEFAULT_RATE_LIMIT_BACKOFF)
+  const streamRetry = options.streamRetry ?? DEFAULT_STREAM_RETRY
   const runFiles = options.attachments ?? []
   const resume = options.resume ?? {}
   const toolChannel = options.toolChannel ?? MCP_REACHES_SESSIONS
@@ -624,11 +628,12 @@ export function start(
    * keyed by message id, which is unique per session, so folding sessions
    * together adds them up without ever double-counting one.
    */
-  async function reconcile(id: string, sessionID: string) {
+  async function reconcile(id: string, sessionID: string, quiet = false) {
     if (!api.sessionSteps) return
     const steps = await api.sessionSteps(sessionID).catch(() => undefined)
     if (!steps) {
-      hooks.onNotice?.("error", `could not read usage for ${entry(id).role} — showing what the event stream saw`)
+      // A resync in the middle of a run is not worth a notice: the end-of-turn read reports a failure that persists.
+      if (!quiet) hooks.onNotice?.("error", `could not read usage for ${entry(id).role} — showing what the event stream saw`)
       return
     }
     const spent = usage.get(id) ?? new Map<string, StepUsage>()
@@ -728,8 +733,9 @@ export function start(
   }
 
   // Live status from the event bus. Best-effort: execution never depends on it.
-  const bus = api
-    .subscribe((event) => {
+  const bus = keepSubscribed(
+    (onEvent, signal) => api.subscribe(onEvent, signal),
+    (event) => {
       // Activity sees every event, including those from subagent sessions this
       // run never created — it is the thing that knows they belong to a node.
       activity.consume(event)
@@ -743,6 +749,15 @@ export function start(
         const message = String(event.data?.message ?? "")
         if (!message) return
         hooks.onNotice?.(event.data?.level === "error" ? "error" : "info", owner ? `${entry(owner).role}: ${message}` : message)
+        return
+      }
+      // The host dropped events this subscriber was owed (it fell behind), so what the bus carried is
+      // incomplete: usage is read from the host's own record instead.
+      if (event.type === "flow.stream.reset") {
+        for (const sessionID of held) {
+          const owner = sessions.get(sessionID)
+          if (owner) void reconcile(owner, sessionID, true)
+        }
         return
       }
       if (!sessionID) return
@@ -799,8 +814,10 @@ export function start(
         default:
           return
       }
-    }, controller.signal)
-    .catch(() => undefined)
+    },
+    controller.signal,
+    streamRetry,
+  )
 
   /**
    * Answers one permission request. Every decision is recorded on the node and
@@ -1447,6 +1464,8 @@ export function start(
             "error",
           )
           sessionID = undefined
+          // A carried session the host could not resume is gone for good: retrying `reuse` would only be told so again.
+          attach = undefined
           delivered = false
         }
         // "Not now" is not "this card is finished". The provider refused the

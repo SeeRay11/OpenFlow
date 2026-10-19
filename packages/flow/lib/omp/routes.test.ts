@@ -320,6 +320,56 @@ describe("event bus", () => {
     bus.close()
   })
 
+  test("a subscriber that attaches after a drop is told, first, that it missed events, then gets the replay, and only it does", async () => {
+    const asked: BusEvent = { type: "permission.v2.asked", data: { id: "r1", sessionID: "s_1", action: "bash", resources: [] } }
+    const bus = createEventBus({ maxQueueBytes: 1024, pingMs: 60_000, replay: () => [asked] })
+    const first = bus.subscribe().body?.getReader() as ReadableStreamDefaultReader<Uint8Array>
+    // Before any drop nobody has missed anything: no reset marker, the replay alone.
+    const opening = await readUntil(first, JSON.stringify(asked))
+    expect(opening).not.toContain("flow.stream.reset")
+    bus.subscribe()
+    for (let index = 0; index < 4; index++) bus.publish({ type: "big", data: { text: "x".repeat(600) } })
+    expect(bus.clients()).toBe(0)
+
+    const next = bus.subscribe().body?.getReader() as ReadableStreamDefaultReader<Uint8Array>
+    const other = bus.subscribe().body?.getReader() as ReadableStreamDefaultReader<Uint8Array>
+    const text = await readUntil(next, JSON.stringify(asked))
+    expect(text.indexOf("flow.stream.reset")).toBeGreaterThan(text.indexOf(": connected"))
+    expect(text.indexOf("flow.stream.reset")).toBeLessThan(text.indexOf(JSON.stringify(asked)))
+    expect(text.split(JSON.stringify(asked))).toHaveLength(2)
+    // A live event is not a replay: the subscriber that is already attached does not see the old ask again.
+    bus.publish({ type: "later" })
+    const after = await readUntil(next, `"later"`, { value: "" })
+    expect(after).not.toContain("permission.v2.asked")
+    await other.cancel()
+    bus.close()
+  })
+
+  test.skipIf(process.platform === "win32")("pending approvals and questions reach a stream that attaches after a slow one was dropped: once each, none already answered", async () => {
+    const attach = async () => {
+      const response = await engine.handle(new Request(`http://flow.test${engineRoutes.events}`))
+      return response?.body?.getReader() as ReadableStreamDefaultReader<Uint8Array>
+    }
+    const { id, proc } = await create()
+    await attach()
+    proc.emit(frames.approval("r1", "Allow tool: bash\ncommand: ls"))
+    proc.emit(frames.approval("r2", "Allow tool: edit\npath: a.ts"))
+    proc.emit({ type: "extension_ui_request", id: "q1", method: "ask", questions: [{ id: "k", question: "Which?", options: [{ label: "A" }, { label: "B" }], multi: false }] })
+    // The attached stream never reads: a few megabytes of output pass its limit and it is dropped.
+    proc.emit(frames.messageStart("msg-1"))
+    for (let index = 0; index < 5; index++) proc.emit(frames.textDelta("msg-1", 0, "x".repeat(1024 * 1024)))
+    expect((await call(sessionRoute(id, "/permission/r1"), { body: { reply: "once" } }))?.status).toBe(200)
+
+    const reader = await attach()
+    const text = await readUntil(reader, "question.v2.asked")
+    expect(text).toContain("flow.stream.reset")
+    expect(text.match(/permission\.v2\.asked/g)).toHaveLength(1)
+    expect(text).toContain('"id":"r2"')
+    expect(text).not.toContain('"id":"r1"')
+    expect(text.match(/question\.v2\.asked/g)).toHaveLength(1)
+    await reader.cancel()
+  })
+
   test.skipIf(process.platform === "win32")("end to end over a real socket: events from a session reach an SSE client, and aborting it is clean", async () => {
     const server = Bun.serve({ port: 0, fetch: async (request) => (await engine.handle(request)) ?? new Response("not ours", { status: 404 }) })
     const origin = `http://127.0.0.1:${server.port}`

@@ -377,8 +377,9 @@ export async function sessionSteps(sessionID: string): Promise<WireStep[]> {
 
 /**
  * Subscribes to the event stream. Resolves when the stream ends or the signal
- * aborts; a dropped connection rejects instead of reconnecting, because there
- * is no replay and the engine re-reads authoritative state itself after a gap.
+ * aborts; a dropped connection rejects. One call is one connection: the engine
+ * re-subscribes (`keepSubscribed`) and the host replays pending requests to each
+ * new subscriber, so nothing here retries.
  *
  * SSE framing: events are `data:` lines ended by a blank line, `:` lines are
  * keep-alive comments, and any of CRLF / LF / CR ends a line — including when a

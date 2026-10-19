@@ -94,6 +94,8 @@ export interface SessionHost {
   active(): string[]
   list(limit: number): Promise<SessionRow[]>
   live(): number
+  /** The `permission.v2.asked` and `question.v2.asked` events of every dialog still waiting for an answer, as first raised: replayed to an event stream that attaches later. */
+  pending(): BusEvent[]
   /** One tick: poll swarm trackers, reap idle sessions. Runs on a timer; exposed so tests need no clock. */
   maintain(now?: number): Promise<void>
   /** Closes every process and stops the timer. */
@@ -104,6 +106,16 @@ export interface SessionHost {
 export const SESSION_SUBDIR = "session"
 
 const META_FILE = ".openflow-session.json"
+/** The conversation as the Sessions panel shows it, next to the metadata: what a finished session answers `turns` from once its process is gone. */
+const TURNS_FILE = ".openflow-turns.json"
+/** The newest turns a session keeps on disk, each clipped, so the file stays small however long the conversation ran. */
+const SAVED_TURNS = 200
+const SAVED_TURN_TEXT = 32 * 1024
+/** A turns file larger than this is not read: it was not written by this host. */
+const TURNS_FILE_LIMIT = 16 * 1024 * 1024
+/** Run and node directories looked at when a persisted session is searched by id or listed. */
+const SCAN_RUNS = 2_000
+const SCAN_NODES = 4_000
 const DEFAULT_IDLE_REAP_MS = 30 * 60_000
 const DEFAULT_TICK_MS = 5_000
 const DEFAULT_WAIT_MS = 30 * 60_000
@@ -170,6 +182,16 @@ type Session = {
   /** The process of a start still in flight, so teardown can stop it before it is attached. */
   spawning?: OmpProcess
   promptCount: number
+  /** Directory ids the session's files were first written under: an adopted session keeps them in its metadata when it works for a newer run. */
+  home: { runId: string; nodeId: string }
+  /** A process has been attached at least once (or the session came from disk): there is a conversation worth saving. */
+  opened: boolean
+  /** The turns on disk when a session was adopted: they precede what streams through this host until the store has paged the whole history in. */
+  base?: Turn[]
+  /** Start-up notices held until the browser knows this session's id (its first accepted prompt). */
+  held: BusEvent[]
+  /** The latest metadata write: writes of one session are chained so an older snapshot never lands after a newer one. */
+  saving?: Promise<void>
 }
 
 function bad(message: string): HttpError {
@@ -318,6 +340,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   const idleReapMs = deps.idleReapMs ?? DEFAULT_IDLE_REAP_MS
   const maxLive = deps.maxLive ?? DEFAULT_MAX_LIVE
   const env = () => deps.env ?? process.env
+  /** Set by `close()`: from then on nothing starts, whichever await a create or a resume is parked in. */
+  let closing = false
 
   function busy(session: Session): boolean {
     return session.last !== undefined && !(session.last.result && session.settled)
@@ -339,12 +363,33 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     }
   }
 
+  /** The conversation: an adopted session's earlier turns (until the store paged the whole history in), then what streamed through this host. */
+  function currentTurns(session: Session, max: number): Turn[] {
+    const live = session.store.turns(max)
+    return session.base && !session.store.loaded() ? [...session.base, ...live].slice(-max) : live
+  }
+
+  /** The conversation as it is kept on disk: the newest turns, each clipped. */
+  function savedTurns(session: Session): Turn[] {
+    return currentTurns(session, SAVED_TURNS).map((turn) => ({ role: turn.role, text: capText(turn.text, SAVED_TURN_TEXT).text }))
+  }
+
   async function writeMeta(session: Session) {
     await fs.mkdir(session.stateDir, { recursive: true, mode: 0o700 })
+    // The turns first: a listed session always has the history it is opened with. Written aside and renamed, so a reader never sees half a file.
+    const turnsFile = path.join(session.stateDir, TURNS_FILE)
+    const temp = `${turnsFile}.${randomBytes(4).toString("hex")}.tmp`
+    try {
+      await fs.writeFile(temp, JSON.stringify(savedTurns(session)), { mode: 0o600 })
+      await fs.rename(temp, turnsFile)
+    } catch (error) {
+      await fs.rm(temp, { force: true }).catch(() => undefined)
+      throw error
+    }
     const meta: Meta = {
       id: session.id,
-      runId: session.request.runId,
-      nodeId: session.request.nodeId,
+      runId: session.home.runId,
+      nodeId: session.home.nodeId,
       key: session.request.card.key,
       model: session.request.model,
       title: session.title,
@@ -354,12 +399,39 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     await fs.writeFile(path.join(session.stateDir, META_FILE), JSON.stringify(meta), { mode: 0o600 })
   }
 
-  /** Listing and resume metadata only: a failed write costs a fresh session on reuse, never a failed turn. */
+  /** Listing, resume and history metadata only: a failed write costs a fresh session on reuse, never a failed turn. */
   function saveMeta(session: Session) {
-    const write: Promise<void> = writeMeta(session)
+    const write: Promise<void> = (session.saving ?? Promise.resolve())
+      .then(() => writeMeta(session))
       .catch(() => undefined)
-      .finally(() => writes.delete(write))
+      .finally(() => {
+        writes.delete(write)
+        if (session.saving === write) session.saving = undefined
+      })
+    session.saving = write
     writes.add(write)
+  }
+
+  /** The turns file of a session directory: undefined when it is missing, too large or not what this host writes. */
+  async function readTurns(dir: string): Promise<Turn[] | undefined> {
+    const file = path.join(dir, TURNS_FILE)
+    const stat = await fs.stat(file).catch(() => undefined)
+    if (!stat?.isFile() || stat.size > TURNS_FILE_LIMIT) return undefined
+    const text = await fs.readFile(file, "utf8").catch(() => undefined)
+    if (text === undefined) return undefined
+    try {
+      const raw: unknown = JSON.parse(text)
+      if (!Array.isArray(raw)) return undefined
+      const turns: Turn[] = []
+      for (const entry of raw) {
+        const turn = asRecord(entry)
+        const body = asString(turn?.text)
+        if ((turn?.role === "user" || turn?.role === "assistant") && body !== undefined) turns.push({ role: turn.role, text: body })
+      }
+      return turns
+    } catch {
+      return undefined
+    }
   }
 
   async function readMeta(dir: string): Promise<Meta | undefined> {
@@ -432,6 +504,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     // Closed on purpose (reaped, disposed, replaced): not a loss.
     if (session.generation !== generation || session.state !== "live") return
     session.state = "lost"
+    saveMeta(session)
     session.proc = undefined
     session.unsubscribe?.()
     session.ui.cancelAll()
@@ -538,25 +611,21 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     session.spawning = undefined
     session.proc = proc
     session.state = "live"
+    session.opened = true
     session.resumed = resume
     session.last = undefined
     session.issued.clear()
     session.settled = true
     session.lastActivity = Date.now()
     void proc.exited.then((exit) => onExit(session, generation, exit))
-    // A resumed start has said this already: the notes are about the card, not the process.
-    if (!resume)
-      for (const note of describeLaunch(input).notes)
-        options.emit({ type: "flow.notice", data: { sessionID: session.id, level: "info", message: capText(stripControl(note), NOTICE_LIMIT).text } })
+    // The browser learns the session id from the create response, after this returns, and drops a notice for an id it does not know: the
+    // notices wait for the first accepted prompt. A resumed start has said the card's notes already; they are about the card, not the process.
+    const notices = resume ? [] : describeLaunch(input).notes.map((note) => capText(stripControl(note), NOTICE_LIMIT).text)
     if (swarm && mode !== "off" && swarm.effective === "off" && swarm.preflight.problems.length)
-      options.emit({
-        type: "flow.notice",
-        data: {
-          sessionID: session.id,
-          level: "info",
-          message: `swarm is off for this card: ${swarm.preflight.problems.map((problem) => (problem.fix ? `${problem.message} ${problem.fix}` : problem.message)).join(" ")}`,
-        },
-      })
+      notices.push(`swarm is off for this card: ${swarm.preflight.problems.map((problem) => (problem.fix ? `${problem.message} ${problem.fix}` : problem.message)).join(" ")}`)
+    for (const message of notices)
+      if (!session.held.some((held) => held.data?.message === message))
+        session.held.push({ type: "flow.notice", data: { sessionID: session.id, level: "info", message } })
   }
 
   function makeSession(id: string, request: CreateRequest, stateDir: string): Session {
@@ -580,6 +649,9 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
       created: Date.now(),
       resumed: false,
       promptCount: 0,
+      home: { runId: request.runId, nodeId: request.nodeId },
+      opened: false,
+      held: [],
     }
   }
 
@@ -587,6 +659,9 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   async function stop(session: Session, state: Session["state"]) {
     // A session that is still starting has no `proc` yet: its spawning process is the one to close.
     const proc = session.proc ?? session.spawning
+    // What a person can still read of this conversation once the process is gone; a start that never became live has none.
+    if (session.opened) saveMeta(session)
+    if (state === "disposed") session.held = []
     session.state = state
     // Whatever start is in flight sees the change after its current await and winds itself down.
     session.generation++
@@ -604,6 +679,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
 
   /** Spawns the process of an idle, lost or new session; every caller during one start shares its flight. */
   function begin(session: Session, resume: boolean): Promise<void> {
+    if (closing) return Promise.reject(hostClosed())
     session.starting ??= start(session, resume).finally(() => {
       session.starting = undefined
     })
@@ -634,17 +710,44 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     await session.store.loadHistory(session.proc).catch(() => false)
   }
 
-  /** The session `request.reuse` names: the one in memory, else the one the metadata on disk describes. */
+  /** Where a persisted session lives: the directory `hint` when it holds it, else the first one under the state root (any run) whose metadata names it. Bounded, so a huge state root costs a miss, not a stall. */
+  async function locate(id: string, hint?: string): Promise<{ meta: Meta; dir: string } | undefined> {
+    if (hint) {
+      const meta = await readMeta(hint)
+      if (meta?.id === id) return { meta, dir: hint }
+    }
+    let match: { meta: Meta; dir: string } | undefined
+    await scan((found) => {
+      if (found.meta.id === id) match = found
+      return match !== undefined
+    })
+    return match
+  }
+
+  /**
+   * The session `request.reuse` names: the one in memory, else the one the metadata on disk describes. It may have been written under another run (Resume after a stop or a restart
+   * comes with a new run id): the session works from the directory its files are in, which is where omp's `--session-dir` points, and for the new run's id.
+   */
   async function adopt(request: CreateRequest, stateDir: string): Promise<Session> {
     const id = request.reuse as string
-    const meta = await readMeta(stateDir)
+    const found = await locate(id, stateDir)
+    if (!found) throw notFound(id)
+    const base = (await readTurns(found.dir)) ?? []
+    // Read again right before registering: the run may have been pruned while the history was read.
+    const meta = await readMeta(found.dir)
     if (!meta || meta.id !== id) throw notFound(id)
+    // Nothing below awaits: the checks and the registration are one step, so a prune that claims the run afterwards finds the session holding it.
+    if (closing) throw hostClosed()
     // A concurrent reuse of the same id may have registered it while the metadata was read: one session, one process.
     const known = sessions.get(id)
     if (known) return known
-    const session = makeSession(id, request, stateDir)
+    if (prunes.has(path.basename(path.dirname(found.dir)))) throw notFound(id)
+    const session = makeSession(id, request, found.dir)
+    session.home = { runId: meta.runId || request.runId, nodeId: meta.nodeId || request.nodeId }
     session.created = meta.created || session.created
     session.title = meta.title
+    session.base = base
+    session.opened = true
     sessions.set(id, session)
     return session
   }
@@ -671,6 +774,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   }
 
   async function reuse(request: CreateRequest, stateDir: string, signal?: AbortSignal): Promise<{ id: string }> {
+    if (closing) throw hostClosed()
     const id = request.reuse as string
     const known = sessions.get(id)
     const session = known ?? (await adopt(request, stateDir))
@@ -711,29 +815,38 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     }
   }
 
-  async function persisted(): Promise<Meta[]> {
+  type Found = { meta: Meta; dir: string }
+
+  /** Every persisted session directory under the state root (any run), in directory order and bounded; `visit` returns true to stop. */
+  async function scan(visit: (found: Found) => boolean): Promise<void> {
     const root = deps.stateRoot()
-    const found: Meta[] = []
+    let nodes = 0
     const runs = await fs.readdir(root).catch(() => [] as string[])
-    for (const run of runs) {
-      const nodes = await fs.readdir(path.join(root, run)).catch(() => [] as string[])
-      for (const node of nodes) {
-        const meta = await readMeta(path.join(root, run, node))
-        if (meta) found.push(meta)
+    for (const run of runs.slice(0, SCAN_RUNS)) {
+      for (const node of await fs.readdir(path.join(root, run)).catch(() => [] as string[])) {
+        if (++nodes > SCAN_NODES) return
+        const dir = path.join(root, run, node)
+        const meta = await readMeta(dir)
+        if (meta && visit({ meta, dir })) return
       }
     }
-    return found
+  }
+
+  function hostClosed(): HttpError {
+    return new HttpError(409, "the engine host is shutting down", "session-closed")
   }
 
   async function launch(request: CreateRequest, stateDir: string, signal?: AbortSignal): Promise<{ id: string }> {
     if (request.reuse) return reuse(request, stateDir, signal)
     await fs.mkdir(stateDir, { recursive: true, mode: 0o700 })
+    if (closing) throw hostClosed()
     // One card, one session at a time: a replaced critic session must not still hold the session directory.
     for (const other of [...sessions.values()]) {
       if (other.request.runId !== request.runId || other.request.nodeId !== request.nodeId) continue
       sessions.delete(other.id)
       await stop(other, "disposed")
     }
+    if (closing) throw hostClosed()
     // Registered before it starts, with no await in between, so releaseRun, dispose and close see it and the limit counts it.
     const session = makeSession(`s_${randomBytes(6).toString("hex")}`, request, stateDir)
     sessions.set(session.id, session)
@@ -746,15 +859,22 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   }
 
   function holds(runDir: string): boolean {
-    return claims.has(runDir) || [...sessions.values()].some((session) => session.state !== "disposed" && safeSegment(session.request.runId) === runDir)
+    // An adopted session works for a newer run but lives in the directory of the run that wrote it: both are in use.
+    return (
+      claims.has(runDir) ||
+      [...sessions.values()].some((session) => session.state !== "disposed" && (safeSegment(session.request.runId) === runDir || path.basename(path.dirname(session.stateDir)) === runDir))
+    )
   }
 
   return {
     async create(body, signal) {
+      if (closing) throw hostClosed()
       const request = await parseCreate(body, deps.project())
+      if (closing) throw hostClosed()
       const runDir = safeSegment(request.runId)
       // A prune removing this run's directory finishes first: this create starts fresh, never into files being deleted.
       while (prunes.has(runDir)) await prunes.get(runDir)?.promise
+      if (closing) throw hostClosed()
       signal?.throwIfAborted()
       claims.set(runDir, (claims.get(runDir) ?? 0) + 1)
       try {
@@ -798,6 +918,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
             { timeoutMs: ADMISSION_TIMEOUT_MS },
           ),
         )
+        // The browser knows the session id by now: what the start had to say goes out, once.
+        for (const event of session.held.splice(0)) options.emit(event)
         // A local slash command: no agent turn, no `prompt_result` will follow.
         if (data?.agentInvoked === false && session.last?.id === commandId) {
           session.last.result ??= { status: "completed" }
@@ -876,9 +998,16 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     },
 
     async turns(id, limit) {
-      const session = find(id)
+      const session = sessions.get(id)
+      if (!session || session.state === "disposed") {
+        // A session this host no longer holds (finished, released, or from before a restart): its saved conversation, read from its directory. No process is started for it.
+        const found = await locate(id)
+        const saved = found ? await readTurns(found.dir) : undefined
+        if (!saved) throw notFound(id)
+        return saved.slice(-limit)
+      }
       await withHistory(session)
-      return session.store.turns(limit)
+      return currentTurns(session, limit)
     },
 
     async final(id) {
@@ -908,8 +1037,18 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     async list(limit) {
       const rows = [...sessions.values()].filter((session) => session.state !== "disposed").map(ofRow)
       const known = new Set(rows.map((row) => row.id))
-      for (const meta of await persisted()) {
-        if (known.has(meta.id)) continue
+      const found: Found[] = []
+      await scan((candidate) => {
+        if (!known.has(candidate.meta.id)) found.push(candidate)
+        return false
+      })
+      // Newest first, and only sessions whose history can be opened: a row that answers 404 when clicked is not a row.
+      found.sort((a, b) => b.meta.updated - a.meta.updated)
+      const target = rows.length + limit
+      for (const { meta, dir } of found) {
+        if (rows.length >= target) break
+        if (known.has(meta.id) || !(await fs.stat(path.join(dir, TURNS_FILE)).then((stat) => stat.isFile(), () => false))) continue
+        known.add(meta.id)
         rows.push({ id: meta.id, title: meta.title ?? meta.key, agent: meta.key, model: meta.model, created: meta.created, updated: meta.updated })
       }
       return rows.sort((a, b) => b.updated - a.updated).slice(0, limit)
@@ -919,9 +1058,14 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
       return [...sessions.values()].filter((session) => session.state === "live").length
     },
 
+    pending() {
+      return [...sessions.values()].flatMap((session) => (session.state === "disposed" ? [] : session.ui.asked()))
+    },
+
     maintain,
 
     async close() {
+      closing = true
       clearInterval(timer)
       const all = [...sessions.values()]
       sessions.clear()

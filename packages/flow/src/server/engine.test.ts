@@ -93,6 +93,8 @@ type HarnessOptions = {
   createStopsOnAbort?: boolean
   /** Makes every permission and question reply fail, with this HTTP status when given. */
   replyFails?: { status?: number }
+  /** Session ids the host can no longer re-attach: a `reuse` naming one fails like a 404. */
+  missingSessions?: string[]
   /** Subset of `models` that accepts image input. */
   vision?: string[]
   /** Price rows per "providerID/id", as the catalog would report them. */
@@ -185,6 +187,8 @@ function harness(options: HarnessOptions = {}) {
   let created = 0
   let inflight = 0
   let peak = 0
+  let subscriptions = 0
+  let endStream: (error: Error) => void = () => {}
 
   for (const [id, spec] of Object.entries(behavior)) if (spec.hold) gates.set(id, deferred())
 
@@ -197,14 +201,17 @@ function harness(options: HarnessOptions = {}) {
 
   const api: EngineApi = {
     async subscribe(onEvent, signal) {
+      subscriptions++
       deliver = onEvent
-      await new Promise<void>((resolve) => {
-        if (signal.aborted) return resolve()
-        signal.addEventListener("abort", () => resolve(), { once: true })
-      })
+      const ended = Promise.withResolvers<void>()
+      endStream = ended.reject
+      if (signal.aborted) return
+      signal.addEventListener("abort", () => ended.resolve(), { once: true })
+      await ended.promise
     },
     async createSession(input: CreateSession, signal?: AbortSignal) {
       creations.push(input)
+      if (input.reuse && options.missingSessions?.includes(input.reuse)) throw Object.assign(new Error("session not found"), { status: 404 })
       createSignals.push(signal)
       const abandoned = Promise.withResolvers<never>()
       if (options.createStopsOnAbort) signal?.addEventListener("abort", () => abandoned.reject(signal.reason), { once: true })
@@ -468,6 +475,13 @@ function harness(options: HarnessOptions = {}) {
     created: () => created,
     release(id: string) {
       gates.get(id)?.resolve()
+    },
+    /** How many times the engine has attached to the event stream. */
+    subscriptions: () => subscriptions,
+    /** Ends the stream the engine is attached to the way a closed connection does; events delivered after this go nowhere until it re-attaches. */
+    dropStream() {
+      deliver = () => {}
+      endStream(new Error("the event stream closed"))
     },
     /** Pushes an event onto the bus the engine subscribed to. */
     emit(event: BusEvent) {
@@ -1076,6 +1090,116 @@ describe("permissions", () => {
   })
 })
 
+describe("the event stream", () => {
+  const retry = { base: 1, cap: 2 }
+
+  test("a stream that drops mid-run is re-attached, and a replayed ask is answered once", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"), "go", { streamRetry: retry })
+    await flush()
+    expect(h.subscriptions()).toBe(1)
+    h.ask("a", { id: "req-1", action: "read" })
+    await flush()
+
+    h.dropStream()
+    await flush()
+    expect(h.subscriptions()).toBe(2)
+    // The host replays what is still pending to the new subscriber, answered ask included, and a new one.
+    h.ask("a", { id: "req-1", action: "read" })
+    h.ask("a", { id: "req-2", action: "read" })
+    await flush()
+
+    expect(h.replies.map((reply) => reply.requestID)).toEqual(["req-1", "req-2"])
+    h.release("a")
+    await run.done
+  })
+
+  test("a question replayed to the new subscriber is shown once", async () => {
+    const asked: string[] = []
+    const h = harness({
+      behavior: { a: { hold: true } },
+      onQuestion: async (request) => {
+        asked.push(request.requestID)
+        return [["yes"]]
+      },
+    })
+    const run = h.run(pipeline("a"), "go", { streamRetry: retry })
+    await flush()
+    const question = { id: "q-1", questions: [{ question: "Ship it?", header: "Ship", options: [{ label: "yes", description: "" }] }] }
+    h.question("a", question)
+    await flush()
+
+    h.dropStream()
+    await flush()
+    h.question("a", question)
+    await flush()
+
+    expect(asked).toEqual(["q-1"])
+    h.release("a")
+    await run.done
+  })
+
+  test("a stream that drops again and again is re-attached every time", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"), "go", { streamRetry: retry })
+    await flush()
+    for (let drop = 0; drop < 3; drop++) {
+      h.dropStream()
+      await flush()
+    }
+
+    expect(h.subscriptions()).toBe(4)
+    h.release("a")
+    await run.done
+  })
+
+  test("a stop ends the stream for good: nothing re-attaches", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"), "go", { streamRetry: retry })
+    await flush()
+
+    await run.stop()
+    h.dropStream()
+    await flush()
+    h.release("a")
+    await run.done
+    await flush()
+
+    expect(h.subscriptions()).toBe(1)
+  })
+
+  test("a finished run does not re-attach", async () => {
+    const h = harness()
+    await h.run(pipeline("a"), "go", { streamRetry: retry }).done
+    await flush()
+
+    expect(h.subscriptions()).toBe(1)
+  })
+
+  test("a reset from the host re-reads usage the bus missed", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.model = "openai/gpt-x"
+    const h = harness({
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+      behavior: { a: { hold: true } },
+      steps: {
+        a: [{ messageID: "m1", model: "openai/gpt-x", tokens: { input: 1_000, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 } }],
+      },
+    })
+    const run = h.run(graph, "go", { streamRetry: retry })
+    await flush()
+    expect(run.log.usage?.steps ?? 0).toBe(0)
+
+    h.emit({ type: "flow.stream.reset" })
+    await flush()
+
+    expect(run.log.usage?.steps).toBe(1)
+    h.release("a")
+    await run.done
+  })
+})
+
 describe("run log", () => {
   test("is saved once, with timings and the run status", async () => {
     // A run this short finishes well inside the checkpoint interval, so the
@@ -1541,6 +1665,18 @@ describe("resume", () => {
     expect(h.creations.map((creation) => creation.reuse)).toEqual(["s-from-before"])
     expect(h.prompts.get("a")).toContain("The run was interrupted, and is being continued")
     expect(log.status).toBe("done")
+  })
+
+  test("a carried session the host no longer has starts the card fresh, once", async () => {
+    // A pruned or never-persisted session answers every re-attach with the same
+    // 404. The card has to give the id up and open a new session, not resend it.
+    const h = harness({ missingSessions: ["s-pruned"] })
+
+    const log = await h.run(pipeline("a"), "do the thing", { sessions: { a: "s-pruned" }, rateLimitBackoff: 1 }).done
+
+    expect(h.creations.map((creation) => creation.reuse)).toEqual(["s-pruned", undefined])
+    expect(log.status).toBe("done")
+    expect(log.nodes[0].sessionID).toBe("s1")
   })
 
   test("a card is told it was interrupted once, not on every later turn", async () => {

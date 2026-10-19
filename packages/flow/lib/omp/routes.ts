@@ -29,7 +29,12 @@ const MAX_LIMIT = 1000
 
 /* --------------------------------------------------------------------- bus */
 
-export type EventBusOptions = { pingMs?: number; maxQueueBytes?: number }
+export type EventBusOptions = {
+  pingMs?: number
+  maxQueueBytes?: number
+  /** Events a subscriber missed that must not be lost (the dialogs still waiting for an answer): sent to each new subscriber, and only to it, when it attaches. */
+  replay?(): BusEvent[]
+}
 
 export interface EventBus {
   /** Every session's events go to every subscriber. */
@@ -47,6 +52,8 @@ export function createEventBus(options: EventBusOptions = {}): EventBus {
   const maxQueueBytes = options.maxQueueBytes ?? MAX_QUEUE_BYTES
   const clients = new Set<ReadableStreamDefaultController<Uint8Array>>()
   let pinger: ReturnType<typeof setInterval> | undefined
+  /** A subscriber was dropped for falling behind: whoever attaches next may have missed events and is told so. */
+  let dropped = false
 
   function drop(controller: ReadableStreamDefaultController<Uint8Array>) {
     if (!clients.delete(controller)) return
@@ -66,10 +73,14 @@ export function createEventBus(options: EventBusOptions = {}): EventBus {
       try {
         controller.enqueue(chunk)
       } catch {
+        dropped = true
         drop(controller)
         continue
       }
-      if (controller.desiredSize !== null && controller.desiredSize < 0) drop(controller)
+      if (controller.desiredSize !== null && controller.desiredSize < 0) {
+        dropped = true
+        drop(controller)
+      }
     }
   }
 
@@ -88,6 +99,8 @@ export function createEventBus(options: EventBusOptions = {}): EventBus {
             clients.add(controller)
             // Flushes the headers: a fetch does not resolve until the first byte.
             controller.enqueue(encoder.encode(": connected\n\n"))
+            if (dropped) controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "flow.stream.reset" })}\n\n`))
+            for (const event of options.replay?.() ?? []) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`))
             pinger ??= setInterval(() => send(encoder.encode(": ping\n\n")), pingMs)
             pinger.unref?.()
           },

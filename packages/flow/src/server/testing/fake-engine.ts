@@ -166,7 +166,7 @@ type Run = {
   release: PromiseWithResolvers<void>
 }
 
-type Open = { kind: "permission" | "question"; settle(decision: Decision): void; count: number }
+type Open = { kind: "permission" | "question"; settle(decision: Decision): void; count: number; asked: BusEvent }
 
 type Waiter = { resolve(result: WaitResult): void }
 
@@ -204,6 +204,8 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
     sequence: number
     fallback: TurnScript
     closed: boolean
+    /** A stream was dropped since a subscriber last attached. */
+    dropped: boolean
     /** The startup `driver.holdStartup` is holding: creates wait on `open` and announce themselves on `reached`. */
     hold?: { reached: PromiseWithResolvers<void>; open: PromiseWithResolvers<void> }
   } = {
@@ -211,6 +213,7 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
     sequence: 0,
     fallback: { steps: [{ text: options.answer ?? "done" }] },
     closed: false,
+    dropped: false,
   }
 
   /** Logical time: every reading is later than the last, so ordering never depends on how fast a test runs. */
@@ -299,24 +302,27 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
 
   async function ask(session: Session, run: Run, request: PermissionAsk | QuestionAsk) {
     const answered = Promise.withResolvers<void>()
+    const asked: BusEvent =
+      request.kind === "permission"
+        ? { type: "permission.v2.asked", data: { id: request.id, sessionID: session.id, action: request.action, resources: [request.resource] } }
+        : {
+            type: "question.v2.asked",
+            data: {
+              id: request.id,
+              sessionID: session.id,
+              questions: [{ question: request.question, header: request.header, options: request.options.map((label) => ({ label, description: "" })), multiple: false, custom: true }],
+            },
+          }
     session.open.set(request.id, {
       kind: request.kind,
       count: request.kind === "question" ? 1 : 0,
+      asked,
       settle(decision) {
         decisions.set(request.id, decision)
         answered.resolve()
       },
     })
-    if (request.kind === "permission") {
-      emit("permission.v2.asked", { id: request.id, sessionID: session.id, action: request.action, resources: [request.resource] })
-    }
-    if (request.kind === "question") {
-      emit("question.v2.asked", {
-        id: request.id,
-        sessionID: session.id,
-        questions: [{ question: request.question, header: request.header, options: request.options.map((label) => ({ label, description: "" })), multiple: false, custom: true }],
-      })
-    }
+    emit(asked.type, asked.data ?? {})
     await Promise.race([answered.promise, run.stop.promise])
   }
 
@@ -499,6 +505,7 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
       return [...sessions.keys()]
     },
     dropStreams(error = new Error("the event stream was dropped")) {
+      state.dropped = true
       for (const subscriber of [...subscribers]) {
         subscribers.delete(subscriber)
         subscriber.end.reject(error)
@@ -528,6 +535,12 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
       if (signal.aborted || state.closed) return
       const subscriber = { onEvent, end: Promise.withResolvers<void>() }
       subscribers.add(subscriber)
+      // What the host does for a subscriber that attaches after a drop: says events were lost, then replays the requests still waiting.
+      if (state.dropped) {
+        state.dropped = false
+        onEvent({ type: "flow.stream.reset" })
+      }
+      for (const session of sessions.values()) for (const entry of session.open.values()) onEvent(entry.asked)
       signal.addEventListener(
         "abort",
         () => {

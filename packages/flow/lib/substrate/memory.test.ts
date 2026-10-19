@@ -6,7 +6,7 @@ import { DEFAULT_OMP_SETTINGS } from "../../shared/omp"
 import type { OmpSettings } from "../../shared/omp"
 import type { MemoryReadRequest, MemoryWriteRequest } from "../../shared/memory"
 import { createSubstrate, type SubstrateModule } from "./index"
-import { MEMORY_ROUTES } from "../../shared/memory"
+import { MEMORY_ROUTES, memorySubject, memorySubjectPrefix } from "../../shared/memory"
 import { parseRemoteSlug } from "./memory"
 import type { FakeCall, FakeSubstrate } from "./fake-substrate.test-support"
 import { startFakeSubstrate } from "./fake-substrate.test-support"
@@ -525,7 +525,7 @@ describe("Substrate down", () => {
     expect(result.status).toBe("unavailable")
     expect(result.error).toContain("no retraction marker")
     const file = JSON.parse(await readFile(join(dir, "state", "memory-ignore.json"), "utf8")) as { cutoffs: Record<string, number> }
-    expect(Object.keys(file.cutoffs)).toEqual(["openflow/demo/run-a/"])
+    expect(Object.keys(file.cutoffs)).toEqual(["repo:acme/widgets|openflow/demo/run-a/"])
   })
 
   test("status says unreachable", async () => {
@@ -721,5 +721,101 @@ describe("where the token goes", () => {
     const stranger = make({ fetch: other.fetcher, env: { SUBSTRATE_URL: "http://elsewhere.example:8080" } })
     expect((await stranger.read(request)).status).toBe("unavailable")
     expect(other.seen).toEqual([])
+  })
+})
+
+describe("forget is scoped to the repository", () => {
+  const useRepo = (repo: string) => {
+    settings = { ...settings, memory: { ...settings.memory, repo } }
+  }
+
+  test("forgetting a pipeline in one repository does not hide the same pipeline name in another", async () => {
+    useRepo("Acme/Widgets")
+    await substrate.write(write("run-a", "x", "widgets outcome"))
+    useRepo("Acme/Gadgets")
+    await substrate.write(write("run-b", "y", "gadgets outcome"))
+
+    useRepo("Acme/Widgets")
+    expect(await substrate.forget({ pipeline: "demo" })).toEqual({ status: "retracted", retracted: 1 })
+    expect((await substrate.read(read("run-c", "z"))).status).toBe("empty")
+
+    useRepo("Acme/Gadgets")
+    const gadgets = await substrate.read(read("run-c", "z"))
+    expect(gadgets.items.map((item) => item.subject)).toEqual(["openflow/demo/run-b/y"])
+    const listing = await substrate.handle(new Request(`http://host${MEMORY_ROUTES.entries}?pipeline=demo`))
+    const entries = (await listing?.json()) as { items: Array<{ subject: string; retracted: boolean }> }
+    expect(entries.items.map((item) => [item.subject, item.retracted])).toEqual([["openflow/demo/run-b/y", false]])
+  })
+
+  test("the same pipeline forgotten in two repositories keeps one cutoff per repository", async () => {
+    useRepo("Acme/Widgets")
+    await substrate.write(write("run-a", "x", "widgets outcome"))
+    await substrate.forget({ pipeline: "demo" })
+    useRepo("Acme/Gadgets")
+    await substrate.write(write("run-b", "y", "gadgets outcome"))
+    await substrate.forget({ pipeline: "demo" })
+    const saved = JSON.parse(await readFile(join(dir, "state", "memory-ignore.json"), "utf8")) as { cutoffs: Record<string, number> }
+    expect(Object.keys(saved.cutoffs).sort()).toEqual(["repo:acme/gadgets|openflow/demo/", "repo:acme/widgets|openflow/demo/"])
+  })
+
+  test("a cutoff file written before keys were scoped still loads and hides nothing in any repository", async () => {
+    await substrate.write(write("run-a", "x", "kept outcome"))
+    await mkdir(join(dir, "state"), { recursive: true })
+    await writeFile(join(dir, "state", "memory-ignore.json"), JSON.stringify({ version: 1, cutoffs: { "openflow/demo/": 9_999_999_999_999 } }))
+    const result = await substrate.read(read("run-b", "y"))
+    expect(result.items.map((item) => item.subject)).toEqual(["openflow/demo/run-a/x"])
+
+    await substrate.forget({ pipeline: "demo", runId: "run-a" })
+    const saved = JSON.parse(await readFile(join(dir, "state", "memory-ignore.json"), "utf8")) as { cutoffs: Record<string, number> }
+    expect(Object.keys(saved.cutoffs).sort()).toEqual(["openflow/demo/", "repo:acme/widgets|openflow/demo/run-a/"])
+  })
+})
+
+describe("long names keep their memory keys intact", () => {
+  const head = "p".repeat(150)
+  // Under the 200 characters the routes accept, and still far past the 64 a subject keeps.
+  const longA = `${head}-alpha-${"a".repeat(30)}`
+  const longB = `${head}-bravo-${"b".repeat(30)}`
+
+  test("a very long pipeline name keeps run and card in the subject through write, entries and forget", async () => {
+    const stored = await substrate.write(write("run-a", "card-1", "long outcome", { pipeline: longA }))
+    expect(stored.status).toBe("stored")
+    expect(stored.subject!.length).toBeLessThanOrEqual(190)
+    expect(stored.subject!.endsWith("/run-a/card-1")).toBe(true)
+
+    const redispatched = await substrate.write(write("run-a", "card-1", "second answer", { pipeline: longA, dispatch: 2 }))
+    expect(redispatched.subject!.endsWith("/run-a/card-1-d2")).toBe(true)
+
+    const listing = await substrate.handle(new Request(`http://host${MEMORY_ROUTES.entries}?pipeline=${encodeURIComponent(longA)}&run=run-a`))
+    const entries = (await listing?.json()) as { items: Array<{ subject: string; run?: string; card?: string; retracted: boolean }> }
+    expect(entries.items.map((item) => [item.run, item.card]).sort()).toEqual([
+      ["run-a", "card-1"],
+      ["run-a", "card-1-d2"],
+    ])
+
+    expect(await substrate.forget({ pipeline: longA, runId: "run-a" })).toEqual({ status: "retracted", retracted: 2 })
+    const markers = fake.entries.filter((entry) => entry.subject.endsWith("/retracted"))
+    expect(markers.map((entry) => entry.subject).sort()).toEqual([`${stored.subject}/retracted`, `${redispatched.subject}/retracted`].sort())
+    expect(markers.every((entry) => entry.subject.length <= 200)).toBe(true)
+    expect((await substrate.read(read("run-b", "y", { pipeline: longA }))).status).toBe("empty")
+  })
+
+  test("two long names that share their first 150 characters get different prefixes and stay apart", async () => {
+    expect(memorySubjectPrefix(longA)).not.toBe(memorySubjectPrefix(longB))
+    const a = await substrate.write(write("run-a", "x", "alpha outcome", { pipeline: longA }))
+    const b = await substrate.write(write("run-b", "x", "bravo outcome", { pipeline: longB }))
+    expect(a.subject).not.toBe(b.subject)
+
+    await substrate.forget({ pipeline: longA })
+    const survivor = await substrate.read(read("run-b", "y", { pipeline: longB }))
+    expect(survivor.items.map((item) => item.subject)).toEqual([b.subject!])
+    expect((await substrate.read(read("run-b", "y", { pipeline: longA }))).status).toBe("empty")
+  })
+
+  test("short subjects are unchanged", () => {
+    expect(memorySubject("Demo Flow", "run-a", "Card One")).toBe("openflow/demo-flow/run-a/card-one")
+    expect(memorySubject("demo", "run-a", "x", 3)).toBe("openflow/demo/run-a/x-d3")
+    expect(memorySubjectPrefix("demo")).toBe("openflow/demo/")
+    expect(memorySubjectPrefix("demo", "run-a")).toBe("openflow/demo/run-a/")
   })
 })

@@ -441,6 +441,25 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
       expect(statusOf(await rejection(ctx.api.replyQuestion(id, request, [["sqlite"]])))).toBe(404)
     })
 
+    scenario("a request still waiting is shown again to a stream that attaches later, and not once it is answered", async (ctx) => {
+      // A stream that dropped and re-attached missed the ask; the engine's only way to learn of it is the replay.
+      const first = await ctx.listen()
+      const request = `${ctx.run}-replay`
+      await ctx.driver.script({ steps: [{ text: "done", ask: { kind: "permission", id: request, action: "bash", resource: "command: ls" } }] })
+      const id = await ctx.open("replay", { permissions: "manual" })
+      await ctx.api.prompt(id, "go")
+      await first.waitFor((event) => event.type === "permission.v2.asked" && event.data?.id === request)
+
+      const second = await ctx.listen()
+      const [replayed] = await second.waitFor((event) => event.type === "permission.v2.asked" && event.data?.id === request)
+      expect(replayed?.data).toMatchObject({ sessionID: id, id: request, action: "bash" })
+
+      await ctx.api.replyPermission(id, request, "once")
+      await ctx.api.waitForIdle(id)
+      const third = await ctx.listen()
+      expect(third.events.filter((event) => event.data?.id === request)).toEqual([])
+    })
+
     scenario("a free-text answer to a question is carried back as typed", async (ctx) => {
       const events = await ctx.listen()
       const request = `${ctx.run}-ask`

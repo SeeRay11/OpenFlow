@@ -20,7 +20,8 @@ export type EngineHost = {
 }
 
 export function createEngineHost(deps: EngineHostDeps): EngineHost {
-  const bus = createEventBus()
+  // The bus is built first because the session host emits through it; `sessions` is only read when a stream attaches, after both exist.
+  const bus = createEventBus({ replay: () => sessions.pending() })
   const sessions = createSessionHost(deps, { emit: bus.publish })
   const models = createModelCatalog(deps, { readyTimeoutMs: deps.readyTimeoutMs })
   const routes = createRoutes({ settings: deps.settings, env: deps.env, sessions, models, bus })
