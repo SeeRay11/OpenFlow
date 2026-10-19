@@ -13,6 +13,10 @@ type Seen = { method: string; path: string; search: string; body: unknown }
 const seen: Seen[] = []
 /** What `/wait` answers per session id; anything else is "missing". */
 const waits = new Map<string, WaitResult>()
+/** Answers consumed one per `/wait` request before `waits` applies, for sessions that settle after a few slices. */
+const waitQueue = new Map<string, WaitResult[]>()
+/** Run when a `/wait` request arrives, before the host answers; receives the `timeoutMs` it asked for. */
+let onWait: ((timeoutMs: number) => void) | undefined
 /** Transcript per session id for `/final`. */
 const finals = new Map<string, { text: string; error?: string }>()
 /** What the `events` route writes, chunk by chunk, then closes (or holds open when `hold`). */
@@ -80,6 +84,7 @@ const server = Bun.serve({
     if (tail === "" && request.method === "DELETE") return reply(200, { released: id })
     if (tail === "/prompt") return reply(200, { accepted: true })
     if (tail === "/wait") {
+      onWait?.(body.timeoutMs)
       if (id === "hang") {
         waitHeld.resolve()
         const held = Promise.withResolvers<Response>()
@@ -93,7 +98,14 @@ const server = Bun.serve({
         )
         return held.promise
       }
-      return reply(200, waits.get(id) ?? { status: "missing" })
+      if (id === "running") {
+        // Real delay on purpose: the client's deadline is the wall clock, so the host must hold the request
+        // for the slice it was asked for, as the real host does, before saying the session is still running.
+        await Bun.sleep(body.timeoutMs)
+        return reply(200, { status: "timeout" })
+      }
+      const queued = waitQueue.get(id)?.shift()
+      return reply(200, queued ?? waits.get(id) ?? { status: "missing" })
     }
     if (tail === "/interrupt") return id === "broken" ? reply(500, { error: "boom" }) : reply(200, {})
     if (tail === "/final" && id === "gone") return reply(404, { error: "session not found: gone" })
@@ -116,6 +128,8 @@ afterAll(async () => {
 beforeEach(() => {
   seen.length = 0
   waits.clear()
+  waitQueue.clear()
+  onWait = undefined
   finals.clear()
   eventChunks = []
   hold = false
@@ -301,10 +315,52 @@ suite("waitForIdle", () => {
     await pending
   })
 
-  test("timeout and missing throw their sentences", async () => {
-    waits.set("ses_1", { status: "timeout" })
-    await expect(client.waitForIdle("ses_1")).rejects.toThrow("timed out waiting for the session to finish")
+  test("missing throws its sentence, with or without a budget", async () => {
     await expect(client.waitForIdle("ses_2")).rejects.toThrow("session not found: ses_2")
+    await expect(client.waitForIdle("ses_2", { timeout: 1000, slice: 10 })).rejects.toThrow("session not found: ses_2")
+  })
+
+  test("a session that is missing or failed after some slices still maps to its sentence", async () => {
+    waitQueue.set("ses_1", [{ status: "timeout" }, { status: "missing" }])
+    await expect(client.waitForIdle("ses_1", { timeout: 1000, slice: 10 })).rejects.toThrow("session not found: ses_1")
+    waitQueue.set("ses_1", [{ status: "timeout" }, { status: "idle", result: "error", error: "Provider request failed with HTTP 401 Unauthorized" }])
+    await expect(client.waitForIdle("ses_1", { timeout: 1000, slice: 10 })).rejects.toThrow("Provider request failed with HTTP 401 Unauthorized")
+  })
+
+  test("re-polls in slices until the session settles, never holding a request longer than a slice", async () => {
+    waitQueue.set("ses_1", [{ status: "timeout" }, { status: "timeout" }, { status: "idle", result: "completed" }])
+    const asked: number[] = []
+    onWait = (timeoutMs) => asked.push(timeoutMs)
+    await client.waitForIdle("ses_1", { timeout: 5000, slice: 50 })
+    expect(asked).toHaveLength(3)
+    expect(asked.every((timeoutMs) => timeoutMs <= 50)).toBe(true)
+  })
+
+  test("with no budget it loops until the session settles, asking a slice each time", async () => {
+    waitQueue.set("ses_1", [{ status: "timeout" }, { status: "idle", result: "completed" }])
+    await client.waitForIdle("ses_1", { slice: 25 })
+    expect(seen.map((entry) => entry.body)).toEqual([{ timeoutMs: 25 }, { timeoutMs: 25 }])
+  })
+
+  test("a session that never settles times out only after the overall budget, asking for no more than what is left", async () => {
+    const timeout = 120
+    const asked: number[] = []
+    onWait = (timeoutMs) => asked.push(timeoutMs)
+    const started = Date.now()
+    await expect(client.waitForIdle("running", { timeout, slice: 40 })).rejects.toThrow("timed out waiting for the session to finish")
+    expect(Date.now() - started).toBeGreaterThanOrEqual(timeout)
+    expect(asked.length).toBeGreaterThan(1)
+    expect(asked.every((timeoutMs) => timeoutMs <= 40)).toBe(true)
+    // Each request is held for what it asked, so the asks can never add up to more than the budget.
+    expect(asked.reduce((total, timeoutMs) => total + timeoutMs, 0)).toBeLessThanOrEqual(timeout)
+  })
+
+  test("an abort between slices returns silently and stops polling", async () => {
+    waitQueue.set("ses_1", [{ status: "timeout" }, { status: "timeout" }, { status: "timeout" }])
+    const controller = new AbortController()
+    onWait = () => controller.abort()
+    await client.waitForIdle("ses_1", { timeout: 5000, slice: 10, signal: controller.signal })
+    expect(seen).toHaveLength(1)
   })
 
   test("aborting the signal ends a long-poll the host is still holding", async () => {

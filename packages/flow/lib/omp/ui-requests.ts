@@ -1,6 +1,7 @@
 import type { BusEvent, PermissionReply, QuestionInfo } from "../../shared/engine"
 import { HttpError } from "../host/respond"
-import { asArray, asRecord, asString } from "./messages"
+import { capText, stripControl } from "../substrate/guard"
+import { asArray, asRecord, asString, NOTICE_LIMIT } from "./messages"
 import type { OmpFrame } from "./rpc-types"
 
 /**
@@ -69,7 +70,7 @@ export function createUiRequests(options: UiRequestsOptions): UiRequests {
   const pending = new Map<string, Pending>()
 
   function notice(level: "info" | "error", message: string) {
-    options.emit({ type: "flow.notice", data: { sessionID, level, message } })
+    options.emit({ type: "flow.notice", data: { sessionID, level, message: capText(stripControl(message), NOTICE_LIMIT).text } })
   }
 
   function take(id: string, kind: Pending["kind"], what: string): Pending {

@@ -188,6 +188,12 @@ describe("everything else", () => {
     ])
   })
 
+  test("a notify message is capped at 240 characters", () => {
+    const { ui, events } = setup()
+    ui.handle({ type: "extension_ui_request", id: "n1", method: "notify", message: "z".repeat(1000), notifyType: "error" })
+    expect(events[0]?.data?.message).toBe(`${"z".repeat(239)}…`)
+  })
+
   test("a cancel request drops the dialog it targets", () => {
     const { ui } = setup()
     ui.handle(frames.approval("r1", PROMPT))

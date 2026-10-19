@@ -1,5 +1,6 @@
 import type { BusEvent } from "../../shared/engine"
-import { asArray, asNumber, asRecord, asString, messageKey, providerError, textOf, type Wire } from "./messages"
+import { capText, stripControl } from "../substrate/guard"
+import { asArray, asNumber, asRecord, asString, messageKey, NOTICE_LIMIT, providerError, textOf, type Wire } from "./messages"
 import type { OmpFrame } from "./rpc-types"
 
 /**
@@ -58,6 +59,8 @@ function contentOf(result: unknown): Array<{ type: "text"; text: string }> {
   }
   return parts
 }
+
+const MOUNT_NOTICE = /^xd:\/\/: mounted\b/
 
 function noticeLevel(level: unknown): "info" | "error" {
   return level === "error" ? "error" : "info"
@@ -306,7 +309,12 @@ export function createEventMapper(options: EventMapperOptions): EventMapper {
         }
         case "notice": {
           const message = asString(frame.message)
-          if (message) out.push({ type: "flow.notice", data: { sessionID, level: noticeLevel(frame.level), message } })
+          const informational = frame.level !== "warning" && frame.level !== "error"
+          // omp announces every xd:// device mount at session start: hundreds of internal tool names.
+          if (message && !(informational && MOUNT_NOTICE.test(message))) {
+            const text = capText(stripControl(message), NOTICE_LIMIT).text
+            if (text) out.push({ type: "flow.notice", data: { sessionID, level: noticeLevel(frame.level), message: text } })
+          }
           break
         }
         case "extension_error":

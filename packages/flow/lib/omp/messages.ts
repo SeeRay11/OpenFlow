@@ -17,6 +17,9 @@ const HISTORY_PAGE = 256
 const HISTORY_PAGES = 40
 const PAGE_TIMEOUT_MS = 30_000
 
+/** A `flow.notice` is one activity row: omp can send thousands of characters (tool lists, stack traces). */
+export const NOTICE_LIMIT = 240
+
 /* ------------------------------------------------------------ wire readers */
 
 /** Frames are JSON from a child process: every read goes through one of these instead of a cast. */

@@ -247,9 +247,22 @@ export function accepts(model: ModelInfo | undefined, mime: string) {
 }
 
 /**
- * Resolves when the host reports the session settled — a long-poll, so there
- * is no polling interval; `options.interval` is accepted for the engine's call
- * sites and ignored.
+ * The longest one `/wait` request is held open. No request lives for minutes:
+ * browsers, proxies and tunnels drop a response that sends no bytes for that
+ * long, and Bun's `fetch` was observed abandoning a 300 s response, leaving the
+ * caller hung after the host had already settled the session.
+ */
+const WAIT_SLICE_MS = 55_000
+
+/**
+ * Resolves when the host reports the session settled — a long-poll re-issued in
+ * slices of `options.slice` (default 55 s), so there is no polling interval;
+ * `options.interval` is accepted for the engine's call sites and ignored.
+ *
+ * `options.timeout` is the overall budget: each request asks for the lesser of
+ * a slice and what is left, a `timeout` answer from the host means the session
+ * is still running and the next slice is asked for, and only a passed deadline
+ * throws. Without a timeout it waits until idle, abort, `missing` or `error`.
  *
  * An abort of `options.signal` ends the request and returns silently, the same
  * as an `aborted` result that the caller asked for. An `aborted` result nobody
@@ -258,23 +271,29 @@ export function accepts(model: ModelInfo | undefined, mime: string) {
  */
 export async function waitForIdle(
   sessionID: string,
-  options: { signal?: AbortSignal; interval?: number; timeout?: number } = {},
+  options: { signal?: AbortSignal; interval?: number; timeout?: number; slice?: number } = {},
 ) {
-  if (options.signal?.aborted) return
-  const body: WaitRequest = { timeoutMs: options.timeout }
-  let result: WaitResult
-  try {
-    result = await call<WaitResult>(sessionRoute(sessionID, "/wait"), { method: "POST", body, signal: options.signal })
-  } catch (error) {
-    if (options.signal?.aborted) return
-    throw error
-  }
-  if (result.status === "missing") throw new Error(`session not found: ${sessionID}`)
-  if (result.status === "timeout") throw new Error("timed out waiting for the session to finish")
-  if (result.result === "error") throw new Error(result.error || "the session failed")
-  if (result.result === "aborted") {
-    if (options.signal?.aborted) return
-    throw new Error("the session was interrupted")
+  const slice = options.slice ?? WAIT_SLICE_MS
+  const deadline = options.timeout === undefined ? Infinity : Date.now() + options.timeout
+  while (!options.signal?.aborted) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) throw new Error("timed out waiting for the session to finish")
+    const body: WaitRequest = { timeoutMs: Math.min(slice, remaining) }
+    let result: WaitResult
+    try {
+      result = await call<WaitResult>(sessionRoute(sessionID, "/wait"), { method: "POST", body, signal: options.signal })
+    } catch (error) {
+      if (options.signal?.aborted) return
+      throw error
+    }
+    if (result.status === "missing") throw new Error(`session not found: ${sessionID}`)
+    if (result.status === "timeout") continue
+    if (result.result === "error") throw new Error(result.error || "the session failed")
+    if (result.result === "aborted") {
+      if (options.signal?.aborted) return
+      throw new Error("the session was interrupted")
+    }
+    return
   }
 }
 

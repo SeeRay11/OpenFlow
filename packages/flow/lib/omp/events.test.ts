@@ -155,6 +155,35 @@ describe("notices", () => {
     expect(events[2]?.data?.message).toBe("omp extension error (tool_call): boom")
   })
 
+  test("omp's xd:// mount announcement is dropped at info level and kept at warning and error", () => {
+    const mounted = `xd://: mounted ${Array.from({ length: 300 }, (_, index) => `mcp__tool_${index}`).join(", ")}`
+    expect(run([{ type: "notice", level: "info", message: mounted }, { type: "notice", message: mounted }])).toEqual([])
+    const kept = run([
+      { type: "notice", level: "warning", message: "xd://: mounted a" },
+      { type: "notice", level: "error", message: "xd://: mounted b" },
+      { type: "notice", level: "info", message: "xd://: unmounted c" },
+    ])
+    expect(kept.map((event) => event.data?.message)).toEqual(["xd://: mounted a", "xd://: mounted b", "xd://: unmounted c"])
+  })
+
+  test("a long notice is cut to 240 characters ending in an ellipsis; 240 passes unchanged", () => {
+    const [cut] = run([{ type: "notice", level: "info", message: "x".repeat(1000) }])
+    expect(cut?.data?.message).toBe(`${"x".repeat(239)}…`)
+    expect((cut?.data?.message as string).length).toBe(240)
+    const exact = "y".repeat(240)
+    expect(run([{ type: "notice", level: "info", message: exact }])[0]?.data?.message).toBe(exact)
+  })
+
+  test("a cut never splits a surrogate pair, and control characters are stripped", () => {
+    const [split] = run([{ type: "notice", level: "info", message: `${"a".repeat(238)}😀${"b".repeat(50)}` }])
+    const text = split?.data?.message as string
+    expect(text.isWellFormed()).toBe(true)
+    expect(text).toBe(`${"a".repeat(238)}…`)
+    const whole = `${"a".repeat(238)}😀`
+    expect(run([{ type: "notice", level: "info", message: whole }])[0]?.data?.message).toBe(whole)
+    expect(run([{ type: "notice", level: "info", message: "a\u0007b\u001b[31mc" }])[0]?.data?.message).toBe("abc")
+  })
+
   test("unknown and presentation frames are ignored", () => {
     expect(run([{ type: "cache_warming_start" }, { type: "queue_update", steering: [], followUp: [] }, { type: "something_new_in_omp_19" }, { type: "extension_ui_request", method: "setStatus", id: "1" }])).toEqual([])
   })
