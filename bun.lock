@@ -493,7 +493,7 @@
     },
     "packages/flow": {
       "name": "@openflow/flow",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "dependencies": {
         "@lydell/node-pty": "catalog:",
         "ghostty-web": "github:anomalyco/ghostty-web#83c0a07b8628b748aed073b232cb4b52a6ca11c1",
