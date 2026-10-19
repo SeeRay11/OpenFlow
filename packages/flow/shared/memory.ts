@@ -86,7 +86,7 @@ export type MemoryWriteResult = {
 export type MemoryInfo = {
   read?: {
     status: MemoryReadResult["status"] | "running"
-    items: Array<Pick<MemoryItem, "scope" | "subject" | "preview" | "run" | "card" | "origin">>
+    items: Array<Pick<MemoryItem, "scope" | "subject" | "preview" | "run" | "card" | "origin" | "ageDays">>
     briefState?: MemoryReadResult["briefState"]
     error?: string
   }
@@ -137,4 +137,14 @@ export const MEMORY_ROUTES = {
 export function memorySubject(pipeline: string, run: string, card: string): string {
   const clean = (value: string) => value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "x"
   return `openflow/${clean(pipeline)}/${clean(run)}/${clean(card)}`.slice(0, 200)
+}
+
+/** One row of the entries listing: what `read` would see, plus retraction markers and what is hidden. */
+export type MemoryEntryRow = MemoryItem & { retracted: boolean }
+
+/** `GET MEMORY_ROUTES.entries?pipeline&run&limit`. */
+export type MemoryEntriesResult = {
+  status: "ok" | "empty" | "unavailable" | "disabled"
+  items: MemoryEntryRow[]
+  error?: string
 }

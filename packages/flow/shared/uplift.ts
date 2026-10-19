@@ -83,6 +83,8 @@ export type UpliftInfo = {
   degraded?: string[]
   decisions?: UpliftDecision[]
   elapsedMs?: number
+  /** Which engine planned it, e.g. `claude:claude-sonnet-5-5`. */
+  engine?: string
   /** The user chose to run the original after a failure (the only way `failed` proceeds). */
   declined?: boolean
 }

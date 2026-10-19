@@ -138,3 +138,17 @@ export const OMP_ROUTES = {
   config: "/flow/api/omp/config",
   providers: "/flow/api/omp/providers",
 } as const
+
+/** Where a value actually comes from. Names of environment variables only, never their values. */
+export type EffectiveSource = { from: "settings" | "env" | "default"; env?: string }
+
+/** `GET OMP_ROUTES.settings`: the settings plus where each env-overridable value comes from. */
+export type OmpSettingsView = {
+  settings: OmpSettings
+  /** Keyed by dotted settings path: only the paths an environment variable can stand in for. */
+  effective: Record<string, EffectiveSource>
+  warnings: string[]
+}
+
+/** `OmpStatus` as the route sends it: settings-file warnings ride along so the dialog can show them. */
+export type OmpStatusView = OmpStatus & { warnings: string[] }
