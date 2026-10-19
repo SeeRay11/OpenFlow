@@ -29,18 +29,22 @@ function sendJson(res: ServerResponse, status: number, body: string) {
 }
 
 /**
- * The absolute URL of the request as first received. A Host that does not form a URL (`localhost:99999`, a NUL
- * byte) must not throw: the base falls back to `localhost`, the raw header still travels in `headers`, and the
- * gate answers 403 for it.
+ * The absolute URL of the request as first received, which is also the one the gate decides on: the vite store
+ * route takes its path from here too, so no two middlewares can read two paths from one request. A Host that does
+ * not form a URL (`localhost:99999`, a NUL byte) or smuggles credentials (`localhost:5174@evil.example`, which
+ * `new Request` refuses) must not throw: the base falls back to `localhost`, the raw header still travels in
+ * `headers`, and the gate answers 403 for it.
  */
-function requestUrl(req: ConnectRequest) {
+export function requestUrl(req: ConnectRequest) {
   // `//x` would parse as a protocol-relative URL naming host `x`, hiding the real path from the gate.
   const target = (req.originalUrl ?? req.url ?? "/").replace(/^\/{2,}/, "/")
-  try {
-    return new URL(target, `http://${req.headers.host ?? "localhost"}`)
-  } catch {
-    return new URL(target, "http://localhost")
+  if (req.headers.host !== undefined) {
+    try {
+      const url = new URL(target, `http://${req.headers.host}`)
+      if (!url.username && !url.password) return url
+    } catch {}
   }
+  return new URL(target, "http://localhost")
 }
 
 export function nodeMiddleware(handler: HostHandler): (req: ConnectRequest, res: ServerResponse, next: () => void) => void {
@@ -59,6 +63,9 @@ async function serve(handler: HostHandler, req: ConnectRequest, res: ServerRespo
     if (value === undefined) continue
     for (const item of Array.isArray(value) ? value : [value]) headers.append(name, item)
   }
+  // An HTTP/1.0 request may have no Host. Saying so (an empty Host names no machine) keeps the gate from
+  // inventing one: the URL below is only a vehicle for the path.
+  if (req.headers.host === undefined) headers.set("host", "")
 
   const abort = new AbortController()
   // `close` also fires after a normal finish, when there is nothing left to abort.

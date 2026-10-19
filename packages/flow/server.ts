@@ -3,9 +3,10 @@ import { fileURLToPath } from "node:url"
 import { remoteBindRefusal } from "./lib/guard"
 import { createHost } from "./lib/host"
 import { resolveProject } from "./lib/last-session"
-import { flowPaths, handleFlow } from "./lib/store"
+import { flowPaths } from "./lib/store"
 import type { OmpStatusView } from "./shared/omp"
 import { bunWebSocket } from "./lib/terminal/ws-bun"
+import { createApp } from "./server-app"
 // Shared with the vite dev host so both explain a held port the same way.
 import { portInUse } from "./vite/port-in-use"
 
@@ -28,7 +29,6 @@ const port = Number(process.env.FLOW_PORT ?? 5174)
 const hostname = process.env.FLOW_HOST ?? "127.0.0.1"
 
 const paths = flowPaths(project)
-const MAX_BODY = 8 * 1024 * 1024
 
 // `paths.project` is the live object `lib/store.ts` mutates when the canvas
 // switches folders, so the host follows the switch without a restart.
@@ -80,39 +80,10 @@ function listen() {
     return Bun.serve({
       port,
       hostname,
+      // Never Bun's development error page (an HTML stack trace with source paths): `createApp` answers its own failures.
+      development: false,
       idleTimeout: 0, // SSE streams outlive any request timeout
-      async fetch(request, serving) {
-        // Every `/flow/api` request, store and SSE included, passes the Host/Origin gate before any handler (and before a body is read).
-        const refused = await host.gate(request)
-        if (refused) return refused
-
-        // The terminal's WebSocket upgrade must be decided before anything reads the request.
-        const upgraded = terminal.fetch(request, serving)
-        if (upgraded instanceof Response) return upgraded
-        if (upgraded) return undefined
-
-        const hosted = await host.handle(request)
-        if (hosted) return hosted
-
-        const url = new URL(request.url)
-        if (url.pathname === "/flow/api" || url.pathname.startsWith("/flow/api/")) {
-          try {
-            const result = await handleFlow(paths, {
-              method: request.method,
-              path: url.pathname,
-              search: url.searchParams,
-              json: () => body(request),
-              profileDir: host.profileDir,
-            })
-            if (result) return Response.json(result.body, { status: result.status })
-            return Response.json({ error: "not found" }, { status: 404 })
-          } catch (error) {
-            return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 })
-          }
-        }
-
-        return statics(url)
-      },
+      fetch: createApp({ host, terminal, paths, dist }),
       websocket: terminal.websocket,
     })
   } catch (error) {
@@ -121,41 +92,4 @@ function listen() {
     console.error(portInUse(port, `http://${hostname}:${port}`))
     return process.exit(1)
   }
-}
-
-async function body(request: Request) {
-  const length = Number(request.headers.get("content-length") ?? 0)
-  if (length > MAX_BODY) throw new Error("request body too large")
-  const text = await request.text()
-  if (text.length > MAX_BODY) throw new Error("request body too large")
-  if (!text) return {}
-  return JSON.parse(text)
-}
-
-/**
- * Serves the built bundle, falling back to index.html so a deep link still
- * boots the app. Requests are resolved inside `dist` and refused if they
- * escape it.
- *
- * index.html is served `no-store`. Vite hashes asset filenames, so the assets
- * may be cached forever, but index.html is the pointer to them — cached under
- * the browser's own heuristic it pins the tab to the previous build's chunks,
- * and the app opens at an old version no rebuild can dislodge.
- */
-async function statics(url: URL) {
-  const requested = path.join(dist, decodeURIComponent(url.pathname))
-  const resolved = path.resolve(requested)
-  if (resolved !== dist && !resolved.startsWith(dist + path.sep)) {
-    return new Response("not found", { status: 404 })
-  }
-  const file = Bun.file(resolved)
-  if (url.pathname !== "/" && (await file.exists())) {
-    const hashed = resolved.startsWith(path.join(dist, "assets") + path.sep)
-    return new Response(file, {
-      headers: { "cache-control": hashed ? "public, max-age=31536000, immutable" : "no-cache" },
-    })
-  }
-  return new Response(Bun.file(path.join(dist, "index.html")), {
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
-  })
 }

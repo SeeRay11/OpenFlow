@@ -67,6 +67,37 @@ function carriesBody(headers: Headers) {
  */
 const GATED = /^\/flow(?:[/.]|$)/i
 
+/** Where a request target's path ends: the query or the fragment. */
+const PATH_END = /[?#]/
+
+/**
+ * A path segment that a URL parser would resolve away (`.`, `..`, and their percent-encoded spellings), a
+ * backslash (a special-scheme URL reads it as `/`), a NUL or a `;` parameter. Any of these means the
+ * route a handler picks may differ from the one the gate looked at.
+ */
+const AMBIGUOUS_PATH = /(?:^|\/)(?:\.|%2e){1,2}(?=\/|$)|[\\;\0]|%5c|%00/i
+
+/**
+ * Refuses a request target that names `/flow` and is spelled so that two parsers could read two paths from it.
+ * Browsers normalise `..` before sending, so only a client that writes raw request lines can trip this; the
+ * point is that the gate must not depend on that. `target` is the raw request line target (or an absolute
+ * URL); on a host whose `Request` is already normalised the check sees nothing and the gate's own verdict
+ * is the one every handler shares.
+ */
+export function rawPathRefusal(target: string): Refusal | undefined {
+  const raw = target.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i, "")
+  const end = raw.search(PATH_END)
+  const rawPath = end === -1 ? raw : raw.slice(0, end)
+  if (!AMBIGUOUS_PATH.test(rawPath)) return undefined
+  const normalised = pathnameOf(`http://localhost${raw.replace(/^\/{2,}/, "/")}`)
+  if (!/^\/flow/i.test(rawPath) && !(normalised !== undefined && GATED.test(normalised))) return undefined
+  return {
+    status: 400,
+    error: "This request path is spelled in a way that can name two different routes; send the plain /flow/api/... path.",
+    code: "forbidden-path",
+  }
+}
+
 /** The refusal for one request, or `undefined` when it may proceed. Pure: no I/O, no state. */
 export function apiRefusal(request: Request, allowRemote: boolean): Refusal | undefined {
   const host = hostOf(request)
@@ -112,6 +143,8 @@ export function createGate(allowRemote: boolean): HostHandler {
   return async (request) => {
     const pathname = pathnameOf(request.url)
     if (pathname === undefined) return fail(403, "The Host header of this request is malformed.", "forbidden-host")
+    const ambiguous = rawPathRefusal(request.url)
+    if (ambiguous) return fail(ambiguous.status, ambiguous.error, ambiguous.code)
     if (!GATED.test(pathname)) return undefined
     const refusal = apiRefusal(request, allowRemote)
     if (!refusal) return undefined

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { apiRefusal, createGate, loopbackHost, sameOrigin } from "./gate"
+import { apiRefusal, createGate, loopbackHost, rawPathRefusal, sameOrigin } from "./gate"
 import { isJsonContentType } from "./respond"
 
 function request(host: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) {
@@ -245,4 +245,56 @@ describe("a malformed Host", () => {
       expect(await response?.json()).toMatchObject({ code: "forbidden-host" })
     },
   )
+})
+
+describe("rawPathRefusal", () => {
+  test.each([
+    "/flow/api/../../pipelines/x",
+    "/flow/api/./pipelines/x",
+    "/flow/api/%2e%2e/%2e%2e/pipelines/x",
+    "/flow/api/.%2e/pipelines/x",
+    "/flow/api/%2E%2E/pipelines/x",
+    "/FLOW/api/../x",
+    "/flow/api./../x",
+    "/flow/api/..",
+    "/flow/api/pipelines/x;a=b",
+    "/flow/api\\pipelines\\x",
+    "/flow/api/%5Cpipelines",
+    "/flow%00/api/x",
+    "/flow/api/x%00",
+    "/flow/api/x/../?q=1",
+    // Absolute form, as a request line may carry it.
+    "http://localhost:5174/flow/api/../../x",
+    // Not under /flow in the raw line, but a parser folds the backslashes into one.
+    "\\flow\\api\\..\\x",
+    "//flow/api/../x",
+  ])("%s is a 400 forbidden-path", (target) => {
+    expect(rawPathRefusal(target)).toEqual({ status: 400, error: expect.any(String), code: "forbidden-path" })
+  })
+
+  test.each([
+    "/flow/api/pipelines/x",
+    "/flow/api/pipelines/a.b",
+    "/flow/api/pipelines/..x",
+    "/flow/api/pipelines/x...",
+    "/flow/api/env?names=HOME;PATH",
+    "/flow/api/x?next=../../y",
+    "/flow/api/x#../y",
+    "/flow/api/pipelines/a%20b",
+    "/assets/../x.js",
+    "/src/%2e%2e/main.tsx",
+    "/index.html;x",
+    "/",
+  ])("%s is not the gate's business", (target) => {
+    expect(rawPathRefusal(target)).toBeUndefined()
+  })
+
+  test("the gate refuses the spellings a normalised Request still carries, before any other rule", async () => {
+    const gate = createGate(false)
+    for (const url of ["http://localhost:5174/flow%00/api/x", "http://localhost:5174/flow/api/x;a=b"]) {
+      const response = await gate(new Request(url))
+      expect(response?.status).toBe(400)
+      expect(await response?.json()).toMatchObject({ code: "forbidden-path" })
+    }
+  })
 })

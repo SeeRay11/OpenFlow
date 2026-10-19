@@ -41,6 +41,10 @@ export default defineConfig({
   server: {
     port: PORT,
     strictPort: true,
+    // The canvas and its API are one origin; nothing here needs CORS. Vite 7's default answers any localhost
+    // origin, and with its static middleware that let a page on another local port read `.html` files off disk.
+    // `server.fs.strict` stays at its default (true).
+    cors: false,
   },
   build: {
     target: "esnext",

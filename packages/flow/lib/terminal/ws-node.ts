@@ -1,5 +1,6 @@
 import { STATUS_CODES } from "node:http"
 import type { IncomingMessage, Server } from "node:http"
+import type { Http2SecureServer } from "node:http2"
 import type { Duplex } from "node:stream"
 import { WebSocketServer } from "ws"
 import { PTY_LIMITS } from "../../shared/terminal"
@@ -8,7 +9,7 @@ import { encodeControl } from "./policy"
 import { ptySocketId } from "./routes"
 
 /**
- * The Node transport, for the vite dev host (`vite/flow-pty.ts`) and any plain
+ * The Node transport, for the vite dev host (`vite/flow-store.ts` via `attachDevUpgrade`) and any plain
  * `http.Server`. Policy is the module's; this converts the upgrade into a Web
  * `Request`, accepts the socket with `ws` (noServer) and adapts it to a sink.
  *
@@ -63,6 +64,21 @@ export function attachNodeUpgrade(server: Server, terminal: TerminalModule): () 
     server.off("upgrade", onUpgrade)
     sockets.close()
   }
+}
+
+/**
+ * How the vite dev host wires the terminal: the upgrade on vite's HTTP server, and `onClose` once that server
+ * closes (after the upgrade is detached). Vite hands out an HTTP/2 server when https is on and no proxy is set;
+ * it never emits 'upgrade' (WebSockets ride extended CONNECT there), so there is nothing to attach to, but
+ * `onClose` still runs. A middleware-mode server has no HTTP server at all: nothing to wire.
+ */
+export function attachDevUpgrade(http: Server | Http2SecureServer | null | undefined, terminal: TerminalModule, onClose: () => void) {
+  if (!http) return
+  const detach = "updateSettings" in http ? undefined : attachNodeUpgrade(http, terminal)
+  http.on("close", () => {
+    detach?.()
+    onClose()
+  })
 }
 
 function refuse(socket: Duplex, status: number) {

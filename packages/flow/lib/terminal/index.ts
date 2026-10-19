@@ -2,7 +2,7 @@
  * The in-app terminal host (Linear SPE-16065). `createTerminal` is what the
  * wiring step mounts: `handle` next to the other `/flow/api` modules, and one
  * transport for the WebSocket — `bunWebSocket(terminal)` in `server.ts`, or
- * `flowPty(terminal)` (`vite/flow-pty.ts`) in the dev host — both on the SAME
+ * `attachDevUpgrade(http, terminal, …)` (`lib/terminal/ws-node.ts`, mounted by `vite/flow-store.ts`) in the dev host — both on the SAME
  * instance, since the tickets `handle` issues are the ones the upgrade consumes.
  * Pass `allowRemote: process.env.FLOW_ALLOW_REMOTE === "1"` and call `dispose()` on
  * host shutdown (the module also hooks process exit and SIGINT/SIGTERM itself).

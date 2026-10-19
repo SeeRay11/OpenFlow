@@ -1,23 +1,22 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { createServer } from "node:http"
 import type { IncomingMessage, Server } from "node:http"
-import type { ViteDevServer } from "vite"
+import type { Http2SecureServer } from "node:http2"
 import { WebSocket } from "ws"
 import { PTY_CLOSE, PTY_HEADER, PTY_LIMITS, PTY_ROUTES } from "../../shared/terminal"
 import type { PtyTicket } from "../../shared/terminal"
-import { flowPty } from "../../vite/flow-pty"
 import { createTerminal } from "./index"
 import type { TerminalModule } from "./index"
 import { cleanScratch, collector, decodeControl, goneWithin, resizeFrame, scratch, stub } from "./test-harness"
-import { attachNodeUpgrade } from "./ws-node"
+import { attachDevUpgrade, attachNodeUpgrade } from "./ws-node"
 
 // Real PTYs, `/bin/sh` and POSIX process groups: nothing in this file runs on Windows.
 const suite = describe.skipIf(process.platform === "win32")
 
 /**
  * The vite dev host's transport: a plain `node:http` server standing in for
- * vite's, the `ws` package as the client, and `flowPty` wired the way vite wires
- * a plugin. Runs on whatever runtime executes the test; the Node-only PTY
+ * vite's, the `ws` package as the client, and `attachDevUpgrade` wired the way `vite/flow-store.ts` wires
+ * it. Runs on whatever runtime executes the test; the Node-only PTY
  * backend has its own test (`pty-node.test.ts`).
  */
 
@@ -43,8 +42,8 @@ async function body(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
-/** `via` picks how the upgrade is attached: the raw function or the vite plugin. */
-async function boot(script: string, via: "attach" | "plugin", extraUpgrade?: (url: string) => void) {
+/** `via` picks how the upgrade is attached: the raw function or the vite dev host's wiring. */
+async function boot(script: string, via: "attach" | "dev", extraUpgrade?: (url: string) => void) {
   const dir = await scratch()
   const plan = await stub(dir, script)
   const terminal = createTerminal({
@@ -76,7 +75,7 @@ async function boot(script: string, via: "attach" | "plugin", extraUpgrade?: (ur
     }
   })
   if (via === "attach") attachNodeUpgrade(server, terminal)
-  else (flowPty(terminal).configureServer as (server: ViteDevServer) => void)({ httpServer: server } as unknown as ViteDevServer)
+  else attachDevUpgrade(server, terminal, () => void terminal.dispose())
 
   const listening = Promise.withResolvers<void>()
   server.listen(0, "127.0.0.1", () => listening.resolve())
@@ -123,7 +122,7 @@ function connect(base: string, granted: PtyTicket, options: { origin?: string | 
   return { socket, received, state }
 }
 
-suite.each(["attach", "plugin"] as const)("node transport (%s)", (via) => {
+suite.each(["attach", "dev"] as const)("node transport (%s)", (via) => {
   test("create, type, resize, exit over a real socket", async () => {
     const { base } = await boot("stty size; read x; echo got:$x; stty size; read y; exit 6", via)
     const granted = await ticket(base, { create: { kind: "omp", cols: 100, rows: 30 } })
@@ -209,9 +208,9 @@ suite.each(["attach", "plugin"] as const)("node transport (%s)", (via) => {
   })
 })
 
-suite("vite plugin lifecycle", () => {
+suite("vite dev wiring lifecycle", () => {
   test("closing the http server disposes the terminal: no shell, no grandchild left", async () => {
-    const { base, server } = await boot("sleep 300 & echo CHILD:$!; wait", "plugin")
+    const { base, server } = await boot("sleep 300 & echo CHILD:$!; wait", "dev")
     const granted = await ticket(base, { create: { kind: "omp", cols: 80, rows: 24 } })
     const { received } = connect(base, granted)
     await received.until(() => /CHILD:\d+/.test(received.output), "grandchild pid")
@@ -225,8 +224,20 @@ suite("vite plugin lifecycle", () => {
   })
 })
 
-test("a plugin on a server with no http server does nothing", () => {
+test("the dev wiring on a server with no http server does nothing", () => {
   const terminal = createTerminal({ project: () => "/", omp: async () => ({ error: "unused" }) })
   terminals.push(terminal)
-  expect(() => (flowPty(terminal).configureServer as (server: ViteDevServer) => void)({ httpServer: null } as unknown as ViteDevServer)).not.toThrow()
+  expect(() => attachDevUpgrade(null, terminal, () => {})).not.toThrow()
+})
+
+test("an HTTP/2 server gets no upgrade listener but still reports its close", async () => {
+  const terminal = createTerminal({ project: () => "/", omp: async () => ({ error: "unused" }) })
+  terminals.push(terminal)
+  // Vite's HTTP/2 server carries `updateSettings`; a plain server with the same marker stands in for it.
+  const http2 = Object.assign(createServer(), { updateSettings: () => {} })
+  const closed = Promise.withResolvers<void>()
+  attachDevUpgrade(http2 as unknown as Http2SecureServer, terminal, () => closed.resolve())
+  expect(http2.listenerCount("upgrade")).toBe(0)
+  http2.emit("close")
+  await closed.promise
 })

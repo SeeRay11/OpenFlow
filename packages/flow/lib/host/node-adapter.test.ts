@@ -126,7 +126,7 @@ describe("fall through keeps the whole body", () => {
 
 describe("a Host that is not a valid URL authority", () => {
   /** A raw HTTP/1.1 exchange: fetch and node's own client refuse to send these Host values. */
-  async function raw(base: string, host: string) {
+  async function raw(base: string, host: string | undefined, version = "1.1") {
     const port = Number(new URL(base).port)
     const socket = connect(port, "127.0.0.1")
     const closed = Promise.withResolvers<string>()
@@ -134,11 +134,11 @@ describe("a Host that is not a valid URL authority", () => {
     socket.on("data", (data) => (text += data.toString("utf8")))
     socket.on("close", () => closed.resolve(text))
     socket.on("error", () => closed.resolve(text))
-    socket.write(`GET /flow/api/omp/settings HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`)
+    socket.write(`GET /flow/api/omp/settings HTTP/${version}\r\n${host === undefined ? "" : `Host: ${host}\r\n`}Connection: close\r\n\r\n`)
     return closed.promise
   }
 
-  test.each(["localhost@evil.example", "evil.example#localhost", "localhost:99999", "localhost%00.evil.example"])(
+  test.each(["localhost@evil.example", "localhost:5174@evil.example", "evil.example#localhost", "localhost:99999", "localhost%00.evil.example"])(
     "%s answers a JSON 403 forbidden-host through the gate",
     async (host) => {
       const { base, fell } = await start(createGate(false))
@@ -149,6 +149,15 @@ describe("a Host that is not a valid URL authority", () => {
       expect(fell).toEqual([])
     },
   )
+
+  // HTTP/1.0 may omit Host. The adapter used to invent `localhost` for it, so the gate passed it on this host and refused it on Bun.
+  test("a request without any Host header is a JSON 403 forbidden-host", async () => {
+    const { base, fell } = await start(createGate(false))
+    const text = await raw(base, undefined, "1.0")
+    expect(text).toStartWith("HTTP/1.1 403")
+    expect(text).toContain('"code":"forbidden-host"')
+    expect(fell).toEqual([])
+  })
 })
 
 describe("streaming", () => {
