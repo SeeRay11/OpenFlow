@@ -1,3 +1,6 @@
+> **Historical:** written for the OpenCode engine, which OpenFlow no longer uses.
+> Current behaviour is in [README.md](../README.md) and [FLOW.md](../../../FLOW.md).
+
 # OpenFlow — Implementation Plan
 
 > **Historical.** This is the plan the package was built from, kept for the

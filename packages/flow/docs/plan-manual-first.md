@@ -1,3 +1,6 @@
+> **Historical:** written for the OpenCode engine, which OpenFlow no longer uses.
+> Current behaviour is in [README.md](../README.md) and [FLOW.md](../../../FLOW.md).
+
 # PLAN_FIRST.md — Manual-First Usability Specs
 
 **Purpose.** Make OpenFlow usable end-to-end **by a human, by hand, with no external

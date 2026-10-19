@@ -2,7 +2,7 @@
 
 Visual builder for multi-agent workflows. Drag role cards onto a canvas, wire a
 pipeline (planner → architect → coder), save it, and run it with real parallel
-agents on top of a headless `opencode serve`.
+agents on top of [Omp](#omp-engine-and-requirements), one omp process per card.
 
 A canvas runs in one of three [modes](#modes): a **pipeline** in dependency order,
 a **swarm** of peers arguing over rounds until a synthesizer decides, or an
@@ -11,17 +11,24 @@ can be run as a **gauntlet** — builders looped against fresh-context critics u
 the work clears a bar you wrote, bounded by money, wall clock and stall. When a run
 ends, a [coach](#after-a-run-the-coach) strip says how far to trust what it reported.
 
-OpenFlow is its own project, built on — and shipped as a fork of —
-[opencode](https://github.com/anomalyco/opencode), whose headless engine drives the
-agents underneath. Everything OpenFlow-specific lives in this package. No other
-package in the repo is modified, so upstream merges stay clean. It is not published
-to npm — it is an app, run it from the repo.
+Around every card the host adds [Prompt Uplift](#prompt-uplift) (the task is
+rewritten into a spec before it runs), [shared memory](#shared-memory-with-agent-substrate)
+(what one card learned is there for the next), and [Agent Swarm](#agent-swarm-in-cards).
+[Omp settings](#omp-settings) configure all of it from the app, and a
+[terminal](#terminal) opens in the bottom dock.
+
+OpenFlow is its own project, shipped as a fork of an upstream agent codebase whose
+engine it no longer runs. Everything OpenFlow-specific lives in this package. No
+other package in the repo is modified, so upstream merges stay clean. It is not
+published to npm — it is an app, run it from the repo.
 
 > OpenFlow is an independent fork. It is not affiliated with, sponsored by, or
-> endorsed by the OpenCode team.
+> endorsed by the team behind the upstream project.
 
 The plan it was built from, and the original build brief, are kept in
-[docs/](docs) for the reasoning; the code is the authority where they disagree.
+[docs/](docs) as history. They describe the earlier engine; this file and
+[FLOW.md](../../FLOW.md) describe how it works now, and the code is the
+authority where any of them disagree.
 
 ## Community
 
@@ -32,7 +39,8 @@ Changelog: [CHANGELOG.md](CHANGELOG.md), tagged on the
 
 ## Install
 
-**Prerequisites:** [Bun](https://bun.sh) 1.3+ and [Git](https://git-scm.com).
+**Prerequisites:** [Bun](https://bun.sh) 1.3+, [Git](https://git-scm.com), and
+[Omp](#omp-engine-and-requirements) 18.12.2 or newer on your `PATH`.
 
 ```bash
 git clone https://github.com/SeeRay11/OpenFlow.git
@@ -40,46 +48,51 @@ cd OpenFlow
 bun install
 ```
 
-`bun install` pulls the whole workspace — the OpenCode engine plus this package.
-First install is large; it downloads the engine's native deps and runs a
+`bun install` pulls the whole workspace, so the first install is large. It runs a
 `postinstall` (`packages/core/script/fix-node-pty.ts`) that marks the prebuilt
-`node-pty` `spawn-helper` binaries executable. It builds nothing, and it returns
-immediately on Windows.
+`node-pty` `spawn-helper` binaries of the vendored packages executable. It builds
+nothing, and it returns immediately on Windows. Install omp separately — see
+[Omp engine and requirements](#omp-engine-and-requirements).
 
 ## Stop anything already running
 
-The engine binds **4096** and the canvas **5174**. A previous run still holding
-them is the usual cause of `Error: Unexpected error` / `ServeError` from
-`opencode serve` — a failed bind, not a broken install. `netstat -ano | findstr
-:4096` (Windows) or `lsof -i :4096` names the owner.
+The canvas binds **5174**. A previous run still holding it is the usual reason
+the canvas does not start: both hosts refuse to move to another port and print
+what to do. `netstat -ano | findstr :5174` (Windows) or `lsof -i :5174` names the
+owner.
 
-`bun openflow.ts` already reuses a healthy engine and frees a port a dead run
+`bun openflow.ts` already reuses a canvas that answers and frees a port a dead run
 left bound, so a manual kill is only needed when you want a genuinely fresh
-engine — notably after editing `opencode.json` or merging agents, which the
-engine reads once at boot and caches for the life of the process.
+canvas. Omp processes need no cleanup: the canvas host starts them in their own
+process groups and closes every one when it exits normally (Ctrl+C, a service
+stop).
 
 ```powershell
-Get-NetTCPConnection -LocalPort 4096,5174 -State Listen -ErrorAction SilentlyContinue |
+Get-NetTCPConnection -LocalPort 5174 -State Listen -ErrorAction SilentlyContinue |
   Select-Object -ExpandProperty OwningProcess -Unique |
   ForEach-Object { taskkill /pid $_ /T /F }
 ```
 
 ```bash
-lsof -t -i :4096 -i :5174 | xargs kill -9
+lsof -t -i :5174 | xargs kill -9
 ```
 
-Both no-op when nothing is listening. Both kill whatever holds those ports, so
+Both no-op when nothing is listening. Both kill whatever holds the port, so
 confirm the owner first if you run something else there.
 
 ## Run it
 
-OpenFlow is two processes — `opencode serve` and the canvas — and the launcher
-at the repo root starts both, waits for the engine's `/api/health`, and opens the
-browser:
+OpenFlow is one process: the canvas. Its host starts Omp itself, one `omp` per
+card session. The launcher at the repo root checks which omp it will find,
+starts the canvas, and opens the browser:
 
 ```bash
 bun openflow.ts
 ```
+
+The launcher prints `omp <version>`, or a warning with the fix when omp is
+missing or too old. It starts either way: the app opens and its
+[Omp settings](#omp-settings) say what is wrong.
 
 `openflow.ps1` and `openflow.sh` are shims over that same file: they hold no
 launcher logic, they only translate their platform's flags into the environment
@@ -102,36 +115,29 @@ running. `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` and
 | PowerShell | shell | environment | what it does |
 |---|---|---|---|
 | `-Project <dir>` | `-p`, `--project <dir>` | `OPENFLOW_PROJECT` | repo the agents read and write |
-| `-ServerPort <n>` | `-s`, `--server-port <n>` | `OPENCODE_SERVER_URL` | engine port, default 4096 |
 | `-Built` | `-b`, `--built` | `OPENFLOW_BUILT=1` | build and serve `dist/` instead of running vite |
-| `-Manage` | `-m`, `--manage` | `FLOW_MANAGE_SERVER=1` | canvas owns the engine, enabling its restart button |
 | `-Help` | `-h`, `--help` | — | print the flag list |
 | — | — | `OPENFLOW_DRY_RUN=1` | print the resolved plan and start nothing |
 
-A port left bound by a dead run is freed before starting; a port that is already
-serving is reused rather than started twice.
+A port left bound by a dead run is freed before starting; a canvas that is
+already serving is reused rather than started twice.
 
-By hand it is the same two commands. The server first:
-
-```bash
-bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096
-```
-
-Then the canvas:
+By hand it is one command:
 
 ```bash
 bun run --cwd packages/flow dev
 ```
 
 Open http://localhost:5174 — the dev server binds the `localhost` name, so
-`127.0.0.1:5174` refuses the connection. The header shows `connected` once the UI
-can reach the server.
+`127.0.0.1:5174` refuses the connection. The statusbar shows
+`connected · omp <version>` once the UI can reach the host and omp answers.
 
 ### Built, without vite
 
 `bun run build` emits a static bundle, and a static bundle on its own is a dead
-page: the `/flow/api` store and the proxy to `opencode serve` are what make save,
-load and run work. `server.ts` serves all three.
+page: the `/flow/api` store and the host modules that drive Omp (engine, uplift,
+memory, swarm, settings, terminal) are what make save, load and run work.
+`server.ts` serves all of them.
 
 ```bash
 bun run --cwd packages/flow start
@@ -144,35 +150,44 @@ run `build` yourself; that is what the launcher's `-Built` uses.
 
 ### Loopback only
 
-`/flow/api` writes pipelines and run logs into the project and merges agents into
-its `opencode.json`, and nothing authenticates the caller. On loopback that is
-you talking to your own machine; on a real interface it is a remote file-write
-hole in whatever repository OpenFlow is pointed at.
+`/flow/api` writes pipelines and run logs into the project, starts omp processes
+that can edit that project and run commands in it, and nothing authenticates the
+caller. On loopback that is you talking to your own machine; on a real interface
+it is remote code execution in whatever repository OpenFlow is pointed at.
 
 So both hosts refuse to serve anything but loopback unless `FLOW_ALLOW_REMOTE=1`
 says otherwise — `bun start` exits, and `vite --host` fails to start rather than
-coming up with the store quietly exposed. Request bodies are capped at 8 MB on
-both.
+coming up exposed. Request bodies are capped at 8 MB on both. With
+`FLOW_ALLOW_REMOTE=1` the [terminal](#terminal) is switched off, but the rest of
+the API is reachable by anyone who can reach the port, so set it only on a
+network you trust.
 
 Environment overrides. Setting one differs per shell — `VAR=1 bun openflow.ts` on
 bash/zsh/Git Bash/WSL, `$env:VAR=1; bun openflow.ts` on PowerShell,
-`set VAR=1 && bun openflow.ts` on cmd, `env VAR=1 bun openflow.ts` on fish:
+`set VAR=1 && bun openflow.ts` on cmd, `env VAR=1 bun openflow.ts` on fish. These
+are read by the canvas host unless the table says otherwise:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OPENCODE_SERVER_URL` | `http://127.0.0.1:4096` | server the proxy forwards to, and the port the launcher starts |
 | `OPENFLOW_PROJECT` | last used, else repo root | project the agents work in, and where `.openflow/` is written |
+| `OPENFLOW_STATE_DIR` | `~/.openflow` | where OpenFlow keeps its own state: the remembered folder and pipeline, `omp-settings.json`, `memory-ignore.json`, and every card's session files |
 | `FLOW_PORT` | `5174` | port for `bun start` (dev server is fixed at 5174) |
 | `FLOW_HOST` | `127.0.0.1` | interface for `bun start` |
-| `FLOW_ALLOW_REMOTE` | unset | exactly `1` allows a non-loopback bind, for both hosts — `true` and `yes` do not count |
-| `FLOW_PROXY_TIMEOUT` | `30000` | ms before a proxied `/api` call gives up, on both hosts |
-| `OPENFLOW_STATE_DIR` | `~/.openflow` | where the remembered folder and pipeline are stored |
-| `FLOW_MANAGE_SERVER` | unset | `1` lets the canvas host spawn and own `opencode serve` (see [the restart button](#the-restart-button)) |
-| `OPENCODE_SERVE_COMMAND` | unset | the command that host runs for the engine, when the default is wrong |
+| `FLOW_ALLOW_REMOTE` | unset | exactly `1` allows a non-loopback bind, for both hosts, and turns the terminal off — `true` and `yes` do not count |
 | `OPENFLOW_BUILT` | unset | launcher only: build the bundle and serve it through `server.ts` instead of vite |
 | `OPENFLOW_DRY_RUN` | unset | launcher only: print the resolved plan and start nothing |
-| `OPENCODE_AUTH_CONTENT` | unset | stands in for the CLI's `auth.json` when reading importable keys |
-| `XDG_DATA_HOME` | `~/.local/share` | root of the path that `auth.json` is read from — `$XDG_DATA_HOME/opencode/auth.json`, on every platform |
+| `ULTRATHINK_ROOT` | unset | claude-ultrathink checkout for [Prompt Uplift](#prompt-uplift), when the setting is empty |
+| `SUBSTRATE_URL` | unset | Agent Substrate address for [shared memory](#shared-memory-with-agent-substrate), when the setting is empty |
+| `SUBSTRATE_TOKEN`, `SUBSTRATE_TOKEN_FILE`, `SUBSTRATE_TOKENS_DIR` | unset | the Substrate token, in that order; `SUBSTRATE_TOKENS_DIR` defaults to `/etc/substrate/tokens` |
+| `SWARM_ROOT`, `ULTRATHINK_SWARM_ROOT` | unset | agent-swarm checkout for [Agent Swarm](#agent-swarm-in-cards), when the setting is empty |
+| `SWARM_ED25519_KEY_FILE`, `SWARM_ED25519_KEY`, `SWARM_SIGNING_KEY` | unset | the swarm's assignment-signing key; the only variables of these families a card receives, and only when its swarm is on |
+| `*_API_KEY` (for example `OPENROUTER_API_KEY`) | unset | provider keys; passed to every card, never to the terminal |
+| `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY` | unset | also read by the planner's Jev decisions, when one is set |
+
+The Substrate and swarm variables are read by the host and never given to a card
+(see [what is isolated](#omp-engine-and-requirements)). A value saved in Omp
+settings wins over its variable, and the Cards tab says which one each value
+comes from.
 
 ### Where it picks up
 
@@ -200,149 +215,388 @@ Both are recorded host-side in `~/.openflow/state.json` — outside any project,
 since they describe the app rather than the repo, and a user might commit or
 delete the repo.
 
-## How it talks to opencode
+## Omp engine and requirements
 
-Both hosts proxy `/api`, `/global`, `/event` and `/mcp` to `opencode serve`, so the
-browser is same-origin with the server — no CORS and no password plumbing. The
-client is `createOpencodeClient` from `@opencode-ai/sdk/v2/client` (the same
-client `packages/app` uses).
+Cards run on Omp, the Oh-My-Pi coding agent. The canvas host starts one
+`omp --mode rpc-ui` process per card session and drives it over omp's RPC
+protocol. OpenFlow has no agent loop of its own: a card has omp's tools, omp's
+model providers, and — when you turn them on — omp's extensions.
 
-The store routes live in `lib/store.ts` and are mounted by both the vite plugin
-(`vite/flow-store.ts`) and `server.ts`, so dev and built cannot drift into two
-different stores.
+**Requirements**
 
-`@opencode-ai/sdk-next` is deliberately *not* used: its `OpenCode.create` builds
-`createEmbeddedRoutes()` and runs the server in-process through Effect layers,
-which is not something a browser app can do.
+- **omp 18.12.2 or newer** (`MIN_OMP_VERSION` in `shared/omp.ts`), on `PATH` or at
+  the absolute path set as **Binary** in [Omp settings](#omp-settings). Install it
+  with `bun add -g @oh-my-pi/pi-coding-agent`, update it with `omp update`. The
+  host runs `omp --version` to check, and caches the answer for 30 seconds.
+- **A login** in the OpenFlow profile — see [First run](#first-run).
+- Optional, each only for its own feature: the `claude` CLI logged in and a
+  claude-ultrathink checkout for Prompt Uplift; a reachable Agent Substrate and
+  its token for shared memory; an agent-swarm checkout, `python3` with
+  `cryptography`, and a signing key for Agent Swarm. Without one of them the card
+  still runs; each section below says what you see instead.
 
-Endpoints driven, all v2:
+**What is isolated**
 
-| Call | Endpoint |
+- **A separate profile.** Cards, the model catalog and the terminal run under the
+  omp profile `openflow` (`--profile`): its own logins, config, MCP servers,
+  skills and sessions. OpenFlow never reads or rewrites your default profile. The
+  one exception is the **Copy logins** button, which copies logins out of it when
+  you ask.
+- **`--no-extensions`.** Cards do not load the extensions and plugins installed
+  in your omp, unless you tick *Load my omp extensions and plugins in cards*. A
+  card whose swarm is on loads agent-swarm's extension explicitly.
+- **An environment allowlist.** A card's environment is built from a short list
+  of host variables (`PATH`, `HOME`, locale, proxy and certificate variables,
+  `XDG_*`, `PI_*`, `OMP_*`, `BUN_*`, `NODE_*`, `GIT_*`, and provider `*_API_KEY`
+  keys), not copied from the host. Everything starting `SUBSTRATE_`, `SWARM_`,
+  `ULTRATHINK_` or `AIO_`, and everything ending `_TOKEN` or `_SECRET`, is
+  dropped. The one exception is the Agent Swarm signing key, passed through by
+  name to a card whose swarm is on.
+- **No double planning.** Every card gets `ULTRATHINK_UPLIFT=0` and
+  `AIO_UPLIFT=0`, so a plugin of yours cannot plan a task that Prompt Uplift
+  already handled, or start detached swarm lanes of their own.
+- **Files outside the project.** A card's role prompt, config overlay, session
+  files and swarm task store live under the state directory, never in your
+  repository.
+
+## First run
+
+The `openflow` profile starts empty, so a fresh install has no logins and the
+model menu is empty. Open **Omp settings** (the sliders button in the titlebar).
+Its Status tab says what is missing: omp not found, omp too old, or *The openflow
+profile has no credentials.* For the last one there are two ways out:
+
+- **Copy logins from your default profile.** If you already use omp, this button
+  — shown on the Status tab beside that problem — asks for confirmation, then
+  copies the API keys and logins stored in your default profile into the OpenFlow
+  profile. Nothing is removed from the default profile. The logins pass between
+  the two omp commands in memory only: they are never put in a file, a log or an
+  answer to the browser.
+- **`/login` in the terminal.** Open the [terminal](#terminal) with `` Ctrl+` ``, keep
+  the `omp` tab, and type `/login`. That omp runs under the OpenFlow profile, so
+  the login lands there.
+
+Then open a card's model menu: the models of every provider you logged in to are
+listed. The menu can make a model the default for new cards.
+
+## How the host drives Omp
+
+The browser never talks to omp. The engine that schedules a run lives in the
+page and calls the host's `/flow/api/engine/*` routes; `shared/engine.ts` is that
+wire and `src/server/client.ts` is the browser side of it. The host
+(`lib/host` composes `lib/omp`, `lib/omp-config`, `lib/uplift`, `lib/substrate`,
+`lib/swarm` and `lib/terminal`) turns those calls into omp processes, and maps
+omp's frames back onto the events the engine reads. Both hosts mount the same
+code — the vite plugin (`vite/flow-store.ts`) and `server.ts` — so dev and built
+cannot drift.
+
+One card session is one `omp --mode rpc-ui` process, in its own process group, in
+the card's working directory. It is started with the card's role prompt
+(`--append-system-prompt`), a per-card config overlay (`--config`), the profile
+(`--profile`), `--no-extensions` unless you opted in, `--approval-mode yolo` for
+the auto [permission policy](#permissions-during-a-run) or the *Manual approval
+mode* setting for ask-me, `--max-time` from *Longest card session* (480 minutes by
+default), and a session directory of its own. Closing its stdin is the graceful
+stop; the group is signalled if it does not exit. A session nobody has touched for
+30 minutes is closed and stays resumable from its session directory, and a page
+reload does not end a run's sessions, because the host owns them.
+
+| Call | Route |
 |---|---|
-| is the engine up | `GET /api/health` |
-| create a node's session | `POST /api/session` |
-| send the node prompt | `POST /api/session/{id}/prompt` |
-| detect completion | `GET /api/session/active` |
-| read the node's answer | `GET /api/session/{id}/message` |
-| live status | `GET /api/event` (SSE) |
-| stop | `POST /api/session/{id}/interrupt` |
-| answer a permission request | `POST /api/session/{id}/permission/{requestID}/reply` |
-| answer a question the agent asked | `POST /api/session/{id}/question/{req}/reply` (or `/reject`) |
-| mcp status and connection | `GET /mcp`, `POST /mcp/{name}/connect`, `POST /mcp/{name}/disconnect` |
-| pickers | `GET /api/agent`, `GET /api/model` |
-| provider list + stored keys | `GET /api/integration` |
-| store a key | `POST /api/integration/{id}/connect/key` |
-| remove a key | `DELETE /api/credential/{id}` |
+| is the host up, and omp usable | `GET /flow/api/engine/health` |
+| the model catalog | `GET /flow/api/engine/models` |
+| live events (SSE) | `GET /flow/api/engine/events` |
+| open a card's session | `POST /flow/api/engine/sessions` |
+| list sessions, newest first | `GET /flow/api/engine/sessions` |
+| which sessions are executing | `GET /flow/api/engine/sessions/active` |
+| send the card's prompt | `POST /flow/api/engine/sessions/{id}/prompt` |
+| wait until it settles | `POST /flow/api/engine/sessions/{id}/wait` |
+| stop | `POST /flow/api/engine/sessions/{id}/interrupt` |
+| answer a permission request | `POST /flow/api/engine/sessions/{id}/permission/{requestID}` |
+| answer a question the agent asked | `POST /flow/api/engine/sessions/{id}/question/{requestID}` (or `/reject`) |
+| read back | `GET /flow/api/engine/sessions/{id}/transcript`, `/final`, `/steps`, `/calls` |
+| close one session / every session of a run | `DELETE /flow/api/engine/sessions/{id}` / `POST /flow/api/engine/runs/release` |
 
-## API keys and models
+The store routes (`lib/store.ts`) are separate: pipelines, run logs, roles, MCP
+servers, skills, folders, checkpoints and worktrees. Both hosts mount them too, so
+dev and built cannot drift into two different stores.
 
-A fresh install can already run something. `opencode serve` serves the `opencode`
-(zen) provider's free tier to a browser that has never seen a key
-(`core/src/plugin/provider/opencode.ts`), and OpenFlow lets a node use those
-models with no credential connected — the ids ending in `-free`, and only the
-ones this build can actually route (`isFreeModel` in `src/server/providers.ts`).
-The tier is a shared quota, so a `-free` model answering `429`, or `400`, is that
-model being busy or broken rather than the install being wrong; the per-node
-**test** button is how you find out which ones are answering right now. Zen's
-*paid* models sit on the same row and stay locked, because dispatching one would
-bill an account nobody connected.
+## Models and logins
 
-Everything else needs a key, and the **api keys** button in the titlebar is where
-it goes: opencode's own two-step connect dialog — search the providers
-models.dev knows, pick one, paste its key (`src/ui/providers-panel.tsx`). Keys go
-to the integration store the model catalog reads (`POST
-/api/integration/{id}/connect/key`), so a saved key takes effect immediately — no
-`opencode serve` restart, unlike an agent merge. Only then do that provider's
-models appear in the model menu, which is opencode's `dialog-select-model`
-menu: 284px, search at the top, one heading per provider, `↑`/`↓`, `Enter`,
-`Esc`.
+Omp holds the provider logins; OpenFlow stores none. The model menu is the
+catalog omp reports for the OpenFlow profile (the host asks omp once and caches
+the answer for ten minutes), grouped by provider and searchable. A provider
+without a login contributes no models.
 
-A provider counts as connected when a key is stored here **or** one of its
-environment variables is really set on the host — `GET /flow/api/env` answers
-which of the names asked about are set, never their values. That is a whole-row
-question, and it stays strict: it answers "which providers did the user connect",
-which is not the same question as "which models can run". The free zen tier is an
-exception granted per model, not per provider, so zen still reads as unconnected
-while its free models remain selectable.
+- **Giving the profile a login:** the *Copy logins* button or `/login` in the
+  terminal, see [First run](#first-run). A provider key in the host's
+  environment (`*_API_KEY`) also reaches every card; the terminal never gets one.
+- **Whether a login works** is only known when something is sent. The **test**
+  button beside a card's model runs one throwaway session and reports the
+  provider's own answer — a real `403 Authorization failed` beats guessing.
+- **Prices** come from the catalog's per-million-token costs. A model the catalog
+  quotes no price for is *unpriced*, never free: its tokens are shown and its
+  money is not.
+- **A retired or unknown model id** fails preflight before a session is created.
 
-The catalog also lies about what exists. Its `opencode` models come from
-models.dev, and on 2026-08-13 it listed 90 while zen served 61 — the other 29
-answer a run with `401 Model kimi-k2 is not supported` in about 1.4s. Zen's list
-is public, so the host reads it (`lib/zen.ts`, `GET /flow/api/zen-models`,
-10-minute cache) and drops the models zen does not serve. When that fetch fails
-the answer is `null` and the catalog is left alone — an offline user must not
-lose every zen model at once. No other provider can be checked this way: their
-`/models` needs the credential, which lives in the opencode server's store and
-never reaches OpenFlow.
+## Omp settings
 
-Three things have to line up before a model runs, and the UI distinguishes them
-because they fail in completely different ways:
+The sliders button in the titlebar opens **Omp settings**. A banner about omp
+being missing offers the same dialog. It has four tabs:
 
-1. **A credential**, or the free-tier exemption. No stored key and no
-   environment variable means the provider is locked and contributes no models
-   at all — except zen's runnable `-free` ids, which are unlocked per model.
-2. **A runner for the provider's API.** `core/src/session/runner/model.ts`
-   routes exactly three shapes: `@ai-sdk/openai`, `@ai-sdk/anthropic`, and
-   `@ai-sdk/openai-compatible` with a base URL. Anything else — `@ai-sdk/groq`,
-   `@openrouter/ai-sdk-provider`, `@ai-sdk/google` — fails at dispatch with
-   `UnsupportedApiError` no matter how valid the key is. Those models are
-   listed as **no runner** and their providers sink to the bottom; most of
-   openrouter's catalog and all of groq's land there.
+- **Status** — the omp binary, its version, the profile, the profile's config
+  directory and how many providers are logged in, plus every problem with the one
+  thing that fixes it. This is where **Copy logins from your default profile**
+  lives. It also shows whether shared memory is reachable and whether the swarm
+  can run.
+- **Cards** — how every card's omp session is started: binary, profile, whether to
+  load your own extensions, manual approval mode, longest card session, and the
+  Prompt Uplift, Shared memory and Agent swarm settings described below. Below the
+  form, *What cards use today* says for each value an environment variable can
+  stand in for (binary, profile, claude-ultrathink, agent-swarm, Substrate URL)
+  whether it is set here, comes from a named variable, or is the default — names
+  of variables only, never their values. **Save**, **Discard changes** and **Reset
+  to defaults** (confirmed) live at the bottom.
+- **Memory** — Substrate status (on or off, reachable, surface, project, how long
+  memories are kept), the entries remembered for the pipeline that is open, and
+  **Forget this pipeline's memory**. Open the dialog from a pipeline to browse or
+  forget its entries.
+- **Omp options** — omp's own configuration, read and written through
+  `omp config list|get|set|reset` against the OpenFlow profile, so omp validates
+  every value. It is searchable by key, description or category and grouped by
+  omp's own headings. Booleans, numbers, choices and strings are edited in place;
+  lists and maps are shown read-only with an **Open terminal** button; a
+  credential shows as *set* and is never revealed. **Reset** puts an option back
+  to omp's default.
 
-   Nine of those providers speak OpenAI chat anyway — upstream's own
-   `llm/src/providers/openai-compatible-profile.ts` says so, and publishes the
-   base URL: baseten, cerebras, deepinfra, deepseek, fireworks, groq,
-   openrouter, togetherai, xai. **Repackage** in the provider panel rewrites
-   them as `@ai-sdk/openai-compatible` with that URL in opencode's *global*
-   config (`~/.config/opencode/opencode.json`), the only config a run reads — a
-   session's location is the engine's cwd, never `OPENFLOW_PROJECT`. The file
-   is backed up first, the override follows whichever config dialect the file
-   already uses, and the engine is restarted, because config is read once at
-   boot. Stored credentials still resolve: the provider id does not change.
-   What is lost is any provider plugin keyed to the old package — OpenRouter's
-   `HTTP-Referer`/`X-Title` headers, and its disabling of the broken
-   `gpt-5-chat` aliases.
-3. **A key that is actually accepted, for a model the account may use.**
-   Nothing verifies a key when it is stored, and the catalog advertises models
-   an account has no entitlement for. The **test** button beside a node's model
-   runs one throwaway session and reports the provider's own answer — a real
-   `403 Authorization failed` or `410 ... end of life` beats guessing.
+Settings are stored in `<state>/omp-settings.json` (`~/.openflow` by default; see
+`OPENFLOW_STATE_DIR`), written atomically with mode 600. The file holds no secrets
+by construction: every field is a path, a flag, a number or a URL, and a Substrate
+URL with a username or password in it is refused. A file that cannot be read is
+moved to `omp-settings.json.bad` and the defaults are used, and the dialog says
+so.
 
-`opencode providers login` writes to `auth.json`, which this server does **not**
-read for its catalog. If the CLI already holds keys, the panel offers to import
-them; the keys are read and connected by the OpenFlow host, so they are never
-served to the browser.
+**Secrets never go through the app.** A provider login is entered in the terminal
+(`/login`) or copied with the button; a Substrate token and a swarm signing key
+come from the host's environment. A saved change applies to the next card that
+starts, not to one already running.
 
-| Store route | Purpose |
+| Setting | Default | Notes |
+|---|---|---|
+| Binary | omp from `PATH` | absolute path of an executable |
+| Profile | `openflow` | 1–32 lowercase letters, digits, `-` or `_`; empty uses omp's default profile |
+| Load my omp extensions and plugins in cards | off | off runs cards with `--no-extensions` |
+| Manual approval mode | ask before writes and commands | or *ask before everything*; used when a run's permissions are *ask me* |
+| Longest card session | 480 minutes | 1 to 1440 |
+| Uplift each card's task before it runs | on | see [Prompt Uplift](#prompt-uplift) |
+| Planner time limit | 240000 ms | 10000 to 1800000 |
+| Let the planner ask clarifying questions | off | one more model call; cards run unattended |
+| claude-ultrathink location | omp's plugin directory | a directory containing `bin/run-bun` |
+| Share memory across the cards of a run | on | see [shared memory](#shared-memory-with-agent-substrate) |
+| Keep memories | 30 days | for this graph, 30 days, or permanently |
+| Most memories per card | 8 | 0 to 50 |
+| Repository scope | from the project's git remote | `owner/name` |
+| Substrate URL | none | `http(s)://`, no credentials |
+| Swarm | auto | off, auto, or always; see [Agent Swarm](#agent-swarm-in-cards) |
+| agent-swarm location | none | a directory containing `omp/package.json` |
+
+## Prompt Uplift
+
+Every task card has its task rewritten into a specification before it runs. The
+host calls claude-ultrathink's headless planner (`bin/run-bun hooks/engine.ts`,
+JSON in and JSON out) with the Claude CLI as its engine. **Jev**, the planner's
+decision logic, decides whether the task needs it: a clear, self-contained task is
+left alone (the card shows `skipped (Jev)`, reason `jev-skip`), a vague one is
+rewritten into a spec. Jev reads `OPENROUTER_API_KEY` or `AI_GATEWAY_API_KEY` from
+the host's environment when one is set.
+
+Only the card's own task text is uplifted. The output of upstream cards,
+attachments, and protocol turns (a verdict, a dispatch result, a forced final
+answer) never are. A task that already starts with a spec tag is sent as it is.
+The original and the uplifted text are both kept on the card and in the run log,
+and the inspector shows both.
+
+**Requirements.** The `claude` CLI logged in (run `claude` once), Bun, and a
+claude-ultrathink checkout: the *claude-ultrathink location* setting, else
+`ULTRATHINK_ROOT`, else `~/.omp/plugins/node_modules/ultrathink`. The planner
+runs with an environment of its own, in its own process group, and its tracking,
+shipping and learning loops are switched off: it plans, and nothing else.
+
+The card's chip says what happened:
+
+| Chip | Meaning |
 |---|---|
-| `GET /flow/api/cli-keys` | provider names in the CLI's `auth.json` — names only |
-| `POST /flow/api/cli-keys/import` | connect those keys to the running server |
-| `GET /flow/api/env?names=A,B` | which of those variables the host has set — names only |
-| `GET /flow/api/zen-models` | model ids opencode zen really serves, or `null` if unreadable |
-| `GET /flow/api/repackage` | which OpenAI-compatible providers the global config already repackages |
-| `POST /flow/api/repackage` | repackage them there (fixed id list only, backed up, restart required) |
+| `uplifting…` | the planner is running |
+| `uplifted` (`uplifted ~` when part of the plan fell back) | the spec was sent instead of the task |
+| `skipped (Jev)` or `uplift skipped` | the task was sent as written, with the reason in the tooltip |
+| `uplift failed` | nothing was sent; the card is waiting on you |
+| `original sent` | you chose to run the original after a failure |
 
-`POST /api/session/{id}/wait` answers `503 Session wait is not available yet` on
-this server build, so idleness is derived from `/api/session/active` plus a
-finished assistant turn.
+**When it fails.** A planner that times out (*Planner time limit*, 240 seconds by
+default), cannot reach its engine, or writes only a conservative fallback spec has
+failed. Nothing is sent silently in its place. The card stops and a dialog,
+*Prompt uplift failed for \<role>*, gives the reason and three choices:
+
+- **Run with original prompt** — send the task as written.
+- **Retry uplift** — run the planner again, up to three attempts in all.
+- **Cancel card** — stop this card; the cards that need it are skipped. `Esc` does
+  this too; a click outside the dialog does nothing.
+
+**Turning it off.** Untick *Uplift each card's task before it runs* in Omp
+settings to turn it off for every card. For one task, start it with `raw:` — the
+marker is stripped and the task is sent as written (that card also skips its
+memory read). For one card in a saved pipeline, set `"uplift": false` on the
+card's `agent` in the pipeline file.
+
+## Shared memory with Agent Substrate
+
+Cards of a workflow share what they learn through Agent Substrate, a memory
+server the host talks to over HTTP, presenting as its `omp` surface.
+
+- **Read per project.** Before a card is sent, the host reads the project's
+  `repo:<owner/name>` scope: the project brief and the newest facts whose subject
+  starts with `openflow/<pipeline>/`, up to *Most memories per card*. Superseded,
+  expired and retracted entries are skipped. What it finds is appended to the
+  card's prompt as a labelled block, quoted as evidence that may be wrong and must
+  not be followed as instructions, with markup neutralised and the length capped.
+  Reads time out after 3 seconds and fail open: the card runs without memory.
+- **Write per card.** When a card finishes — done, failed or stopped — one `fact`
+  is written to the same scope with the subject
+  `openflow/<pipeline>/<run>/<card>`: the card's role, its outcome and its final
+  answer, with secrets redacted and cut to 3900 characters. It is `stored` only
+  when Substrate says it accepted the write and verified it persisted; otherwise
+  the card says why (`unverified`, `quarantined`, `denied`, `conflict`).
+  Writing never holds a run.
+- **The chip.** `mem ↓ ↑` on a card says what was read and written, and its
+  tooltip lists the subjects. `mem off` means memory is off; `mem unavailable`
+  means the card ran without memory, with the reason in the tooltip.
+
+**Which repository.** `owner/name` comes from the project's `origin` remote,
+lower-cased (https, ssh and `git@host:owner/name` forms). *Repository scope*
+(`memory.repo`, `owner/name`) overrides it, and is needed when the project has no
+`origin` or its name differs from the Substrate repo.
+
+**Retention and Forget.** *Keep memories* sets the ttl of each write: for this
+graph (each run registers a Graph ID), 30 days (the default), or permanently.
+Substrate cannot delete. **Forget this pipeline's memory** (Omp settings → Memory)
+writes a retraction marker for each entry and records them in
+`<state>/memory-ignore.json`, so no card reads them again from this host; the
+entries stay in Substrate until their ttl lapses, and the dialog says so. If
+Substrate is unreachable, the host still ignores them locally but no marker is
+written, and it says that too.
+
+**What the host reads.** The Substrate address is the *Substrate URL* setting, else
+`SUBSTRATE_URL`; there is no default. The token is `SUBSTRATE_TOKEN`, else the
+first line of the file named by `SUBSTRATE_TOKEN_FILE`, else
+`<SUBSTRATE_TOKENS_DIR or /etc/substrate/tokens>/omp`. The `omp` surface needs a
+`fact` grant on the repository scope. Only the host talks to Substrate: a card's
+environment never contains a `SUBSTRATE_*` variable or any `*_TOKEN`. Untick
+*Share memory across the cards of a run* to turn it off.
+
+## Agent Swarm in cards
+
+*Agent Swarm* here is agent-swarm's omp extension, loaded into a card's own omp
+session. It is not the canvas's `swarm` [mode](#modes), which schedules several
+cards against each other.
+
+| Swarm | What the card gets |
+|---|---|
+| `off` | the extension is not loaded; the card runs plain |
+| `auto` (default) | the extension is loaded and its own classifier decides whether a prompt is software-delivery work and, if so, adds a hint to delegate |
+| `always` | the extension is loaded and the card's system prompt tells it to hand software-delivery work to `a01-orchestrator` through the `task` tool, and to answer questions and trivial lookups itself |
+
+The mode is the *Swarm* setting in Omp settings → Cards. A saved pipeline can
+override it: `swarm` on a card's `agent`, or `defaultSwarm` on the pipeline; there
+is no control for either in the canvas yet. OpenFlow never uses the extension's
+`/swarm` command, which writes `.claude/swarm-state.json` and appends to
+`.planning/STATE.md` in the working directory.
+
+**Preflight.** Before a card whose swarm is `auto` or `always` starts, the host
+checks that the swarm can run, without reading any secret: an agent-swarm
+checkout (the *agent-swarm location* setting, else `SWARM_ROOT`, else
+`ULTRATHINK_SWARM_ROOT`) holding `omp/package.json` and `scripts/orch_plan.py`;
+`python3` that runs; Python that can import `cryptography`; a signing key; and a
+task-store directory it can create under the state directory. If any check
+fails the card runs with its swarm **off** and says so — *swarm is off for this
+card* followed by what is wrong and the fix. The Status tab shows the same check
+as *ready* or *degraded*. The same check answers
+`GET /flow/api/swarm/preflight?mode=off|auto|always`.
+
+**What needs a signing key.** agent-swarm signs every assignment it hands a
+specialist with an Ed25519 key, and refuses to dispatch without one. Provide it in
+the host's environment as `SWARM_ED25519_KEY_FILE` (a path), `SWARM_ED25519_KEY` or
+`SWARM_SIGNING_KEY`, or in `agent-swarm/signing-key.hex` under `$XDG_CONFIG_HOME`
+(`~/.config` by default), and restart. The unsigned development key is never
+offered. The key reaches the omp process only as an environment variable passed by
+name from the host, and only for a card whose swarm is on; its value is never put
+in a command line or a file.
+
+**The status chip.** Once a card delegates, or its swarm degrades, a line appears
+on the card — `swarm 2 running · 1 done`, with a pill per specialist and its last
+activity in the tooltip. It is red when a lane failed or the swarm degraded
+(`swarm degraded: <reason>`). A loaded extension that has not delegated shows
+nothing on the card; the inspector says so. Each card has its own task store
+under the state directory, and its swarm is limited to two levels of delegation
+(card, then `a01-orchestrator`, then specialists).
+
+## Terminal
+
+The terminal button in the titlebar, or `` Ctrl+` ``, opens a terminal in a dock along
+the bottom of the window. It runs in the project folder, and you switch between
+two kinds:
+
+- **`omp`** — omp itself, under the OpenFlow profile. This is where you `/login`,
+  run `omp` commands, and edit the lists and maps that Omp options shows
+  read-only.
+- **`shell`** — your login shell (`$SHELL` when it is listed in `/etc/shells`,
+  else `/bin/sh`; `%ComSpec%` on Windows).
+
+It is for the things the app deliberately does not do for you: logging in,
+inspecting why a card failed, and running a command against the same project the
+cards work on. The host keeps up to four sessions, replays the last 2 MiB of
+output when you reconnect, kills a session nobody has been attached to for ten
+minutes, and keeps the last few exited ones so the dock can offer *Restart*.
+Everything typed in the dock goes to the terminal — `Esc` included — except
+`` Ctrl+` ``, which returns to the dock's own controls; `Ctrl+Shift+C` copies the
+selection. The dock and a card's activity drawer share the bottom of the window,
+so opening one closes the other.
+
+**The terminal is code execution as you**, so it is gated three ways. Every
+request must carry the `x-openflow-pty` header, which a web page on another origin
+cannot send without a CORS preflight this host never answers. Its `Origin` must
+equal the loopback `Host` it was sent to. And the WebSocket is opened with a
+one-shot ticket that expires after 60 seconds. The browser sends only a kind —
+never a command, a directory or an environment — and the host decides all three.
+The shell's environment is the same allowlist as a card's, without provider
+`*_API_KEY` keys and without any Substrate, swarm or `*_TOKEN` variable.
+
+With `FLOW_ALLOW_REMOTE=1` the terminal is **disabled**: its routes answer 403
+(`terminal-disabled`). The same host code serves both runtimes: `server.ts` runs under
+Bun and spawns the PTY with Bun's own, the vite dev server runs under Node and
+uses `@lydell/node-pty` and `ws` for the WebSocket upgrade. The browser draws the
+terminal with ghostty-web.
 
 ## Engine
 
-One node = one primary session. Nodes are grouped into topological layers; the
-nodes in a layer are dispatched concurrently (`prompt` only admits the input and
-schedules the agent loop, so the fan-out is real), then the whole layer is
-awaited before the next starts.
+One node = one card session = one omp process. Nodes are grouped into
+topological layers; the nodes in a layer are dispatched concurrently, each in its
+own process, so the fan-out is real, then the whole layer is awaited before the
+next starts.
 
-1. Validate — DAG, reachable nodes, models resolvable against `GET /api/model`.
+1. Validate — DAG, reachable nodes, models resolvable against the omp catalog.
 2. Layer with Kahn's algorithm.
-3. Dispatch each layer through a pool; prompt = pipeline briefing + role
-   instructions + run task + serialized upstream output.
-4. Live status from the event bus maps `session.next.*` events onto node badges.
-5. Capture each node's final assistant text; write `.openflow/runs/<id>.json`.
+3. Dispatch each layer through a pool. For every card the task is first
+   [uplifted](#prompt-uplift), then [shared memory](#shared-memory-with-agent-substrate)
+   is read; the prompt is pipeline briefing + role instructions + task (the spec
+   when uplift ran) + serialized upstream output + the memory block, if any.
+4. Live status: the host maps omp's frames onto the events the engine reads, and
+   they drive the node badges.
+5. Capture each node's final assistant text; write `.openflow/runs/<id>.json`; write
+   the finished card to shared memory.
 
 ### The pipeline briefing
 
-A card is an ordinary `opencode` session and knows nothing about the graph it
+A card is an ordinary omp session and knows nothing about the graph it
 sits in, so `pipelineBriefing()` in `src/graph/prompt.ts` prepends a map to every
 prompt: what OpenFlow is, every card in the pipeline with its execution layer and
 its wiring (`role (id) · receives: … · feeds: …`), which one the card is, and who
@@ -427,15 +681,20 @@ subagents" is bounded by the graph you drew, and every session is a card you can
 see, price and re-run. A diamond is refused: the second dispatch would re-prompt a
 session still working on the first parent's task.
 
-The orchestrator drives the loop by ending its message with a fenced block holding
+The orchestrator drives the loop with a tool call: `openflow_dispatch` hands work
+to cards it can see, `openflow_finish` ends the run with the answer. Both are
+omp RPC host tools that the host registers for the orchestrator's session; they
+execute nothing, the engine reads the calls back. If a card cannot call them, it
+can end its message with a fenced block holding
 `{ "dispatch": [ { "card": "coder", "task": "what to do" } ] }`, or
-`{ "final": "the answer" }` when it is done. The **last** block in the message
-wins, because a model often quotes the protocol before using it. A malformed block
-is handed back with the exact reason and re-asked up to three times, each ask
-terser than the last; protocol re-asks are not charged to the dispatch budget,
-because they buy nothing and the alternative is throwing away the run. A card id
-outside the orchestrator's own children is refused, and so is the same card twice
-in one batch — one card is one session, and two assignments would race it.
+`{ "final": "the answer" }` when it is done. The **last** call or block in the
+message wins, because a model often quotes the protocol before using it. A
+malformed one is handed back with the exact reason and re-asked up to three
+times, each ask terser than the last; protocol re-asks are not charged to the
+dispatch budget, because they buy nothing and the alternative is throwing away
+the run. A card id outside the orchestrator's own children is refused, and so is
+the same card twice in one batch — one card is one session, and two assignments
+would race it.
 
 Leaf cards never see the protocol: they are briefed as subagents, and their final
 message is handed back to the parent. Cards nobody dispatched end the run
@@ -477,8 +736,9 @@ tells the truth about what the run produced, and the error says which case it wa
 
 Bounds, all live at once, first to fire wins:
 
-- **Spend** — $5 by default, $500 at most. Priced client-side from models.dev, and
-  a card's cost is the sum of every session it has held.
+- **Spend** — $5 by default, $500 at most. Priced client-side from the model
+  prices omp's catalog reports, and a card's cost is the sum of every session it
+  has held.
 - **Wall clock** — 60 minutes by default, 12 hours at most.
 - **Stall** — the same batch (same cards, same task text) dispatched 3 rounds
   running. Measured out here rather than asked of the model, because that is what
@@ -507,7 +767,7 @@ it is told about, and a write there is not counted as changing the work.
 
 The engine runs **in the page**, so a reload, a crash or a closed tab ends a run
 with nothing alive to write `done`, `error` or `stopped` — while the sessions
-themselves are still on the server and still addressable. A live run is guarded by
+themselves are still held by the host and still addressable. A live run is guarded by
 `beforeunload`, and whatever gets past that is recoverable: a run still marked
 `running` on disk for this canvas, with nothing live, is one the page abandoned,
 and **Resume** appears beside Run.
@@ -558,127 +818,70 @@ Under `OPENFLOW_PROJECT`:
 ```
 .openflow/pipelines/<name>.json          the graph
 .openflow/runs/<runId>.json              per-run log: prompts, outputs, timings
-.openflow/generated/<name>.opencode.json generated agent defs
+.openflow/roles.json                     roles you added on this machine
+```
+
+Under the state directory (`OPENFLOW_STATE_DIR`, default `~/.openflow`), outside
+any project:
+
+```
+state.json                               the remembered folder and pipeline
+omp-settings.json                        Omp settings
+memory-ignore.json                       what Forget told this host to ignore
+omp/<project>/<run>/<card>/              one card's role.md, overlay.yml, session/ and swarm/
 ```
 
 `.openflow/runs/` is disposable — worth adding to `.gitignore` if you keep
 pipelines in version control.
 
-**save** writes the pipeline and the generated agent block. Saving under a name a
+**save** writes the pipeline. Saving under a name a
 *different* pipeline already holds is refused rather than silently overwriting —
 every new pipeline is born `untitled`, so that used to be a reliable way to
 destroy the last one. The refusal offers both ways out: rename this one, or save
 again to replace the other.
 
-**merge agents** folds the generated block into the project's `opencode.json`
-(backed up first, see below) and points every node at its own agent — this is the
-only way per-node tool allowlists take effect at runtime, because a session can
-only select tools through a named agent.
+Nothing is merged into an engine config and nothing needs a restart: a card is
+launched from its own spec, so an edited card simply starts a fresh omp process
+with the new spec. The card session files under `omp/` are kept after a run so it
+can be resumed; they live outside the project.
 
-An agent's key is `<pipeline>-<role>-<node id>` (`agentKey` in
-`src/server/store.ts`), so two nodes of the same role no longer collapse onto one
-agent whose permissions the last-written node decided. **A pipeline saved before
-that change needs one "merge agents" re-run** to pick up the new keys; without it
-the pre-flight check reports agents that do not exist on the server.
+### How a card is launched
 
-**run merges too.** Every run folds the current agent block into `opencode.json`
-before it starts, so a node never runs against a def you edited but forgot to
-merge. The write is skipped entirely when the block on disk is already
-identical, so a repeated run neither rewrites the file nor leaves a backup, and
-says nothing. A run that cannot read the project's MCP servers refuses to write
-at all rather than emit agents missing their `<server>_*` rules, and reports the
-failure instead of starting.
+The card's prompt becomes its role file (`--append-system-prompt`). The tool
+toggles in the inspector become a per-card config overlay that denies the matching
+omp tools, and a deny wins in every approval mode:
 
-**Restart the server after merging.** `opencode serve` reads a project's
-`opencode.json` once and caches it — there is no reload route, and dispose does
-not re-read it. Agents merged into a running server stay invisible until it
-restarts, so the order is: merge agents, restart `opencode serve`, reload the
-page, run. Both the merge button and the run pre-flight check for this and say
-so rather than letting a node run under an agent that does not exist.
-
-### The restart button
-
-The titlebar has a restart control for exactly that. The server has no shutdown
-route, so only the process that started it can restart it — which means the
-button does one of two things:
-
-- **the canvas started the engine** (`./openflow.sh -m`, `./openflow.ps1 -Manage`,
-  or `FLOW_MANAGE_SERVER=1` on either host): one click stops it, starts it again,
-  waits for `/api/health`, and re-reads agents, models and MCP status. About five
-  seconds.
-- **something else started it** — a terminal, a launcher without that flag: the
-  button says so and hands over the exact command to run, rather than pretending
-  a click can reach a process OpenFlow has no handle on.
-
-`FLOW_MANAGE_SERVER=1` is opt-in and never adopts a running engine: if the port
-already answers, the host leaves it alone and reports the command instead. The
-command it would run comes from `OPENCODE_SERVE_COMMAND` when set, otherwise the
-source checkout, otherwise `opencode serve --port <port>` on PATH.
-
-### Backups of your opencode.json
-
-A merge rewrites the project's `opencode.json`, so it copies the file aside
-first:
-
-| file | what it holds |
+| toggle | omp tools denied when it is off |
 |---|---|
-| `opencode.json.bak` | the config as it was before OpenFlow ever touched it — written once, never overwritten |
-| `opencode.json.prev.bak` | the state before the most recent merge |
+| `read`, `grep`, `glob` | the tool of the same name |
+| `edit` | `edit`, `write` and `ast_edit` — `write`, `patch` and `apply-patch` in older saved graphs fold onto it, and a deny anywhere in that group wins |
+| `bash` | `bash` and `eval` |
+| `websearch` | `web_search` |
+| `todowrite` | `todo` |
+| `question` | `ask` |
+| `skill` | omp starts with `--no-skills` |
+| `webfetch` | none: omp reads URLs with its `read` tool, which cannot be separated from file reads, so it stays on |
 
-Two files because one is not enough: `.bak` alone, rewritten on every merge,
-would hold an already-merged copy after the second merge and the original would
-be gone — quietly, since `opencode.json` is usually gitignored.
+A card whose node says nothing about tools runs with every tool omp has,
+`edit` and `bash` included, and preflight warns about it. An orchestrator also
+gets `openflow_dispatch` and `openflow_finish`, as described under
+[Orchestration](#orchestration).
 
-**A commented `opencode.json` is read, never written.** opencode parses its
-config with `jsonc-parser` and `allowTrailingComma`, so `//` comments and a
-trailing comma are perfectly valid there — but OpenFlow writes the file back as
-plain JSON, which would strip every comment. So any write into a config that
-carries them (merging agents, adding an MCP server, registering a skill) stops
-and says so, and leaves the file exactly as it was. Remove the comments, or make
-that change in `opencode.json` by hand.
+### Permissions during a run
 
-### Agent config shape
+A tool call can need approval. The toolbar's **permissions** policy decides who
+gives it:
 
-The generated block uses the config's *input* vocabulary — `prompt`, `permission`,
-`model`, `mode` — which the server translates on load into the `system` and
-`permissions` that `GET /api/agent` reports back. Emitting the reported form
-instead gets both fields silently ignored. Verified against a running server in
-both directions.
-
-Each tool toggle is written out explicitly: enabled becomes `"allow"`, disabled
-becomes `"deny"`, both landing as `{ action, resource: "*", effect }`. The older
-`agent.tools` field is marked `@deprecated Use 'permission' field instead` in the
-config schema and can only say allow or deny, so it is not used.
-
-Actions the graph says nothing about — `external_directory` above all — are left
-out of the map and keep their default, usually `ask`. Those are answered at
-runtime, see below.
-
-Names matter, because an unrecognised one becomes a rule that matches nothing
-and silently does nothing:
-
-| toggle | permission action | note |
-|---|---|---|
-| `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `todowrite`, `skill` | same name | |
-| `edit` | `edit` | also covers the `write` and `patch` tools |
-| `question` | — | special-cased by the server, produces no rule |
-
-`write`, `patch` and `apply-patch` in older saved graphs are folded onto `edit`,
-and a deny anywhere in that group wins.
-
-### Permission prompts during a run
-
-An agent can still hit an action whose effect is `ask` — reading a `.env`,
-touching a path outside the project. Nobody is watching a headless pipeline, so
-an unanswered request would stall that node until the idle wait gives up half an
-hour later. The engine subscribes to `permission.v2.asked` and answers every
-request for a session it owns, under the toolbar's **permissions** policy:
-
-- **auto** (default) — replies `once`, approving that single call. Deliberately
-  not `always`, which would write the approval into the project's saved
-  permissions and outlive the run.
-- **ask me** — the request surfaces as a card with allow once / always / reject,
-  and the node reports `awaiting permission: <action>` until you answer.
+- **auto** (default) — the card starts with `--approval-mode yolo`: omp does not
+  ask, and every tool call is approved. What a card can do is limited only by its
+  tool toggles.
+- **ask me** — the card starts with the *Manual approval mode* setting (*ask
+  before writes and commands*, or *ask before everything*) and each request
+  surfaces on the bar with **allow once**, **always** and **reject**; the node
+  reports `awaiting permission: <action>` until you answer. **always** approves
+  that subject for the rest of this card's session when omp offers the option,
+  and is the same as allow once when it does not. Nothing is saved beyond the
+  session.
 
 Every decision is recorded on the node and in the run log with the action,
 resources, reply and policy — an approval that leaves no trace is how a run
@@ -687,13 +890,12 @@ pending rather than leaving the node waiting on an answer that will never come.
 
 ### Questions during a run (human in the loop)
 
-A card can stop and ask you something. That is opencode's builtin `question`
-tool, enabled per node by the **question** toggle in the inspector's tool list;
-with it off the node runs headless and guesses instead. When an agent calls it,
-the engine picks up `question.v2.asked`, parks the node (`asking: <header>`) and
-shows a modal with the agent's own options — one answer per question, several
-labels when the question allows it, plus a free-text box for an answer the
-options did not offer.
+A card can stop and ask you something. That is omp's `ask` tool, enabled per node
+by the **question** toggle in the inspector's tool list; with it off the node
+runs headless and guesses instead. When an agent calls it, the host forwards the
+request, the engine parks the node (`asking: <header>`) and shows a modal with the
+agent's own options — one answer per question, several labels when the question
+allows it, plus a free-text box for an answer the options did not offer.
 
 Unlike a permission ask there is no auto policy, because an invented answer is
 worse than none: the agent treats it as your intent. An unanswered question is
@@ -711,64 +913,120 @@ left behind after a run — at the cost of size, so anything over 4 MB is refuse
 with a reason rather than failing later as an opaque request error.
 
 A card only receives a file whose modality its model actually accepts, read from
-`capabilities.input` on `GET /api/model`. A text-only model in the middle of a
+`capabilities.input` in omp's model catalog. A text-only model in the middle of a
 chain is not sent the image; it is told, in the prompt, which files were withheld
 and not to claim it saw them, and the run continues. A card with no pinned model
 is sent everything, since nothing can prove its model incapable.
 
-## MCP servers
+## MCP servers and skills
 
-The **plug** button in the titlebar manages the project's MCP servers. Both
-kinds are covered: **local** (a command this machine runs, with environment
-variables and an optional working directory) and **remote** (an http/sse url with
-headers). They are written to the project's `opencode.json` under `mcp`, so the
-opencode CLI and TUI see exactly the same set — OpenFlow owns no parallel config.
+MCP servers and skills live in the OpenFlow omp profile, not in the project: the
+profile's `mcp.json` and `skills/` directory, under the config directory the
+Status tab of Omp settings shows (`omp config path`). The profile is isolated, so
+servers and skills in your default profile or in a project do not carry over; add
+them here.
 
-The panel shows two things at once on purpose. The rows are what the *config*
-says; the tag on each row is what the *running server* reports from `GET /mcp`.
-They disagree constantly, because `opencode serve` reads its config once at boot:
-a freshly added server reads **not loaded — restart server** until it does.
-Connect/disconnect act on the live server only — a way to retry a failed
-connection without a restart, not a way to change the config.
+The **plug** button in the titlebar manages the MCP servers. Both kinds are
+covered: **local** (a command this machine runs, with environment variables and
+an optional working directory) and **remote** (an http/sse url with headers). The
+panel lists and rewrites the profile's `mcp.json`, so the omp CLI and TUI under
+that profile see exactly the same set — OpenFlow owns no parallel config. Entries
+the form does not own are kept as they were, and `mcp.json.bak` holds the file as
+it was before OpenFlow first rewrote it (written once, never overwritten). Omp
+connects to the servers itself when a card's session starts, so there is no live
+status to show: a saved change applies to the next card session, not to one
+already running.
 
-Per-node access lives in the inspector: each card gets a checkbox per configured
-server. An MCP tool is named `<server>_<tool>` and permission actions match by
-wildcard, so the generated agent config carries one rule per server
-(`"context7_*": "allow" | "deny"`). A card that has never chosen says nothing at
-all, which is what a pipeline authored before this existed asked for — it
-inherits whatever the server offers rather than being retroactively locked down.
+**Known limit: every card sees every configured server.** Omp has no per-session
+MCP selection, and the launch cannot enforce one. The inspector still lists a
+checkbox per server for each card and the pipeline stores the choice, but today it
+restricts nothing. A card that must not reach a server needs that server removed
+from the profile, or disabled in `mcp.json`.
 
-Values in `opencode.json` are plain text. For a secret, prefer an environment
-variable the host already holds.
+The **skills** button authors skills: each is a `SKILL.md` under the profile's
+`skills/<name>/`, which omp loads when a card's session starts. Skills authored
+by earlier builds under `.openflow/skills` are still listed, flagged `legacy`, and
+move to the profile when you save them. A card with its **skill** toggle off
+starts with `--no-skills`.
+
+Values in `mcp.json` are plain text. For a secret, prefer an environment variable
+the host already holds.
 
 | Store route | Purpose |
 |---|---|
-| `GET /flow/api/mcp` | servers configured in the project's opencode.json |
-| `PUT /flow/api/mcp/{name}` | add or update one (backs the config up first) |
-| `DELETE /flow/api/mcp/{name}` | drop one from the config |
+| `GET /flow/api/mcp` | servers in the profile's `mcp.json` |
+| `PUT /flow/api/mcp/{name}` | add or update one (backs the file up first) |
+| `DELETE /flow/api/mcp/{name}` | drop one |
+| `GET /flow/api/skills`, `GET /flow/api/skills/{name}` | list and read |
+| `PUT /flow/api/skills/{name}`, `DELETE /flow/api/skills/{name}` | write or delete a skill in the profile |
+
+The MCP routes, and writing or deleting a skill, answer 409 until omp has
+reported the profile's directory — open Omp settings if you see that.
 
 ## Sessions
 
-The history icon in the titlebar opens a column on the left listing the sessions
-`opencode serve` holds for the current project, newest first, with a search box
+The history icon in the titlebar opens a column on the left listing the card
+sessions the host holds for the current project, newest first, with a search box
 over them. Click one to read its turns; `←` goes back to the list.
 
-These are not a history OpenFlow keeps. Every node is one full primary session on
-the server, so they are already rows in OpenCode's sqlite database (`opencode.db`,
-drizzle) and this reads them back through `GET /api/session`. A session you start
-from the `opencode` CLI or TUI in the same project is listed here too, and one a
-card started is listed there — one store, two front ends. Nothing in the panel
-writes: it lists and it reads.
+These are not a history OpenFlow keeps separately. Every node is one omp session,
+its files are under `omp/<project>/<run>/<card>/` in the state directory, and
+this reads them back through `GET /flow/api/engine/sessions`. Only sessions
+OpenFlow's cards started are listed; what you run in the terminal is not. Nothing
+in the panel writes: it lists and it reads.
 
 The column is closed by default and remembered per browser, because a 240px
 sidebar is cheap on a wide screen and not on a laptop — collapsed, the canvas
 gets the full width back.
 
-Cards are labelled by generated agent (`plan-and-code-coder-…`) rather than by
-title, and the search matches agent, model, id and title. A node never titles its
-session, so every one of them is auto-named `New session - <iso>`; labelling by
-title would give a column of identical rows, and the server's own `?search=`
-looks at nothing else — which is why the filter runs over a fetched page instead.
+A row is labelled by the session's title — omp's own, else the first line of the
+card's prompt — and by the card key (`plan-and-code-coder-…`) when there is
+neither. The search matches title, card key, model and id.
+
+## Migrating older pipelines
+
+Pipelines and run logs saved by the earlier build open without crashing. They are
+migrated in memory when they load — the file on disk changes only when you save —
+and the notice that says what was loaded adds *from an earlier build*, with every
+detail on hover:
+
+- **Model ids stay as written** and are flagged when they cannot exist in the
+  omp catalog: ids that are not a `provider/id` pair, and ids from the earlier
+  engine's bundled free-tier provider. Preflight reports them for each card
+  (*pick an Omp model*), and the card does not run until you pick one.
+- **Agent names are dropped.** Omp has no agents by name, so a card that named
+  one runs on its own prompt, and the note says which card.
+- **Session ids from the earlier build cannot be resumed.** Their runs can be
+  read; **Resume** starts those cards fresh and says so.
+- **Unknown fields are kept as written** and their names listed, never their
+  values.
+
+The first migration that has something to report stamps the document so the notes
+are not repeated every time you open it. Agent definitions the earlier build
+merged into a project's engine config, and that config's MCP servers, providers
+and keys, are not read any more: re-add the servers and skills in the profile
+([MCP servers and skills](#mcp-servers-and-skills)), log in again ([First
+run](#first-run)), and pick a model per card. The shipped templates pin no model,
+for the same reason.
+
+## Troubleshooting
+
+| You see | Cause | Do |
+|---|---|---|
+| a banner says *omp is not available*, or the Status tab says *omp is not on PATH* | omp is not installed, or not where the setting points | `bun add -g @oh-my-pi/pi-coding-agent`, or set **Binary** in Omp settings |
+| *omp X is older than the 18.12.2 OpenFlow needs* | an old omp | `omp update`, then run again |
+| *`omp --version` did not answer* | the binary starts but fails | run it in the terminal to see why, or point **Binary** at a working one |
+| *The openflow profile has no credentials*, and an empty model menu | the profile has no login | **Copy logins from your default profile**, or `/login` in the terminal |
+| *None of the profile's authenticated providers can serve models* | the logins are there but the providers are not available | `/login` for an available provider in the terminal |
+| *Could not read the profile's providers* | the profile name is wrong, or omp failed | check **Profile**, or run omp in the terminal |
+| a model fails at the first token, or the **test** button reports an error | the key is not accepted, or the account may not use that model | read the provider's own text in the message; pick another model |
+| `port 5174 is already in use` | another canvas, or a stale one | open http://localhost:5174, or run `bun openflow.ts` to free it |
+| *Prompt uplift failed for …* | the planner timed out, `claude` is not logged in, Bun is missing, or claude-ultrathink was not found | the dialog gives the reason: run `claude` once, raise **Planner time limit**, set **claude-ultrathink location** — or **Run with original prompt** |
+| `mem unavailable` on a card | no Substrate URL or token, no `origin` remote, or Substrate unreachable | the tooltip gives the sentence: set **Substrate URL** / `SUBSTRATE_URL`, the token variable, or **Repository scope** |
+| *swarm is off for this card* | the swarm preflight failed | the notice says what and how to fix it: agent-swarm path, `python3`, `cryptography`, a signing key |
+| the terminal says it is disabled | `FLOW_ALLOW_REMOTE=1` is set | unset it; the terminal is never available on a non-loopback host |
+| *omp profile directory unknown* from the MCP or skills panel | omp has not reported its config directory yet | open Omp settings and fix what the Status tab lists |
+| a run says the host did not answer | the canvas host is not running, or crashed | start it with `bun openflow.ts` |
 
 ## Canvas
 
@@ -783,6 +1041,6 @@ last published 2022, three versions, built for Solid 1.5.
   `+Z` puts it back
 - click a node to edit role, model, agent, prompt and tools, and to read its
   sent prompt and output
-- the model field is opencode's model menu — searchable, grouped by provider,
-  `↑`/`↓`, `Enter`, `Esc` — and it lists nothing until a provider is connected;
-  a search that only matches unconnected providers offers to connect them
+- the model field is a searchable menu of the models omp reports, grouped by
+  provider, `↑`/`↓`, `Enter`, `Esc` — it lists nothing until the OpenFlow profile
+  has a login, and its last row, **Manage models in Omp settings**, opens the dialog

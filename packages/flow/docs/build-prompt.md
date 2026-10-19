@@ -1,3 +1,6 @@
+> **Historical:** written for the OpenCode engine, which OpenFlow no longer uses.
+> Current behaviour is in [README.md](../README.md) and [FLOW.md](../../../FLOW.md).
+
 # One-shot build prompt — OpenFlow
 
 > **Historical.** The prompt the package was built from, kept as a record of the

@@ -10,21 +10,27 @@ derivable from the code.
 ## The one hard constraint
 
 **Do not modify any upstream package.** Fork merges must stay clean. Fork-owned surfaces
-are `packages/flow`, `.github`, the LICENSE attribution line, and this file. `bun.lock`
-gains only the workspace entry.
+are `packages/flow`, the root launchers (`openflow.ts`, `openflow.sh`, `openflow.ps1`),
+`.claude/launch.json`, the shipped templates in `.openflow/pipelines`, `.github` (only its
+`workflows/openflow.yml` is the fork's; the rest is upstream CI and stays as it is), the LICENSE
+attribution line, and this file. `bun.lock` gains only the workspace entry. From `packages/flow`,
+`bun run check:no-opencode` fails when a fork-owned surface still mentions the removed engine;
+`scripts/check-no-opencode.ts` lists the few paths allowed to (history, migration code and
+fixtures, upstream CI).
 
 Corollary: **do not scrub the hundreds of `opencode` string references** in the upstream
 README, docs, source, `sst.config.ts`, or `infra`. They are intentional. Scrubbing them
 fights the no-upstream-modification design.
 
-Read `packages/flow/README.md` before touching the code — endpoints, run instructions,
-file layout, and API-key/model behavior are documented there rather than re-derived.
+Read `packages/flow/README.md` before touching the code — routes, run instructions,
+file layout, and login/model behavior are documented there rather than re-derived.
 
 ## Architecture, settled
 
-- **One card = one full `opencode serve` primary session.** `src/server/engine.ts` per
-  node: `createSession({agent, model})` → `prompt` → `waitForIdle` → `transcript`. Nodes
-  run in topological layers via a parallel pool.
+- **One card = one omp session = one `omp --mode rpc-ui` process.** `src/server/engine.ts` per
+  node: `createSession({card, model, …})` → `prompt` → `waitForIdle` → `transcript`, each a call
+  to the host's `/flow/api/engine/*` routes (see "Omp engine" below). The engine itself runs in
+  the page. Nodes run in topological layers via a parallel pool.
 - **A canvas has a mode, and modes do not nest.** `Pipeline.mode` is `pipeline` (absent, and
   what every canvas saved before modes existed reads as), `swarm`, or `orchestration`. It is
   a property of the *document*, not of a run — it is persisted, exported, and undoable,
@@ -95,7 +101,7 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   does not quote makes the spend cap unmeasurable, and an unenforceable cap on a run designed
   to go for hours is the one failure nobody would notice until the bill arrived — it stops the
   run rather than warning.
-  **Critics are opencode's own `reviewer` role**, read off the role text like a swarm reads its
+  **Critics are the `reviewer` role**, read off the role text like a swarm reads its
   synthesizer, so designating one is renaming a card. A critic gets a **new session for every
   verdict** (`nodeSession.delete` before dispatch): a critic that has watched the work improve
   grades the improvement, not the work, which is the exact failure a separate critic exists to
@@ -153,7 +159,7 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   `maxSpend`, the headline bound of a mode built to run for hours, was compared against a number
   drifting below what had been spent.
   No vision: a critic reads source, runs builds, runs tests, hits the dev server. Visual A/B
-  waits for MCP to reach v2 sessions — though a card with `bash` can drive a headless browser
+  has no built-in tool — though a card with `bash` can drive a headless browser
   and capture the artifact itself, which is how the runtime lines of a bar have actually been
   judged here.
 - **A run that nobody is watching says when it ended.** Every mode here is meant to be left
@@ -173,7 +179,7 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   the same shape as `graph/default-model.ts`, so `bun test` needs no storage polyfill.
 - **An interrupted run is picked up, not started again.** The engine runs *in the page*, so a
   reload, a crash or a closed tab ends a run with nothing alive to write `done`, `error` or
-  `stopped` — while the sessions are still on the server and still addressable. `RunOptions.sessions`
+  `stopped` — while the sessions are still held by the host and still addressable. `RunOptions.sessions`
   maps a node id to the session it was working in and is seeded before anything dispatches, so
   the card's first turn is prompted into that session; `interruptedNote()` tells it once, on
   that turn only, that the run around it stopped and nothing it produced was discarded, because
@@ -184,46 +190,27 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   run log** (`patch(node.id, { sessionID })`), because the create path that normally writes it
   is skipped — without it a resumed run reports cards with no session while they answer in one,
   and the *next* interruption has nothing left to carry.
-- **No MCP tool can reach a card in this fork, so the dispatch tool is parked.** Proven
-  2026-08-29, after it looked like a config bug for a long time. OpenFlow drives
-  `client.v2.session.*`, so a card runs through the v2 session runner, and that runner has
-  never been wired to MCP — its own spec comment says so, unticked, at
-  `packages/core/src/session/runner/llm.ts`: *"[ ] Resolve policy-filtered built-in, MCP,
-  plugin, and structured-output tool definitions."* MCP tools are converted and registered in
-  exactly one place, the **v1** session path (`packages/opencode/src/session/tools.ts`), which
-  OpenFlow does not use. The v2 registry (`packages/core/src/tool/`) holds read, grep, glob,
-  bash, edit, write, question, skill, todowrite, webfetch, websearch, apply-patch — and
-  nothing puts MCP beside them, so any `<server>_<tool>` comes back `Unknown tool` from
-  `core/src/tool/registry.ts` however the config is written.
-  **`GET /mcp` answering `connected` is the trap**: the MCP *service* spawns the process and
-  completes the handshake perfectly well: it just never contributes a tool definition to a v2
-  session. Do not read that status as "the tool works". Fixing this here is not an option —
-  it means editing `packages/core`. It needs an upstream change, or a fork that stops being
-  fork-clean.
-  `MCP_REACHES_SESSIONS` in `graph/dispatch.ts` is the single switch: `false` parks the
-  channel (the engine skips the history scan, the runbar hides the install banner, and the
-  orchestrator briefing teaches only the fenced block). Flipping it to `true` is the whole of
-  turning it back on. **Do not name the tools in a prompt while it is parked** — measured, the
-  card calls one, is told `Unknown tool`, and only then writes the block, which costs a paid
-  turn on every single run.
-- **The tool channel itself is built, tested, and correct** — `mcp/dispatch.ts` (a hand-rolled
-  stdio MCP server; no dependency, since `bun.lock` gains only the workspace entry),
-  `fromToolCall`, `sessionCalls`, and `lib/dispatch-tool.ts` writing the **global** config.
-  Keep these working. The reason it is a tool at all is measured: a text-only protocol lost
-  three ways — a model sent the JSON with no fence, a model emitted the block and then kept
-  calling tools so the block was no longer in the message read, and a strong model tried to
-  *call* `dispatch` because that is what the schema in front of it looks like.
-  Two traps worth keeping, both found by running it: the call is read from the **message
-  history**, and that scan must **not** be bounded at the newest user message — a tool
-  *result* comes back as a user-type message, so the scan would stop before reaching the call
-  that produced it; consumed call ids are what separate this turn from the last. And the MCP
-  command must be an **absolute path to bun**, never the bare word, because opencode spawns a
-  local MCP server without a shell and Windows does not apply PATHEXT; `process.execPath` is
-  not enough either, since the vite dev host runs under node, so `bunPath()` searches PATH.
+- **The orchestrator's decision is a tool call first and a fenced block second.** The host
+  registers `openflow_dispatch` and `openflow_finish` as omp RPC host tools for a card that
+  orchestrates (`lib/omp/host-tools.ts`, `CardSpec.dispatch`). They execute nothing: the engine
+  reads the calls back through `EngineApi.sessionCalls` (`GET …/sessions/:id/calls`, newest
+  first), and `fromToolCall` in `graph/dispatch.ts` turns one into the same assignments the
+  fenced block would give, so the two channels cannot disagree about what a valid dispatch is.
+  `MCP_REACHES_SESSIONS` in `graph/dispatch.ts` is the single switch the briefing, the engine and
+  the runbar read; it is `true`. Its name is from the era when the channel was an MCP server — it
+  now means "the host answers the dispatch tools", not "MCP servers reach cards". The tool names
+  are `DISPATCH_TOOL` / `FINISH_TOOL`, and `lib/omp/host-tools.test.ts` asserts the host registers
+  the same two; `lib/` does not import from `src/`, which is why the names are duplicated.
+- **Why it is a tool at all** — measured: a text-only protocol lost three ways. A model sent the
+  JSON with no fence, a model emitted the block and then kept calling tools so the block was no
+  longer in the message read, and a strong model tried to *call* `dispatch` because that is what
+  the schema in front of it looks like. One trap worth keeping: the engine remembers which call
+  ids it has consumed, per card (`consumed` in `engine.ts`) — that is what separates this turn's
+  call from the last turn's, and without it an old call is re-read as a fresh decision.
 - **The orchestrator also speaks a fenced ` ```openflow ` block** — `{dispatch:[{card,task}]}`
   or `{final}` — parsed by `graph/dispatch.ts`. The **last** block wins, because a model often
-  quotes the protocol before using it. A malformed block is handed back **once** with the exact
-  reason; a second failure fails the card, since every ask is a paid turn. A card id outside the
+  quotes the protocol before using it. A malformed block is handed back with the exact reason,
+  up to `PROTOCOL_RETRIES` (3) times, and then fails the card, since every ask is a paid turn. A card id outside the
   orchestrator's own children is refused, and so is the same card twice in one batch — one card
   is one session, and two assignments would race it. An assignment may carry `files`, the paths
   the orchestrator expects that card to write; two assignments in one batch declaring the same
@@ -262,8 +249,8 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   setting entirely (`verifyOf` returns nothing) and preflight says so, because its loop already
   cannot finish without a verdict and a second opinion there would have no owner.
 - **A card is `done` when its session goes idle, so what it did is checked separately.** Idle is
-  all "finished" has ever meant here — `POST /api/session/:id/wait` answers 503 on this build, so
-  `waitForIdle` derives it from `/api/session/active` plus a finished assistant turn — and a model
+  all "finished" has ever meant here — the host's `POST /flow/api/engine/sessions/:id/wait`
+  long-polls until omp reports the session settled (`WaitResult`; `aborted` is never success) — and a model
   that replies "I'll start on that" and calls nothing satisfies it in one turn. Two checks stand
   between that and `done`, both in `runTurn` so every mode gets them. **No text and no writes
   fails the card**: there is nothing to pass downstream and nothing to have built, and a blank
@@ -438,10 +425,9 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   saved before it existed: turning somebody's cards loose in separate trees is not a change to
   make because they upgraded. The flag survives a mode switch so switching back does not lose
   it, and does nothing while the canvas is not an orchestration.
-  This is the prevention half of the rule above, and it is reachable because a session created
-  with `location: { directory }` runs its tools *there* — measured 2026-09-03, against the
-  older note in "Hazard: test runs write real files", which is about config resolution rather
-  than cwd. `lib/worktree.ts` opens one `git worktree` per dispatched card that can write,
+  This is the prevention half of the rule above, and it is reachable because a card's omp
+  process is started with `--cwd` set to the session's `directory` and runs its tools *there* —
+  measured 2026-09-03. `lib/worktree.ts` opens one `git worktree` per dispatched card that can write,
   branched from `git stash create` so the user's **uncommitted** work is in it — `HEAD` would
   hand every card a tree unlike the one on screen. Trees live in the OS temp dir, never inside
   the repo, and `node_modules` is linked in, because a critic that cannot run the tests judges
@@ -460,18 +446,94 @@ file layout, and API-key/model behavior are documented there rather than re-deri
   keeps its tree for the whole run because a session's location is fixed at creation, so a
   re-dispatch opens nothing; it must still **merge**, or cleanup would delete that work.
   Cleanup runs in `finally`, since an aborted run leaves the most trees behind.
-- **OpenFlow has no agent loop of its own.** The harness is identical to the OpenCode CLI
-  harness, so a card inherits OpenCode's tools, permission ruleset, and subagents. Subagents
-  work but are OpenCode-native and invisible to OpenFlow, which only sees the final
-  transcript. OpenFlow injects no skills and adds no Claude-Code skill/MCP layer inside a card.
+- **OpenFlow has no agent loop of its own.** A card is an omp process, so it inherits omp's tools,
+  approval modes and subagents. Subagents (agent-swarm's specialists among them) are omp-native:
+  OpenFlow sees the card's final transcript and, for a swarm, a status derived from omp's
+  subagent frames — not the subagents' own transcripts. OpenFlow injects no skills; skills and
+  MCP servers come from the omp profile.
 - The canvas is hand-rolled — HTML node cards over an SVG edge layer in one CSS-transformed
   viewport. `solid-flow` is abandoned (last publish 2022, Solid 1.5); do not reach for it.
-- `@opencode-ai/sdk-next` is **not** an HTTP client — it embeds a server in-process via
-  Effect. Browser code uses `createOpencodeClient` from `@opencode-ai/sdk/v2/client`.
-- Use v2 `/api/*` routes. The older `/session/*` + `prompt_async` routes are superseded.
+- The browser never talks to omp. It calls the host's `/flow/api/engine/*` routes
+  (`shared/engine.ts` is the wire, `src/server/client.ts` the browser client); there is no
+  other engine server and no SDK.
 - Store routes (`/flow/api/*`) live in `lib/store.ts` and are mounted by **both** hosts
   (the vite plugin and `server.ts`) so dev and built output cannot drift. Add new routes in
   one place only.
+
+## Omp engine
+
+The architecture invariants of the engine that replaced the earlier one. The facts below were
+established by live runs against real omp 18.12.2 and the real Agent Substrate; the code is the
+authority where this and it disagree.
+
+- **Host module map.** `lib/host` (`createHost`) composes `lib/omp` (the engine host: one omp
+  process per card, the RPC core `rpc.ts`, the launch builder `launch.ts`, the model catalog, the
+  frame-to-event mapper, UI requests, host tools), `lib/omp-config` (the settings store, status,
+  `omp config`, providers, login import), `lib/uplift`, `lib/substrate`, `lib/swarm` and
+  `lib/terminal`. It returns one `handle` — terminal, omp-config, engine, uplift, substrate, swarm,
+  tried in that order — plus `profileDir()` and an idempotent `dispose()`. Both hosts (`server.ts`
+  and `vite/flow-store.ts`) build one `createHost`, give it first refusal of every request, and
+  mount `handleFlow` (the store) after it. A new host route goes in a module, never in either host.
+- **The wire.** `shared/engine.ts` is the engine wire: the routes under `/flow/api/engine`, the
+  event names, `CardSpec`, and `EngineApi`, the port `src/server/engine.ts` depends on.
+  `src/server/client.ts` implements it in the browser and `engine.test.ts` doubles it, so the long
+  engine suite stays valid. The host maps omp frames onto the event names the engine and
+  `activity.ts` already read (`session.next.*`, `permission.v2.asked`, `question.v2.asked`,
+  `session.created`), plus `flow.swarm.status` and `flow.notice`. The stage and settings wires are
+  `shared/{omp,uplift,memory,swarm,terminal,clarification}.ts`. Change a wire in `shared/` first;
+  host and browser both import it.
+- **Process model.** One `omp --mode rpc-ui` per card session, owned by the host, leading its own
+  process group (so tool shells and MCP servers die with it). The RPC core speaks JSONL over stdio
+  with protocol v2 `rpc_chunk` reassembly — mandatory, the model catalog alone arrives as about
+  eight chunks. Closing stdin is the graceful stop; the group is SIGTERMed and SIGKILLed on cancel,
+  and swept again when the host exits. A live session with no frames, no prompt and no HTTP
+  activity for 30 minutes is closed and stays resumable from its session directory
+  (`CreateSession.reuse`), which is also how a page reload keeps a run's sessions. The catalog,
+  the provider list and the status check each start a short-lived omp and cache the answer.
+- **Stage order.** For a card turn of kind `task`, `stage()` in `src/server/engine.ts` runs Prompt
+  Uplift first, then the memory read, then the send; `raw:` at the start of a task and
+  `agent.uplift === false` skip both. A failed uplift never falls back silently: the card parks
+  and the user chooses (run the original, retry, cancel). The memory read fails open and shows on
+  the card. The memory write happens after the card settles and is never awaited by the card.
+  Protocol turns (verdict, force-final, dispatch result, reassign) are never uplifted, and neither
+  are upstream outputs or attachments — only the card's own task text.
+- **Isolation decisions.** Cards, the catalog and the terminal run under the omp profile
+  `openflow`, so OpenFlow never reads or writes the user's default profile (the one exception is the
+  user-initiated login copy, `omp auth export` into `omp --profile … auth import -`, in memory
+  only). Cards start with `--no-extensions` unless `loadUserExtensions` is on. A card's environment
+  is an allowlist (`lib/omp/env.ts`): deny rules beat allow rules, so `SUBSTRATE_*`, `SWARM_*`,
+  `ULTRATHINK_*`, `AIO_*`, `*_TOKEN` and `*_SECRET` reach a card only when the launch builder hands
+  them over in `extra` — which it does for the swarm signing key (by name, only when the card's
+  swarm is on), `OPENFLOW_RUN`, `OPENFLOW_CARD`, `ULTRATHINK_UPLIFT=0` and `AIO_UPLIFT=0`. **No
+  secret goes to a card through argv, a file or `omp-settings.json`**; the Substrate token is read
+  by the host and never given to a card. Per-card files live outside the project, under
+  `<state>/omp/<12 hex of sha1(realpath(project))>/<run>/<card>/`. Tool toggles are enforced with a
+  `tools.approval.<tool>: deny` overlay passed as `--config`, not `--tools`: probed against the
+  real binary, `--tools` shrinks the active set to the named tools, so an extension's tool
+  disappears unless it is listed, while a deny leaves everything else alone. The card's own denies
+  are merged last so no other overlay can switch a disabled tool back on.
+- **The per-card MCP allowlist is not enforced.** Omp has no per-session MCP selection and no
+  settings-overlay switch for it; server allow and deny live in the profile's `mcp.json`.
+  `CardSpec.mcp` is carried and `describeLaunch` builds a note about it, but nothing surfaces that
+  note yet and the inspector still draws the per-server checkboxes. Treat every configured server
+  as visible to every card.
+- **The terminal security gate.** A PTY is code execution as the user, so every terminal route
+  needs the `x-openflow-pty: 1` header (a custom header forces a CORS preflight this host never
+  answers), an `Origin` equal to the loopback `Host` it was sent to, and — for the WebSocket — a
+  one-shot ticket (60 seconds). The browser sends only a `kind` (`omp` or `shell`); argv, cwd and
+  env are host-derived, and the env is the card allowlist without `*_API_KEY` keys. It is off when
+  `FLOW_ALLOW_REMOTE=1`. All of this is `lib/terminal/policy.ts`, a table-driven test.
+- **Bun/Node dual runtime.** `server.ts` runs under Bun; the vite dev plugin runs under Node.
+  Everything in `lib/` and `shared/` runs in both, so it uses `node:` APIs only — no `Bun.*` and no
+  `bun:` imports — and `Promise.withResolvers()` rather than an executor. What genuinely differs is
+  chosen once, in one file per runtime: the PTY (`lib/terminal/pty-bun.ts` uses Bun's own, because
+  `@lydell/node-pty` fails under Bun; `pty-node.ts` uses `@lydell/node-pty` and must stay
+  strippable by Node — no enums, no extensionless value imports) and the WebSocket upgrade
+  (`ws-bun.ts`, `ws-node.ts`). `shared/` imports nothing from `lib/`, `src/` or a runtime, and
+  `lib/` does not import `src/`; the engine runs in the browser and cannot import `lib/`.
+- **State that tests touch.** A test that reaches OpenFlow's own state sets `OPENFLOW_STATE_DIR`
+  to a temp directory before the module loads; the alternative writes a developer's real
+  `~/.openflow/state.json`.
 
 ## The post-run coach
 
@@ -527,17 +589,19 @@ before running one.
 
 ## Running and verifying
 
-- `opencode serve` on **:4096**, canvas dev server on **:5174**. Both start from
-  `.claude/launch.json` (`opencode-server`, `openflow`).
+- The canvas dev server is on **:5174**, started from `.claude/launch.json` (`openflow`). It
+  hosts everything — the store and the modules that drive omp — so there is no second server to
+  start.
 - :5174 binds `localhost`/IPv6 — `127.0.0.1:5174` refuses the connection. Use
   `http://localhost:5174`.
-- `opencode serve` takes ~30s to listen. Early `/api/*` proxy calls fail; reload rather
-  than debug it.
-- **Running the canvas without `opencode serve` is the number-one false alarm.** Every
-  `/api/*` call dies and the symptom surfaces as a *provider* failure (empty provider panel,
-  failing key import), not an obvious "server down". The dev proxy now answers 502 naming the
-  missing server.
-- Another session may already hold :4096 or :5174. Check `netstat` before starting your own.
+- omp takes about two seconds to be ready and a few more to answer the model catalog, so the first
+  model read after boot is slow; the host caches it for ten minutes. Reload rather than debug it.
+- **Running without a usable omp is the number-one false alarm.** A missing or too-old omp
+  surfaces as whatever was being done — an empty model menu, a card that errors at once, a failed
+  model read — not as an obvious "omp is missing". Check the statusbar (`connected · omp
+  <version>`) and the Status tab of Omp settings (`GET /flow/api/omp/status`) before debugging
+  anything else.
+- Another session may already hold :5174. Check `netstat` before starting your own.
 - From `packages/flow`: `bun test` and `bun run typecheck` (tsgo). Tests cannot run from the
   repo root.
 
@@ -567,85 +631,48 @@ Working headless techniques:
 - **Menu rows are `button.oc-item[data-key="…"]`, and clicking the inner `span.oc-item-label`
   does nothing.** Select on the `[data-key]` button itself; a text search that lands on the
   label finds the row and clicks the wrong element.
-- A bare `fetch('/api/agent')` reports the **server-cwd** project's agents. Add header
-  `x-opencode-directory: <OPENFLOW_PROJECT>` to see the merged pipeline agents.
 
 ## Hazard: test runs write real files
 
-Per-node tool allowlists only take effect after the generated agents are merged into the
-project `opencode.json` **and** the node names that agent. Otherwise nodes run as the server
-default `build` agent with `write`/`edit`/`bash`. A verification run once took its task
-literally and edited `packages/cli`.
+A card whose node says nothing about tools runs with every tool omp has — `edit` and `bash`
+included — in the project folder. `preflight` warns (`unrestricted-write`) but does not block. A
+verification run once took its task literally and edited `packages/cli`.
 
-Before any run that could write: give it a restricted agent, and set `OPENFLOW_PROJECT` to
-the target repo.
+Before any run that could write: give every card the tool toggles it needs (the launch spec carries
+a tool list only when the card declares one), and set `OPENFLOW_PROJECT` to the target repo.
 
-The mechanism, measured 2026-08-26: **a session's location is the engine's cwd, never
-`OPENFLOW_PROJECT`.** `supervisorFor` spawns `opencode serve` with `cwd: input.repo` — the
-OpenFlow checkout (`packages/opencode` when run from source) — so every session records that
-directory, and the merged project agents are simply not there at drain time. `AgentV2.select`
-does not fail on an unknown id; it returns `{ id, info: undefined }`, and the runner then reads
-`agent.info?.system` and `agent.info?.permissions` as undefined. A session created with the
-agent name `this-agent-does-not-exist-xyz` answered normally — no node system prompt, default
-tool set. `x-opencode-directory` only steers the *reads* (`/api/agent`, `/api/model`), not the
-drain. Anything that must reach a run — an agent, a permission ruleset, a provider override —
-therefore belongs in the global config or in the engine's own cwd, not in the target project.
+**Where a card runs is the project, or its own worktree.** The host starts each omp process with
+`--cwd` set to the session's `directory`: `OPENFLOW_PROJECT` by default, a card's `git worktree`
+when isolation gave it one (see the orchestration rules above). Which config the card reads is
+omp's rule for the profile and directory OpenFlow passes (`--profile`, plus a per-card `--config`
+overlay); the project's own files are not a place to put card permissions.
 
-**That is about config, not about cwd — corrected 2026-09-03.** `session.create` takes
-`location: { directory }`, and a session created with one **runs its tools there**: a card
-given a `git worktree` path ran `bash` in that worktree, not in `packages/opencode`. So the
-paragraph above still holds for *which config a drain reads* — that is resolved from the
-engine's own cwd — but it is not true that a session's working directory cannot be steered.
-Per-card isolation is built on exactly that (see below).
-
-**Skills written through `PUT /flow/api/skills/:name` are subject to the same trap.** The file
-lands in `<project>/.openflow/skills/<name>/SKILL.md` and the path is registered in the project
-`opencode.json` — both correct, and both at a location no run ever reads. Measured 2026-08-26:
-after a restart, `GET /api/skill` did not list the new skill, with or without
-`x-opencode-directory`; copying the same folder to `~/.config/opencode/skills/<name>/` made it
-appear immediately and every provider then used it. Until the engine is spawned in the project,
-a skill that must reach a card has to be global.
-
-**An empty scoped agent list is a question about the directory, not about any name.** A project
-folder the server does not recognise as one — most often a folder that is simply not a git
-repository — answers `GET /api/agent` with **zero** agents, built-ins included. Measured again
-2026-09-08 against a live engine: a non-git temp directory returned 0, this repo returned 49,
-and the same read with no `x-opencode-directory` at all returned the same 49. Every named card
-therefore reads as missing, and the message that used to be shown blamed a stale engine and
-quoted a restart command — which changes nothing, and is expensive precisely because it sounds
-right. The run itself was usually fine: a session resolves its config from the engine's own cwd
-rather than from `OPENFLOW_PROJECT`, which is the same split this section documents for agents,
-skills and provider overrides — here it surfaces in the *check* rather than in the run.
-So `unknownAgents` treats an empty list as its own case and asks `agentsUnscoped()` (a second
-client built with no `directory`, so it sees what the drain sees) before failing anything: if
-the names are there the cards run, and only when they are not does it stop, say `git init`, and
-**not** call `onEngineStale` — that dialog offers the one fix that cannot work. A non-empty list
-missing one name is still the ordinary stale-config case and still says restart. `mergeAgents`
-in `src/app.tsx` splits the same two cases after a write, for the same reason. A host with no
-unscoped read (an older build, a test double) keeps the old message, which is the right answer
-whenever the directory is a real project.
+**Skills and MCP servers are written to the omp profile**, not the project
+(`<profile>/skills/<name>/SKILL.md`, `<profile>/mcp.json`), and omp reads them when a card's
+session starts. A change applies to the next session, not to one already running, and the routes
+answer 409 until omp has reported the profile's directory.
 
 ## Design directive (standing)
 
 **The entire OpenFlow UI matches upstream OpenCode, and stays minimal.** Copy from upstream
 components rather than approximating them, and do not add extra affordances alongside them.
 
-- Model and provider UI mirrors `packages/app/src/components/dialog-select-model.tsx` and
-  `dialog-connect-provider.tsx`. A fresh install shows **no models, only providers** — pick a
-  provider, enter a key, then its models exist.
+- Model UI mirrors `packages/app/src/components/dialog-select-model.tsx`. A fresh install shows
+  **no models** until the OpenFlow omp profile has a login — log in (Omp settings, or `/login`
+  in the terminal), then its models exist.
 - Tokens are copied verbatim from `packages/ui/src/v2/styles/theme.css` and `colors.css` into
-  `:root` in `src/styles.css`, because the flow page loads no upstream stylesheet and
-  `@opencode-ai/ui` stays out of the dep tree. Inter 13px / weight 440 / tracking -0.04px;
+  `:root` in `src/styles.css`, because the flow page loads no upstream stylesheet and the vendored
+  UI package stays out of the dep tree. Inter 13px / weight 440 / tracking -0.04px;
   mono only for code, ids, and paths. Fonts are copied into `packages/flow/public/fonts/`.
 - Chrome is titlebar 40px / runbar 44px / statusbar 28px around a three-column `main`.
-- Native `<select>` cannot be styled into OpenCode's popover. Every menu routes through
+- Native `<select>` cannot be styled into the upstream popover. Every menu routes through
   `src/ui/select.tsx` (controlled; `value=""` for action menus). Zero native selects survive.
 - Icons are the hand-drawn 16px set in `src/ui/icons.tsx`. No icon dependency.
-- Five role colors are OpenCode's own dark agent solids: planner `#f799c6`, architect
+- Five role colors are upstream's own dark agent solids: planner `#f799c6`, architect
   `#9e99f7`, coder `#c3d4fd`, reviewer `#b8e9c1`, custom `#f7e5b5`. Two are OpenFlow's own,
-  because opencode has no agent for either job: `synthesizer` `#8fd4e8` reads a swarm and
+  because upstream has no agent for either job: `synthesizer` `#8fd4e8` reads a swarm and
   decides, `orchestrator` `#f7c48b` hands work to cards it can see. Cyan and amber are the
-  hues the five leave free. Add a color here only for a role opencode genuinely has no
+  hues the five leave free. Add a color here only for a role upstream genuinely has no
   counterpart for, and say so where it sits.
 
 ## Selection is a list, and the canvas gestures follow from that
@@ -702,75 +729,36 @@ Check these first when the UI misbehaves — each one cost a debugging session.
   rule as `.canvas-empty` — or drag-to-create and panning die. The walkthrough is a `position:
   fixed` layer in `src/ui/walkthrough.tsx` following this exactly.
 
-## Sessions come from opencode, not from OpenFlow
+## Sessions come from the host
 
-The sessions sidebar (`src/ui/sessions-panel.tsx`) reads `GET /api/session` — the rows of
-OpenCode's drizzle sqlite `session` table in `opencode.db`. **Never open that file
-directly.** `opencode serve` owns the handle; a second writer from `server.ts` or the vite
-plugin is a corruption path, and it would drag `@opencode-ai/core` into a browser dep tree
-that only carries `@opencode-ai/sdk`. The HTTP route *is* the drizzle system.
+The sessions sidebar (`src/ui/sessions-panel.tsx`) lists `GET /flow/api/engine/sessions` — rows
+the host builds from its live sessions and from the per-card state it keeps under
+`<state>/omp/<project>/<run>/<card>/` (`.openflow-session.json` beside each session directory).
+**Never read or write those directories from the browser or from a second writer**: the host owns
+the processes and rewrites that file as a session changes, and a session in use is not a file to
+open.
 
-Two shapes that surprise, both learned the hard way:
-
-- **`?search=` matches the session title and nothing else.** No node ever sets a title, so
-  every OpenFlow session is auto-named `New session - <iso>`; `search=coder` answers zero
-  for a project holding ten coder sessions, and the fields that identify a node — its
-  generated agent, its model — are unsearchable server-side. When filtering a session list
-  by anything a user would actually type, fetch a page and match client-side
-  (`matches()` in `src/server/sessions.ts`).
-- **User and assistant messages are not shaped alike.** A user message carries its prompt
-  in a top-level `text` and has **no `content` array at all**; an assistant message carries
-  `content` parts. Reading only `content` silently drops every prompt and renders replies
-  to nothing. `transcriptTurns()` reads both, and its tests pin both.
+Filter client-side over a fetched page, by anything a user would actually type — title, card key,
+model and id (`matches()` in `src/server/sessions.ts`). A row's title is omp's own, else the first
+line of the card's prompt, else the card key, so a blank title is still worth listing: it is
+usually the session that just started.
 
 ## Config and cost gotchas
 
-- **`opencode serve` caches config per project and never re-reads it.** Restart the server
-  after merging agents, adding skills, or editing `opencode.json`.
-- `skills` in `opencode.json` is an **object** (`{ paths: [...] }`), not an array.
-  `registerSkillSource` also repairs a bare array left by older builds.
-- `slug()` in `lib/store.ts` does **not** lowercase — it only strips path separators and
-  collapses spaces. Skill display name and folder legitimately differ in case; `readSkill`
-  returns both `name` (frontmatter, what the agent sees) and `folder` (what the API addresses).
-- This vendored server build reports `cost: 0`, so spend is computed client-side in
-  `src/server/usage.ts` from models.dev per-1M tiers. **An unpriced model must never render
-  as zero** — show it as unknown.
-- Permissions set to `auto` reply `once` to every ask.
-- **The repackage lives in the app, not in a hand-edited file.** `lib/repackage.ts` holds
-  upstream's profile table (id to base URL) and writes the override into the *global*
-  `opencode.json`; `GET/POST /flow/api/repackage` drive it and the provider panel offers it
-  as a banner on any connected provider from that table. Only ids in the table are accepted,
-  so no request can name an arbitrary npm package. The write follows the file's own dialect:
-  one v1 key anywhere (`plugin`, `agent`, `provider`, ...) makes opencode migrate the whole
-  file, where `providers` is never read — so a v1 file gets `provider.<id> = {npm, api}` and a
-  v2 file gets `providers.<id>.api = {type, package, url}`. Config is read once at boot, so the
-  panel restarts the engine after writing. The manual equivalent below still applies to a host
-  OpenFlow does not own.
-- **A provider whose models the runner cannot route is fixed by repackaging it, in the *global*
-  config.** The v2 runner routes three API packages only (`@ai-sdk/openai`, `@ai-sdk/anthropic`,
-  `@ai-sdk/openai-compatible` + url); everything else — OpenRouter's `@openrouter/ai-sdk-provider`,
-  `@ai-sdk/groq` — throws `UnsupportedApiError` at dispatch, which the panel renders as
-  `no runnable models` and a run reports as "the session never started executing". For an
-  OpenAI-compatible endpoint, override the provider's package in
-  `~/.config/opencode/opencode.json`:
-  `"provider": { "openrouter": { "npm": "@ai-sdk/openai-compatible", "api": "https://openrouter.ai/api/v1" } }`,
-  and groq the same with `https://api.groq.com/openai/v1`. Both URLs are upstream's own, from
-  `packages/llm/src/providers/openai-compatible-profile.ts` — that table already classes
-  openrouter, groq, cerebras, deepseek, fireworks, togetherai, xai, baseten and deepinfra as
-  OpenAI-compatible, so it is the list to copy from when a new provider needs this.
-  Provider-level is enough — every model of that provider inherits the new package; no per-model
-  map. Stored credentials still resolve, because the provider id is unchanged.
-  **Project-level config does not work for this.** A session's location is the *engine's* cwd
-  (`packages/opencode`), not `OPENFLOW_PROJECT`, so the target project's `opencode.json` reaches
-  the catalog reads the browser makes with `x-opencode-directory` but never the drain that runs
-  the model. Global config applies to both. Restart the engine after editing either.
-  Cost of the swap: the OpenRouter plugin keys off the old package, so its `HTTP-Referer`/`X-Title`
-  headers and its disabling of the broken `gpt-5-chat` aliases stop applying.
-- **`runnable()` mirrors that profile table by provider id**, so the panel counts an `openrouter`
-  or `groq` model as usable whatever its package says. That anticipates the upstream fallback
-  (anomalyco/opencode#45424) which this fork's vendored core does not have yet: against an engine
-  without it *and* without the config override above, those models read as runnable and still fail
-  to dispatch. Drop the id list from `COMPATIBLE_PROVIDERS` if that PR is rejected.
+- `slug()` in `lib/store.ts` **lowercases**, drops everything but letters, numbers, `-`, `_`, space
+  and `.`, and turns spaces into `-`. Lowercasing is load-bearing: NTFS and APFS fold case, so
+  `Alpha.json` and `alpha.json` are one file, and leaving case in only hid the collision. Unicode
+  letters survive, so a non-Latin name does not collapse onto `untitled`. A skill's display name
+  (frontmatter, what the agent sees) and its folder legitimately differ in case; `readSkill`
+  returns both `name` and `folder` (what the API addresses).
+- Spend is computed client-side in `src/server/usage.ts` from the per-1M-token prices in omp's
+  model catalog. **An unpriced model must never render as zero** — show it as unknown.
+- Permissions set to `auto` start the card in `--approval-mode yolo`, so omp never asks. `ask me`
+  surfaces each request; `always` approves the subject for that card's session when omp offers
+  the option, and is allow-once otherwise.
+- `omp-settings.json` holds no secrets by construction: paths, flags, numbers and a URL, and a
+  URL with credentials in it is refused. Secrets enter through the terminal's `/login` or the
+  host environment, never through an OpenFlow route.
 - `bun test` has **no `localStorage`** (it is a browser global). When persisting a preference
   the browser stores there — custom roles, the default-model preference (`graph/default-model.ts`),
   the walkthrough-dismissed flag — make a Solid signal the source of truth and treat
