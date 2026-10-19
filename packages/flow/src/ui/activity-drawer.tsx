@@ -95,7 +95,7 @@ export function ActivityDrawer() {
             <Show when={runtime()?.usage?.steps}>
               <span class="hint">{costLabel(runtime()!.usage!)}</span>
             </Show>
-            <Show when={swarmLine(runtime()?.swarm)}>
+            <Show when={swarmLine(runtime()?.swarm, runtime()?.status)}>
               {(line) => (
                 <span class="hint" title={line().title}>
                   {line().text}

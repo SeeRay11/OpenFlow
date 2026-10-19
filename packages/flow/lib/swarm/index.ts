@@ -74,8 +74,8 @@ export function createSwarmHost(deps: SwarmDeps): SwarmHost & { handle: HostHand
       return {
         ...tracker,
         dispose() {
-          tracker.dispose()
           sessions.delete(key)
+          return tracker.dispose()
         },
       }
     },

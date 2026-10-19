@@ -328,9 +328,26 @@ export function createTracker(options: TrackerOptions): SwarmTracker {
       return commit()
     },
 
+    /**
+     * Ends the session's swarm: no agent stays queued or running, `active`
+     * drops. Returns that final status once, and only when the swarm ever
+     * showed anything; later calls, a disabled tracker and a swarm that never
+     * delegated return undefined.
+     */
     dispose() {
+      if (disposed) return undefined
       disposed = true
+      if (rows.size === 0) return undefined
+      for (const row of rows.values()) {
+        if (terminal(row.state)) continue
+        row.state = "cancelled"
+        row.at = now()
+      }
+      active = false
+      updatedAt = now()
+      const final = status()
       rows.clear()
+      return final
     },
   }
 }

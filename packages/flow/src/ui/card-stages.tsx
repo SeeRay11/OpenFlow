@@ -2,6 +2,7 @@ import { For, Show, createEffect, createSignal } from "solid-js"
 import type { MemoryInfo } from "../../shared/memory"
 import type { SwarmStatus } from "../../shared/swarm"
 import type { UpliftInfo } from "../../shared/uplift"
+import type { NodeStatus } from "../graph/types"
 import { runtimeOf } from "../state"
 import {
   decisionLine,
@@ -9,6 +10,7 @@ import {
   memoryReadText,
   memoryRow,
   memoryWriteText,
+  settleSwarm,
   stageAnnouncement,
   stageSnapshot,
   swarmAgentText,
@@ -61,9 +63,9 @@ export function MemoryChip(props: { memory?: MemoryInfo }) {
 }
 
 /** One truncating line: counts, then a pill per agent. */
-export function SwarmLine(props: { swarm?: SwarmStatus }) {
+export function SwarmLine(props: { swarm?: SwarmStatus; status?: NodeStatus }) {
   return (
-    <Show when={swarmLine(props.swarm)}>
+    <Show when={swarmLine(props.swarm, props.status)}>
       {(line) => (
         <div class="node-line stage-swarm" data-tone={line().tone} title={line().title} role="img" aria-label={line().aria}>
           <span class="stage-swarm-text">{line().text}</span>
@@ -191,9 +193,9 @@ export function MemorySection(props: { memory?: MemoryInfo }) {
   )
 }
 
-export function SwarmSection(props: { swarm?: SwarmStatus }) {
+export function SwarmSection(props: { swarm?: SwarmStatus; status?: NodeStatus }) {
   return (
-    <Show when={props.swarm && props.swarm.mode !== "off" ? props.swarm : undefined}>
+    <Show when={props.swarm?.mode === "off" ? undefined : settleSwarm(props.swarm, props.status)}>
       {(swarm) => (
         <div class="panel-section">
           <h2 class="panel-title">swarm</h2>

@@ -118,7 +118,7 @@ export function NodeCard(props: {
         <Show when={runtime().activity}>
           <div class="node-line accent">{runtime().activity}</div>
         </Show>
-        <SwarmLine swarm={runtime().swarm} />
+        <SwarmLine swarm={runtime().swarm} status={runtime().status} />
         <Show when={runtime().error}>
           <div class="node-error">{runtime().error}</div>
         </Show>

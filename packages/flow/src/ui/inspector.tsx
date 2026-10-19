@@ -246,7 +246,7 @@ export function Inspector(props: {
                 meets them. Each renders nothing until the card has a record. */}
             <UpliftSection originalPrompt={runtime()?.originalPrompt} uplift={runtime()?.uplift} />
             <MemorySection memory={runtime()?.memory} />
-            <SwarmSection swarm={runtime()?.swarm} />
+            <SwarmSection swarm={runtime()?.swarm} status={runtime()?.status} />
 
             <Show when={runtime()?.prompt}>
               <div class="panel-section">

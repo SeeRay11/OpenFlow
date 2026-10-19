@@ -110,7 +110,8 @@ export interface SwarmTracker {
   snapshot(): SwarmStatus
   /** Re-read the task store; returns the new status when it changed. */
   poll?(): Promise<SwarmStatus | undefined>
-  dispose(): void
+  /** Settles the swarm for good (every open agent cancelled, `active` false) and returns that final status, once; undefined when there is none to show or it was already returned. */
+  dispose(): SwarmStatus | undefined
 }
 
 /** What `lib/omp` receives from `lib/swarm`. Both methods are total: problems come back in `preflight`, never as throws. */

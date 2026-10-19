@@ -1,6 +1,7 @@
 import type { MemoryInfo } from "../../shared/memory"
 import type { SwarmAgentState, SwarmStatus } from "../../shared/swarm"
 import type { UpliftDecision, UpliftInfo } from "../../shared/uplift"
+import type { NodeStatus } from "../graph/types"
 
 /**
  * Every string the uplift / memory / swarm surfaces show, as data.
@@ -300,6 +301,19 @@ export function swarmCountsText(counts: SwarmStatus["counts"]) {
   return parts.join(" · ")
 }
 
+/**
+ * A swarm's agents only run while their card does. Once the card is anything
+ * but running or queued, what the host last said may be stale (the final
+ * status can arrive late or never), so open agents read as cancelled.
+ */
+export function settleSwarm(swarm: SwarmStatus | undefined, status: NodeStatus | undefined): SwarmStatus | undefined {
+  if (!swarm || status === undefined || status === "running" || status === "queued") return swarm
+  if (!swarm.active && !swarm.counts.running && !swarm.counts.queued) return swarm
+  const counts = { ...swarm.counts, running: 0, queued: 0, cancelled: swarm.counts.cancelled + swarm.counts.running + swarm.counts.queued }
+  const agents = swarm.agents.map((entry) => (entry.state === "running" || entry.state === "queued" ? { ...entry, state: "cancelled" as const } : entry))
+  return { ...swarm, active: false, counts, agents }
+}
+
 /** The card line shows once the swarm did something or degraded; a loaded-but-idle extension is not news. */
 export function swarmVisible(swarm: SwarmStatus | undefined): swarm is SwarmStatus {
   if (!swarm || swarm.mode === "off") return false
@@ -320,7 +334,8 @@ export function swarmPills(agents: SwarmAgentState[]) {
   return { pills, more: Math.max(0, agents.length - PILL_LIMIT) }
 }
 
-export function swarmLine(swarm: SwarmStatus | undefined) {
+export function swarmLine(raw: SwarmStatus | undefined, status?: NodeStatus) {
+  const swarm = settleSwarm(raw, status)
   if (!swarmVisible(swarm)) return undefined
   const counts = swarmCountsText(swarm.counts) || "delegating"
   const { pills, more } = swarmPills(swarm.agents)
@@ -351,11 +366,12 @@ export function stageSnapshot(runtime: {
   uplift?: UpliftInfo
   memory?: MemoryInfo
   swarm?: SwarmStatus
+  status?: NodeStatus
 }): StageSnapshot {
   return {
     uplift: upliftChip(runtime.uplift)?.aria,
     memory: memoryChip(runtime.memory)?.aria,
-    swarm: swarmLine(runtime.swarm)?.aria,
+    swarm: swarmLine(runtime.swarm, runtime.status)?.aria,
   }
 }
 

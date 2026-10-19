@@ -11,6 +11,7 @@ import {
   memoryReadText,
   memoryRow,
   memoryWriteText,
+  settleSwarm,
   stageAnnouncement,
   stageSnapshot,
   swarmCountsText,
@@ -284,6 +285,36 @@ describe("swarm", () => {
   test("idle text depends on the mode", () => {
     expect(swarmIdleText(swarm({ mode: "always", active: false }))).toContain("a01-orchestrator")
     expect(swarmIdleText(swarm({ mode: "auto", active: false }))).toContain("no delegation yet")
+  })
+
+  test("a card that is not running never shows a running swarm", () => {
+    const stale = swarm({
+      counts: { queued: 1, running: 1, completed: 1, failed: 0, cancelled: 0 },
+      agents: [
+        { agent: "a01-orchestrator", state: "running", at: 1 },
+        { agent: "a05-backend", state: "queued", at: 1 },
+        { agent: "a08-qa", state: "completed", at: 1 },
+      ],
+    })
+    for (const status of ["stopped", "error", "done", "skipped", "idle"] as const) {
+      const settled = settleSwarm(stale, status)
+      expect(settled?.active).toBe(false)
+      expect(settled?.counts).toEqual({ queued: 0, running: 0, completed: 1, failed: 0, cancelled: 2 })
+      expect(settled?.agents.map((agent) => agent.state)).toEqual(["cancelled", "cancelled", "completed"])
+      expect(swarmLine(stale, status)?.text).toBe("swarm 1 done · 2 cancelled")
+      expect(swarmLine(stale, status)?.text).not.toContain("running")
+      expect(stageSnapshot({ swarm: stale, status }).swarm).not.toContain("running")
+    }
+    expect(settleSwarm(stale, "running")).toBe(stale)
+    expect(settleSwarm(stale, "queued")).toBe(stale)
+    expect(settleSwarm(stale, undefined)).toBe(stale)
+    expect(settleSwarm(undefined, "stopped")).toBeUndefined()
+    expect(stale.counts.running).toBe(1)
+  })
+
+  test("a swarm the host already settled is left as it is", () => {
+    const final = swarm({ active: false, counts: { queued: 0, running: 0, completed: 1, failed: 0, cancelled: 1 }, agents: [{ agent: "a01-orchestrator", state: "cancelled", at: 1 }] })
+    expect(settleSwarm(final, "stopped")).toBe(final)
   })
 })
 

@@ -240,6 +240,37 @@ describe("tracker: frames", () => {
     tracker.dispose()
     expect(tracker.observe(frames.taskStart("c1", { agent: "a05-backend", task: "x" }))).toBeUndefined()
   })
+
+  test("dispose settles the swarm: open agents cancelled, finished ones kept, active false, counts recomputed", () => {
+    const tracker = track()
+    tracker.observe(frames.taskStart("c1", { agent: "a01-orchestrator", task: "x" }))
+    tracker.observe(frames.lifecycle("w1", "a05-backend", "started"))
+    tracker.observe(frames.lifecycle("w2", "a08-qa", "completed"))
+    tracker.observe(frames.lifecycle("w3", "a03-architect", "failed"))
+    tracker.observe(frames.taskStart("c2", { agent: "a06-frontend", task: "y" }))
+    expect(tracker.snapshot().active).toBe(true)
+
+    const final = tracker.dispose()
+    expect(final?.active).toBe(false)
+    expect(final?.agents.map((agent) => [agent.agent, agent.state])).toEqual([
+      ["a01-orchestrator", "cancelled"],
+      ["a05-backend", "cancelled"],
+      ["a08-qa", "completed"],
+      ["a03-architect", "failed"],
+      ["a06-frontend", "cancelled"],
+    ])
+    expect(final?.counts).toEqual({ queued: 0, running: 0, completed: 1, failed: 1, cancelled: 3 })
+    expect(final?.updatedAt).toBe(1_000)
+  })
+
+  test("the final status comes once; a swarm that never showed anything has none", () => {
+    const tracker = track()
+    tracker.observe(frames.taskStart("c1", { agent: "a05-backend", task: "x" }))
+    expect(tracker.dispose()).toBeDefined()
+    expect(tracker.dispose()).toBeUndefined()
+    expect(track().dispose()).toBeUndefined()
+    expect(track({ mode: "off", error: "degraded" }).dispose()).toBeUndefined()
+  })
 })
 
 describe("tracker: live.json", () => {

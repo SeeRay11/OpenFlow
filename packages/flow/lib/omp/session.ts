@@ -362,6 +362,13 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     options.emit({ type: "flow.swarm.status", data: { sessionID: session.id, status } })
   }
 
+  /** Detaches the tracker and tells the browser how the swarm ended; the status goes out once, before the session's own end notice. */
+  function endSwarm(session: Session) {
+    const tracker = session.tracker
+    session.tracker = undefined
+    emitSwarm(session, tracker?.dispose())
+  }
+
   function onPromptResult(session: Session, frame: Record<string, unknown>) {
     const last = session.last
     const id = asString(frame.id)
@@ -401,8 +408,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     session.proc = undefined
     session.unsubscribe?.()
     session.ui.cancelAll()
-    session.tracker?.dispose()
-    session.tracker = undefined
+    endSwarm(session)
     settleWaiters(session, { status: "missing" })
     const how = exit.signal ? `signal ${exit.signal}` : `code ${exit.code}`
     const tail = lastLine(exit.stderrTail)
@@ -446,7 +452,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     session.mapper = createEventMapper({ sessionID: session.id, epoch: session.epoch, agent: request.card.key, model: request.model })
     session.ui = createUiRequests({ sessionID: session.id, send, emit: options.emit })
     session.hostTools = createHostTools({ send })
-    session.tracker?.dispose()
+    endSwarm(session)
     session.tracker = deps.swarm?.tracker({ mode: session.swarmMode, stateDir: session.stateDir })
     session.unsubscribe = proc.onFrame((frame) => onFrame(session, generation, frame))
     try {
@@ -461,8 +467,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
       if (request.card.dispatch) await proc.command(hostToolsCommand())
     } catch (error) {
       session.unsubscribe?.()
-      session.tracker?.dispose()
-      session.tracker = undefined
+      endSwarm(session)
       await proc.close().catch(() => undefined)
       throw error instanceof HttpError ? error : new HttpError(502, startupMessage(error), "omp-start-failed")
     }
@@ -516,8 +521,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     session.unsubscribe?.()
     session.unsubscribe = undefined
     session.ui.cancelAll()
-    session.tracker?.dispose()
-    session.tracker = undefined
+    endSwarm(session)
     settleWaiters(session, { status: "missing" })
     await proc?.close().catch(() => undefined)
     await Promise.all(writes)

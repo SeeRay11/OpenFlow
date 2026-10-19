@@ -187,6 +187,7 @@ describe("swarm", () => {
       observed: [] as Array<{ type: string }>,
       polls: 0,
       disposed: 0,
+      silent: false,
     }
     const tracker: SwarmTracker = {
       observe(frame) {
@@ -200,6 +201,7 @@ describe("swarm", () => {
       },
       dispose() {
         record.disposed++
+        return record.disposed === 1 && !record.silent ? { ...status(9), active: false } : undefined
       },
     }
     const host: SwarmHost = {
@@ -277,6 +279,38 @@ describe("swarm", () => {
     expect(events.filter((event) => event.type === "flow.swarm.status").map((event) => event.data?.status.updatedAt)).toEqual([2])
     await host.dispose(id)
     expect(swarm.record.disposed).toBe(1)
+  })
+
+  test("disposing the session ends its swarm once, before anything else is said about the end", async () => {
+    const swarm = swarmHost()
+    await boot({ swarm: swarm.host })
+    const { id } = await open({ ...BODY, swarm: "auto" })
+    await host.dispose(id)
+    await host.dispose(id).catch(() => undefined)
+    const final = events.filter((event) => event.type === "flow.swarm.status")
+    expect(final).toHaveLength(1)
+    expect(final[0]?.data).toMatchObject({ sessionID: id, status: { active: false, updatedAt: 9 } })
+  })
+
+  test("a process that exits ends its swarm before flow.session.lost, once", async () => {
+    const swarm = swarmHost()
+    await boot({ swarm: swarm.host })
+    const { id, proc } = await open({ ...BODY, swarm: "auto" })
+    proc.exit(1)
+    await proc.exited
+    await host.dispose(id).catch(() => undefined)
+    const names = types(events).filter((type) => type === "flow.swarm.status" || type === "flow.session.lost")
+    expect(names).toEqual(["flow.swarm.status", "flow.session.lost"])
+    expect(events.find((event) => event.type === "flow.swarm.status")?.data).toMatchObject({ sessionID: id, status: { active: false, updatedAt: 9 } })
+  })
+
+  test("a swarm that never showed anything ends silently", async () => {
+    const swarm = swarmHost()
+    swarm.record.silent = true
+    await boot({ swarm: swarm.host })
+    const { id } = await open({ ...BODY, swarm: "auto" })
+    await host.dispose(id)
+    expect(events.filter((event) => event.type === "flow.swarm.status")).toEqual([])
   })
 })
 

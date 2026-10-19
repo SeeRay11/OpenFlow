@@ -88,7 +88,7 @@ describe("createSwarmHost.tracker", () => {
   test("without a prior launch the slug shape decides", () => {
     const tracker = host(signed()).tracker({ mode: "auto", stateDir: path.join(dir, "unknown") })
     expect(tracker.observe(frames.taskStart("c1", { agent: "a13-observability", task: "x" }))?.active).toBe(true)
-    tracker.dispose()
+    expect(tracker.dispose()).toMatchObject({ active: false, counts: { running: 0, cancelled: 1 } })
   })
 })
 
