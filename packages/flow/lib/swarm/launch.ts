@@ -48,7 +48,7 @@ function ensureStore(stateDir: string): string | undefined {
 }
 
 export function buildSwarmLaunch(input: { preflight: SwarmPreflight; stateDir: string }): SwarmLaunch {
-  const { preflight } = input
+  const preflight = input.preflight
   const off = (degraded: SwarmPreflight): SwarmLaunch => ({
     effective: "off",
     args: [],

@@ -7,6 +7,7 @@ import { createSubstrate } from "../substrate"
 import { createSwarmHost } from "../swarm"
 import { createTerminal, type TerminalModule } from "../terminal"
 import { createUplift } from "../uplift"
+import { createGate } from "./gate"
 import { stateDir, stateRoot } from "./paths"
 import { guarded, type HostHandler } from "./respond"
 
@@ -19,6 +20,11 @@ export type HostOptions = {
 }
 
 export type Host = {
+  /**
+   * The Host / Origin / Sec-Fetch-Site / Content-Type gate for every `/flow/api` request, the store routes
+   * and the SSE stream included. Mount it first on each server: a `Response` is a refusal, `undefined` lets the request on.
+   */
+  gate: HostHandler
   /** Every `/flow/api` module that is not the store; `undefined` means the request is not one of theirs. */
   handle: HostHandler
   /** The same instance `handle` serves tickets for: hand it to `bunWebSocket` / `attachNodeUpgrade`. */
@@ -67,6 +73,7 @@ export function createHost(options: HostOptions): Host {
   let disposed: Promise<void> | undefined
 
   return {
+    gate: createGate(options.allowRemote),
     handle: guarded(async (request) => {
       for (const module of modules) {
         const response = await module(request)

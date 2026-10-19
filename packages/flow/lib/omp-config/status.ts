@@ -1,4 +1,4 @@
-import type { OmpProblem, OmpSettings, OmpStatus, OmpStatusView } from "../../shared/omp"
+import type { OmpProblem, OmpSettings, OmpStatus } from "../../shared/omp"
 import { checkOmp } from "../omp/binary"
 import { childEnv, firstLine, profileArgs, type Run } from "./config"
 import type { Providers } from "./providers"
@@ -67,7 +67,8 @@ export function createStatusChecker(deps: StatusDeps): StatusChecker {
             message: `The ${profile} profile has no credentials.`,
             fix: "Use the Copy logins button in Omp settings, or open the terminal and run /login.",
           })
-        } else if (!authenticated.some((row) => row.available)) {
+        }
+        if (authenticated.length && !authenticated.some((row) => row.available)) {
           problems.push({
             code: "no-models",
             message: `None of the ${profile} profile's authenticated providers can serve models.`,

@@ -462,7 +462,8 @@ describe("skills", () => {
     expect(list.some((entry) => "legacy" in entry)).toBe(false)
   })
 
-  test("lists a skill folder that is a symlink", async () => {
+  // Creating a symlink needs a privilege Windows does not grant by default.
+  test.skipIf(process.platform === "win32")("lists a skill folder that is a symlink", async () => {
     const elsewhere = path.join(dir, "shared", "linked")
     await fs.mkdir(elsewhere, { recursive: true })
     await fs.writeFile(path.join(elsewhere, "SKILL.md"), "---\nname: linked\ndescription: Shared\n---\n\nbody\n")
@@ -888,6 +889,33 @@ describe("mcp servers", () => {
 
     expect(await read(`${configPath()}.bak`)).toBe(raw)
     expect(Object.keys((await config()).mcpServers)).toEqual(["second", "third"])
+  })
+
+  // POSIX permission bits: Windows reports its own, so there is nothing to compare there.
+  const posix = process.platform !== "win32"
+  const modeOf = async (file: string) => (await fs.stat(file)).mode & 0o777
+
+  test.skipIf(!posix)("a rewrite keeps the file's own mode and the backup is private", async () => {
+    await fs.mkdir(profile, { recursive: true })
+    await fs.writeFile(configPath(), JSON.stringify({ mcpServers: { first: { command: "a", env: { KEY: "dummy" } } } }))
+    await fs.chmod(configPath(), 0o600)
+
+    await call("PUT", "/mcp/second", { body: { type: "local", command: ["b"] } })
+    expect(await modeOf(configPath())).toBe(0o600)
+    expect(await modeOf(`${configPath()}.bak`)).toBe(0o600)
+
+    await call("DELETE", "/mcp/second")
+    expect(await modeOf(configPath())).toBe(0o600)
+
+    // A file somebody made group-readable on purpose stays that way.
+    await fs.chmod(configPath(), 0o640)
+    await call("PUT", "/mcp/third", { body: { type: "local", command: ["c"] } })
+    expect(await modeOf(configPath())).toBe(0o640)
+  })
+
+  test.skipIf(!posix)("a config this host creates is private", async () => {
+    await call("PUT", "/mcp/fresh", { body: { type: "remote", url: "https://example.test", headers: { authorization: "Bearer dummy" } } })
+    expect(await modeOf(configPath())).toBe(0o600)
   })
 
   test("a server saved as sse stays sse", async () => {

@@ -16,7 +16,6 @@ import { promisify } from "node:util"
 import type { OmpSettings } from "../../shared/omp"
 import type {
   MemoryEntriesResult,
-  MemoryEntryRow,
   MemoryForgetRequest,
   MemoryForgetResult,
   MemoryItem,
@@ -28,7 +27,7 @@ import type {
 } from "../../shared/memory"
 import { memorySubject } from "../../shared/memory"
 import type { MemoryWriteReply, SubstrateClient, SubstrateEntry, SubstrateFailure, SubstrateResult } from "./client"
-import { createClient, parseBaseUrl, resolveToken } from "./client"
+import { createClient, parseBaseUrl, resolveToken, tokenAllowed, untrustedMessage } from "./client"
 import type { BlockEntry } from "./guard"
 import { buildBlock, capText, preview, redact, stripControl } from "./guard"
 import type { GraphContext, RunGraphs } from "./run-graph"
@@ -38,7 +37,6 @@ const runCommand = promisify(execFile)
 const SLUG = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/
 const RETRACTED = "/retracted"
 const WRITE_TEXT_LIMIT = 3900
-const QUERY_LIMIT = 1500
 const FORGET_BATCH = 8
 const DAY_MS = 86_400_000
 
@@ -65,18 +63,7 @@ export type MemoryModule = {
  * scp-style `git@host:owner/name`, with or without `.git`. Sub-groups keep the last two segments.
  */
 export function parseRemoteSlug(remote: string): string | undefined {
-  const text = remote.trim()
-  let path: string | undefined
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) {
-    try {
-      path = new URL(text).pathname
-    } catch {
-      return undefined
-    }
-  } else {
-    path = /^(?:[^@/\s]+@)?[^/:\s]+:(.+)$/.exec(text)?.[1]
-  }
-  const segments = path?.split("/").filter(Boolean)
+  const segments = remotePath(remote.trim())?.split("/").filter(Boolean)
   if (!segments || segments.length < 2) return undefined
   const slug = segments
     .slice(-2)
@@ -84,6 +71,16 @@ export function parseRemoteSlug(remote: string): string | undefined {
     .replace(/\.git$/i, "")
     .toLowerCase()
   return SLUG.test(slug) ? slug : undefined
+}
+
+/** The path part of a remote: a URL's pathname, or what follows the `:` of an scp-style `git@host:owner/name`. */
+function remotePath(text: string): string | undefined {
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return /^(?:[^@/\s]+@)?[^/:\s]+:(.+)$/.exec(text)?.[1]
+  try {
+    return new URL(text).pathname
+  } catch {
+    return undefined
+  }
 }
 
 async function git(cwd: string, args: string[]): Promise<string | undefined> {
@@ -162,7 +159,7 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
       const path = ignorePath()
       const cutoffs = await readCutoffs()
       cutoffs[prefix] = Math.max(cutoffs[prefix] ?? 0, at)
-      await mkdir(dirname(path), { recursive: true })
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 })
       const temporary = `${path}.${process.pid}.tmp`
       await writeFile(temporary, `${JSON.stringify({ version: 1, cutoffs }, null, 2)}\n`, { mode: 0o600 })
       await rename(temporary, path)
@@ -183,7 +180,7 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     return slug
   }
 
-  type Resolved = { url?: URL; token?: string; repo?: string; problems: string[] }
+  type Resolved = { url?: URL; token?: string; repo?: string; problems: string[]; blocked: boolean }
 
   async function resolve(settings: OmpSettings): Promise<Resolved> {
     const problems: string[] = []
@@ -191,24 +188,23 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     const url = raw ? parseBaseUrl(raw) : undefined
     if (!raw) problems.push("No Substrate URL: set substrate.url in the Omp settings or SUBSTRATE_URL.")
     else if (!url) problems.push("The Substrate URL is not an http(s) URL: fix substrate.url in the Omp settings or SUBSTRATE_URL.")
-    const token = await resolveToken(env)
-    if (!token) {
+    // The token is not even read for a URL it may not be sent to.
+    const blocked = url !== undefined && !tokenAllowed(url, env)
+    if (url && blocked) problems.push(untrustedMessage(url))
+    const token = blocked ? undefined : await resolveToken(env)
+    if (!token && !blocked) {
       problems.push(
         `No Substrate token: set SUBSTRATE_TOKEN or SUBSTRATE_TOKEN_FILE, or put the omp token in ${env.SUBSTRATE_TOKENS_DIR || "/etc/substrate/tokens"}/omp.`,
       )
     }
-    let repo: string | undefined
     const override = settings.memory.repo.trim().toLowerCase()
-    if (override) {
-      repo = SLUG.test(override) ? override : undefined
-      if (!repo) problems.push(`The memory repo "${override}" is not owner/name: fix memory.repo in the Omp settings.`)
-    } else {
-      repo = await derivedRepo(deps.project())
-      if (!repo) {
-        problems.push("The project has no git remote `origin` to name the repo for memory: set memory.repo to owner/name in the Omp settings.")
-      }
+    const valid = SLUG.test(override)
+    if (override && !valid) problems.push(`The memory repo "${override}" is not owner/name: fix memory.repo in the Omp settings.`)
+    const repo = !override ? await derivedRepo(deps.project()) : valid ? override : undefined
+    if (!override && !repo) {
+      problems.push("The project has no git remote `origin` to name the repo for memory: set memory.repo to owner/name in the Omp settings.")
     }
-    return { url, token: token?.token, repo, problems }
+    return { url, token: token?.token, repo, problems, blocked }
   }
 
   type Connection = { client: SubstrateClient; repo: string; scope: string; context: GraphContext }
@@ -217,7 +213,7 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     if (disposed) return { error: "Shared memory is shut down." }
     const resolved = await resolve(settings)
     if (!resolved.url || !resolved.token || !resolved.repo) return { error: resolved.problems[0] ?? "Shared memory is not configured." }
-    const client = createClient({ url: resolved.url, token: resolved.token, fetch: deps.fetch ?? fetch })
+    const client = createClient({ url: resolved.url, token: resolved.token, fetch: deps.fetch ?? fetch, env })
     const branch = await git(deps.project(), ["rev-parse", "--abbrev-ref", "HEAD"])
     const context: GraphContext = { client, repo: resolved.repo, branch: branch === "HEAD" ? undefined : branch }
     return { client, repo: resolved.repo, scope: `repo:${resolved.repo}`, context }
@@ -280,12 +276,22 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     const elapsed = () => now() - started
     const settings = await deps.settings()
     if (!settings.memory.enabled) return { status: "disabled", block: "", items: [], scopes: [], elapsedMs: elapsed() }
+    if (settings.memory.readLimit === 0) {
+      return {
+        status: "disabled",
+        block: "",
+        items: [],
+        scopes: [],
+        error: "Memory reads are off because memory.readLimit is 0 in the Omp settings; raise it to let cards read shared memory.",
+        elapsedMs: elapsed(),
+      }
+    }
     const connection = await connect(settings)
     if ("error" in connection) {
       return { status: "unavailable", block: "", items: [], scopes: [], briefState: "absent", error: connection.error, elapsedMs: elapsed() }
     }
     const { client, scope, context } = connection
-    const limit = Math.max(1, request.limit ?? settings.memory.readLimit)
+    const limit = request.limit ?? settings.memory.readLimit
     const prefix = subjectPrefix(request.pipeline)
     const graphId = deps.runGraphs.graphId(request.runId)
     // The recall query (`request.query`) is not sent: Substrate ANDs every word of a full-text query,
@@ -393,7 +399,11 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     const connection = await connect(settings)
     if ("error" in connection) return { status: "unavailable", error: connection.error }
     const { client, scope, context } = connection
-    const subject = memorySubject(request.pipeline, request.runId, request.nodeId)
+    // A sub-agent dispatched again writes again: the ordinal keeps its subject and idempotency key apart from the first
+    // answer's (the first dispatch keeps the bare ones, so entries written before this existed still match).
+    const dispatch = request.dispatch !== undefined && Number.isInteger(request.dispatch) && request.dispatch > 1 ? request.dispatch : 1
+    const suffix = dispatch > 1 ? `-d${dispatch}` : ""
+    const subject = `${memorySubject(request.pipeline, request.runId, request.nodeId).slice(0, 200 - suffix.length)}${suffix}`
     const base: MemoryWriteResult = { status: "skipped", scope, subject }
     return track(
       (async () => {
@@ -413,7 +423,7 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
           ttl: settings.memory.ttl,
           graph_id: deps.runGraphs.graphId(request.runId),
           session_id: `openflow-${request.runId}-${request.nodeId}`,
-          idempotency_key: `openflow:${request.runId}:${request.nodeId}`,
+          idempotency_key: `openflow:${request.runId}:${request.nodeId}${dispatch > 1 ? `:${dispatch}` : ""}`,
         }
         let reply = await client.memoryWrite(payload)
         // 202 means accepted but not read back; the same key makes the retry exactly-once.
@@ -506,8 +516,8 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     if (!settings.memory.enabled) return { ...base, problems: [] }
     const problems = [...resolved.problems]
     let reachable = false
-    if (resolved.url) {
-      const health = await createClient({ url: resolved.url, token: resolved.token ?? "", fetch: deps.fetch ?? fetch }).healthz()
+    if (resolved.url && !resolved.blocked) {
+      const health = await createClient({ url: resolved.url, token: resolved.token ?? "", fetch: deps.fetch ?? fetch, env }).healthz()
       if (health.ok) {
         reachable = true
         problems.push(...health.value.problems)

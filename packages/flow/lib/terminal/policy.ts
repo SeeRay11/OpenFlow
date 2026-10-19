@@ -3,6 +3,8 @@ import { accessSync, constants, readFileSync, realpathSync } from "node:fs"
 import path from "node:path"
 import { PTY_CONTROL, PTY_HEADER, PTY_LIMITS, clampSize } from "../../shared/terminal"
 import type { PtyClientControl, PtyKind, PtyServerControl, PtyTicketRequest } from "../../shared/terminal"
+import { hostOf, loopbackHost, sameOrigin } from "../host/gate"
+import type { Refusal } from "../host/gate"
 
 /**
  * Everything the terminal decides before a process exists: who may ask, what
@@ -10,26 +12,7 @@ import type { PtyClientControl, PtyKind, PtyServerControl, PtyTicketRequest } fr
  * ticket store, so the whole policy is one table-driven test.
  */
 
-export type Refusal = { status: number; error: string; code: string }
-
-const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$/i
-
-/** A Host header that names this machine. Anything else is DNS rebinding or a LAN client. */
-export function loopbackHost(host: string | null): host is string {
-  return host !== null && LOOPBACK_HOST.test(host)
-}
-
-/** `Origin` must be exactly the page that served us: `http(s)://<the Host it was sent to>`. */
-function sameOrigin(origin: string | null, host: string) {
-  if (!origin) return false
-  const lower = host.toLowerCase()
-  const given = origin.toLowerCase()
-  return given === `http://${lower}` || given === `https://${lower}`
-}
-
-function hostOf(request: Request) {
-  return request.headers.get("host") ?? new URL(request.url).host
-}
+// The Host / Origin rules are the host gate's: one implementation for every route.
 
 /**
  * The gate for the HTTP routes. The custom header cannot be sent cross-origin

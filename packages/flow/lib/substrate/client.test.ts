@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createClient, parseBaseUrl, resolveToken } from "./client"
+import { createClient, parseBaseUrl, resolveToken, tokenAllowed } from "./client"
 import type { FakeSubstrate } from "./testing/fake-substrate"
 import { startFakeSubstrate } from "./testing/fake-substrate"
 
@@ -54,7 +54,67 @@ describe("parseBaseUrl", () => {
   })
 })
 
+describe("tokenAllowed", () => {
+  const allowed = (url: string, env: NodeJS.ProcessEnv = {}) => {
+    const parsed = parseBaseUrl(url)
+    if (!parsed) throw new Error("bad url")
+    return tokenAllowed(parsed, env)
+  }
+
+  test.each([
+    ["https://substrate.example", true],
+    ["https://substrate.example:8443", true],
+    ["http://localhost:8080", true],
+    ["http://127.0.0.1:8080", true],
+    ["http://[::1]:8080", true],
+    ["http://substrate.example:8080", false],
+    ["http://10.0.0.5:8080", false],
+    ["http://localhost.evil.example:8080", false],
+    ["http://127.0.0.1.evil.example", false],
+    ["http://0.0.0.0:8080", false],
+  ])("%s with an empty environment", (url, expected) => expect(allowed(url)).toBe(expected))
+
+  test("plain http to another host is trusted only when SUBSTRATE_URL names the same origin", () => {
+    const env = { SUBSTRATE_URL: "http://substrate.example:8080" }
+    expect(allowed("http://substrate.example:8080", env)).toBe(true)
+    expect(allowed("http://substrate.example:8080/some/path", env)).toBe(true)
+    expect(allowed("http://substrate.example:9090", env)).toBe(false)
+    expect(allowed("http://substrate.example", env)).toBe(false)
+    expect(allowed("http://other.example:8080", env)).toBe(false)
+    expect(allowed("https://substrate.example:8080", { SUBSTRATE_URL: "http://other.example" })).toBe(true)
+    expect(allowed("http://substrate.example:8080", { SUBSTRATE_URL: "not a url" })).toBe(false)
+    expect(allowed("http://substrate.example:8080", { SUBSTRATE_URL: "" })).toBe(false)
+  })
+})
+
 describe("client", () => {
+  test("an untrusted URL never sees the token: authenticated calls fail without a request, healthz still goes out bare", async () => {
+    const seen: Array<{ url: string; authorization: string | null }> = []
+    const recorder = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ url: String(input), authorization: new Headers(init?.headers).get("authorization") })
+      return new Response(JSON.stringify({ index: true }), { status: 200 })
+    }) as typeof fetch
+    const url = parseBaseUrl("http://substrate.example:8080")
+    if (!url) throw new Error("bad url")
+    const untrusted = createClient({ url, token: fake.token, fetch: recorder, env: {} })
+
+    const brief = await untrusted.brief({ repo: "acme/widgets" })
+    expect(brief).toMatchObject({ ok: false, kind: "unavailable" })
+    expect(JSON.stringify(brief)).not.toContain(fake.token)
+    expect(brief.ok ? "" : brief.message).toContain("substrate.example:8080")
+    expect(await untrusted.memorySearch({ scope: "repo:acme/widgets" })).toMatchObject({ ok: false, kind: "unavailable" })
+    expect(seen).toEqual([])
+
+    expect((await untrusted.healthz()).ok).toBe(true)
+    expect(seen).toEqual([{ url: "http://substrate.example:8080/healthz", authorization: null }])
+
+    // The environment's own choice, and https, do carry it.
+    seen.length = 0
+    const trusted = createClient({ url, token: fake.token, fetch: recorder, env: { SUBSTRATE_URL: "http://substrate.example:8080" } })
+    await trusted.brief({ repo: "acme/widgets" })
+    expect(seen.map((call) => call.authorization)).toEqual([`Bearer ${fake.token}`])
+  })
+
   test("healthz is open and reports degraded planes", async () => {
     fake.planes.hindsight = { ok: false }
     const health = await client("wrong-token").healthz()

@@ -202,7 +202,8 @@ describe("a failure", () => {
 })
 
 describe("locating claude-ultrathink", () => {
-  test("settings win, then ULTRATHINK_ROOT, then omp's plugin directory under HOME", async () => {
+  // The plugin directory is a symlink, which Windows only grants with a privilege.
+  test.skipIf(process.platform === "win32")("settings win, then ULTRATHINK_ROOT, then omp's plugin directory under HOME", async () => {
     const harness = await setup()
     const home = path.join(harness.root, "..", "home")
     const plugin = path.join(home, ".omp", "plugins", "node_modules")

@@ -5,6 +5,7 @@ import path from "node:path"
 import { DEFAULT_OMP_SETTINGS, type OmpSettings } from "../../shared/omp"
 import { HttpError } from "../host/respond"
 import { ValidationFailure, childEnv, createConfig, defaultRun, firstLine, isSensitiveKey, parseListing, toEntry, type Run } from "./config"
+import { resolveBinary } from "../omp/binary"
 import { installFakeOmp } from "./fake-omp"
 
 const LISTING = `Settings:
@@ -124,7 +125,57 @@ describe("firstLine / childEnv", () => {
   })
 })
 
-describe("against a real executable", () => {
+// The listing parser is otherwise tested against a hand-written fixture; this is the one place it meets omp's own output.
+// Skipped when omp is not installed. HOME is a throwaway directory and the profile a made-up one, so the developer's profile is never read or written.
+describe("against the installed omp", () => {
+  const binary = resolveBinary({ binary: "" })
+  let home: string
+
+  beforeEach(async () => {
+    home = await mkdtemp(path.join(os.tmpdir(), "omp-config-real-"))
+  })
+
+  afterEach(async () => {
+    await rm(home, { recursive: true, force: true })
+  })
+
+  test.skipIf(!binary)(
+    "`omp config list --json` and the text listing parse into complete, typed entries with options for enums",
+    async () => {
+      const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home }
+      const settings = { ...structuredClone(DEFAULT_OMP_SETTINGS), binary: binary ?? "", profile: "openflow-probe" }
+      const entries = await createConfig({ run: defaultRun, env }).list(settings)
+      expect(entries.length).toBeGreaterThan(100)
+
+      const types = ["boolean", "number", "enum", "string", "array", "record"]
+      for (const entry of entries) {
+        expect(entry.key).not.toBe("")
+        expect(types).toContain(entry.type)
+      }
+      // Enums are only recognisable from the text listing: the production parser must have found some, with choices.
+      expect(entries.some((entry) => entry.type === "enum" && (entry.options?.length ?? 0) > 1)).toBe(true)
+      // omp has been seen to print its text listing only partway when the machine is busy, so the parser is checked against
+      // the first complete one of a few: every setting the JSON listing names must have a row.
+      const missing = async () => {
+        const text = await defaultRun(binary ?? "", ["--profile", "openflow-probe", "config", "list"], childEnv(env))
+        const meta = parseListing(text.stdout)
+        return entries.filter((entry) => !meta.has(entry.key)).map((entry) => entry.key)
+      }
+      let left = await missing()
+      for (let attempt = 1; attempt < 5 && left.length > 0; attempt++) left = await missing()
+      expect(left).toEqual([])
+      // Credential-named settings come back without a value.
+      for (const entry of entries.filter((candidate) => isSensitiveKey(candidate.key))) {
+        expect(entry.value).toBeUndefined()
+        expect(entry.editable).toBe(false)
+      }
+    },
+    60_000,
+  )
+})
+
+// The fake omp is a `#!` script and the suite spawns it as a process group: POSIX only.
+describe.skipIf(process.platform === "win32")("against a real executable", () => {
   let dir: string
   let binary: string
   let settings: OmpSettings
@@ -261,6 +312,31 @@ describe("with a fake runner", () => {
       return { code: 0, stdout: text, stderr: "" }
     }
   }
+
+  test("a text listing cut short is not kept: groups and enum choices return, and a key past the cut can still be set", async () => {
+    const json = JSON.stringify({
+      "theme.dark": { type: "string", description: "", value: "x" },
+      symbolPreset: { type: "enum", description: "", value: "nerd" },
+    })
+    const full = "[appearance]\n  theme.dark = x (string)\n  symbolPreset = nerd (unicode|nerd|ascii)\n"
+    const cut = "[appearance]\n  theme.dark = x (string)\n"
+    const texts = [cut]
+    const sets: string[][] = []
+    const run: Run = async (_binary, args) => {
+      if (args.includes("--json")) return { code: 0, stdout: json, stderr: "" }
+      if (args.includes("set")) {
+        sets.push(args)
+        return { code: 0, stdout: "", stderr: "" }
+      }
+      return { code: 0, stdout: texts.shift() ?? full, stderr: "" }
+    }
+    const config = createConfig({ env: { PATH: process.env.PATH }, run })
+
+    const listed = await config.list(settings)
+    expect(listed.find((entry) => entry.key === "symbolPreset")).toMatchObject({ type: "enum", group: "appearance", options: ["unicode", "nerd", "ascii"] })
+    await config.set(settings, "symbolPreset", "ascii")
+    expect(sets).toHaveLength(1)
+  })
 
   test("omp rejecting a value is a 422 carrying its first line, never the value echoed on stdout", async () => {
     const config = createConfig({

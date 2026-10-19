@@ -45,7 +45,8 @@ async function settingsFor(version = "18.12.2"): Promise<OmpSettings> {
   return { ...structuredClone(DEFAULT_OMP_SETTINGS), binary: await installFakeOmp(dir, version) }
 }
 
-describe("createStatusChecker", () => {
+// Both suites run the fake omp (a `#!` script) for real: POSIX only.
+describe.skipIf(process.platform === "win32")("createStatusChecker", () => {
   test("a healthy profile reports binary, version, config dir and provider counts with no problems", async () => {
     const providers = providersOf([row("anthropic", true), row("zai", false)])
     const status = await createStatusChecker({ run: defaultRun, env, providers }).status(await settingsFor())
@@ -144,7 +145,7 @@ describe("createStatusChecker", () => {
   })
 })
 
-describe("status through the omp-config module", () => {
+describe.skipIf(process.platform === "win32")("status through the omp-config module", () => {
   test("a profile with every provider unauthenticated reports no-credentials and no profile problem", async () => {
     await installFakeOmp(dir)
     // Like real omp: an rpc process without --model aborts on a profile with no default model.

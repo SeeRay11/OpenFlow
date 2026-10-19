@@ -84,7 +84,8 @@ describe("POST", () => {
     expect(result.reason).toBe("planner timed out after 0.4 s")
   })
 
-  test("an aborted request stops the planner and its whole group", async () => {
+  // Process groups: POSIX only.
+  test.skipIf(process.platform === "win32")("an aborted request stops the planner and its whole group", async () => {
     const harness = await setup()
     const base = serve(harness.create())
     const controller = new AbortController()

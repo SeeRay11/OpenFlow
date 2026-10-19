@@ -5,6 +5,9 @@ import { createTerminal } from "./index"
 import type { TerminalDeps, TerminalModule } from "./index"
 import { cleanScratch, collector, goneWithin, scratch, stub } from "./test-harness"
 
+// Real PTYs, `/bin/sh` and POSIX process groups: nothing in this file runs on Windows.
+const suite = describe.skipIf(process.platform === "win32")
+
 /**
  * The module end to end without a socket: HTTP handler + upgrade policy over
  * real PTYs. The transports' own tests (`ws-bun`, `ws-node`) repeat the
@@ -51,7 +54,7 @@ async function create(terminal: TerminalModule, kind: "omp" | "shell" = "omp", c
 const wsRequest = (id: string, query: string, headers: Record<string, string> = { origin: ORIGIN }, base = ORIGIN) =>
   new Request(`${base}${PTY_ROUTES.ws(id)}${query}`, { method: "GET", headers })
 
-describe("the whole route", () => {
+suite("the whole route", () => {
   test("ticket -> upgrade -> output -> list -> kill, and the ticket is one-shot", async () => {
     const { terminal } = await setup("echo from-omp-stub; read x; echo got:$x; read y")
     const ticket = await create(terminal)
@@ -162,7 +165,7 @@ describe("the whole route", () => {
   })
 })
 
-describe("policy table", () => {
+suite("policy table", () => {
   const create80 = { create: { kind: "omp", cols: 80, rows: 24 } }
 
   test.each([

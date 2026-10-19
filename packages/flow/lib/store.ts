@@ -662,8 +662,9 @@ async function listMcpServers(file: string): Promise<McpServer[]> {
  * `enabled` follows omp: `disabledServers` always wins, an `enabled: false`
  * entry is switched back on only by `enabledServers`.
  */
-function normalizeMcp(name: string, entry: any, listed: boolean, forced: boolean): McpServer | undefined {
-  if (!entry || typeof entry !== "object") return undefined
+function normalizeMcp(name: string, value: unknown, listed: boolean, forced: boolean): McpServer | undefined {
+  const entry = asRecord(value)
+  if (!entry) return undefined
   const enabled = listed && (entry.enabled !== false || forced)
   const timeout = typeof entry.timeout === "number" ? entry.timeout : undefined
   // A URL-only entry is http, which is how omp's own discovery reads it.
@@ -686,6 +687,11 @@ function normalizeMcp(name: string, entry: any, listed: boolean, forced: boolean
     environment: isStringRecord(entry.env) ? entry.env : undefined,
     timeout,
   }
+}
+
+/** A plain JSON object (not null, not an array), or `undefined`. */
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
 }
 
 function isStringRecord(value: unknown): value is Record<string, string> {
@@ -728,10 +734,10 @@ async function readMcpFile(file: string): Promise<{ value: Record<string, any>; 
  * Saving an enabled server also lifts it off `disabledServers`, which would
  * otherwise keep it off whatever its own `enabled` says.
  */
-async function writeMcpServer(file: string, name: string, body: any) {
+async function writeMcpServer(file: string, name: string, body: unknown) {
   return serialize(file, async () => {
     const config = await readMcpFile(file)
-    const servers = (config.value.mcpServers ?? {}) as Record<string, any>
+    const servers = (config.value.mcpServers ?? {}) as Record<string, Record<string, unknown> | undefined>
     const entry = buildMcpEntry(body, servers[name])
     const disabled = stringList(config.value.disabledServers)
     const lift = entry.enabled && disabled.includes(name)
@@ -751,14 +757,15 @@ async function writeMcpServer(file: string, name: string, body: any) {
   })
 }
 
-function buildMcpEntry(body: any, existing: Record<string, unknown> | undefined) {
-  const enabled = body?.enabled !== false
-  const timeout = typeof body?.timeout === "number" && body.timeout > 0 ? body.timeout : undefined
+function buildMcpEntry(body: unknown, existing: Record<string, unknown> | undefined) {
+  const form = asRecord(body) ?? {}
+  const enabled = form.enabled !== false
+  const timeout = typeof form.timeout === "number" && form.timeout > 0 ? form.timeout : undefined
   const kept = Object.fromEntries(Object.entries(existing ?? {}).filter(([key]) => !MCP_MANAGED.includes(key)))
-  if (body?.type === "remote") {
-    const url = typeof body.url === "string" ? body.url.trim() : ""
+  if (form.type === "remote") {
+    const url = typeof form.url === "string" ? form.url.trim() : ""
     if (!url) throw new Error("a remote mcp server needs a url")
-    const headers = pickStrings(body.headers)
+    const headers = pickStrings(form.headers)
     return {
       ...kept,
       // The form has no transport switch, so a server saved as sse stays sse.
@@ -769,10 +776,10 @@ function buildMcpEntry(body: any, existing: Record<string, unknown> | undefined)
       enabled,
     }
   }
-  const command = Array.isArray(body?.command) ? body.command.map(String).filter((part: string) => part.length) : []
+  const command = Array.isArray(form.command) ? form.command.map(String).filter((part) => part.length) : []
   if (!command.length) throw new Error("a local mcp server needs a command")
-  const env = pickStrings(body?.environment)
-  const cwd = typeof body?.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : undefined
+  const env = pickStrings(form.environment)
+  const cwd = typeof form.cwd === "string" && form.cwd.trim() ? form.cwd.trim() : undefined
   return {
     ...kept,
     type: "stdio",
@@ -898,16 +905,17 @@ async function readSkill(paths: FlowPaths, profile: string | undefined, name: st
  * frontmatter name defaults to the folder slug so the two never drift. omp
  * loads a skill only at session start, so a new one reaches the next card.
  */
-async function writeSkill(profile: string, name: string, body: any) {
+async function writeSkill(profile: string, name: string, body: unknown) {
+  const form = asRecord(body) ?? {}
   const dir = path.join(profile, "skills", name)
   await fs.mkdir(dir, { recursive: true })
   const file = path.join(dir, "SKILL.md")
   await writeAtomic(
     file,
     buildSkillMarkdown({
-      name: oneLine(body?.name) || name,
-      description: oneLine(body?.description),
-      content: typeof body?.content === "string" ? body.content : "",
+      name: oneLine(form.name) || name,
+      description: oneLine(form.description),
+      content: typeof form.content === "string" ? form.content : "",
     }),
   )
   return { name, path: file }
@@ -960,7 +968,7 @@ function oneLine(value: unknown): string | undefined {
 async function backupOnce(target: string, raw: string | undefined) {
   if (raw === undefined) return undefined
   const backup = `${target}.bak`
-  await fs.writeFile(backup, raw, { flag: "wx" }).catch((error) => {
+  await fs.writeFile(backup, raw, { flag: "wx", mode: 0o600 }).catch((error) => {
     if (error?.code !== "EEXIST") throw error
   })
   return backup
@@ -1021,7 +1029,14 @@ function pipelineConflict(name: string) {
  */
 async function writeAtomic(file: string, data: string) {
   const temp = `${file}.${process.pid.toString(36)}${Date.now().toString(36)}.tmp`
-  await fs.writeFile(temp, data)
+  // The rename replaces the inode, so the target's own mode has to ride along or a 0600 `mcp.json` comes back 0644.
+  // A new file is private by default: configs here hold MCP `env` and `headers`, which are often secrets.
+  const mode = await fs.stat(file).then(
+    (stat) => stat.mode & 0o777,
+    () => 0o600,
+  )
+  await fs.writeFile(temp, data, { mode })
+  await fs.chmod(temp, mode)
   // Windows hands back EPERM or EBUSY when a virus scanner or indexer holds the
   // target open for a moment, so the rename is retried before it is fatal.
   for (let attempt = 0; ; attempt++) {

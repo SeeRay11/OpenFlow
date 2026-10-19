@@ -83,6 +83,7 @@ export function createRoutes(memory: MemoryModule): HostHandler {
         role: text(body, "role", true) as string,
         outcome: body.outcome as MemoryWriteRequest["outcome"],
         output: text(body, "output", false, WRITE_BODY_LIMIT) ?? "",
+        dispatch: count(body.dispatch, "dispatch", 1000),
       }
       return json(200, await memory.write(input))
     }

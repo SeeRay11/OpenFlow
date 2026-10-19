@@ -34,7 +34,8 @@ describe("stateRoot", () => {
     expect(stateRoot(project, env)).toBe(path.join("/state", "omp", expected))
   })
 
-  test("a symlink and its target share a root", () => {
+  // Creating a symlink needs a privilege Windows does not grant by default.
+  test.skipIf(process.platform === "win32")("a symlink and its target share a root", () => {
     const project = path.join(dir, "project")
     const link = path.join(dir, "link")
     mkdirSync(project)

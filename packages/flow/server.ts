@@ -82,6 +82,10 @@ function listen() {
       hostname,
       idleTimeout: 0, // SSE streams outlive any request timeout
       async fetch(request, serving) {
+        // Every `/flow/api` request, store and SSE included, passes the Host/Origin gate before any handler (and before a body is read).
+        const refused = await host.gate(request)
+        if (refused) return refused
+
         // The terminal's WebSocket upgrade must be decided before anything reads the request.
         const upgraded = terminal.fetch(request, serving)
         if (upgraded instanceof Response) return upgraded

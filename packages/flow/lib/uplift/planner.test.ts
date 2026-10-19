@@ -147,7 +147,8 @@ describe("plannerEnv", () => {
   })
 })
 
-describe("the planner process", () => {
+// Process groups, signals and `#!/bin/sh` scripts: POSIX only.
+describe.skipIf(process.platform === "win32")("the planner process", () => {
   test("gets control.json before it plans, with hitl from settings and tracking off", async () => {
     const harness = await setup()
     const uplift = harness.create()

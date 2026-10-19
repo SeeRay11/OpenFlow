@@ -69,7 +69,8 @@ describe("credentialStamp", () => {
   })
 })
 
-describe("the omp-config module's stamp", () => {
+// Runs the fake omp (a `#!` script) for real: POSIX only.
+describe.skipIf(process.platform === "win32")("the omp-config module's stamp", () => {
   async function start() {
     await installFakeOmp(dir)
     let spawns = 0

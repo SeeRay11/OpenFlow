@@ -19,11 +19,12 @@ let settings: OmpSettings
 let substrate: SubstrateModule
 const extra: SubstrateModule[] = []
 
-function make(options: { env?: NodeJS.ProcessEnv; project?: string; stateDir?: string } = {}): SubstrateModule {
+function make(options: { env?: NodeJS.ProcessEnv; project?: string; stateDir?: string; fetch?: typeof fetch } = {}): SubstrateModule {
   const created = createSubstrate({
     project: () => options.project ?? dir,
     settings: async () => settings,
     env: { SUBSTRATE_TOKEN: fake.token, OPENFLOW_STATE_DIR: options.stateDir ?? join(dir, "state"), ...options.env },
+    fetch: options.fetch,
     now: fake.now,
   })
   extra.push(created)
@@ -185,6 +186,18 @@ describe("read", () => {
     expect((await substrate.read(read("run-new", "y"))).items).toHaveLength(3)
   })
 
+  test("a read limit of 0 reads nothing: disabled for the read, with the reason, and Substrate is never called", async () => {
+    await substrate.write(write("run-a", "x", "something worth recalling"))
+    const before = fake.calls.length
+    settings.memory.readLimit = 0
+    const result = await substrate.read(read("run-b", "y"))
+    expect(result).toMatchObject({ status: "disabled", block: "", items: [] })
+    expect(result.error).toContain("memory.readLimit")
+    expect(fake.calls).toHaveLength(before)
+    // Writes are a separate switch: they still go through.
+    expect((await substrate.write(write("run-b", "y", "still written"))).status).toBe("stored")
+  })
+
   test("reports the age in days", async () => {
     await substrate.write(write("run-a", "x", "old"))
     fake.advance(3 * 86_400_000)
@@ -319,6 +332,62 @@ describe("write", () => {
     expect(bodyOf(calls[0]).idempotency_key).toBe("openflow:run-a:x")
     expect(bodyOf(calls[1]).idempotency_key).toBe("openflow:run-a:x")
     expect(fake.entries).toHaveLength(1)
+  })
+
+  test("a card dispatched again writes again: both dispatches are stored, the first keeps the bare subject and key", async () => {
+    const first = await substrate.write(write("run-a", "sub", "first answer", { dispatch: 1 }))
+    const second = await substrate.write(write("run-a", "sub", "a different second answer", { dispatch: 2 }))
+    const third = await substrate.write(write("run-a", "sub", "and a third", { dispatch: 3 }))
+    expect([first.status, second.status, third.status]).toEqual(["stored", "stored", "stored"])
+    expect([first.subject, second.subject, third.subject]).toEqual(["openflow/demo/run-a/sub", "openflow/demo/run-a/sub-d2", "openflow/demo/run-a/sub-d3"])
+    expect(memoryCalls().map((call) => bodyOf(call).idempotency_key)).toEqual(["openflow:run-a:sub", "openflow:run-a:sub:2", "openflow:run-a:sub:3"])
+    expect(fake.entries.map((entry) => entry.text)).toEqual([
+      expect.stringContaining("first answer"),
+      expect.stringContaining("a different second answer"),
+      expect.stringContaining("and a third"),
+    ])
+
+    // An absent, repeated or nonsense ordinal is the first dispatch: same key as before, so a retry is still exactly-once.
+    for (const dispatch of [undefined, 1, 0, -2, 1.5, Number.NaN]) {
+      const again = await substrate.write(write("run-a", "sub", "first answer", { dispatch }))
+      expect(again).toMatchObject({ status: "stored", subject: "openflow/demo/run-a/sub" })
+    }
+    expect(fake.entries).toHaveLength(3)
+  })
+
+  test("forget retracts every dispatch of a run, and the entries listing marks them retracted", async () => {
+    await substrate.write(write("run-a", "sub", "first answer", { dispatch: 1 }))
+    await substrate.write(write("run-a", "sub", "second answer", { dispatch: 2 }))
+    expect(await substrate.forget({ pipeline: "demo", runId: "run-a" })).toEqual({ status: "retracted", retracted: 2 })
+    expect(fake.entries.map((entry) => entry.subject).filter((subject) => subject.endsWith("/retracted")).sort()).toEqual([
+      "openflow/demo/run-a/sub-d2/retracted",
+      "openflow/demo/run-a/sub/retracted",
+    ])
+    const listing = await substrate.handle(new Request(`http://host${MEMORY_ROUTES.entries}?pipeline=demo&run=run-a`))
+    const body: { items: Array<{ subject: string; retracted: boolean }> } = await listing?.json()
+    const rows = body.items.filter((row) => !row.subject.endsWith("/retracted")).map((row) => [row.subject, row.retracted])
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        ["openflow/demo/run-a/sub", true],
+        ["openflow/demo/run-a/sub-d2", true],
+      ]),
+    )
+    expect((await substrate.read(read("run-b", "y"))).status).toBe("empty")
+  })
+
+  test("a dispatch over the HTTP route reaches the write, and a bad ordinal is a 400", async () => {
+    const post = (dispatch: unknown) =>
+      substrate.handle(
+        new Request(`http://host${MEMORY_ROUTES.write}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ runId: "run-a", nodeId: "sub", pipeline: "demo", role: "coder", outcome: "done", output: "answer", dispatch }),
+        }),
+      )
+    const accepted: { subject: string } = await (await post(2))?.json()
+    expect(accepted.subject).toBe("openflow/demo/run-a/sub-d2")
+    expect((await post(0))?.status).toBe(400)
+    expect((await post("two"))?.status).toBe(400)
   })
 
   test("accepted but never verified is `unverified`, not `stored`", async () => {
@@ -526,5 +595,69 @@ describe("repo slug", () => {
     expect(result.status).toBe("unavailable")
     expect(result.error).toContain("git remote `origin`")
     expect(result.error).toContain("memory.repo")
+  })
+})
+
+describe("where the token goes", () => {
+  /** A recording fetch standing in for a Substrate that is not on this machine: nothing is ever sent anywhere. */
+  function recorder() {
+    const seen: Array<{ url: string; authorization: string | null }> = []
+    const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ url: String(input), authorization: new Headers(init?.headers).get("authorization") })
+      return new Response(JSON.stringify({ index: true, planes: {} }), { status: 200, headers: { "content-type": "application/json" } })
+    }) as typeof fetch
+    return { seen, fetcher }
+  }
+  const request = { runId: "run-a", nodeId: "x", pipeline: "demo", query: "q" }
+
+  test("plain http to another host: no request carries the token, and every path says why in one sentence", async () => {
+    const { seen, fetcher } = recorder()
+    settings.substrate.url = "http://substrate.example:8080"
+    const module = make({ fetch: fetcher })
+
+    const read = await module.read(request)
+    expect(read.status).toBe("unavailable")
+    expect(read.error).toContain("substrate.example:8080")
+    expect(read.error).toContain("https")
+
+    const written = await module.write({ ...request, role: "coder", outcome: "done", output: "something to keep" })
+    expect(written.status).toBe("unavailable")
+    expect(written.error).toContain("substrate.example:8080")
+
+    const status = await module.status()
+    expect(status.reachable).toBe(false)
+    expect(status.problems[0]).toContain("substrate.example:8080")
+
+    expect(await module.forget({ pipeline: "demo", runId: "run-a" })).toMatchObject({ status: "unavailable" })
+
+    expect(seen).toEqual([])
+    expect(JSON.stringify([read, written, status])).not.toContain(fake.token)
+  })
+
+  test("a loopback Substrate gets the token on every authenticated call", async () => {
+    await substrate.read(request)
+    expect(fake.calls.filter((call) => call.path !== "/healthz").length).toBeGreaterThan(0)
+    expect(fake.calls.filter((call) => call.path !== "/healthz").every((call) => call.authorized)).toBe(true)
+  })
+
+  test("an https Substrate gets the token", async () => {
+    const { seen, fetcher } = recorder()
+    settings.substrate.url = "https://substrate.example"
+    await make({ fetch: fetcher }).read(request)
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen.every((call) => call.authorization === `Bearer ${fake.token}`)).toBe(true)
+  })
+
+  test("plain http to another host is trusted only when the environment's SUBSTRATE_URL names that same origin", async () => {
+    settings.substrate.url = "http://substrate.example:8080"
+    const named = recorder()
+    await make({ fetch: named.fetcher, env: { SUBSTRATE_URL: "http://substrate.example:8080" } }).read(request)
+    expect(named.seen.length).toBeGreaterThan(0)
+    expect(named.seen.every((call) => call.authorization === `Bearer ${fake.token}`)).toBe(true)
+
+    const other = recorder()
+    const stranger = make({ fetch: other.fetcher, env: { SUBSTRATE_URL: "http://elsewhere.example:8080" } })
+    expect((await stranger.read(request)).status).toBe("unavailable")
+    expect(other.seen).toEqual([])
   })
 })

@@ -33,11 +33,22 @@ export function fail(status: number, error: string, code?: string): Response {
   return json(status, code ? { error, code } : { error })
 }
 
-/** Parses a JSON body; refuses anything over `limit` bytes (default 1 MiB) or that is not JSON. */
+/** `application/json`, any case, with or without parameters such as `; charset=utf-8`. */
+export function isJsonContentType(contentType: string | null) {
+  return contentType !== null && contentType.split(";")[0].trim().toLowerCase() === "application/json"
+}
+
+/**
+ * Parses a JSON body; refuses anything over `limit` bytes (default 1 MiB), that is not JSON, or that
+ * is not declared as `application/json` (a page can send `text/plain` cross-origin without a preflight).
+ */
 export async function readJson<T = unknown>(request: Request, limit = 1_048_576): Promise<T> {
   if (Number(request.headers.get("content-length") ?? 0) > limit) throw new HttpError(413, "request body too large", "too-large")
   const text = await request.text()
   if (text.length > limit) throw new HttpError(413, "request body too large", "too-large")
+  if (text && !isJsonContentType(request.headers.get("content-type"))) {
+    throw new HttpError(403, "Request bodies must be sent with the content type application/json.", "forbidden-content-type")
+  }
   try {
     return JSON.parse(text || "null") as T
   } catch {

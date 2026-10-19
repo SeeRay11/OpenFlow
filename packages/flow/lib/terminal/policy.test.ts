@@ -8,7 +8,6 @@ import {
   decodeClientFrame,
   encodeControl,
   httpRefusal,
-  loopbackHost,
   parseTicketRequest,
   resolveShell,
   spawnPlan,
@@ -22,25 +21,6 @@ afterEach(cleanScratch)
 function request(url: string, init: { method?: string; headers?: Record<string, string> } = {}) {
   return new Request(url, { method: init.method ?? "POST", headers: init.headers })
 }
-
-describe("loopbackHost", () => {
-  test.each([
-    ["localhost", true],
-    ["localhost:5173", true],
-    ["LOCALHOST:5173", true],
-    ["127.0.0.1:4097", true],
-    ["[::1]:4097", true],
-    ["example.com", false],
-    ["localhost.evil.com", false],
-    ["127.0.0.1.evil.com", false],
-    ["evil.com:80@localhost", false],
-    ["192.168.1.5:5173", false],
-    ["0.0.0.0:5173", false],
-    ["localhost:notaport", false],
-  ])("%s", (host, expected) => expect(loopbackHost(host)).toBe(expected))
-
-  test("a missing host is not loopback", () => expect(loopbackHost(null)).toBe(false))
-})
 
 describe("httpRefusal", () => {
   const good = { [PTY_HEADER]: "1", origin: "http://127.0.0.1:5173" }
@@ -184,6 +164,7 @@ describe("terminalEnv", () => {
       OMP_PROFILE: "openflow",
       PI_API_KEY: "dummy",
       OMP_ACCESS_TOKEN: "dummy",
+      OMP_X_API_KEY: "dummy",
       SUBSTRATE_TOKEN: "dummy-token",
       SWARM_ED25519_KEY: "dummy-key",
       ULTRATHINK_PLANNER_KEY: "dummy",
@@ -219,7 +200,8 @@ describe("terminalEnv", () => {
 })
 
 describe("resolveShell", () => {
-  test("uses $SHELL only when absolute, executable and listed; else /bin/sh -l", async () => {
+  // `#!/bin/sh` fakes, `chmod` bits and `/bin/sh` itself: not on Windows (the %ComSpec% case below is portable).
+  test.skipIf(process.platform === "win32")("uses $SHELL only when absolute, executable and listed; else /bin/sh -l", async () => {
     const dir = await scratch()
     const fake = path.join(dir, "fakesh")
     await fs.writeFile(fake, "#!/bin/sh\n", { mode: 0o755 })
@@ -237,7 +219,7 @@ describe("resolveShell", () => {
     expect(resolveShell({}, { shells })).toEqual({ file: "/bin/sh", args: ["-l"] })
   })
 
-  test("a symlink to a listed shell is accepted (merged /usr)", async () => {
+  test.skipIf(process.platform === "win32")("a symlink to a listed shell is accepted (merged /usr)", async () => {
     const dir = await scratch()
     const real = path.join(dir, "real-sh")
     await fs.writeFile(real, "#!/bin/sh\n", { mode: 0o755 })
@@ -255,7 +237,8 @@ describe("resolveShell", () => {
 })
 
 describe("spawnPlan", () => {
-  test("shell: cwd is the real path of the project, env is filtered", async () => {
+  // `/bin/sh` and a POSIX symlink: not on Windows.
+  test.skipIf(process.platform === "win32")("shell: cwd is the real path of the project, env is filtered", async () => {
     const dir = await scratch()
     const link = path.join(dir, "link")
     await fs.mkdir(path.join(dir, "project"))

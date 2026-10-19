@@ -209,11 +209,11 @@ export function createConfig(deps: { run: Run; env: NodeJS.ProcessEnv }): Config
     }
   }
 
-  /** The text listing changes only when omp is upgraded, so it is cached per binary file and modification time. */
-  async function metaFor(settings: OmpSettings): Promise<Map<string, ListingMeta>> {
+  /** The text listing changes only when omp is upgraded, so it is cached per binary file and modification time; `fresh` skips the cache. */
+  async function metaFor(settings: OmpSettings, fresh = false): Promise<Map<string, ListingMeta>> {
     const binary = resolveBinary(settings, deps.env)
     const key = binary ? `${binary}|${(await stat(binary).catch(() => undefined))?.mtimeMs ?? 0}` : ""
-    if (listing && key && listing.key === key) return listing.meta
+    if (!fresh && listing && key && listing.key === key) return listing.meta
     const result = await omp(settings, ["list"])
     if (result.code !== 0) throw new HttpError(502, firstLine(result.stderr), "omp-failed")
     const meta = parseListing(result.stdout)
@@ -222,7 +222,7 @@ export function createConfig(deps: { run: Run; env: NodeJS.ProcessEnv }): Config
   }
 
   async function entries(settings: OmpSettings): Promise<OmpConfigEntry[]> {
-    const [result, meta] = await Promise.all([omp(settings, ["list", "--json"]), metaFor(settings)])
+    const [result, cached] = await Promise.all([omp(settings, ["list", "--json"]), metaFor(settings)])
     if (result.code !== 0) throw new HttpError(502, firstLine(result.stderr), "omp-failed")
     let parsed: unknown
     try {
@@ -231,11 +231,16 @@ export function createConfig(deps: { run: Run; env: NodeJS.ProcessEnv }): Config
       throw new HttpError(502, "omp returned a config listing that is not JSON", "omp-output")
     }
     if (!isRecord(parsed)) throw new HttpError(502, "omp returned an unexpected config listing", "omp-output")
+    // omp has been seen to print its text listing only partway, exit 0 and no error, when the machine is busy. Cached, that
+    // would hide groups and enum choices (and make `known` refuse real keys) until omp is upgraded. A setting the JSON listing
+    // names and the text listing does not is the tell: ask for the text listing again, once.
+    const meta = Object.keys(parsed).every((key) => cached.has(key)) ? cached : await metaFor(settings, true)
     return Object.entries(parsed).map(([key, raw]) => toEntry(key, raw, meta.get(key)))
   }
 
   async function known(settings: OmpSettings, key: string): Promise<ListingMeta> {
-    const found = (await metaFor(settings)).get(key)
+    // A key the cached listing lacks may be a listing that was cut short (see `entries`): look once more before refusing it.
+    const found = (await metaFor(settings)).get(key) ?? (await metaFor(settings, true)).get(key)
     if (!found) throw new HttpError(404, `omp has no setting named ${key}`, "unknown-key")
     return found
   }

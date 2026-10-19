@@ -111,7 +111,10 @@ export function createUplift(deps: UpliftDeps): UpliftModule {
     }
   }
 
-  async function run(request: UpliftRequest, signal?: AbortSignal): Promise<UpliftResult> {
+  /** Runs not yet settled, persist included: `dispose` waits for them so nothing writes under a state directory that is already gone. */
+  const running = new Set<Promise<UpliftResult>>()
+
+  async function execute(request: UpliftRequest, signal?: AbortSignal): Promise<UpliftResult> {
     const started = Date.now()
     let result: UpliftResult
     try {
@@ -124,12 +127,23 @@ export function createUplift(deps: UpliftDeps): UpliftModule {
     return result
   }
 
+  function run(request: UpliftRequest, signal?: AbortSignal): Promise<UpliftResult> {
+    const work = execute(request, signal)
+    running.add(work)
+    const settle = () => running.delete(work)
+    work.then(settle, settle)
+    return work
+  }
+
   return {
     handle: createRoutes({
       run,
       read: async (runId, nodeId) => (await loadStored(stateDir(), runId, nodeId))?.result,
     }),
     run,
-    dispose: () => pool.dispose(),
+    async dispose() {
+      await pool.dispose()
+      await Promise.allSettled([...running])
+    },
   }
 }

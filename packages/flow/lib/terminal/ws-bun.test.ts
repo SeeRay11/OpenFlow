@@ -7,6 +7,9 @@ import { cleanScratch, collector, decodeControl, firstCursor, goneWithin, resize
 import type { Collector } from "./test-harness"
 import { bunWebSocket } from "./ws-bun"
 
+// Real PTYs, `/bin/sh` and POSIX process groups: nothing in this file runs on Windows.
+const suite = describe.skipIf(process.platform === "win32")
+
 /**
  * The Bun transport over a real `Bun.serve` on port 0 and the real WebSocket
  * client: framing, tickets, Origin, replay, and that nothing outlives the host.
@@ -85,7 +88,7 @@ const closedBeforeOpen = async (received: Collector, state: { open: boolean }) =
   expect(state.open).toBe(false)
 }
 
-describe("Bun.serve transport", () => {
+suite("Bun.serve transport", () => {
   test("create, type, resize, exit: text out, binary controls both ways, clean close", async () => {
     const { base } = await boot("stty size; read x; echo got:$x; stty size; read y; exit 5")
     const granted = await ticket(base, { create: { kind: "omp", cols: 100, rows: 30 } })

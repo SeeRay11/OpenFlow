@@ -11,6 +11,9 @@ import type { TerminalModule } from "./index"
 import { cleanScratch, collector, decodeControl, goneWithin, resizeFrame, scratch, stub } from "./test-harness"
 import { attachNodeUpgrade } from "./ws-node"
 
+// Real PTYs, `/bin/sh` and POSIX process groups: nothing in this file runs on Windows.
+const suite = describe.skipIf(process.platform === "win32")
+
 /**
  * The vite dev host's transport: a plain `node:http` server standing in for
  * vite's, the `ws` package as the client, and `flowPty` wired the way vite wires
@@ -26,7 +29,9 @@ afterEach(async () => {
   for (const client of clients.splice(0)) client.terminate()
   for (const server of servers.splice(0)) {
     server.closeAllConnections()
-    await new Promise<void>((resolve) => server.close(() => resolve()))
+    const closing = Promise.withResolvers<void>()
+    server.close(() => closing.resolve())
+    await closing.promise
   }
   await Promise.all(terminals.splice(0).map((terminal) => terminal.dispose()))
   await cleanScratch()
@@ -73,7 +78,9 @@ async function boot(script: string, via: "attach" | "plugin", extraUpgrade?: (ur
   if (via === "attach") attachNodeUpgrade(server, terminal)
   else (flowPty(terminal).configureServer as (server: ViteDevServer) => void)({ httpServer: server } as unknown as ViteDevServer)
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const listening = Promise.withResolvers<void>()
+  server.listen(0, "127.0.0.1", () => listening.resolve())
+  await listening.promise
   const address = server.address()
   if (!address || typeof address === "string") throw new Error("no port")
   return { terminal, server, base: `http://127.0.0.1:${address.port}` }
@@ -116,7 +123,7 @@ function connect(base: string, granted: PtyTicket, options: { origin?: string | 
   return { socket, received, state }
 }
 
-describe.each(["attach", "plugin"] as const)("node transport (%s)", (via) => {
+suite.each(["attach", "plugin"] as const)("node transport (%s)", (via) => {
   test("create, type, resize, exit over a real socket", async () => {
     const { base } = await boot("stty size; read x; echo got:$x; stty size; read y; exit 6", via)
     const granted = await ticket(base, { create: { kind: "omp", cols: 100, rows: 30 } })
@@ -202,7 +209,7 @@ describe.each(["attach", "plugin"] as const)("node transport (%s)", (via) => {
   })
 })
 
-describe("vite plugin lifecycle", () => {
+suite("vite plugin lifecycle", () => {
   test("closing the http server disposes the terminal: no shell, no grandchild left", async () => {
     const { base, server } = await boot("sleep 300 & echo CHILD:$!; wait", "plugin")
     const granted = await ticket(base, { create: { kind: "omp", cols: 80, rows: 24 } })
@@ -211,13 +218,15 @@ describe("vite plugin lifecycle", () => {
     const grandchild = Number(/CHILD:(\d+)/.exec(received.output)![1])
 
     server.closeAllConnections()
-    await new Promise<void>((resolve) => server.close(() => resolve()))
+    const closing = Promise.withResolvers<void>()
+    server.close(() => closing.resolve())
+    await closing.promise
     expect(await goneWithin(grandchild, 5000)).toBe(true)
   })
+})
 
-  test("a plugin on a server with no http server does nothing", () => {
-    const terminal = createTerminal({ project: () => "/", omp: async () => ({ error: "unused" }) })
-    terminals.push(terminal)
-    expect(() => (flowPty(terminal).configureServer as (server: ViteDevServer) => void)({ httpServer: null } as unknown as ViteDevServer)).not.toThrow()
-  })
+test("a plugin on a server with no http server does nothing", () => {
+  const terminal = createTerminal({ project: () => "/", omp: async () => ({ error: "unused" }) })
+  terminals.push(terminal)
+  expect(() => (flowPty(terminal).configureServer as (server: ViteDevServer) => void)({ httpServer: null } as unknown as ViteDevServer)).not.toThrow()
 })

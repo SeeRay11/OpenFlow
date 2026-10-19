@@ -26,6 +26,32 @@ function withSettings(patch: (settings: OmpSettings) => void): OmpSettings {
   return settings
 }
 
+describe("substrate.url warning", () => {
+  const warnings = async (url: string, env: NodeJS.ProcessEnv = {}) => {
+    const saved = await store(env).update({ substrate: { url } })
+    if (!saved.ok) throw new Error("the url was refused")
+    return saved.view.warnings
+  }
+
+  test("plain http to a non-loopback host is saved with a warning, not refused, and the warning stays on a later read", async () => {
+    const saved = await warnings("http://substrate.example:8080")
+    expect(saved).toHaveLength(1)
+    expect(saved[0]).toContain("substrate.example:8080")
+    expect(saved[0]).toContain("https")
+    expect((await store().view()).warnings).toEqual(saved)
+    expect((await store().load()).warnings).toEqual(saved)
+  })
+
+  test.each(["https://substrate.example", "http://localhost:8080", "http://127.0.0.1:8080", "http://[::1]:8080", ""])("%j draws no warning", async (url) => {
+    expect(await warnings(url)).toEqual([])
+  })
+
+  test("SUBSTRATE_URL naming the same origin makes it a deliberate choice: no warning", async () => {
+    expect(await warnings("http://substrate.example:8080", { SUBSTRATE_URL: "http://substrate.example:8080" })).toEqual([])
+    expect(await warnings("http://substrate.example:8080", { SUBSTRATE_URL: "http://other.example:8080" })).toHaveLength(1)
+  })
+})
+
 describe("load", () => {
   test("returns the defaults and creates nothing when there is no file", async () => {
     expect((await store().load()).settings).toEqual(DEFAULT_OMP_SETTINGS)
@@ -78,7 +104,8 @@ describe("load", () => {
 })
 
 describe("update", () => {
-  test("saves the merged result at mode 0600 and leaves no temp file", async () => {
+  // POSIX permission bits only.
+  test.skipIf(process.platform === "win32")("saves the merged result at mode 0600 and leaves no temp file", async () => {
     const result = await store().update({ profile: "work", memory: { readLimit: 3 } })
     expect(result.ok).toBe(true)
     const onDisk = JSON.parse(await readFile(settingsFile(), "utf8")) as OmpSettings

@@ -64,6 +64,11 @@ jobs:
         working-directory: packages/flow
         run: bun run typecheck
 
+      # The migration's own rule: nothing but `src/graph/migrate.ts` may name the engine this fork left.
+      - name: Removed-engine gate
+        working-directory: packages/flow
+        run: bun run check:no-opencode
+
       - name: Unit tests
         working-directory: packages/flow
         run: bun test

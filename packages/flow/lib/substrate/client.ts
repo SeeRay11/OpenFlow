@@ -9,6 +9,7 @@
  */
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
+import { loopbackHost } from "../host/gate"
 
 export const SURFACE = "omp"
 export const READ_TIMEOUT_MS = 3000
@@ -95,6 +96,22 @@ export async function resolveToken(env: NodeJS.ProcessEnv): Promise<{ token: str
   return token ? { token, source: "tokens-dir" } : undefined
 }
 
+/**
+ * Whether the omp token may be sent to `url`: it is https, its host is loopback, or its origin is the
+ * one `SUBSTRATE_URL` names in the environment (the operator's own choice). The settings file can name
+ * any URL, so without this a saved `http://elsewhere` would receive the bearer token in clear text.
+ */
+export function tokenAllowed(url: URL, env: NodeJS.ProcessEnv): boolean {
+  if (url.protocol === "https:" || loopbackHost(url.host)) return true
+  const named = env.SUBSTRATE_URL ? parseBaseUrl(env.SUBSTRATE_URL) : undefined
+  return named?.origin === url.origin
+}
+
+/** One sentence for a URL the token is withheld from; names the host, never a credential. */
+export function untrustedMessage(url: URL): string {
+  return `Substrate at ${url.host} is plain http on a non-loopback host, so the omp token is not sent there. Use an https:// URL in the Omp settings, or set SUBSTRATE_URL to this address in the environment to trust it.`
+}
+
 /** `http(s)` base URL without a trailing slash, or undefined when it is not one. */
 export function parseBaseUrl(raw: string): URL | undefined {
   try {
@@ -163,9 +180,10 @@ function parseRpc(body: string, id: number): Record<string, unknown> | undefined
   return parsed.find((message) => message.id === id) ?? parsed.at(-1)
 }
 
-export function createClient(options: { url: URL; token: string; fetch: typeof fetch }): SubstrateClient {
+export function createClient(options: { url: URL; token: string; fetch: typeof fetch; env?: NodeJS.ProcessEnv }): SubstrateClient {
   const base = `${options.url.protocol}//${options.url.host}`
   const hostPort = options.url.host
+  const trusted = tokenAllowed(options.url, options.env ?? process.env)
   let rpcId = 0
 
   async function send(
@@ -173,6 +191,8 @@ export function createClient(options: { url: URL; token: string; fetch: typeof f
     init: { method: string; body?: unknown; auth: boolean; headers?: Record<string, string> },
     timeoutMs: number,
   ): Promise<{ ok: true; response: Response } | SubstrateFailure> {
+    // The token never leaves for a URL that is not https, loopback or the one the environment names.
+    if (init.auth && !trusted) return { ok: false, kind: "unavailable", message: untrustedMessage(options.url) }
     const headers: Record<string, string> = { ...init.headers }
     if (init.auth) headers.authorization = `Bearer ${options.token}`
     if (init.body !== undefined) headers["content-type"] = "application/json"

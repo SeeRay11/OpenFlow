@@ -106,7 +106,8 @@ async function alive(pid: number): Promise<boolean> {
   }
 }
 
-describe("POST authImport", () => {
+// The fake omp is a `#!` script the module really executes: POSIX only.
+describe.skipIf(process.platform === "win32")("POST authImport", () => {
   test("copies the default profile's logins into the configured profile, byte for byte", async () => {
     start()
     await fetch(url(OMP_ROUTES.status))

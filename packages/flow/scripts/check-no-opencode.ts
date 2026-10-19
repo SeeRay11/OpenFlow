@@ -40,6 +40,7 @@ export const ALLOWLIST: readonly Allowed[] = [
   { path: "packages/flow/scripts/check-no-opencode.ts", reason: "this script names what it looks for" },
   { path: "packages/flow/scripts/check-no-opencode.test.ts", reason: "its test plants strays to prove the gate fails" },
   { path: "FLOW.md", pattern: /vendored|upstream|check[:-]no-opencode/i, reason: "states vendored-upstream facts and names this gate" },
+  { path: ".github/workflows/openflow.yml", pattern: /check:no-opencode/, reason: "the CI step that runs this gate" },
   { path: ".github/workflows/test.yml", reason: "upstream CI" },
   { path: ".github/actions/setup-git-committer/action.yml", reason: "upstream CI" },
   { path: ".github/ISSUE_TEMPLATE/bug-report.yml", reason: "upstream issue template" },

@@ -11,6 +11,7 @@ import {
 } from "../../shared/omp"
 import { SWARM_MODES } from "../../shared/swarm"
 import { resetOmpCheck } from "../omp/binary"
+import { parseBaseUrl, tokenAllowed } from "../substrate/client"
 
 /**
  * OpenFlow's own Omp settings: what it decides when it spawns omp, kept in
@@ -167,6 +168,18 @@ export function effectiveSources(settings: OmpSettings, env: NodeJS.ProcessEnv):
   }
 }
 
+/**
+ * A warning, never a refusal: a Substrate over plain http on another machine is a legitimate lab setup, but the
+ * omp token is withheld from it unless `SUBSTRATE_URL` names the same address (`lib/substrate/client.ts`).
+ */
+function substrateWarnings(settings: OmpSettings, env: NodeJS.ProcessEnv): string[] {
+  const url = settings.substrate.url ? parseBaseUrl(settings.substrate.url) : undefined
+  if (!url || tokenAllowed(url, env)) return []
+  return [
+    `substrate.url ${url.host} is plain http on a non-loopback host, so the Substrate token is not sent to it and memory stays off. Use https, or set SUBSTRATE_URL to the same address to trust it.`,
+  ]
+}
+
 export function createSettingsStore(options: SettingsStoreOptions): SettingsStore {
   const env = options.env ?? process.env
   const listeners = new Set<() => void>()
@@ -239,13 +252,13 @@ export function createSettingsStore(options: SettingsStoreOptions): SettingsStor
 
   async function view(settings?: OmpSettings): Promise<OmpSettingsView> {
     const current = settings ?? (await read())
-    return { settings: current, effective: effectiveSources(current, env), warnings: [...warnings] }
+    return { settings: current, effective: effectiveSources(current, env), warnings: [...warnings, ...substrateWarnings(current, env)] }
   }
 
   return {
     async load() {
       const settings = await read()
-      return { settings, warnings: [...warnings] }
+      return { settings, warnings: [...warnings, ...substrateWarnings(settings, env)] }
     },
     view: () => view(),
     update: (patch) =>

@@ -12,7 +12,8 @@ import { cleanScratch, goneWithin, scratch } from "./test-harness"
 
 afterEach(cleanScratch)
 
-test("node-pty backend under Node: long-lived output, input, resize, group hangup", async () => {
+// Real PTYs, `/bin/sh` and POSIX process groups: this does not run on Windows.
+test.skipIf(process.platform === "win32")("node-pty backend under Node: long-lived output, input, resize, group hangup", async () => {
   const dir = await scratch()
   const entry = path.join(import.meta.dir, "pty-node.ts")
   const script = path.join(dir, "probe.mjs")
@@ -38,7 +39,9 @@ proc.onData((data) => {
     process.kill(-proc.pid, "SIGHUP")
   }
 })
-const exit = await new Promise((resolve) => proc.onExit(resolve))
+const exited = Promise.withResolvers()
+proc.onExit(exited.resolve)
+const exit = await exited.promise
 console.log(JSON.stringify({ out, exit }))
 `,
   )

@@ -19,6 +19,7 @@ import { KILL_GRACE_MS } from "../uplift/planner"
 import { bunWebSocket, type PtySocketData } from "../terminal/ws-bun"
 import { createHost, type Host } from "./index"
 import { stateRoot } from "./paths"
+import { flowPaths, handleFlow, type FlowPaths } from "../store"
 
 /**
  * The whole host over real HTTP: `createHost` composed from the real modules,
@@ -29,6 +30,10 @@ import { stateRoot } from "./paths"
  */
 
 setDefaultTimeout(30_000)
+
+// The wrapper omp, the stub planner and the PTY are `/bin/sh` scripts and POSIX process groups: nothing here runs on Windows.
+const posix = process.platform !== "win32"
+const suite = describe.skipIf(!posix)
 
 const here = import.meta.dir
 const STUB_OMP = path.join(here, "..", "omp", "testing", "stub-omp.ts")
@@ -45,9 +50,12 @@ let configDir: string
 let fake: FakeSubstrate
 let host: Host
 let server: Server<PtySocketData>
+let paths: FlowPaths
+let argvFile: string
 let base: string
 
 beforeAll(async () => {
+  if (!posix) return
   dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), "flow-host-")))
   project = path.join(dir, "project")
   stateDir = path.join(dir, "state")
@@ -55,6 +63,7 @@ beforeAll(async () => {
   scriptFile = path.join(dir, "script.json")
   logFile = path.join(dir, "stub.log")
   pidFile = path.join(dir, "pids")
+  argvFile = path.join(dir, "argv.log")
   mkdirSync(project)
   expect(Bun.spawnSync(["git", "init", "-q", project]).exitCode).toBe(0)
   writeFileSync(scriptFile, "[]")
@@ -76,6 +85,7 @@ beforeAll(async () => {
       `if [ -f "${dir}/model-count" ]; then export STUB_OMP_MODELS=$(cat "${dir}/model-count"); fi`,
       `echo $$ >> "${pidFile}"`,
       `export STUB_OMP_SCRIPT="${scriptFile}" STUB_OMP_LOG="${logFile}"`,
+      `echo "$*" >> "${argvFile}"`,
       `exec "${process.execPath}" "${STUB_OMP}" "$@"`,
       "",
     ].join("\n"),
@@ -91,6 +101,7 @@ beforeAll(async () => {
   chmodSync(path.join(ultrathink, "bin", "run-bun"), 0o755)
 
   fake = startFakeSubstrate()
+  paths = flowPaths(project)
   host = createHost({
     project: () => project,
     allowRemote: false,
@@ -102,10 +113,23 @@ beforeAll(async () => {
     hostname: "127.0.0.1",
     idleTimeout: 0,
     async fetch(request, serving) {
+      // The same order as `server.ts`: the gate first, then the terminal upgrade, the host modules, then the store.
+      const refused = await host.gate(request)
+      if (refused) return refused
       const upgraded = socket.fetch(request, serving)
       if (upgraded instanceof Response) return upgraded
       if (upgraded) return undefined
-      return (await host.handle(request)) ?? new Response("unclaimed", { status: 418 })
+      const hosted = await host.handle(request)
+      if (hosted) return hosted
+      const url = new URL(request.url)
+      const stored = await handleFlow(paths, {
+        method: request.method,
+        path: url.pathname,
+        search: url.searchParams,
+        json: async () => JSON.parse((await request.text()) || "{}"),
+        profileDir: host.profileDir,
+      })
+      return stored ? Response.json(stored.body, { status: stored.status }) : new Response("unclaimed", { status: 418 })
     },
     websocket: socket.websocket,
   })
@@ -122,6 +146,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  if (!posix) return
   await host.dispose()
   await server.stop(true)
   await fake.stop()
@@ -233,7 +258,7 @@ async function wait(id: string) {
   return (await response.json()) as WaitResult
 }
 
-describe("omp config", () => {
+suite("omp config", () => {
   test("status reports the wrapper as available omp and the profile directory", async () => {
     const status = await get<OmpStatusView>(OMP_ROUTES.status)
     expect(status.available).toBe(true)
@@ -254,7 +279,7 @@ describe("omp config", () => {
   })
 })
 
-describe("engine", () => {
+suite("engine", () => {
   test("health and the stub catalog", async () => {
     const health = await get<{ ok: boolean; omp: { available: boolean; version?: string }; sessions: { live: number } }>(engineRoutes.health)
     expect(health).toMatchObject({ ok: true, omp: { available: true, version: "18.12.2" } })
@@ -395,7 +420,7 @@ describe("engine", () => {
   })
 })
 
-describe("uplift", () => {
+suite("uplift", () => {
   test("an ok plan, a skipped one and a failed one are all 200 answers", async () => {
     const request = (nodeId: string, original: string) => send(UPLIFT_ROUTE, "POST", { runId: "run-u", nodeId, role: "builder", original })
     const ok = await request("a", "@ok build it")
@@ -432,7 +457,7 @@ describe("uplift", () => {
   })
 })
 
-describe("memory", () => {
+suite("memory", () => {
   test("what one run writes, a second run reads", async () => {
     const status = await get<MemoryStatus>(MEMORY_ROUTES.status)
     expect(status).toMatchObject({ enabled: true, reachable: true, project: "acme/widgets" })
@@ -448,7 +473,7 @@ describe("memory", () => {
   })
 })
 
-describe("swarm", () => {
+suite("swarm", () => {
   test("preflight answers for off and refuses a made-up mode", async () => {
     const off = await get<SwarmPreflight>(`${SWARM_ROUTES.preflight}?mode=off`)
     expect(off).toMatchObject({ ok: true, requested: "off", effective: "off" })
@@ -456,7 +481,7 @@ describe("swarm", () => {
   })
 })
 
-describe("terminal", () => {
+suite("terminal", () => {
   const origin = () => base
   const create = (kind: string, headers: Record<string, string>) => send(PTY_ROUTES.ticket, "POST", { create: { kind, cols: 80, rows: 24 } }, headers)
 
@@ -489,14 +514,106 @@ describe("terminal", () => {
   })
 })
 
-describe("routing", () => {
+suite("cross-site gate", () => {
+  const launches = () => (existsSync(pidFile) ? readFileSync(pidFile, "utf8").split("\n").filter(Boolean).length : 0)
+  /** What a web page on another site can send without a preflight: a simple request with a `text/plain` body. */
+  const crossSite = { origin: "https://evil.example", "sec-fetch-site": "cross-site", "content-type": "text/plain" }
+  const attack = (route: string, method: string, body?: unknown, headers: Record<string, string> = crossSite) =>
+    fetch(`${base}${route}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+  /** What the browser client sends from the page this host serves. */
+  const sameOrigin = () => ({ origin: base, "sec-fetch-site": "same-origin" })
+
+  test("cross-origin text/plain writes are refused before any handler runs, and spawn and change nothing", async () => {
+    const before = { launches: launches(), sessions: (await get<SessionRow[]>(engineRoutes.sessions)).length, settings: await get<OmpSettingsView>(OMP_ROUTES.settings) }
+    const other = path.join(dir, "elsewhere")
+    mkdirSync(other, { recursive: true })
+    const attacks = [
+      attack(engineRoutes.sessions, "POST", { runId: "evil", nodeId: "n", card: { key: "k", role: "r" }, directory: other, permissions: "auto" }),
+      attack("/flow/api/project", "POST", { path: other }),
+      attack(OMP_ROUTES.authImport, "POST"),
+      attack(OMP_ROUTES.settings, "PUT", { manualApproval: "always-ask", binary: "/tmp/evil" }),
+    ]
+    for (const response of await Promise.all(attacks)) {
+      expect(response.status).toBe(403)
+      expect(await response.json()).toMatchObject({ code: "forbidden-origin" })
+    }
+    expect(paths.project).toBe(project)
+    expect(launches()).toBe(before.launches)
+    expect((await get<SessionRow[]>(engineRoutes.sessions)).length).toBe(before.sessions)
+    expect(await get<OmpSettingsView>(OMP_ROUTES.settings)).toEqual(before.settings)
+  })
+
+  test("a text/plain body without any browser header is refused on its content type", async () => {
+    const before = launches()
+    const response = await attack(engineRoutes.sessions, "POST", { runId: "plain", nodeId: "n", card: { key: "k", role: "r" } }, { "content-type": "text/plain" })
+    expect(response.status).toBe(403)
+    expect(await response.json()).toMatchObject({ code: "forbidden-content-type" })
+    expect(launches()).toBe(before)
+  })
+
+  test("a rebound Host cannot read settings, the event stream or the store, even with a matching Origin", async () => {
+    for (const route of [OMP_ROUTES.settings, OMP_ROUTES.status, engineRoutes.events, "/flow/api/browse?path=/", "/flow/api/env?names=HOME", "/flow/api/mcp", "/flow/api/skills"]) {
+      const rebound: Array<Record<string, string>> = [{ host: "evil.example" }, { host: "evil.example:5174", origin: "http://evil.example:5174" }]
+      for (const headers of rebound) {
+        const response = await fetch(`${base}${route}`, { headers })
+        expect(response.status).toBe(403)
+        expect(await response.json()).toMatchObject({ code: "forbidden-host" })
+      }
+    }
+  })
+
+  test("a cross-site GET of the event stream is refused", async () => {
+    const response = await fetch(`${base}${engineRoutes.events}`, { headers: { "sec-fetch-site": "cross-site" } })
+    expect(response.status).toBe(403)
+  })
+
+  test("a same-origin JSON request and a header-less one both succeed, on host and store routes alike", async () => {
+    const view = await get<OmpSettingsView>(OMP_ROUTES.settings)
+    for (const headers of [sameOrigin(), {}]) {
+      expect((await send(OMP_ROUTES.settings, "GET", undefined, headers)).status).toBe(200)
+      expect((await send("/flow/api/env?names=HOME", "GET", undefined, headers)).status).toBe(200)
+      expect((await send(OMP_ROUTES.settings, "PUT", { maxSessionMinutes: view.settings.maxSessionMinutes }, headers)).status).toBe(200)
+      expect((await send(OMP_ROUTES.authImport, "POST", undefined, headers)).status).toBe(200)
+    }
+    // A same-origin SSE subscription opens: the gate is not in the way of the stream.
+    const abort = new AbortController()
+    const stream = await fetch(`${base}${engineRoutes.events}`, { headers: sameOrigin(), signal: abort.signal })
+    expect(stream.status).toBe(200)
+    abort.abort()
+  })
+
+  test("the terminal keeps its own gate: a same-origin request without its header is still refused", async () => {
+    const refused = await send(PTY_ROUTES.ticket, "POST", { create: { kind: "shell", cols: 80, rows: 24 } }, sameOrigin())
+    expect(refused.status).toBe(403)
+    expect(await refused.json()).toMatchObject({ code: "missing-header" })
+  })
+})
+
+suite("settings reach the launch", () => {
+  test("a saved maxSessionMinutes is on the --max-time of the next session", async () => {
+    const saved = await send(OMP_ROUTES.settings, "PUT", { maxSessionMinutes: 17 })
+    expect(saved.status).toBe(200)
+    writeFileSync(argvFile, "")
+    try {
+      await open("n-limit", {}, "run-limit")
+      const lines = readFileSync(argvFile, "utf8").split("\n").filter(Boolean)
+      expect(lines.some((line) => line.includes("--max-time 17m"))).toBe(true)
+      expect(lines.some((line) => line.includes("--max-time 480m"))).toBe(false)
+    } finally {
+      await send(engineRoutes.releaseRun, "POST", { runId: "run-limit" })
+      expect((await send(OMP_ROUTES.settings, "PUT", { maxSessionMinutes: 480 })).status).toBe(200)
+    }
+  })
+})
+
+suite("routing", () => {
   test("a path no module owns is not answered by the host", async () => {
     expect(await host.handle(new Request("http://127.0.0.1/flow/api/pipelines"))).toBeUndefined()
     expect((await send(`${ENGINE_BASE}/nothing`, "GET")).status).toBe(418)
   })
 })
 
-describe("dispose", () => {
+suite("dispose", () => {
   test("closes every stub process, is idempotent, and the server stays answerable for non-host paths", async () => {
     const pids = readFileSync(pidFile, "utf8")
       .split("\n")

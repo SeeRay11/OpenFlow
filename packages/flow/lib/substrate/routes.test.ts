@@ -103,8 +103,9 @@ describe("routes", () => {
 
   test("entries needs a pipeline; invalid JSON is a 400", async () => {
     expect((await call(MEMORY_ROUTES.entries))?.status).toBe(400)
-    const response = await substrate.handle(new Request(`http://flow.test${MEMORY_ROUTES.read}`, { method: "POST", body: "{nope" }))
-    expect(response?.status).toBe(400)
+    const request = (type: string) => new Request(`http://flow.test${MEMORY_ROUTES.read}`, { method: "POST", headers: { "content-type": type }, body: "{nope" })
+    expect((await substrate.handle(request("application/json")))?.status).toBe(400)
+    expect((await substrate.handle(request("text/plain")))?.status).toBe(403)
   })
 
   test("a down Substrate is a 200 with an honest status, never a 500", async () => {

@@ -62,7 +62,8 @@ describe("buildSwarmLaunch", () => {
       stateDir: path.join(state, "swarm"),
       preflight: ok("auto", root),
     })
-    expect(fs.statSync(path.join(state, "swarm")).mode & 0o777).toBe(0o700)
+    // POSIX permission bits only.
+    if (!(process.platform === "win32")) expect(fs.statSync(path.join(state, "swarm")).mode & 0o777).toBe(0o700)
   })
 
   test("always adds a system prompt that routes through the task tool and never through /swarm", () => {

@@ -8,6 +8,9 @@ import type { HostTuning } from "./host"
 import { defaultSpawn } from "./index"
 import { alive, cleanScratch, collector, firstCursor, goneWithin, scratch, stub } from "./test-harness"
 
+// Real PTYs, `/bin/sh` and POSIX process groups: nothing in this file runs on Windows.
+const suite = describe.skipIf(process.platform === "win32")
+
 /**
  * Real PTYs: every test runs a stub script under a real `/bin/sh` on a real
  * pseudo-terminal through `@lydell/node-pty`. The parts that break are process
@@ -29,7 +32,7 @@ afterEach(async () => {
 
 const SIZE = { cols: 100, rows: 30 }
 
-describe("sessions", () => {
+suite("sessions", () => {
   test("create, echo, and the exit code arrives as a control frame", async () => {
     const dir = await scratch()
     const terminals = host()
@@ -116,7 +119,7 @@ describe("sessions", () => {
   })
 })
 
-describe("scrollback", () => {
+suite("scrollback", () => {
   test("a ring of 2 MiB keeps the tail of 3 MB of output, with a monotonic cursor", async () => {
     const dir = await scratch()
     const terminals = host()
@@ -199,7 +202,7 @@ describe("scrollback", () => {
   })
 })
 
-describe("no orphans", () => {
+suite("no orphans", () => {
   /** A backgrounded grandchild whose pid the stub prints; `body` decides what the leader does next. */
   async function withGrandchild(terminals: TerminalHost, body: string) {
     const dir = await scratch()
@@ -263,7 +266,7 @@ describe("no orphans", () => {
   })
 })
 
-describe("limits", () => {
+suite("limits", () => {
   test("the fifth live session is refused; an exited one does not count", async () => {
     const dir = await scratch()
     const terminals = host()
@@ -317,7 +320,7 @@ describe("limits", () => {
   })
 })
 
-describe("idle reaper", () => {
+suite("idle reaper", () => {
   test("a running session nobody is attached to is killed", async () => {
     const dir = await scratch()
     const terminals = host({ idleReapMs: 50 })

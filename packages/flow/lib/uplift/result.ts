@@ -161,7 +161,11 @@ export function isUplifted(original: string) {
 }
 
 export async function interpret(outcome: Outcome): Promise<UpliftResult> {
-  const { exit, original, stateDir, sessionId, elapsedMs } = outcome
+  const exit = outcome.exit
+  const original = outcome.original
+  const stateDir = outcome.stateDir
+  const sessionId = outcome.sessionId
+  const elapsedMs = outcome.elapsedMs
   const failed = (reason: string, extra: Partial<UpliftResult> = {}): UpliftResult => ({ status: "failed", original, reason, elapsedMs, ...extra })
 
   if (exit.spawnError) {

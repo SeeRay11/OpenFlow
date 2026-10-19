@@ -103,9 +103,17 @@ describe("settings routes", () => {
   })
 
   test("PUT answers 400 for a body that is not JSON", async () => {
-    const response = await call(OMP_ROUTES.settings, { method: "PUT", body: "{nope" })
+    const response = await call(OMP_ROUTES.settings, { method: "PUT", headers: { "content-type": "application/json" }, body: "{nope" })
     expect(response.status).toBe(400)
     expect(((await response.json()) as { code: string }).code).toBe("bad-json")
+  })
+
+  test("PUT refuses a body that is not declared application/json, and saves nothing", async () => {
+    const response = await call(OMP_ROUTES.settings, { method: "PUT", headers: { "content-type": "text/plain" }, body: JSON.stringify({ maxSessionMinutes: 5 }) })
+    expect(response.status).toBe(403)
+    const body: { code: string } = await response.json()
+    expect(body.code).toBe("forbidden-content-type")
+    await expect(stat(path.join(stateDir, "omp-settings.json"))).rejects.toThrow()
   })
 
   test("PUT answers 422 for JSON that is not an object", async () => {
@@ -141,7 +149,8 @@ describe("settings routes", () => {
   })
 })
 
-describe("status route", () => {
+// These run the fake omp (a `#!` script) for real: POSIX only.
+describe.skipIf(process.platform === "win32")("status route", () => {
   test("reports the binary found on PATH, its config dir and provider counts", async () => {
     const response = await call(OMP_ROUTES.status)
     expect(response.status).toBe(200)
@@ -178,7 +187,7 @@ describe("status route", () => {
   })
 })
 
-describe("config routes", () => {
+describe.skipIf(process.platform === "win32")("config routes", () => {
   test("GET lists omp's entries with groups and enum options", async () => {
     const response = await call(OMP_ROUTES.config)
     expect(response.status).toBe(200)
@@ -248,7 +257,7 @@ describe("config routes", () => {
   })
 })
 
-describe("providers route", () => {
+describe.skipIf(process.platform === "win32")("providers route", () => {
   test("lists rows without account labels", async () => {
     const response = await call(OMP_ROUTES.providers)
     expect(response.status).toBe(200)

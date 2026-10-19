@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
+import { createGate } from "./gate"
 import { nodeMiddleware } from "./node-adapter"
 import { json, type HostHandler } from "./respond"
 
@@ -9,7 +10,9 @@ const servers: Server[] = []
 afterEach(async () => {
   for (const server of servers.splice(0)) {
     server.closeAllConnections()
-    await new Promise<void>((resolve) => server.close(() => resolve()))
+    const closing = Promise.withResolvers<void>()
+    server.close(() => closing.resolve())
+    await closing.promise
   }
 })
 
@@ -35,7 +38,9 @@ async function start(handler: HostHandler) {
     })
   })
   servers.push(server)
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const listening = Promise.withResolvers<void>()
+  server.listen(0, "127.0.0.1", () => listening.resolve())
+  await listening.promise
   return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, fell, closed }
 }
 
@@ -219,5 +224,45 @@ describe("limits and failures", () => {
     })
     const text = await fetch(`${base}/a`).then((response) => response.text()).catch(() => "closed")
     expect(["closed", "partial"]).toContain(text)
+  })
+})
+
+/** How the vite plugin mounts the gate: first, in front of routes (the store's) that the adapter itself never serves. */
+describe("the gate in front of the dev middleware chain", () => {
+  const gate = createGate(false)
+  const evil = { origin: "https://evil.example", "sec-fetch-site": "cross-site", "content-type": "text/plain" }
+
+  test("a cross-site simple POST is a 403 and the store route behind it never sees it", async () => {
+    const { base, fell } = await start(gate)
+    const response = await fetch(`${base}/flow/api/project`, { method: "POST", headers: evil, body: JSON.stringify({ path: "/tmp" }) })
+    expect(response.status).toBe(403)
+    expect(await response.json()).toMatchObject({ code: "forbidden-origin" })
+    expect(fell).toEqual([])
+  })
+
+  test("a rebound Host is a 403 on a GET", async () => {
+    const { base, fell } = await start(gate)
+    const response = await fetch(`${base}/flow/api/omp/settings`, { headers: { host: "evil.example" } })
+    expect(response.status).toBe(403)
+    expect(await response.json()).toMatchObject({ code: "forbidden-host" })
+    expect(fell).toEqual([])
+  })
+
+  test("a same-origin JSON request passes untouched, with its body still readable by the next middleware", async () => {
+    const { base, fell } = await start(gate)
+    const response = await fetch(`${base}/flow/api/project`, {
+      method: "POST",
+      headers: { origin: base, "sec-fetch-site": "same-origin", "content-type": "application/json" },
+      body: JSON.stringify({ path: "/tmp" }),
+    })
+    expect(response.status).toBe(418)
+    expect(fell).toEqual([{ url: "/flow/api/project", body: '{"path":"/tmp"}' }])
+  })
+
+  test("a header-less caller and a path outside /flow/api pass", async () => {
+    const { base, fell } = await start(gate)
+    expect((await fetch(`${base}/flow/api/env?names=HOME`)).status).toBe(418)
+    expect((await fetch(`${base}/index.html`, { headers: { origin: "https://evil.example" } })).status).toBe(418)
+    expect(fell.map((entry) => entry.url)).toEqual(["/flow/api/env?names=HOME", "/index.html"])
   })
 })
