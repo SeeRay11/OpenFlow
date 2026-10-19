@@ -97,3 +97,22 @@ export function cardSpec(pipeline: Pipeline, node: FlowNode): CardSpec {
     ...(orchestrates ? { dispatch: true } : {}),
   }
 }
+
+const TITLE_TASK_LIMIT = 70
+
+/**
+ * The label a card's session carries in the Sessions panel: its role, then the
+ * opening line of the task it was given. The briefing every card starts with is
+ * the same boilerplate, so a title cut from the prompt would read identically
+ * on every row.
+ */
+export function cardTitle(role: string, task: string) {
+  const line = task
+    .split(/\r\n?|\n/)
+    .map((text) => text.replace(/\p{Cc}/gu, " ").replace(/^\s*#+(?:\s+|$)/, "").replace(/\s+/g, " ").trim())
+    .find((text) => text)
+  if (!line) return role
+  const chars = Array.from(line)
+  const cut = chars.length > TITLE_TASK_LIMIT ? `${chars.slice(0, TITLE_TASK_LIMIT).join("").trimEnd()}…` : line
+  return `${role} · ${cut}`
+}

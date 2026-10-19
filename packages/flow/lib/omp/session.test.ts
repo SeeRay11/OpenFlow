@@ -917,6 +917,64 @@ hosted("listing", () => {
     expect(after.find((row) => row.id === b.id)?.title).toBe("card-1")
     expect(await host.list(1)).toHaveLength(1)
   })
+
+  test("a title from the engine is stored in the meta file, listed, and not replaced by the first prompt", async () => {
+    const a = await open({ ...BODY, title: "Builder · Fix the parser" })
+    await host.prompt(a.id, { text: "# OpenFlow You are one card in an OpenFlow pipeline" })
+    expect((await host.list(10))[0]?.title).toBe("Builder · Fix the parser")
+
+    const meta = JSON.parse(await fs.readFile(path.join(h.stateRoot, "run1", "n1", ".openflow-session.json"), "utf8")) as { title?: string }
+    expect(meta.title).toBe("Builder · Fix the parser")
+
+    await host.close()
+    const restarted = createSessionHost(h.deps, { emit: (event) => events.push(event), tickMs: 3_600_000 })
+    try {
+      expect((await restarted.list(10)).map((row) => [row.id, row.title])).toEqual([[a.id, "Builder · Fix the parser"]])
+    } finally {
+      await restarted.close()
+    }
+  })
+
+  test("a resumed session keeps the title it was created with", async () => {
+    const a = await open({ ...BODY, title: "Builder · Fix the parser" })
+    await host.dispose(a.id)
+    await host.create({ ...BODY, title: "Builder · something else", reuse: a.id })
+    await host.prompt(a.id, { text: "continue" })
+    expect((await host.list(10)).find((row) => row.id === a.id)?.title).toBe("Builder · Fix the parser")
+
+    await host.close()
+    const restarted = createSessionHost(h.deps, { emit: (event) => events.push(event), tickMs: 3_600_000 })
+    try {
+      await restarted.create({ ...BODY, reuse: a.id })
+      expect((await restarted.list(10)).find((row) => row.id === a.id)?.title).toBe("Builder · Fix the parser")
+    } finally {
+      await restarted.close()
+    }
+  })
+
+  test("a title is stripped of control characters and line breaks and clipped to 120 characters", async () => {
+    const dirty = await open({ ...BODY, nodeId: "dirty", title: "  Builder\u001b[31m ·\u0000 fix\n\tthe\u202e parser  " })
+    const long = await open({ ...BODY, nodeId: "long", title: "x".repeat(500) })
+    const rows = await host.list(10)
+    expect(rows.find((row) => row.id === dirty.id)?.title).toBe("Builder · fix the parser")
+    const clipped = rows.find((row) => row.id === long.id)?.title ?? ""
+    expect(clipped).toHaveLength(120)
+    expect(clipped.endsWith("…")).toBe(true)
+  })
+
+  test("a blank title is no title: the first prompt names the session as before", async () => {
+    const a = await open({ ...BODY, title: " \n\u0000 " })
+    expect((await host.list(10))[0]?.title).toBe("card-1")
+    await host.prompt(a.id, { text: "write the docs" })
+    expect((await host.list(10))[0]?.title).toBe("write the docs")
+  })
+
+  test("a title that is not a string is a 400 and spawns nothing", async () => {
+    const error = await failure(host.create({ ...BODY, title: 7 }))
+    expect(error.status).toBe(400)
+    expect(error.message).toBe("title must be a string")
+    expect(h.fake.procs).toHaveLength(0)
+  })
 })
 
 /** A command that parks until `release()`; `reached` settles when it arrives, so a test acts at exactly that point. */

@@ -4643,6 +4643,7 @@ describe("what a session is created with", () => {
         runId: log.id,
         nodeId: "a",
         card: { key: "test-coder-a", role: "Coder", prompt: "You write code.", tools: { edit: true, bash: false } },
+        title: "Coder · do the thing",
         model: "openai/gpt-x",
         directory: undefined,
         permissions: "manual",
@@ -4650,6 +4651,28 @@ describe("what a session is created with", () => {
       },
     ])
     expect(log.nodes[0].agent).toBeUndefined()
+  })
+
+  test("the title is built from the card's own task, never from the briefing", async () => {
+    const h = harness({
+      behavior: {
+        root: {
+          outputs: [
+            "```openflow\n" + JSON.stringify({ dispatch: [{ card: "a", task: "# Fix the parser\nthen run the tests" }] }) + "\n```",
+            "```openflow\n" + JSON.stringify({ final: "done" }) + "\n```",
+          ],
+        },
+        a: { output: "a done" },
+      },
+    })
+    await h.run({ ...pipeline("root->a"), mode: "orchestration", dispatches: 1 }, "Ship the release\nwith notes", { toolChannel: false }).done
+
+    const titles = (creations: typeof h.creations) => Object.fromEntries(creations.map((creation) => [creation.nodeId, creation.title]))
+    expect(titles(h.creations)).toEqual({ root: "root · Ship the release", a: "a · Fix the parser" })
+
+    const piped = harness()
+    await piped.run(pipeline("a", "b"), "Plan the migration").done
+    expect(titles(piped.creations)).toEqual({ a: "a · Plan the migration", b: "b · Plan the migration" })
   })
 
   test("swarm: the card's own mode, then the canvas default, then the host's", async () => {

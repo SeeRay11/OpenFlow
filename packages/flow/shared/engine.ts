@@ -116,6 +116,11 @@ export type CreateSession = {
   swarm?: SwarmMode
   /** A session an earlier run left open (`RunOptions.sessions`): re-attach instead of creating. */
   reuse?: string
+  /**
+   * A short human label for the Sessions panel. The host clips and cleans it;
+   * absent keeps the fallback of the first prompt's opening words.
+   */
+  title?: string
 }
 
 export type SessionRow = {

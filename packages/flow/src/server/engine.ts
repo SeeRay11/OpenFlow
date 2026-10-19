@@ -66,7 +66,7 @@ import {
 import { ancestors, downstream, layer, upstream } from "../graph/validate"
 import { applyEvent, createActivity, persistable } from "./activity"
 import * as api from "./client"
-import { cardSpec, swarmOf, toolMap } from "./card-spec"
+import { cardSpec, cardTitle, swarmOf, toolMap } from "./card-spec"
 import { createStages } from "./stages"
 import { store, type WorktreeRef } from "./store"
 import { mergeSpend, summarize, type PricedModel } from "./usage"
@@ -1175,6 +1175,8 @@ export function start(
    *
    * `build` is handed the attachments this card's model cannot read and returns
    * the prompt; what goes in it is the mode's business, not this function's.
+   * `task` is the card's own assignment, never the briefing: it only names the
+   * session in the Sessions panel (`cardTitle`).
    * `reuse` keeps the session the card opened on an earlier turn — a swarm agent
    * revising in round 3 is the same session it answered round 1 in, so it
    * remembers its own reasoning and the provider can cache the prefix.
@@ -1183,7 +1185,7 @@ export function start(
    * re-sending a 4MB screenshot once per round is the same picture at four times
    * the price.
    */
-  async function runTurn(node: FlowNode, build: (skipped: Attachment[]) => TurnText, reuse = false) {
+  async function runTurn(node: FlowNode, task: string, build: (skipped: Attachment[]) => TurnText, reuse = false) {
     // A card carried over from an interrupted run is prompted into the session
     // it was already working in, whichever scheduler is asking. Consumed on the
     // first turn: from the second one on it is an ordinary reused session, and
@@ -1285,6 +1287,7 @@ export function start(
             runId: log.id,
             nodeId: node.id,
             card: cardSpec(pipeline, node),
+            title: cardTitle(node.role, task),
             model: node.agent.model,
             // Fixed for the life of the session, which is why a card keeps the
             // tree it was first given rather than moving between batches.
@@ -1602,7 +1605,7 @@ export function start(
       pipe === "direct"
         ? sources
         : [...ancestors(pipeline, node.id)].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0))
-    await runTurn(node, (skipped) => buildSections(pipeline, node, context, outputs, input, skipped))
+    await runTurn(node, input, (skipped) => buildSections(pipeline, node, context, outputs, input, skipped))
     // A pipeline card runs once, so nothing will prompt into its session again.
     remember(node)
     abandon(node.id)
@@ -1620,6 +1623,7 @@ export function start(
     activity.note(node.id, `round:${node.id}:${round}`, `round ${round} of ${roundsOf(pipeline)}`, undefined, "done")
     await runTurn(
       node,
+      input,
       (skipped) =>
         round > 1 ? swarmPrompt(pipeline, node, round, peers, input, skipped) : swarmSections(pipeline, node, input, skipped),
       round > 1,
@@ -1706,7 +1710,7 @@ export function start(
     while (true) {
       // Always `reuse`: `runTurn` opens a session when the card has none, so
       // this is "keep the one you have" rather than "there must be one".
-      await runTurn(node, build, true)
+      await runTurn(node, task, build, true)
       if (failed.has(node.id) || controller.signal.aborted) return undefined
 
       const decision = await decide(node, children)
@@ -2261,6 +2265,7 @@ export function start(
     const critic = gauntlet && isCritic(node)
     await runTurn(
       node,
+      task,
       (skipped) =>
         returning
           ? reassignPrompt(task)
@@ -2325,6 +2330,7 @@ export function start(
       while (true) {
         await runTurn(
           critic,
+          input,
           (skipped) => (asked ? verdictPrompt() : verifyPrompt(pipeline, critic, result, skipped)),
           asked,
         )
@@ -2422,7 +2428,7 @@ export function start(
           around: measured,
           peer: (id, round) => runPeer(nodes.get(id)!, round, said),
           synthesise: () =>
-            runTurn(swarm.synthesizers[0], (skipped) =>
+            runTurn(swarm.synthesizers[0], input, (skipped) =>
               synthesisSections(pipeline, swarm.synthesizers[0], outputs, input, skipped),
             ).then(() => {
               remember(swarm.synthesizers[0])

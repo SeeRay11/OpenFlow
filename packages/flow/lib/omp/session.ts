@@ -17,6 +17,7 @@ import type {
 import type { OmpSettings } from "../../shared/omp"
 import { SWARM_MODES, type SwarmHost, type SwarmMode, type SwarmTracker } from "../../shared/swarm"
 import { HttpError } from "../host/respond"
+import { capText, stripControl } from "../substrate/guard"
 import { createEventMapper, type EventMapper } from "./events"
 import { createHostTools, hostToolsCommand, type HostTools } from "./host-tools"
 import { asNumber, asRecord, asString, createMessageStore, providerError, type MessageStore } from "./messages"
@@ -107,6 +108,8 @@ const DEFAULT_MAX_LIVE = 32
 const ABORT_TIMEOUT_MS = 15_000
 const FILE_INLINE_LIMIT = 200 * 1024
 const TITLE_LIMIT = 80
+/** The longest title a caller may name for its own session. */
+const GIVEN_TITLE_LIMIT = 120
 /** Dead and idle records kept for reads after the fact. */
 const KEPT_RECORDS = 64
 /** `provider/id`, the provider starting with a letter or digit so the value can never be read as a flag. */
@@ -121,6 +124,8 @@ type CreateRequest = {
   permissions: "auto" | "manual"
   swarm?: SwarmMode
   reuse?: string
+  /** Cleaned and clipped; absent keeps the first-prompt fallback. */
+  title?: string
 }
 
 type PromptOutcome = { status: "completed" | "aborted" | "error"; error?: string }
@@ -220,6 +225,8 @@ async function parseCreate(body: unknown, project: string): Promise<CreateReques
   if (swarm !== undefined && !SWARM_MODES.includes(swarm as SwarmMode)) throw bad(`swarm must be one of ${SWARM_MODES.join(", ")}`)
 
   if (input.reuse !== undefined && typeof input.reuse !== "string") throw bad("reuse must be a session id")
+  if (input.title !== undefined && typeof input.title !== "string") throw bad("title must be a string")
+  const title = capText(stripControl(input.title ?? "").replace(/\s+/g, " ").trim(), GIVEN_TITLE_LIMIT).text
 
   const directory = input.directory === undefined ? project : input.directory
   if (typeof directory !== "string" || !path.isAbsolute(directory)) throw bad("directory must be an absolute path")
@@ -235,6 +242,7 @@ async function parseCreate(body: unknown, project: string): Promise<CreateReques
     permissions,
     swarm: swarm as SwarmMode | undefined,
     reuse: input.reuse as string | undefined,
+    ...(title ? { title } : {}),
   }
 }
 
@@ -535,6 +543,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
       id,
       request,
       stateDir,
+      title: request.title,
       state: "idle",
       generation: 0,
       epoch: "",

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { pipeline } from "../graph/test-support"
 import type { Pipeline } from "../graph/types"
-import { agentKey, cardSpec, swarmOf, TOOL_ACTIONS, TOOLS, toolMap } from "./card-spec"
+import { agentKey, cardSpec, cardTitle, swarmOf, TOOL_ACTIONS, TOOLS, toolMap } from "./card-spec"
 
 describe("toolMap", () => {
   test("folds the edit aliases onto one toggle, and a deny anywhere in the group wins", () => {
@@ -141,5 +141,35 @@ describe("swarmOf", () => {
     expect(swarmOf(graph, graph.nodes[0])).toBe("always")
     graph.defaultSwarm = "bogus" as never
     expect(swarmOf(graph, graph.nodes[0])).toBeUndefined()
+  })
+})
+
+describe("cardTitle", () => {
+  test("the role, then the task's first non-empty line", () => {
+    expect(cardTitle("Coder", "Fix the parser")).toBe("Coder · Fix the parser")
+    expect(cardTitle("Coder", "\n \r\n  Fix the parser  \nthen the tests")).toBe("Coder · Fix the parser")
+  })
+
+  test("a task with nothing readable in it leaves the role alone", () => {
+    expect(cardTitle("Coder", "")).toBe("Coder")
+    expect(cardTitle("Coder", " \n\t\n ")).toBe("Coder")
+    expect(cardTitle("Coder", "##\n\u0000\u0007")).toBe("Coder")
+  })
+
+  test("a long line is cut at 70 characters with an ellipsis, a short one is not touched", () => {
+    const title = cardTitle("Coder", "x".repeat(200))
+    expect(title).toBe(`Coder · ${"x".repeat(70)}…`)
+    expect(cardTitle("Coder", "y".repeat(70))).toBe(`Coder · ${"y".repeat(70)}`)
+  })
+
+  test("the cut never splits an emoji", () => {
+    expect(cardTitle("Coder", "😀".repeat(80))).toBe(`Coder · ${"😀".repeat(70)}…`)
+  })
+
+  test("markdown headings and control characters are stripped", () => {
+    expect(cardTitle("Coder", "## Fix the\tparser\u0000 now")).toBe("Coder · Fix the parser now")
+    expect(cardTitle("Coder", "#\n# Heading\nbody")).toBe("Coder · Heading")
+    // Only a heading marker is dropped: a hashtag-style word is the task's own text.
+    expect(cardTitle("Coder", "#42 is failing")).toBe("Coder · #42 is failing")
   })
 })
