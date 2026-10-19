@@ -1,23 +1,34 @@
 import { describe, expect, test } from "bun:test"
 import { pipeline } from "../graph/test-support"
+import type {
+  BusEvent,
+  CreateSession,
+  EngineApi,
+  ModelInfo,
+  PermissionReply,
+  PromptFile,
+  QuestionInfo,
+} from "../../shared/engine"
+import type { MemoryReadRequest, MemoryReadResult, MemoryWriteRequest, MemoryWriteResult } from "../../shared/memory"
+import type { UpliftRequest, UpliftResult } from "../../shared/uplift"
 import type { Attachment, NodeEvent, Pipeline, RunLog, StepUsage } from "../graph/types"
-import type { BusEvent, PermissionReply, QuestionInfo } from "./client"
 import {
   DEFAULT_NODE_TIMEOUT,
   start,
   type EngineDeps,
   type EngineHooks,
+  type NodePatch,
   type PermissionRequest,
   type QuestionRequest,
   type RunOptions,
+  type UpliftFailureRequest,
 } from "./engine"
 
 /**
- * The engine is exercised against a fake server client. Everything the real one
+ * The engine is exercised against a fake `EngineApi`. Everything the real client
  * does over HTTP — sessions, prompts, the idle wait, the event bus, permission
  * replies — is stubbed here, so these tests cover layering, context piping,
- * failure containment, stop and the permission policy without a running
- * `opencode serve`.
+ * failure containment, stop and the permission policy without a running host.
  */
 
 type Behavior = {
@@ -62,14 +73,16 @@ type HarnessOptions = {
    * `/api/health` before its catalog has filled, so the first read can be short.
    */
   modelsRefilled?: string[]
-  /** Agent ids the server knows about for this project. */
-  agents?: string[]
-  /**
-   * Agent ids the server knows about with no directory on the read — what the
-   * drain sees. Omitted means the host has no unscoped read at all, which is
-   * how an older build and a plain test double both look.
-   */
-  unscoped?: string[]
+  /** Prompt Uplift. Omitted means the engine has none, as a host without the planner would. */
+  uplift?: (request: UpliftRequest) => Promise<UpliftResult> | UpliftResult
+  /** Shared memory. Omitted means the engine has none. */
+  memory?: {
+    read?: (request: MemoryReadRequest) => Promise<MemoryReadResult> | MemoryReadResult
+    write?: (request: MemoryWriteRequest) => Promise<MemoryWriteResult> | MemoryWriteResult
+  }
+  onUpliftFailure?: (request: UpliftFailureRequest) => Promise<"original" | "retry" | "cancel">
+  /** Whether the host lets the engine hand sessions back (`EngineApi.release`). */
+  release?: boolean
   /** Subset of `models` that accepts image input. */
   vision?: string[]
   /** Price rows per "providerID/id", as the catalog would report them. */
@@ -139,11 +152,19 @@ function harness(options: HarnessOptions = {}) {
   const closed: string[] = []
   const waits: { node: string; timeout?: number }[] = []
   const notices: { kind: string; text: string }[] = []
+  const patches: { id: string; patch: NodePatch }[] = []
   const saved: RunLog[] = []
   let deliver: (event: BusEvent) => void = () => {}
   /** sessionID -> the directory it was created in, for the worktree tests. */
   const sessionDirs = new Map<string, string | undefined>()
   const worktreeCalls: { open: string[][]; merged: number; cleaned: number } = { open: [], merged: 0, cleaned: 0 }
+  /** Everything the engine asked a session to be created with, in order. */
+  const creations: CreateSession[] = []
+  /** Sessions handed back to the host, in order. */
+  const released: string[] = []
+  const upliftRequests: UpliftRequest[] = []
+  const memoryReads: MemoryReadRequest[] = []
+  const memoryWrites: MemoryWriteRequest[] = []
   let catalogReads = 0
   let treeReads = 0
   const checkpointed: number[] = []
@@ -153,7 +174,7 @@ function harness(options: HarnessOptions = {}) {
 
   for (const [id, spec] of Object.entries(behavior)) if (spec.hold) gates.set(id, deferred())
 
-  const api: EngineDeps["api"] = {
+  const api: EngineApi = {
     async subscribe(onEvent, signal) {
       deliver = onEvent
       await new Promise<void>((resolve) => {
@@ -161,17 +182,19 @@ function harness(options: HarnessOptions = {}) {
         signal.addEventListener("abort", () => resolve(), { once: true })
       })
     },
-    async createSession(input: { directory?: string } = {}) {
-      const id = `s${++created}`
+    async createSession(input: CreateSession) {
+      creations.push(input)
+      // Re-attaching is not creating: the session was already there.
+      const id = input.reuse ?? `s${++created}`
       sessionDirs.set(id, input.directory)
       return { id }
     },
-    async prompt(sessionID: string, text: string, files: Attachment[] = []) {
+    async prompt(sessionID: string, text: string, files: PromptFile[] = []) {
       const node = nodeOf.get(sessionID)!
       dispatched.push(node)
       prompts.set(node, text)
       promptLog.push({ node, text })
-      sent.set(node, files)
+      sent.set(node, files as Attachment[])
       inflight++
       peak = Math.max(peak, inflight)
       return {}
@@ -222,6 +245,13 @@ function harness(options: HarnessOptions = {}) {
       replies.push({ sessionID, requestID, reply })
       return {}
     },
+    ...(options.release
+      ? {
+          async release(sessionID: string) {
+            released.push(sessionID)
+          },
+        }
+      : {}),
     async models() {
       const list = catalogReads++ && options.modelsRefilled ? options.modelsRefilled : (options.models ?? [])
       return list.map((value) => {
@@ -232,18 +262,8 @@ function harness(options: HarnessOptions = {}) {
           capabilities: { input: options.vision?.includes(value) ? ["text", "image"] : ["text"] },
           cost: options.prices?.[value] ?? [],
         }
-      }) as any
+      }) as ModelInfo[]
     },
-    async agents() {
-      return (options.agents ?? []).map((id) => ({ id })) as any
-    },
-    ...(options.unscoped
-      ? {
-          async agentsUnscoped() {
-            return options.unscoped!.map((id) => ({ id })) as any
-          },
-        }
-      : {}),
     async sessionCalls(sessionID: string) {
       const node = nodeOf.get(sessionID)!
       const spec = behavior[node] ?? {}
@@ -281,6 +301,7 @@ function harness(options: HarnessOptions = {}) {
       activity.push({ node: id, event })
     },
     onNode(id, patch) {
+      patches.push({ id, patch })
       if (patch.sessionID) {
         nodeOf.set(patch.sessionID, id)
         sessionOf.set(id, patch.sessionID)
@@ -292,6 +313,7 @@ function harness(options: HarnessOptions = {}) {
     onPermission: options.onPermission,
     onQuestion: options.onQuestion,
     onQuestionClosed: (requestID) => closed.push(requestID),
+    onUpliftFailure: options.onUpliftFailure,
   }
 
   const deps: EngineDeps = {
@@ -300,6 +322,32 @@ function harness(options: HarnessOptions = {}) {
       saved.push(structuredClone(log))
       return {}
     },
+    ...(options.uplift
+      ? {
+          async uplift(request: UpliftRequest) {
+            upliftRequests.push(request)
+            return options.uplift!(request)
+          },
+        }
+      : {}),
+    ...(options.memory
+      ? {
+          memory: {
+            async read(request: MemoryReadRequest) {
+              memoryReads.push(request)
+              return options.memory!.read
+                ? options.memory!.read(request)
+                : { status: "empty" as const, block: "", items: [], scopes: [], elapsedMs: 0 }
+            },
+            async write(request: MemoryWriteRequest) {
+              memoryWrites.push(request)
+              return options.memory!.write
+                ? options.memory!.write(request)
+                : { status: "stored" as const, subject: `openflow/${request.nodeId}` }
+            },
+          },
+        }
+      : {}),
     ...(options.scratch
       ? {
           async scratch() {
@@ -357,6 +405,11 @@ function harness(options: HarnessOptions = {}) {
     deps,
     hooks,
     sessionDirs,
+    creations,
+    released,
+    upliftRequests,
+    memoryReads,
+    memoryWrites,
     worktreeCalls,
     dispatched,
     prompts,
@@ -365,6 +418,7 @@ function harness(options: HarnessOptions = {}) {
     replies,
     waits,
     notices,
+    patches,
     saved,
     activity,
     sessionOf,
@@ -378,6 +432,10 @@ function harness(options: HarnessOptions = {}) {
     /** Pushes an event onto the bus the engine subscribed to. */
     emit(event: BusEvent) {
       deliver(event)
+    },
+    /** The host reporting a card's session process gone. */
+    lose(nodeID: string, reason = "the process exited") {
+      deliver({ type: "flow.session.lost", data: { sessionID: sessionOf.get(nodeID), reason } })
     },
     /** Replays what a provider step looks like on the bus: started, then ended. */
     spend(
@@ -482,22 +540,6 @@ describe("validation", () => {
     const log = await h.run(graph).done
 
     expect(log.status).toBe("done")
-  })
-
-  test("names the server restart when a node points at an agent the server has not loaded", async () => {
-    // The server reads opencode.json once. Running anyway gives the session an
-    // empty permission ruleset, which fails every tool and reads like a broken
-    // model — so this has to be caught before dispatch.
-    const graph = pipeline("a")
-    graph.nodes[0].agent.name = "test-a"
-    const h = harness({ agents: ["build"] })
-
-    const log = await h.run(graph).done
-
-    expect(h.dispatched).toEqual([])
-    expect(log.status).toBe("error")
-    expect(log.nodes[0].error).toContain("restart")
-    expect(h.notices.some((notice) => notice.text.includes("restart"))).toBe(true)
   })
 })
 
@@ -1243,121 +1285,6 @@ describe("usage", () => {
   })
 })
 
-describe("stale engine", () => {
-  test("names the exact command for this host, and flags the run", async () => {
-    const graph = pipeline("a")
-    graph.nodes[0].agent.name = "untitled-mcp-server-adder"
-    const h = harness({ agents: ["some-other-agent"] })
-    let stale = 0
-    h.hooks.onEngineStale = () => {
-      stale += 1
-    }
-    h.deps.serveStatus = async () => ({
-      managed: false,
-      running: true,
-      url: "http://127.0.0.1:4096",
-      command: "bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096",
-      reason: "it was started outside OpenFlow",
-    })
-
-    const log = await h.run(graph).done
-
-    expect(log.status).toBe("error")
-    expect(stale).toBe(1)
-    // The command, and where to run it — not a bare binary name that may not
-    // be on PATH or may be a different version than this checkout.
-    expect(log.nodes[0].error).toContain("bun run --cwd packages/opencode")
-    expect(log.nodes[0].error).toContain("Ctrl+C")
-  })
-
-  test("points at the button when this host owns the engine", async () => {
-    const graph = pipeline("a")
-    graph.nodes[0].agent.name = "missing-agent"
-    const h = harness({ agents: [] })
-    h.deps.serveStatus = async () => ({
-      managed: true,
-      running: true,
-      url: "http://127.0.0.1:4096",
-      command: "bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096",
-    })
-
-    const log = await h.run(graph).done
-
-    expect(log.nodes[0].error).toContain("restart button")
-  })
-
-  test("still says something useful when the host cannot report the engine", async () => {
-    const graph = pipeline("a")
-    graph.nodes[0].agent.name = "missing-agent"
-    const h = harness({ agents: [] })
-
-    const log = await h.run(graph).done
-
-    expect(log.nodes[0].error).toContain("opencode serve")
-  })
-
-  test("a project reporting no agents at all runs anyway when the drain has them", async () => {
-    const graph = pipeline("a")
-    graph.nodes[0].agent.name = "flow-a"
-    // The scoped read is empty — the directory is not a project — but the drain
-    // resolves its config from the engine's cwd and has the agent.
-    const h = harness({ agents: [], unscoped: ["build", "flow-a"] })
-    let stale = 0
-    h.hooks.onEngineStale = () => {
-      stale += 1
-    }
-
-    const log = await h.run(graph).done
-
-    expect(log.status).toBe("done")
-    expect(stale).toBe(0)
-    expect(h.dispatched).toEqual(["a"])
-  })
-
-  test("says git init, not restart, when nothing knows the agent and the built-ins are gone too", async () => {
-    const graph = pipeline("a")
-    graph.nodes[0].agent.name = "flow-a"
-    const h = harness({ agents: [], unscoped: ["build"] })
-    let stale = 0
-    h.hooks.onEngineStale = () => {
-      stale += 1
-    }
-    h.deps.serveStatus = async () => ({
-      managed: true,
-      running: true,
-      url: "http://127.0.0.1:4096",
-      command: "bun run --cwd packages/opencode --conditions=browser src/index.ts serve --port 4096",
-    })
-
-    const log = await h.run(graph).done
-
-    expect(log.status).toBe("error")
-    expect(log.nodes[0].error).toContain("git init")
-    // The restart dialog offers the one fix that cannot work here.
-    expect(stale).toBe(0)
-    expect(log.nodes[0].error).not.toContain("restart button")
-  })
-
-  test("an agent missing from a project that has others is still the stale-config case", async () => {
-    const graph = pipeline("a")
-    graph.nodes[0].agent.name = "flow-a"
-    const h = harness({ agents: ["build"], unscoped: ["build", "flow-a"] })
-    let stale = 0
-    h.hooks.onEngineStale = () => {
-      stale += 1
-    }
-
-    const log = await h.run(graph).done
-
-    expect(log.status).toBe("error")
-    // The scoped list is not empty, so the unscoped one is never consulted — a
-    // merged agent the running server has not reloaded is exactly this.
-    expect(stale).toBe(1)
-    expect(log.nodes[0].error).toContain("opencode serve")
-    expect(log.nodes[0].error).not.toContain("git init")
-  })
-})
-
 describe("resume", () => {
   test("a seeded node is satisfied without a session", async () => {
     const h = harness()
@@ -1426,6 +1353,9 @@ describe("resume", () => {
 
     expect(log.nodes[0].sessionID).toBe("s-from-before")
     expect(h.created()).toBe(0)
+    // Re-attached through the host rather than prompted into blind, so a host
+    // that restarted since can bring the session back from its own files.
+    expect(h.creations.map((creation) => creation.reuse)).toEqual(["s-from-before"])
     expect(h.prompts.get("a")).toContain("The run was interrupted, and is being continued")
     expect(log.status).toBe("done")
   })
@@ -2279,10 +2209,70 @@ describe("a tool call belongs to the turn that made it", () => {
   })
 })
 
-describe("the tool channel is parked", () => {
-  test("by default a run never asks for tool calls at all", async () => {
-    // No MCP tool can reach a v2 session in this fork, so scanning for one
-    // would be a request per orchestrator turn that cannot find anything.
+describe("the tool channel is the primary one", () => {
+  const tool = (name: string, input: unknown) => [{ name, input }]
+
+  test("by default a host tool call decides, with no option set", async () => {
+    // The host answers `openflow_dispatch` / `openflow_finish` as RPC host tools;
+    // the engine reads them back through `sessionCalls`.
+    const h = harness({
+      behavior: {
+        root: {
+          // Nothing fenced in the text at all: only the call carries the decision.
+          outputs: ["I will use the tools."],
+          callTurns: [
+            tool("openflow_dispatch", { assignments: [{ card: "a", task: "do it" }] }),
+            tool("openflow_finish", { answer: "the tool decided" }),
+          ],
+        },
+        a: { output: "a done" },
+      },
+    })
+    const log = await h.run({ ...pipeline("root->a"), mode: "orchestration", dispatches: 1 }, "do the thing").done
+
+    expect(h.prompts.get("a")).toContain("do it")
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("the tool decided")
+    expect(log.status).toBe("done")
+  })
+
+  test("the call wins over a block in the same message", async () => {
+    const h = harness({
+      behavior: {
+        root: {
+          outputs: [
+            "I am dispatching.",
+            "```openflow\n" + JSON.stringify({ final: "the block decided" }) + "\n```",
+          ],
+          callTurns: [
+            tool("openflow_dispatch", { assignments: [{ card: "a", task: "do it" }] }),
+            tool("openflow_finish", { answer: "the tool decided" }),
+          ],
+        },
+        a: { output: "a done" },
+      },
+    })
+    const log = await h.run({ ...pipeline("root->a"), mode: "orchestration", dispatches: 1 }, "do the thing").done
+
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("the tool decided")
+  })
+
+  test("the fenced block is the fallback when no call was made", async () => {
+    const h = harness({
+      behavior: {
+        root: {
+          outputs: [
+            "```openflow\n" + JSON.stringify({ dispatch: [{ card: "a", task: "do it" }] }) + "\n```",
+            "```openflow\n" + JSON.stringify({ final: "the block decided" }) + "\n```",
+          ],
+        },
+        a: { output: "a done" },
+      },
+    })
+    const log = await h.run({ ...pipeline("root->a"), mode: "orchestration", dispatches: 1 }, "do the thing").done
+    expect(log.nodes.find((node) => node.id === "root")!.output).toBe("the block decided")
+  })
+
+  test("switched off for a run, the engine never asks for tool calls at all", async () => {
     let asked = 0
     const h = harness({
       behavior: {
@@ -2296,17 +2286,28 @@ describe("the tool channel is parked", () => {
         a: { output: "a done" },
       },
     })
-    const counting = { ...h.deps, api: { ...h.deps.api, sessionCalls: async (id: string) => (asked++, []) } }
+    const counting = { ...h.deps, api: { ...h.deps.api, sessionCalls: async () => (asked++, []) } }
     const log = await start(
       { ...pipeline("root->a"), mode: "orchestration", dispatches: 1 },
       "do the thing",
       h.hooks,
-      {},
+      { toolChannel: false },
       counting,
     ).done
 
     expect(asked).toBe(0)
     expect(log.nodes.find((node) => node.id === "root")!.output).toBe("the block decided")
+  })
+
+  test("an orchestrator's session is created with the dispatch tools, and a leaf's is not", async () => {
+    const h = harness()
+    await h.run({ ...pipeline("root->a"), mode: "orchestration", dispatches: 1 }, "do the thing", {
+      toolChannel: false,
+    }).done
+    const root = h.creations.find((creation) => creation.nodeId === "root")
+    const leaf = h.creations.find((creation) => creation.nodeId === "a")
+    expect(root?.card.dispatch).toBe(true)
+    expect(leaf?.card.dispatch).toBeUndefined()
   })
 })
 
@@ -3618,5 +3619,897 @@ describe("scratch output", () => {
     await h.run(graph).done
 
     expect(h.prompts.get("a")).not.toContain("Scratch output")
+  })
+})
+
+const fence = (body: string) => ["```openflow", body, "```"].join("\n")
+const dispatches = (...cards: string[]) =>
+  fence(JSON.stringify({ dispatch: cards.map((card) => ({ card, task: `do ${card}` })) }))
+const finalAnswer = (answer: string) => fence(JSON.stringify({ final: answer }))
+const orchestration = (spec: string[], dispatchBudget = 1): Pipeline => ({
+  ...pipeline(...spec),
+  mode: "orchestration",
+  dispatches: dispatchBudget,
+})
+const mesh = (rounds = 2): Pipeline => {
+  const graph = pipeline("a", "b", "verdict")
+  graph.mode = "swarm"
+  graph.rounds = rounds
+  graph.nodes[2].role = "synthesizer"
+  return graph
+}
+
+describe("prompt uplift", () => {
+  const spec = "<BUILD_PROMPT>the spec</BUILD_PROMPT>"
+  const ok = (request: UpliftRequest): UpliftResult => ({
+    status: "ok",
+    original: request.original,
+    uplifted: spec,
+    source: "llm",
+    graphId: "ut-1",
+    specPath: "/tmp/spec.xml",
+    nodes: 3,
+    elapsedMs: 7,
+  })
+  const failed = (reason = "the claude CLI is logged out"): UpliftResult => ({
+    status: "failed",
+    original: "",
+    reason,
+    elapsedMs: 3,
+  })
+
+  test("an uplifted task is sent in place of the original, with every other section after it", async () => {
+    const h = harness({ uplift: ok })
+    const log = await h.run(pipeline("a->b"), "build the thing").done
+
+    // Uplift is given the card's own task and nothing another card produced.
+    expect(h.upliftRequests.map((request) => request.nodeId)).toEqual(["a", "b"])
+    expect(h.upliftRequests[1]).toMatchObject({ runId: log.id, role: "b", original: "# Task\n\nbuild the thing" })
+    expect(h.upliftRequests[1].original).not.toContain("a output")
+
+    const sent = h.prompts.get("b")!
+    expect(sent.startsWith(`${spec}\n\n# Context from earlier cards`)).toBe(true)
+    expect(sent).toContain("## a (a)\n\na output")
+    expect(sent).toContain("You are one card in an OpenFlow pipeline")
+    // The spec replaced the task text; it is not sent twice.
+    expect(sent).not.toContain("# Task\n\nbuild the thing")
+
+    expect(log.nodes[1].prompt).toBe(sent)
+    expect(log.nodes[1].uplift).toMatchObject({
+      status: "ok",
+      original: "# Task\n\nbuild the thing",
+      uplifted: spec,
+      source: "llm",
+      graphId: "ut-1",
+      specPath: "/tmp/spec.xml",
+      nodes: 3,
+      elapsedMs: 7,
+    })
+  })
+
+  test("the card's role instructions are part of the task uplift sees", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.prompt = "You are the planner."
+    const h = harness({ uplift: ok })
+    await h.run(graph, "plan it").done
+
+    expect(h.upliftRequests[0].original).toBe("You are the planner.\n\n# Task\n\nplan it")
+    expect(h.prompts.get("a")).not.toContain("You are the planner.")
+  })
+
+  test("a card with no uplift dependency records none and sends the task as always", async () => {
+    const h = harness()
+    const log = await h.run(pipeline("a")).done
+
+    expect(log.nodes[0].uplift).toBeUndefined()
+    expect(h.prompts.get("a")).toContain("# Task\n\ndo the thing")
+    expect(h.prompts.get("a")).not.toContain("Context from earlier cards")
+  })
+
+  test("a skipped uplift sends the original and says why, once", async () => {
+    const h = harness({
+      uplift: (request) => ({ status: "skipped", original: request.original, reason: "jev-skip", elapsedMs: 1 }),
+    })
+    const log = await h.run(pipeline("a")).done
+
+    expect(h.prompts.get("a")).toContain("# Task\n\ndo the thing")
+    expect(h.prompts.get("a")).not.toContain("Context from earlier cards")
+    expect(log.nodes[0].uplift).toMatchObject({ status: "skipped", reason: "jev-skip" })
+    const notes = h.activity.filter((row) => row.node === "a" && row.event.title.includes("uplift skipped"))
+    expect(new Set(notes.map((row) => row.event.id)).size).toBe(1)
+    expect(log.status).toBe("done")
+  })
+
+  test("a failed uplift waits for the user, and 'original' runs the original", async () => {
+    const asked: UpliftFailureRequest[] = []
+    const h = harness({
+      uplift: () => failed(),
+      onUpliftFailure: async (request) => {
+        asked.push(request)
+        // Nothing has been sent while the user decides.
+        expect(h.dispatched).toEqual([])
+        return "original"
+      },
+    })
+    const log = await h.run(pipeline("a")).done
+
+    expect(asked).toEqual([{ nodeID: "a", role: "a", reason: "the claude CLI is logged out", elapsedMs: 3 }])
+    expect(h.prompts.get("a")).toContain("# Task\n\ndo the thing")
+    expect(log.nodes[0].uplift).toMatchObject({
+      status: "declined",
+      declined: true,
+      original: "# Task\n\ndo the thing",
+      reason: "the claude CLI is logged out",
+    })
+    expect(log.status).toBe("done")
+  })
+
+  test("'retry' asks uplift again and sends what the second attempt returns", async () => {
+    let calls = 0
+    const asked: string[] = []
+    const h = harness({
+      uplift: (request) => (++calls === 1 ? failed("timed out after 120s") : ok(request)),
+      onUpliftFailure: async (request) => {
+        asked.push(request.reason)
+        return "retry"
+      },
+    })
+    const log = await h.run(pipeline("a")).done
+
+    expect(h.upliftRequests).toHaveLength(2)
+    expect(asked).toEqual(["timed out after 120s"])
+    expect(h.prompts.get("a")!.startsWith(spec)).toBe(true)
+    expect(log.nodes[0].uplift).toMatchObject({ status: "ok", uplifted: spec })
+    expect(log.nodes[0].uplift?.declined).toBeUndefined()
+  })
+
+  test("three failed attempts in all end the card, however often the user says retry", async () => {
+    let asks = 0
+    const h = harness({
+      uplift: () => failed("planner crashed"),
+      onUpliftFailure: async () => (asks++, "retry"),
+    })
+    const log = await h.run(pipeline("a")).done
+
+    expect(h.upliftRequests).toHaveLength(3)
+    expect(asks).toBe(3)
+    expect(log.nodes[0]).toMatchObject({ status: "error", error: "prompt uplift failed: planner crashed" })
+    expect(h.dispatched).toEqual([])
+  })
+
+  test("'cancel' fails the card, sends nothing and opens no session; the cards behind it are skipped", async () => {
+    const h = harness({ uplift: () => failed("timed out after 120s"), onUpliftFailure: async () => "cancel" })
+    const log = await h.run(pipeline("a->b")).done
+
+    expect(log.nodes[0]).toMatchObject({ status: "error", error: "prompt uplift failed: timed out after 120s" })
+    expect(log.nodes[1].status).toBe("skipped")
+    expect(h.dispatched).toEqual([])
+    expect(h.creations).toEqual([])
+    expect(log.status).toBe("error")
+  })
+
+  test("with no hook to ask, a failure cancels: the original is never run silently", async () => {
+    const h = harness({ uplift: () => failed("the claude CLI is missing") })
+    const log = await h.run(pipeline("a")).done
+
+    expect(log.nodes[0]).toMatchObject({ status: "error", error: "prompt uplift failed: the claude CLI is missing" })
+    expect(log.nodes[0].uplift).toMatchObject({ status: "failed" })
+    expect(h.dispatched).toEqual([])
+  })
+
+  test("a hook that throws counts as cancel", async () => {
+    const h = harness({
+      uplift: () => failed(),
+      onUpliftFailure: async () => {
+        throw new Error("dialog closed")
+      },
+    })
+    const log = await h.run(pipeline("a")).done
+    expect(log.nodes[0].status).toBe("error")
+    expect(h.dispatched).toEqual([])
+  })
+
+  test("a planner that throws is a failure with its own message", async () => {
+    const asked: string[] = []
+    const h = harness({
+      uplift: async () => {
+        throw new Error("planner crashed")
+      },
+      onUpliftFailure: async (request) => (asked.push(request.reason), "original"),
+    })
+    const log = await h.run(pipeline("a")).done
+    expect(asked).toEqual(["planner crashed"])
+    expect(log.status).toBe("done")
+  })
+
+  test("a fallback spec is a failure, whatever status carries it", async () => {
+    const asked: string[] = []
+    const h = harness({
+      uplift: (request) => ({
+        status: "ok",
+        original: request.original,
+        uplifted: spec,
+        source: "fallback",
+        reason: "the claude CLI could not be reached",
+        elapsedMs: 2,
+      }),
+      onUpliftFailure: async (request) => (asked.push(request.reason), "cancel"),
+    })
+    const log = await h.run(pipeline("a")).done
+
+    expect(asked).toEqual(["the claude CLI could not be reached"])
+    expect(h.dispatched).toEqual([])
+    expect(log.nodes[0].error).toBe("prompt uplift failed: the claude CLI could not be reached")
+  })
+
+  test("an ok result with no spec in it is a failure too", async () => {
+    const asked: string[] = []
+    const h = harness({
+      uplift: (request) => ({ status: "ok", original: request.original, elapsedMs: 2 }),
+      onUpliftFailure: async (request) => (asked.push(request.reason), "cancel"),
+    })
+    await h.run(pipeline("a")).done
+    expect(asked).toEqual(["the planner returned no spec"])
+  })
+
+  test("stopping the run settles a pending failure decision as cancel", async () => {
+    const h = harness({ uplift: () => failed(), onUpliftFailure: () => new Promise<never>(() => {}) })
+    const run = h.run(pipeline("a"))
+    await flush()
+    await run.stop()
+    const log = await run.done
+
+    expect(log.nodes[0].status).toBe("stopped")
+    expect(log.status).toBe("stopped")
+    expect(h.dispatched).toEqual([])
+    expect(h.creations).toEqual([])
+  })
+
+  test("stopping the run does not wait for a planner that is still working", async () => {
+    const h = harness({ uplift: () => new Promise<never>(() => {}) })
+    const run = h.run(pipeline("a"))
+    await flush()
+    await run.stop()
+    const log = await run.done
+
+    expect(log.nodes[0].status).toBe("stopped")
+    expect(h.dispatched).toEqual([])
+  })
+
+  test("protocol turns are never uplifted: a re-dispatch, the dispatch result and the forced answer", async () => {
+    const h = harness({
+      uplift: ok,
+      behavior: { root: { outputs: [dispatches("a"), dispatches("a"), finalAnswer("done")] }, a: {} },
+    })
+    const log = await h.run(orchestration(["root->a"], 2)).done
+
+    expect(log.status).toBe("done")
+    // The orchestrator's own first turn and the subagent's first assignment, nothing else.
+    expect(h.upliftRequests.map((request) => request.nodeId)).toEqual(["root", "a"])
+    expect(h.upliftRequests[1].original).toContain("# Your assignment\n\ndo a")
+    const again = h.promptLog.filter((entry) => entry.node === "a")[1].text
+    expect(again).toContain("A new assignment")
+    expect(again).not.toContain(spec)
+    const rootTurns = h.promptLog.filter((entry) => entry.node === "root")
+    expect(rootTurns.length).toBeGreaterThan(2)
+    expect(rootTurns[0].text.startsWith(spec)).toBe(true)
+    for (const turn of rootTurns.slice(1)) expect(turn.text).not.toContain(spec)
+    expect(rootTurns[1].text).toContain("# What your cards returned")
+  })
+
+  test("a swarm uplifts each peer's round 1 and the synthesis, never a later round", async () => {
+    const h = harness({ uplift: ok })
+    await h.run(mesh(2)).done
+
+    expect(h.upliftRequests.map((request) => request.nodeId).sort()).toEqual(["a", "b", "verdict"])
+    const roundTwo = h.promptLog.filter((entry) => entry.text.includes("# Round 2 of 2"))
+    expect(roundTwo).toHaveLength(2)
+    for (const turn of roundTwo) expect(turn.text).not.toContain(spec)
+    // The debate the synthesizer weighs is context, not task: it rides after the spec.
+    const synthesis = h.prompts.get("verdict")!
+    expect(synthesis.startsWith(spec)).toBe(true)
+    expect(synthesis).toContain("# Final positions")
+    expect(h.upliftRequests.find((request) => request.nodeId === "verdict")!.original).not.toContain("Final positions")
+  })
+
+  test("a verification pass and a gauntlet critic's briefing are never uplifted", async () => {
+    const graph = pipeline("builder->reviewer")
+    graph.verify = {}
+    const h = harness({ uplift: ok, behavior: { reviewer: { output: "looks right\nVERDICT: PASS" } } })
+    await h.run(graph).done
+
+    // Once each for the two cards' own turns; the verifier's new session is a protocol turn.
+    expect(h.upliftRequests.map((request) => request.nodeId)).toEqual(["builder", "reviewer"])
+    const verifying = h.promptLog.filter((entry) => entry.node === "reviewer")
+    expect(verifying).toHaveLength(2)
+    expect(verifying[1].text).toContain("You are the verifier of an OpenFlow run")
+    expect(verifying[1].text).not.toContain(spec)
+  })
+
+  test("a card continued from an interrupted run is not uplifted again", async () => {
+    const h = harness({ uplift: ok })
+    await h.run(pipeline("a"), "do the thing", { sessions: { a: "s-old" } }).done
+
+    expect(h.upliftRequests).toEqual([])
+    expect(h.prompts.get("a")).toContain("The run was interrupted")
+    expect(h.prompts.get("a")).toContain("# Task\n\ndo the thing")
+  })
+
+  test("a retried send re-sends the same text without asking uplift again", async () => {
+    const h = harness({
+      uplift: ok,
+      behavior: { a: { errors: ["Provider request failed with HTTP 429 Too Many Requests"] } },
+    })
+    const log = await h.run(pipeline("a"), "do the thing", { rateLimitBackoff: 1 }).done
+
+    expect(log.status).toBe("done")
+    expect(h.upliftRequests).toHaveLength(1)
+    const sends = h.promptLog.filter((entry) => entry.node === "a")
+    expect(sends).toHaveLength(2)
+    expect(sends[1].text).toBe(sends[0].text)
+  })
+
+  test("a card with uplift off is sent as written and records why", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.uplift = false
+    const h = harness({ uplift: ok })
+    const log = await h.run(graph).done
+
+    expect(h.upliftRequests).toEqual([])
+    expect(h.prompts.get("a")).toContain("# Task\n\ndo the thing")
+    expect(log.nodes[0].uplift).toMatchObject({ status: "skipped", reason: "uplift is off for this card" })
+  })
+
+  test("a leading raw: opts out and is stripped from what is sent", async () => {
+    const h = harness({ uplift: ok })
+    const log = await h.run(pipeline("a"), "raw: just do it").done
+
+    expect(h.upliftRequests).toEqual([])
+    expect(h.prompts.get("a")).toContain("# Task\n\njust do it")
+    expect(h.prompts.get("a")).not.toContain("raw:")
+    expect(log.nodes[0].uplift).toMatchObject({ status: "skipped", reason: "raw: prefix" })
+  })
+
+  test("raw: is stripped even where there is no uplift to opt out of", async () => {
+    const h = harness()
+    await h.run(pipeline("a"), "raw: just do it").done
+    expect(h.prompts.get("a")).toContain("# Task\n\njust do it")
+  })
+
+  test("a task that already is a spec is not uplifted again", async () => {
+    const already = "<FIX_PROMPT>\n<goal>fix it</goal>\n</FIX_PROMPT>"
+    const h = harness({ uplift: ok })
+    const log = await h.run(pipeline("a"), already).done
+
+    expect(h.upliftRequests).toEqual([])
+    expect(h.prompts.get("a")).toContain(already)
+    expect(log.nodes[0].uplift).toMatchObject({ status: "skipped", reason: "already a spec" })
+  })
+
+  test("a card in a worktree has the planner read that tree", async () => {
+    const h = harness({
+      uplift: ok,
+      worktrees: "available",
+      behavior: { root: { outputs: [dispatches("a", "b"), finalAnswer("done")] }, a: {}, b: {} },
+    })
+    const graph = { ...orchestration(["root->a", "root->b"]), isolate: true }
+    await h.run(graph).done
+
+    expect(h.upliftRequests.find((request) => request.nodeId === "root")!.cwd).toBeUndefined()
+    expect(h.upliftRequests.find((request) => request.nodeId === "a")!.cwd).toBe(h.sessionDirs.get("s2"))
+  })
+})
+
+describe("project memory", () => {
+  const block = "<project-memory>untrusted evidence: the flag lives in cli/flags.ts</project-memory>"
+  const found = (): MemoryReadResult => ({
+    status: "ok",
+    block,
+    items: [
+      {
+        id: "1",
+        scope: "repo:o/n",
+        kind: "fact",
+        subject: "openflow/test/run-0/x",
+        preview: "the flag lives in cli/flags.ts",
+        origin: "brief",
+        run: "run-0",
+        card: "x",
+      },
+    ],
+    scopes: ["repo:o/n"],
+    briefState: "complete",
+    elapsedMs: 4,
+  })
+  const spec = "<BUILD_PROMPT>the spec</BUILD_PROMPT>"
+  const ok = (request: UpliftRequest): UpliftResult => ({
+    status: "ok",
+    original: request.original,
+    uplifted: spec,
+    elapsedMs: 1,
+  })
+
+  test("recalled memory is appended after the context, and the read is keyed on the task", async () => {
+    const h = harness({ memory: { read: found } })
+    const log = await h.run(pipeline("a->b"), "build the thing").done
+
+    expect(h.memoryReads[1]).toEqual({
+      runId: log.id,
+      nodeId: "b",
+      pipeline: "test",
+      role: "b",
+      query: "# Task\n\nbuild the thing",
+    })
+    const sent = h.prompts.get("b")!
+    expect(sent.endsWith(block)).toBe(true)
+    expect(sent.indexOf("# Upstream output")).toBeLessThan(sent.indexOf(block))
+    expect(log.nodes[1].memory?.read).toEqual({
+      status: "ok",
+      items: [
+        {
+          scope: "repo:o/n",
+          subject: "openflow/test/run-0/x",
+          preview: "the flag lives in cli/flags.ts",
+          origin: "brief",
+          run: "run-0",
+          card: "x",
+        },
+      ],
+      briefState: "complete",
+    })
+  })
+
+  test("with an uplifted task the block still comes last, after the context section", async () => {
+    const h = harness({ uplift: ok, memory: { read: found } })
+    await h.run(pipeline("a->b")).done
+
+    const sent = h.prompts.get("b")!
+    expect(sent.startsWith(spec)).toBe(true)
+    expect(sent.indexOf("# Context from earlier cards")).toBeLessThan(sent.indexOf(block))
+    expect(sent.endsWith(block)).toBe(true)
+    // Memory is queried with the original task, not the spec.
+    expect(h.memoryReads[1].query).toBe("# Task\n\ndo the thing")
+  })
+
+  test("an empty recall appends nothing and says so", async () => {
+    const h = harness({ memory: {} })
+    const log = await h.run(pipeline("a")).done
+
+    expect(h.prompts.get("a")).not.toContain("project-memory")
+    expect(log.nodes[0].memory?.read).toMatchObject({ status: "empty", items: [] })
+  })
+
+  test("unavailable memory fails open: the card runs without it and the card says so", async () => {
+    const h = harness({
+      memory: {
+        read: () => ({
+          status: "unavailable",
+          block: "",
+          items: [],
+          scopes: [],
+          error: "Substrate is not reachable at 127.0.0.1:9000",
+          elapsedMs: 9,
+        }),
+      },
+    })
+    const log = await h.run(pipeline("a")).done
+
+    expect(log.status).toBe("done")
+    expect(h.prompts.get("a")).toContain("# Task\n\ndo the thing")
+    expect(log.nodes[0].memory?.read).toMatchObject({
+      status: "unavailable",
+      error: "Substrate is not reachable at 127.0.0.1:9000",
+    })
+    expect(h.activity.some((row) => row.node === "a" && row.event.title.includes("memory unavailable"))).toBe(true)
+  })
+
+  test("a block returned with a status other than ok is not sent", async () => {
+    const h = harness({ memory: { read: () => ({ ...found(), status: "disabled" }) } })
+    const log = await h.run(pipeline("a")).done
+
+    expect(h.prompts.get("a")).not.toContain(block)
+    expect(log.nodes[0].memory?.read?.status).toBe("disabled")
+  })
+
+  test("a read that throws is unavailable, not a failed card", async () => {
+    const h = harness({
+      memory: {
+        read: async () => {
+          throw new Error("socket hang up")
+        },
+      },
+    })
+    const log = await h.run(pipeline("a")).done
+
+    expect(log.status).toBe("done")
+    expect(log.nodes[0].memory?.read).toMatchObject({ status: "unavailable", error: "socket hang up" })
+  })
+
+  test("only task turns read memory: a re-dispatch, a retry and a continuation do not", async () => {
+    const h = harness({
+      memory: { read: found },
+      behavior: { root: { outputs: [dispatches("a"), dispatches("a"), finalAnswer("done")] }, a: {} },
+    })
+    await h.run(orchestration(["root->a"], 2), "do the thing", { sessions: {} }).done
+    expect(h.memoryReads.map((read) => read.nodeId)).toEqual(["root", "a"])
+
+    const retried = harness({
+      memory: { read: found },
+      behavior: { a: { errors: ["Provider request failed with HTTP 429 Too Many Requests"] } },
+    })
+    await retried.run(pipeline("a"), "do the thing", { rateLimitBackoff: 1 }).done
+    expect(retried.memoryReads).toHaveLength(1)
+
+    const resumed = harness({ memory: { read: found } })
+    await resumed.run(pipeline("a"), "do the thing", { sessions: { a: "s-old" } }).done
+    expect(resumed.memoryReads).toEqual([])
+  })
+
+  test("a card opted out of uplift is opted out of memory too", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.uplift = false
+    const h = harness({ memory: { read: found } })
+    await h.run(graph).done
+    expect(h.memoryReads).toEqual([])
+
+    const raw = harness({ memory: { read: found } })
+    await raw.run(pipeline("a"), "raw: as written").done
+    expect(raw.memoryReads).toEqual([])
+    expect(raw.prompts.get("a")).not.toContain(block)
+  })
+
+  test("a finished card is written to memory with its answer", async () => {
+    const h = harness({ memory: {} })
+    const log = await h.run(pipeline("a->b")).done
+
+    expect(h.memoryWrites).toEqual([
+      { runId: log.id, nodeId: "a", pipeline: "test", role: "a", outcome: "done", output: "a output" },
+      { runId: log.id, nodeId: "b", pipeline: "test", role: "b", outcome: "done", output: "b output" },
+    ])
+    expect(log.nodes[0].memory?.write).toEqual({ status: "stored", subject: "openflow/a" })
+  })
+
+  test("a card that failed is written with its error, and the cards behind it are not written", async () => {
+    const h = harness({ memory: {}, behavior: { a: { error: "provider exploded" } } })
+    const log = await h.run(pipeline("a->b")).done
+
+    expect(h.memoryWrites).toEqual([
+      { runId: log.id, nodeId: "a", pipeline: "test", role: "a", outcome: "error", output: "provider exploded" },
+    ])
+    expect(log.nodes[1].status).toBe("skipped")
+    expect(log.nodes[1].memory).toBeUndefined()
+  })
+
+  test("a card that was stopped is written as stopped", async () => {
+    const h = harness({ memory: {}, behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+    await run.stop()
+    const log = await run.done
+
+    expect(h.memoryWrites.map((write) => [write.nodeId, write.outcome])).toEqual([["a", "stopped"]])
+    expect(log.nodes[0].memory?.write?.status).toBe("stored")
+  })
+
+  test("a reused card is not written again", async () => {
+    const h = harness({ memory: {} })
+    await h.run(pipeline("a->b"), "do the thing", { resume: { a: "from last time" } }).done
+    expect(h.memoryWrites.map((write) => write.nodeId)).toEqual(["b"])
+  })
+
+  test("a write that was refused or failed is shown on the card, and the run still succeeds", async () => {
+    const denied = harness({
+      memory: { write: () => ({ status: "denied", error: "the token cannot write repo:o/n" }) },
+    })
+    const log = await denied.run(pipeline("a")).done
+    expect(log.status).toBe("done")
+    expect(log.nodes[0].memory?.write).toMatchObject({ status: "denied", error: "the token cannot write repo:o/n" })
+
+    const broken = harness({
+      memory: {
+        write: async () => {
+          throw new Error("connection refused")
+        },
+      },
+    })
+    const second = await broken.run(pipeline("a")).done
+    expect(second.status).toBe("done")
+    expect(second.nodes[0].memory?.write).toMatchObject({ status: "unavailable", error: "connection refused" })
+  })
+
+  test("a write that never answers does not hold the card or the run", async () => {
+    const h = harness({ memory: { write: () => new Promise<never>(() => {}) } })
+    const log = await h.run(pipeline("a->b"), "do the thing", { backgroundGrace: 20 }).done
+
+    // `b` ran, so the write for `a` did not stand in its way.
+    expect(log.status).toBe("done")
+    expect(log.nodes.map((node) => node.status)).toEqual(["done", "done"])
+    expect(log.nodes[0].memory?.write?.status).toBe("running")
+  })
+
+  test("a swarm peer is written once, after its last round, and so is the synthesizer", async () => {
+    const h = harness({ memory: {} })
+    await h.run(mesh(2)).done
+    expect(h.memoryWrites.map((write) => write.nodeId).sort()).toEqual(["a", "b", "verdict"])
+  })
+
+  test("an orchestration writes the root once, and a dispatched card after its work", async () => {
+    const h = harness({
+      memory: {},
+      behavior: { root: { outputs: [dispatches("a"), finalAnswer("the answer")] }, a: { output: "a did it" } },
+    })
+    await h.run(orchestration(["root->a"])).done
+
+    const byCard = Object.fromEntries(h.memoryWrites.map((write) => [write.nodeId, write.output]))
+    expect(byCard).toEqual({ a: "a did it", root: "the answer" })
+    expect(h.memoryWrites).toHaveLength(2)
+  })
+
+  test("a host with no memory records none and writes none", async () => {
+    const h = harness()
+    const log = await h.run(pipeline("a")).done
+    expect(log.nodes[0].memory).toBeUndefined()
+    expect(h.memoryWrites).toEqual([])
+  })
+})
+
+describe("events from the host", () => {
+  test("a swarm status lands on the card that owns the session", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+    const status = {
+      mode: "auto" as const,
+      active: true,
+      counts: { queued: 0, running: 1, completed: 0, failed: 0, cancelled: 0 },
+      agents: [{ agent: "a05-backend", state: "running" as const, activity: "bash", at: 1 }],
+      updatedAt: 1,
+    }
+    h.emit({ type: "flow.swarm.status", data: { sessionID: h.sessionOf.get("a"), status } })
+    h.emit({ type: "flow.swarm.status", data: { sessionID: "someone-elses", status: { ...status, active: false } } })
+    h.release("a")
+    const log = await run.done
+
+    expect(log.nodes[0].swarm).toEqual(status)
+    expect(h.patches.filter((entry) => entry.patch.swarm).map((entry) => entry.id)).toEqual(["a"])
+  })
+
+  test("a notice reaches the user, named for the card when a session owns it", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+    const sessionID = h.sessionOf.get("a")
+    h.emit({ type: "flow.notice", data: { sessionID, level: "info", message: "swarm extension loaded" } })
+    h.emit({ type: "flow.notice", data: { sessionID, level: "error", message: "extension failed" } })
+    h.emit({ type: "flow.notice", data: { level: "error", message: "host is low on memory" } })
+    h.emit({ type: "flow.notice", data: { sessionID: "another-run", level: "error", message: "not ours" } })
+    h.emit({ type: "flow.notice", data: { sessionID, level: "info", message: "" } })
+    h.release("a")
+    await run.done
+
+    expect(h.notices).toEqual([
+      { kind: "info", text: "a: swarm extension loaded" },
+      { kind: "error", text: "a: extension failed" },
+      { kind: "error", text: "host is low on memory" },
+    ])
+  })
+
+  test("a lost session process ends the wait and the card is recreated on the transport budget", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"), "do the thing", { rateLimitBackoff: 1 })
+    await flush()
+    expect(h.created()).toBe(1)
+
+    h.lose("a", "the omp process exited with code 1")
+    await flush()
+    // A second session was opened and the same task sent into it.
+    expect(h.created()).toBe(2)
+    h.release("a")
+    const log = await run.done
+
+    expect(log.status).toBe("done")
+    expect(log.nodes[0].sessionID).toBe("s2")
+    expect(h.promptLog.filter((entry) => entry.node === "a")).toHaveLength(2)
+    const row = h.activity.find((entry) => entry.node === "a" && entry.event.title.includes("session was lost"))
+    expect(row?.event.body).toContain("the omp process exited with code 1")
+  })
+
+  test("a lost session with the budget spent fails the card", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"), "do the thing", { rateLimitBackoff: 0 })
+    await flush()
+    h.lose("a", "the omp process exited")
+    const log = await run.done
+
+    expect(log.nodes[0].status).toBe("error")
+    expect(log.nodes[0].error).toContain("the omp process exited")
+    expect(h.created()).toBe(1)
+  })
+
+  test("a lost event for a session the run does not own is ignored", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+    h.emit({ type: "flow.session.lost", data: { sessionID: "another-run", reason: "gone" } })
+    await flush()
+    expect(h.created()).toBe(1)
+    h.release("a")
+    expect((await run.done).status).toBe("done")
+  })
+})
+
+describe("releasing sessions", () => {
+  test("a pipeline card's session goes back as soon as the card is finished, and every other at the end", async () => {
+    const h = harness({ release: true, behavior: { b: { hold: true } } })
+    const run = h.run(pipeline("a->b"))
+    await flush()
+
+    // `a` is done and will not be prompted again; `b` is still working.
+    expect(h.released).toEqual(["s1"])
+    h.release("b")
+    await run.done
+    expect(h.released).toEqual(["s1", "s2"])
+  })
+
+  test("a run releases everything it created exactly once, including after a stop", async () => {
+    const h = harness({ release: true, behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+    await run.stop()
+    await run.done
+
+    expect(h.released).toEqual(["s1"])
+  })
+
+  test("a gauntlet critic's replaced session is released when it is replaced", async () => {
+    const graph = pipeline("root->builder", "root->reviewer")
+    for (const node of graph.nodes) node.agent.model = "openai/gpt-x"
+    const h = harness({
+      release: true,
+      behavior: {
+        root: { output: dispatches("builder", "reviewer") },
+        builder: { output: "built it" },
+        reviewer: { output: "the bar still wins" },
+      },
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+    })
+    await h.run({ ...graph, mode: "orchestration", gauntlet: { bar: "the reference build", stall: 1 } }).done
+
+    const critics = h.creations.map((creation, index) => [creation.nodeId, `s${index + 1}`]).filter(([id]) => id === "reviewer")
+    expect(critics.length).toBeGreaterThan(1)
+    expect(h.released).toContain(critics[0][1])
+    // Every session the run opened is back with the host, none twice.
+    expect(new Set(h.released).size).toBe(h.released.length)
+    expect([...h.released].sort()).toEqual(h.creations.map((_, index) => `s${index + 1}`).sort())
+  })
+
+  test("a lost session is released rather than left for the host", async () => {
+    const h = harness({ release: true, behavior: { a: { errors: ["session not found"], output: "again" } } })
+    await h.run(pipeline("a"), "go", { rateLimitBackoff: 1 }).done
+
+    expect(h.released).toEqual(["s1", "s2"])
+  })
+
+  test("swarm peers keep one session across rounds and are released after the last", async () => {
+    const h = harness({ release: true })
+    await h.run(mesh(2)).done
+
+    expect(h.created()).toBe(3)
+    expect([...h.released].sort()).toEqual(["s1", "s2", "s3"])
+  })
+
+  test("a host that cannot release is simply not asked", async () => {
+    const h = harness()
+    const log = await h.run(pipeline("a->b")).done
+    expect(log.status).toBe("done")
+    expect(h.released).toEqual([])
+  })
+})
+
+describe("what a session is created with", () => {
+  test("the card, the run and the node, in OpenFlow's own vocabulary", async () => {
+    const graph = pipeline("a")
+    graph.nodes[0].role = "Coder"
+    graph.nodes[0].agent = {
+      prompt: "You write code.",
+      model: "openai/gpt-x",
+      tools: { write: true, bash: false, ghost: true },
+      mcp: ["docs"],
+      // A name from the opencode era is tolerated and never used.
+      name: "flow-a",
+    }
+    const h = harness({ models: ["openai/gpt-x"] })
+    const log = await h.run(graph, "do the thing", { permissions: "manual" }).done
+
+    expect(h.creations).toEqual([
+      {
+        runId: log.id,
+        nodeId: "a",
+        card: { key: "test-coder-a", role: "Coder", prompt: "You write code.", tools: { edit: true, bash: false }, mcp: ["docs"] },
+        model: "openai/gpt-x",
+        directory: undefined,
+        permissions: "manual",
+        swarm: undefined,
+      },
+    ])
+    expect(log.nodes[0].agent).toBeUndefined()
+  })
+
+  test("swarm: the card's own mode, then the canvas default, then the host's", async () => {
+    const graph = { ...pipeline("a", "b", "c"), defaultSwarm: "auto" as const }
+    graph.nodes[1].agent.swarm = "always"
+    graph.nodes[2].agent.swarm = "off"
+    const h = harness()
+    await h.run(graph).done
+
+    const swarmOf = Object.fromEntries(h.creations.map((creation) => [creation.nodeId, creation.swarm]))
+    expect(swarmOf).toEqual({ a: "auto", b: "always", c: "off" })
+
+    const plain = harness()
+    await plain.run(pipeline("a")).done
+    expect(plain.creations[0].swarm).toBeUndefined()
+  })
+
+  test("an isolated card is created in its own tree", async () => {
+    const h = harness({
+      worktrees: "available",
+      behavior: { root: { outputs: [dispatches("a", "b"), finalAnswer("done")] } },
+    })
+    const log = await h.run({ ...orchestration(["root->a", "root->b"]), isolate: true }).done
+
+    expect(h.creations.find((creation) => creation.nodeId === "a")?.directory).toBe(`/tmp/${log.id}/a`)
+    expect(h.creations.find((creation) => creation.nodeId === "root")?.directory).toBeUndefined()
+  })
+})
+
+describe("the run log keeps what the stages did", () => {
+  test("original and uplifted prompts, memory and swarm state all survive into the saved log", async () => {
+    const spec = "<BUILD_PROMPT>the spec</BUILD_PROMPT>"
+    const h = harness({
+      uplift: (request) => ({ status: "ok", original: request.original, uplifted: spec, elapsedMs: 5 }),
+      memory: {
+        read: () => ({
+          status: "ok",
+          block: "<project-memory>x</project-memory>",
+          items: [{ id: "1", scope: "repo:o/n", kind: "fact", subject: "s", preview: "p", origin: "search" }],
+          scopes: ["repo:o/n"],
+          elapsedMs: 1,
+        }),
+      },
+      behavior: { a: { hold: true } },
+    })
+    const run = h.run(pipeline("a"), "build it")
+    await flush()
+    const status = {
+      mode: "always" as const,
+      active: true,
+      counts: { queued: 0, running: 0, completed: 1, failed: 0, cancelled: 0 },
+      agents: [{ agent: "a05-backend", state: "completed" as const, at: 2 }],
+      updatedAt: 2,
+    }
+    h.emit({ type: "flow.swarm.status", data: { sessionID: h.sessionOf.get("a"), status } })
+    h.release("a")
+    await run.done
+
+    const saved = JSON.parse(JSON.stringify(h.saved.at(-1))) as RunLog
+    const node = saved.nodes[0]
+    expect(node.uplift).toMatchObject({ status: "ok", original: "# Task\n\nbuild it", uplifted: spec })
+    expect(node.prompt).toContain(spec)
+    expect(node.prompt).toContain("<project-memory>x</project-memory>")
+    expect(node.memory?.read).toMatchObject({ status: "ok", items: [{ scope: "repo:o/n", subject: "s", origin: "search" }] })
+    expect(node.memory?.write).toMatchObject({ status: "stored" })
+    expect(node.swarm).toEqual(status)
+  })
+
+  test("a failed uplift is in the saved log with the reason", async () => {
+    const h = harness({
+      uplift: () => ({ status: "failed", original: "", reason: "timed out after 120s", elapsedMs: 3 }),
+    })
+    await h.run(pipeline("a")).done
+
+    const node = h.saved.at(-1)!.nodes[0]
+    expect(node.uplift).toMatchObject({ status: "failed", reason: "timed out after 120s", original: "# Task\n\ndo the thing" })
+    expect(node.error).toBe("prompt uplift failed: timed out after 120s")
   })
 })

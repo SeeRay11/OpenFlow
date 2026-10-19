@@ -1,0 +1,29 @@
+{
+  "id": "fixture-agent-name",
+  "name": "named agents",
+  "nodes": [
+    {
+      "id": "n1",
+      "role": "builder",
+      "agent": {
+        "name": "build",
+        "model": "anthropic/claude-sonnet-4-5",
+        "prompt": "Build it.",
+        "tools": { "read": true, "write": true },
+        "mcp": ["github"]
+      },
+      "position": { "x": 40, "y": 40 }
+    },
+    {
+      "id": "n2",
+      "role": "reviewer",
+      "agent": {
+        "name": "",
+        "model": "openrouter/anthropic/claude-haiku-4.5",
+        "prompt": "Review it."
+      },
+      "position": { "x": 340, "y": 40 }
+    }
+  ],
+  "edges": [{ "id": "e1", "source": "n1", "target": "n2" }]
+}

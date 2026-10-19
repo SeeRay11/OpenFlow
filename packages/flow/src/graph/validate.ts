@@ -1,4 +1,4 @@
-import { agentKey, toolMap } from "../server/store"
+import { agentKey, toolMap } from "../server/card-spec"
 import { isCritic, orchestrationShape } from "./orchestration"
 import { swarmShape } from "./swarm"
 import { depthOf, dispatchesOf, gauntletOf, modeOf, verifyOf, type Pipeline } from "./types"
@@ -71,26 +71,10 @@ export type Preflight = { blocking: Problem[]; warnings: Problem[] }
  * right now (a keyed, runnable model). A model set but absent from it is the
  * "keyed provider that still 401s" case, so it blocks rather than warns.
  *
- * `engineReachable: false` means the model catalog could not be read at all, so
- * `unlockedModels` is empty for a reason that has nothing to do with any node.
- * Only an explicit `false` counts — an unstated engine is assumed up.
  */
-export function preflight(
-  pipeline: Pipeline,
-  ctx: { unlockedModels: Set<string>; engineReachable?: boolean },
-): Preflight {
+export function preflight(pipeline: Pipeline, ctx: { unlockedModels: Set<string> }): Preflight {
   const blocking: Problem[] = []
   const warnings: Problem[] = []
-  const offline = ctx.engineReachable === false
-
-  // With the engine down every model looks locked, so one true problem replaces
-  // a wall of confident, specific, wrong per-node diagnoses.
-  if (offline)
-    blocking.push({
-      kind: "engine-unreachable",
-      message:
-        "OpenFlow cannot reach `opencode serve`, so no model can run and no provider can be read — start the engine with `bun openflow.ts`, then try again",
-    })
 
   const shape = shapeProblems(pipeline)
   blocking.push(...shape.blocking)
@@ -99,14 +83,12 @@ export function preflight(
   for (const node of pipeline.nodes) {
     const model = node.agent.model
     if (!model) {
-      // No model and no agent to fall back on means nothing to run it on.
-      if (!node.agent.name)
-        blocking.push({
-          nodeId: node.id,
-          kind: "no-model",
-          message: `Node '${node.role}' has no model — pick one or set a default`,
-        })
-    } else if (!offline && !ctx.unlockedModels.has(model)) {
+      blocking.push({
+        nodeId: node.id,
+        kind: "no-model",
+        message: `Node '${node.role}' has no model — pick one or set a default`,
+      })
+    } else if (!ctx.unlockedModels.has(model)) {
       blocking.push({
         nodeId: node.id,
         kind: "locked-model",
@@ -114,31 +96,22 @@ export function preflight(
       })
     }
 
-    // A node that says nothing about tools runs unrestricted.
-    //
-    // This used to warn the other way round — "can edit files but has no agent"
-    // — and it was backwards twice over. Every node becomes a generated agent
-    // the moment a run starts (`syncAgents` fills `agent.name` from
-    // `agentKey`), so an empty name at preflight means nothing; it is filled a
-    // second later, which is why the warning fired for six cards that all ran
-    // under restricted agents. And declaring tools is what *creates* the
-    // restriction: `agentBlock` writes a `permission` block only from
-    // `agent.tools`, so a node that declares none inherits the default agent's
-    // permissions — edit, write and bash included. The hazard is silence, not
-    // toggles.
+    // A node that says nothing about tools runs unrestricted: the launch spec
+    // (`cardSpec`) carries a tool list only when the card declares one, and a
+    // card without it gets every tool Omp has — edit and bash included. The
+    // hazard is silence, not toggles.
     const tools = node.agent.tools
-    if (!node.agent.name && !(tools && Object.keys(tools).length))
+    if (!(tools && Object.keys(tools).length))
       warnings.push({
         nodeId: node.id,
         kind: "unrestricted-write",
-        message: `Node '${node.role}' sets no tool permissions, so it runs with the default agent's — it can edit files and run commands`,
+        message: `Node '${node.role}' sets no tool permissions, so it runs with every tool — it can edit files and run commands`,
       })
   }
 
-  // Two nodes generating the same agent id collapse into one merged agent, and
-  // the last one written decides both nodes' tool permissions — a node the user
-  // restricted would run with the other's edit/bash access. The key is unique
-  // per node today; this refuses the run rather than trusting that to hold.
+  // Two nodes with the same card key would share whatever is keyed on it — a
+  // session's state directory, a swarm task store. The key is unique per node
+  // today; this refuses the run rather than trusting that to hold.
   const owners = new Map<string, string>()
   for (const node of pipeline.nodes) {
     const key = agentKey(pipeline, node)
@@ -147,7 +120,7 @@ export function preflight(
       blocking.push({
         nodeId: node.id,
         kind: "duplicate-agent",
-        message: `Nodes '${owner}' and '${node.role}' both generate the agent id '${key}' — one would overwrite the other's tool permissions`,
+        message: `Nodes '${owner}' and '${node.role}' both generate the card key '${key}' — they would share one session's state`,
       })
     owners.set(key, node.role)
   }
@@ -293,9 +266,8 @@ function swarmProblems(pipeline: Pipeline): Preflight {
   // that does not exist. A swarm is a debate; its output is the synthesizer's
   // message, and nothing a peer writes to disk is part of it.
   //
-  // Only tools switched off explicitly are denied — an unlisted tool inherits
-  // the default agent's permission, which is allow — so `{ read: true }` can
-  // write. The synthesizer is not checked: it runs alone, after the rounds.
+  // Only tools switched off explicitly are denied — an unlisted tool is not
+  // restricted, which means allowed — so `{ read: true }` can write. The synthesizer is not checked: it runs alone, after the rounds.
   const writers = shape.agents.filter((agent) => {
     const tools = toolMap(agent.agent.tools)
     return tools.edit !== false || tools.bash !== false

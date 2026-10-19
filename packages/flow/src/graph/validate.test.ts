@@ -382,10 +382,10 @@ describe("preflight", () => {
     expect(result.blocking[0].message).toContain("'a'")
   })
 
-  test("a node with no model but a named agent is fine — it runs on the agent's default", () => {
+  test("a legacy opencode agent name on a node is tolerated and changes nothing", () => {
     const graph = pipeline("a")
     graph.nodes[0].agent.name = "reviewer"
-    expect(preflight(graph, unlocked()).blocking).toEqual([])
+    expect(preflight(graph, unlocked()).blocking.map((problem) => problem.kind)).toEqual(["no-model"])
   })
 
   test("a model that no connected provider can run blocks and names the node", () => {
@@ -401,9 +401,8 @@ describe("preflight", () => {
   })
 
   test("a node that sets no tool permissions warns but does not block", () => {
-    // The generated agent gets a `permission` block only from `agent.tools`, so
-    // a node that declares none inherits the default agent's — edit, write and
-    // bash included.
+    // The launch spec carries a tool list only from `agent.tools`, so a node
+    // that declares none runs with every tool — edit and bash included.
     const graph = withModel(pipeline("a"), "opencode/x")
     graph.nodes[0].agent.tools = undefined
     const result = preflight(graph, unlocked("opencode/x"))
@@ -412,18 +411,8 @@ describe("preflight", () => {
   })
 
   test("declaring tools is what restricts a node, so it silences the warning", () => {
-    // This warned the other way round once: it fired for six cards that all ran
-    // under restricted generated agents, because `agent.name` is filled when the
-    // run starts and preflight reads it before that.
     const graph = withModel(pipeline("a"), "opencode/x")
     graph.nodes[0].agent.tools = { bash: true }
-    expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
-  })
-
-  test("a named agent silences it too — that agent's own permissions apply", () => {
-    const graph = withModel(pipeline("a"), "opencode/x")
-    graph.nodes[0].agent.tools = undefined
-    graph.nodes[0].agent.name = "coder"
     expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
   })
 
@@ -433,10 +422,10 @@ describe("preflight", () => {
     expect(result.warnings.map((problem) => [problem.kind, problem.nodeId])).toEqual([["isolated", "lonely"]])
   })
 
-  test("two nodes generating the same agent id block", () => {
+  test("two nodes generating the same card key block", () => {
     // The key carries the node id, so this only happens if two nodes are given
-    // the same id — but a collision silently merges their permission blocks,
-    // which is worth refusing rather than running.
+    // the same id — but a collision would share one state directory between
+    // them, which is worth refusing rather than running.
     const graph = withModel(pipeline("a", "b"), "opencode/x")
     graph.nodes[1].id = graph.nodes[0].id
     graph.nodes[1].role = graph.nodes[0].role
@@ -458,28 +447,9 @@ describe("preflight", () => {
     expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
   })
 
-  test("an unreachable engine blames the engine once and suppresses every locked model", () => {
-    // The exact false alarm: with the engine down nothing can read the catalog,
-    // so all three nodes look like they picked a model nobody can run.
-    const graph = withModel(pipeline("a->b", "b->c"), "anthropic/claude-sonnet-4")
-    const result = preflight(graph, { unlockedModels: new Set<string>(), engineReachable: false })
-
-    expect(result.blocking.map((problem) => problem.kind)).toEqual(["engine-unreachable"])
-    expect(result.blocking[0].message).toContain("opencode serve")
-    expect(result.blocking[0].nodeId).toBeUndefined()
-  })
-
-  test("an unreachable engine still reports problems that are not about models", () => {
-    const graph = withModel(pipeline("a->b", "b->a"), "opencode/x")
-    const kinds = preflight(graph, { unlockedModels: new Set<string>(), engineReachable: false }).blocking.map(
-      (problem) => problem.kind,
-    )
-    expect(kinds).toEqual(["engine-unreachable", "structure"])
-  })
-
   test("a reachable engine still blocks a model no connected provider can run", () => {
     const graph = withModel(pipeline("a"), "groq/llama")
-    const result = preflight(graph, { unlockedModels: new Set(["opencode/x"]), engineReachable: true })
+    const result = preflight(graph, unlocked("opencode/x"))
     expect(result.blocking.map((problem) => problem.kind)).toEqual(["locked-model"])
   })
 })

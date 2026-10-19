@@ -118,10 +118,29 @@ group("createActivity", () => {
     const { activity, last } = collector({ s1: "n1" })
     activity.consume({
       type: "session.next.step.started",
-      data: { sessionID: "s1", assistantMessageID: "m1", agent: "build", model: { providerID: "opencode", id: "zen" } },
+      data: { sessionID: "s1", assistantMessageID: "m1", agent: "build", model: { providerID: "anthropic", id: "claude-opus-5" } },
     })
     expect(last().event.kind).toBe("step")
-    expect(last().event.title).toBe("build · opencode/zen")
+    expect(last().event.title).toBe("build · anthropic/claude-opus-5")
+  })
+
+  test("an omp notice becomes a note row on the card that owns the session, errors flagged", () => {
+    const { activity, seen, last } = collector({ s1: "n1" })
+    activity.consume({ type: "flow.notice", data: { sessionID: "s1", level: "info", message: "extension loaded" } })
+    expect(last().node).toBe("n1")
+    expect(last().event.kind).toBe("note")
+    expect(last().event.title).toBe("extension loaded")
+    expect(last().event.status).toBeUndefined()
+    activity.consume({ type: "flow.notice", data: { sessionID: "s1", level: "error", message: "extension crashed" } })
+    expect(last().event.status).toBe("error")
+    // each notice is its own row, not an upsert of the previous one
+    expect(new Set(seen.map((entry) => entry.event.id)).size).toBe(2)
+  })
+
+  test("a notice with no session belongs to no card and is dropped", () => {
+    const { activity, seen } = collector({ s1: "n1" })
+    activity.consume({ type: "flow.notice", data: { level: "info", message: "omp restarted" } })
+    expect(seen).toHaveLength(0)
   })
 
   test("a body longer than the live limit is clipped, and says so", () => {

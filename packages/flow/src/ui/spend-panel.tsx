@@ -8,7 +8,7 @@ import { IconClose } from "./icons"
 /**
  * What the agents have cost, and how that number was arrived at.
  *
- * Every figure is `tokens the server reported × the price models.dev publishes`
+ * Every figure is `tokens Omp reported × the price its model catalog reports`
  * — see `server/usage.ts`. The panel is deliberately explicit about the two
  * ways it can be short of the truth, because a spend readout nobody trusts is
  * worth nothing:
@@ -84,10 +84,11 @@ export function SpendPanel(props: { onClose: () => void }) {
           </Show>
 
           <p class="hint spend-note">
-            Token counts come from the provider's own usage report, relayed by <code>opencode serve</code>. Money is
-            those counts at the list price models.dev publishes for each model, including cached and reasoning tokens.
-            It does not know about subscriptions, credits, free tiers or negotiated rates, and a step that failed
-            before reporting usage is not counted. Treat it as a close estimate of list-price spend, not as an invoice.
+            Token counts come from the provider's own usage report, relayed by Omp. Money is those counts at the
+            per-model price in the catalog Omp reports, including cached and reasoning tokens. A model with no price
+            there is shown as <em>unpriced</em>, with tokens but no money — never as free. It does not know about
+            subscriptions, credits, free tiers or negotiated rates, and a step that failed before reporting usage is
+            not counted. Treat it as a close estimate of list-price spend, not as an invoice.
           </p>
         </div>
       </section>

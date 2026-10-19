@@ -23,6 +23,7 @@ import { actions, primary, runtimeOf, state } from "./state"
 beforeEach(() => {
   actions.reset()
   actions.rejectPermissions()
+  actions.rejectUpliftFailures()
   actions.clearNotice()
   setDefaultModel(undefined)
   setAvailableModels(new Set<string>())
@@ -168,6 +169,92 @@ describe("runtime", () => {
     expect(state.runtime).toEqual({})
     expect(state.run).toBeUndefined()
     expect(state.selection).toEqual([])
+  })
+})
+
+describe("uplift, memory and swarm on the runtime", () => {
+  const failure = (requestID: string, nodeID = "n1") => ({ requestID, nodeID, role: "planner", reason: "timed out", elapsedMs: 1200 })
+
+  test("patches carry the new fields and keep earlier ones", () => {
+    const [id] = graph("planner")
+    actions.patchRuntime(id, { status: "running", prompt: "uplifted text", originalPrompt: "task" })
+    actions.patchRuntime(id, { uplift: { status: "ok", original: "task", uplifted: "uplifted text" } })
+    actions.patchRuntime(id, { memory: { read: { status: "empty", items: [] } } })
+    actions.patchRuntime(id, {
+      swarm: {
+        mode: "auto",
+        active: true,
+        counts: { queued: 0, running: 1, completed: 0, failed: 0, cancelled: 0 },
+        agents: [{ agent: "a05-backend", state: "running", at: 1 }],
+        updatedAt: 1,
+      },
+    })
+
+    expect(runtimeOf(id)).toMatchObject({
+      status: "running",
+      prompt: "uplifted text",
+      originalPrompt: "task",
+      uplift: { status: "ok", uplifted: "uplifted text" },
+      memory: { read: { status: "empty" } },
+      swarm: { active: true, agents: [{ agent: "a05-backend" }] },
+    })
+  })
+
+  test("resetRuntime drops them with everything else", () => {
+    const [id] = graph("planner")
+    actions.patchRuntime(id, { originalPrompt: "task", uplift: { status: "failed", original: "task" }, memory: { graphId: "g" } })
+    actions.resetRuntime({ [id]: "queued" })
+
+    expect(runtimeOf(id)).toEqual({ status: "queued" })
+  })
+
+  test("askUpliftFailure resolves with the chosen value and leaves the queue", async () => {
+    const answer = actions.askUpliftFailure(failure("r1"))
+    expect(state.upliftFailures.map((entry) => entry.requestID)).toEqual(["r1"])
+
+    actions.resolveUpliftFailure("r1", "original")
+
+    expect(await answer).toBe("original")
+    expect(state.upliftFailures).toEqual([])
+  })
+
+  test("each pending failure resolves with its own choice, oldest first in the queue", async () => {
+    const first = actions.askUpliftFailure(failure("r1", "n1"))
+    const second = actions.askUpliftFailure(failure("r2", "n2"))
+    expect(state.upliftFailures.map((entry) => entry.requestID)).toEqual(["r1", "r2"])
+
+    actions.resolveUpliftFailure("r2", "retry")
+    expect(state.upliftFailures.map((entry) => entry.requestID)).toEqual(["r1"])
+    actions.resolveUpliftFailure("r1", "cancel")
+
+    expect(await second).toBe("retry")
+    expect(await first).toBe("cancel")
+  })
+
+  test("resolving an unknown request changes nothing", () => {
+    void actions.askUpliftFailure(failure("r1"))
+    actions.resolveUpliftFailure("nope", "cancel")
+
+    expect(state.upliftFailures).toHaveLength(1)
+  })
+
+  test("rejectUpliftFailures cancels every pending card", async () => {
+    const all = [actions.askUpliftFailure(failure("r1", "n1")), actions.askUpliftFailure(failure("r2", "n2")), actions.askUpliftFailure(failure("r3", "n3"))]
+
+    actions.rejectUpliftFailures()
+
+    expect(await Promise.all(all)).toEqual(["cancel", "cancel", "cancel"])
+    expect(state.upliftFailures).toEqual([])
+  })
+
+  test("a new run settles decisions the previous run left behind", async () => {
+    const [id] = graph("planner")
+    const stale = actions.askUpliftFailure(failure("r1", id))
+
+    actions.resetRuntime({ [id]: "queued" })
+
+    expect(await stale).toBe("cancel")
+    expect(state.upliftFailures).toEqual([])
   })
 })
 
@@ -391,15 +478,15 @@ describe("undo", () => {
   })
 })
 
-describe("engine reachability", () => {
+describe("host reachability", () => {
   test("starts optimistic and follows the last probe", () => {
-    expect(state.engineReachable).toBe(true)
+    expect(state.hostReachable).toBe(true)
 
-    actions.setEngineReachable(false)
-    expect(state.engineReachable).toBe(false)
+    actions.setHostReachable(false)
+    expect(state.hostReachable).toBe(false)
 
-    actions.setEngineReachable(true)
-    expect(state.engineReachable).toBe(true)
+    actions.setHostReachable(true)
+    expect(state.hostReachable).toBe(true)
   })
 })
 

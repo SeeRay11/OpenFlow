@@ -1,9 +1,10 @@
 /**
  * The orchestrator's control protocol.
  *
- * A card is a plain `opencode` session: it emits one final message and nothing
- * else crosses the boundary. So an orchestrator says what it wants to happen
- * next by ending that message with a fenced block, and this reads it back.
+ * A card is a plain Omp session: its final message is what crosses the boundary,
+ * plus the two host tools it may call. So an orchestrator says what it wants to
+ * happen next with a tool call, or by ending its message with a fenced block, and
+ * this reads either back.
  *
  * Everything here is deliberately strict. A control instruction that is *nearly*
  * right — a card id that does not exist, a task that is an empty string, two
@@ -18,11 +19,13 @@ import { normalizePath } from "./collisions"
 export const FENCE = "openflow"
 
 /**
- * The MCP server that carries the same protocol as tool calls, and the tool
- * names opencode registers it under (`<server>_<tool>`).
+ * The two tools an orchestrator card is given, and the names they are called
+ * under. They are Omp RPC host tools (`CardSpec.dispatch`), registered by the
+ * host for the card's session, so the names carry no server prefix beyond this
+ * one — `openflow_dispatch` and `openflow_finish` are what the model sees.
  *
  * A tool call is the channel models actually reach for — measured — so it is
- * tried first and the fenced block is the fallback. Both ends up in
+ * tried first and the fenced block is the fallback. Both end up in
  * `assignmentsFrom` below, so the two channels cannot drift into disagreeing
  * about what a valid dispatch is.
  */
@@ -31,33 +34,17 @@ export const DISPATCH_TOOL = `${MCP_SERVER}_dispatch`
 export const FINISH_TOOL = `${MCP_SERVER}_finish`
 
 /**
- * Whether an MCP tool can reach a card at all. **It cannot, in this fork.**
+ * Whether the tool channel is the primary way an orchestrator's decision is
+ * read. It is: the host answers `openflow_dispatch` / `openflow_finish` as RPC
+ * host tools for the card's session, and the engine reads the calls back through
+ * `EngineApi.sessionCalls`. The fenced block stays as the fallback for a card
+ * whose allowlist leaves the tools out, or a host that does not offer them.
  *
- * OpenFlow drives `client.v2.session.*`, so a card runs through the v2 session
- * runner — and that runner has never been wired to MCP. Its own spec comment
- * says so, unticked, at `packages/core/src/session/runner/llm.ts`:
- *
- *   - [ ] Resolve policy-filtered built-in, MCP, plugin, and structured-output
- *         tool definitions.
- *
- * MCP tools are converted and registered in exactly one place, the *v1* session
- * path (`packages/opencode/src/session/tools.ts`), which OpenFlow does not use.
- * The v2 tool registry (`packages/core/src/tool/`) holds read, grep, glob, bash,
- * edit, write, question, skill, todowrite, webfetch, websearch and apply-patch,
- * and nothing puts MCP beside them — so `openflow_dispatch` comes back as
- * `Unknown tool` from `core/src/tool/registry.ts` however the config is written.
- *
- * `GET /mcp` still answers `connected`, which is what made this look like a
- * config bug for so long: the MCP *service* connects the process and holds the
- * client perfectly well. It simply never contributes a tool definition to a v2
- * session.
- *
- * So the channel is parked, not deleted. Everything it needs is built and
- * tested; flipping this to `true` is the whole of turning it back on the day
- * that checklist line is ticked. Fixing it here is not an option — it would
- * mean editing `packages/core`, and this fork modifies no upstream package.
+ * Kept as one switch because the briefing, the engine's history scan and the
+ * run bar's install banner all read it; `RunOptions.toolChannel` overrides it
+ * for a single run.
  */
-export const MCP_REACHES_SESSIONS = false
+export const MCP_REACHES_SESSIONS = true
 
 /**
  * `files` is what the orchestrator says the card will write, if it says. It is

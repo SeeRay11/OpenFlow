@@ -7,11 +7,10 @@ import { IconBack, IconRestart, IconSearch } from "./icons"
 /**
  * The sessions column.
  *
- * Every OpenFlow node is one `opencode serve` primary session, so the sessions
- * this lists are not a parallel history OpenFlow keeps — they are the rows
- * already in OpenCode's sqlite database, read back through `GET /api/session`.
- * A session started from the CLI or TUI in the same project shows up here too,
- * and one started by a card shows up in those. There is exactly one store.
+ * Every OpenFlow node is one Omp session owned by the host, and the rows listed
+ * here come from `api.sessions()` with a session's turns from
+ * `api.sessionTranscript()` — not from a parallel history kept in the browser.
+ * A session a card started shows up in the list while the host holds it.
  *
  * The panel is collapsible because the canvas is the app: 240px is cheap on a
  * wide screen and not on a laptop, and a history sidebar is a thing you consult

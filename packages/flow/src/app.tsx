@@ -1,4 +1,5 @@
-import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js"
+import type { PtyKind } from "../shared/terminal"
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { Canvas } from "./canvas/canvas"
 import {
   depthOf,
@@ -11,14 +12,14 @@ import {
   modeOf,
   roundsOf,
   type FlowMode,
-  type Pipeline,
   type RunLog,
 } from "./graph/types"
-import { MCP_REACHES_SESSIONS } from "./graph/dispatch"
 import { layer, preflight, type Preflight } from "./graph/validate"
 import { isPipeline } from "./graph/pipeline-io"
+import { isLegacySession, legacyModelProblems, migratePipeline, migrateRunLog, type MigrationNote } from "./graph/migrate"
 import * as api from "./server/client"
 import {
+  DEFAULT_CATALOG_RETRY,
   DEFAULT_MAX_PARALLEL,
   DEFAULT_NODE_TIMEOUT,
   start,
@@ -26,26 +27,11 @@ import {
   type PipeMode,
   type Run,
 } from "./server/engine"
-import {
-  availableModels,
-  freeModels,
-  providerRows,
-  suggestedFreeDefault,
-  unlockedRows,
-  type ProviderRow,
-} from "./server/providers"
-import { defaultModel, setAvailableModels, setDefaultModel } from "./graph/default-model"
+import { availableModels, providerRows, type ProviderRow } from "./server/providers"
+import { setAvailableModels } from "./graph/default-model"
 import { hydrateCustomRoles, onRolesSyncError } from "./graph/roles"
 import { findRun, PRUNE_DAYS, RUN_DELETE, RUN_PRUNE, runMenuOptions } from "./server/runs"
-import {
-  agentBlock,
-  agentKey,
-  store,
-  type McpServer,
-  type PipelineEntry,
-  type RunEntry,
-  type ServeStatus,
-} from "./server/store"
+import { store, type McpServer, type PipelineEntry, type RunEntry } from "./server/store"
 import { actions, state } from "./state"
 import {
   IconAlert,
@@ -57,15 +43,14 @@ import {
   IconHistory,
   IconImport,
   IconInfo,
-  IconKey,
   IconLayers,
   IconPlay,
   IconPlug,
   IconPlus,
-  IconRestart,
   IconSave,
   IconSliders,
   IconStop,
+  IconTerminal,
 } from "./ui/icons"
 import { ActivityDrawer } from "./ui/activity-drawer"
 import { Attachments, filesFrom, readFiles } from "./ui/attachments"
@@ -77,17 +62,19 @@ import { QuestionDialog } from "./ui/question-dialog"
 import { Palette } from "./ui/palette"
 import { Walkthrough } from "./ui/walkthrough"
 import { ProjectPicker } from "./ui/project-picker"
-import { ProvidersPanel } from "./ui/providers-panel"
 import { SessionsPanel } from "./ui/sessions-panel"
 import { SkillsPanel } from "./ui/skills-panel"
 import { SpendPanel } from "./ui/spend-panel"
-import { EngineDialog } from "./ui/engine-dialog"
 import { GauntletDialog } from "./ui/gauntlet-dialog"
 import { VerifyDialog } from "./ui/verify-dialog"
 import { alertsOn, announce, askDesktop, setAlerts, webhook } from "./alerts"
 import { AlertsDialog } from "./ui/alerts-dialog"
 import { costLabel } from "./server/usage"
 import { Select, type SelectOption } from "./ui/select"
+import { OmpSettingsDialog } from "./ui/omp-settings"
+import { TerminalDock } from "./ui/terminal-dock"
+import { UpliftFailureDialog } from "./ui/uplift-dialog"
+import { omp } from "./server/omp-config"
 
 // The four run settings are fixed lists, so they are built once here rather
 // than rebuilt on every render. Each label is only the value — the trigger
@@ -146,141 +133,202 @@ const TIMEOUT_OPTIONS: SelectOption[] = [5, 15, 30, 60].map((minutes) => ({
   label: `${minutes}m`,
 }))
 
-/** How often the statusbar re-checks the engine while nothing else is talking to it. */
+/** How often the statusbar re-checks the host while nothing else is talking to it. */
 const HEALTH_INTERVAL = 15_000
 
 /** How often a running gauntlet's elapsed-minutes readout advances. */
 const CLOCK_INTERVAL = 10_000
 
+const HOST_DOWN = "cannot reach the OpenFlow host — start it with `bun openflow.ts`, then reload this page"
+const OMP_MISSING = "omp is not available — install it, or set its path in the Omp settings"
+
+/** What a probe found: all well, the host does not answer, or the host answers and omp cannot run. */
+type Health = "ready" | "host" | "omp"
+
+/** Banner extras that ride along with a notice: a hover title, and a button that opens the Omp settings. */
+type NoticeMeta = { text: string; title?: string; settings?: boolean }
+
 /**
- * Whether a failure is the engine's rather than the request's.
+ * Whether a failure is the host's or omp's rather than the request's.
  *
- * Every `/api/*` call dies the same way when `opencode serve` is down, and the
- * symptom surfaces as whatever the caller was doing — a provider read, a save,
- * a run. Matching the message is what turns any of those back into one honest
- * "the engine is gone" state instead of a confident wrong diagnosis.
+ * Every `/flow/api/*` call dies the same way when the host is down, and the
+ * symptom surfaces as whatever the caller was doing — a model read, a save, a
+ * run. Matching the message is what turns any of those back into one honest
+ * "the host is gone / omp is missing" state instead of a confident wrong
+ * diagnosis. The wire drops the error `code`, so `omp-unavailable` is matched
+ * through the sentences the host attaches to it.
  */
-function namesEngine(text: string) {
+function namesHost(text: string) {
   return (
-    text.includes("opencode serve") ||
     text.includes("Failed to fetch") ||
     text.includes("NetworkError") ||
     text.includes("HTTP 502") ||
-    text.includes("flow store unavailable")
+    text.includes("HTTP 503") ||
+    text.includes("omp-unavailable") ||
+    text.includes("omp was not found") ||
+    text.includes("omp is not available") ||
+    text.includes("could not run omp") ||
+    text.includes("flow store unavailable") ||
+    text.includes("OpenFlow host did not answer")
   )
 }
 
 /**
- * Whether the sessions column was left open.
+ * Whether a panel was left open: the sessions column and the terminal dock.
  *
- * Closed by default: the canvas is the app, and a first run should get the full
- * width rather than 240px of empty history. Storage is best-effort in both
- * directions — the signal is the source of truth, so `bun test` (which has no
- * `localStorage`) and a private window both behave, they just do not remember.
+ * Both closed by default — the canvas is the app, and a first run should get
+ * the full width and height. Storage is best-effort in both directions — the
+ * signal is the source of truth, so `bun test` (which has no `localStorage`)
+ * and a private window both behave, they just do not remember.
  */
 const SESSIONS_KEY = "openflow.sessionsOpen.v1"
+const TERMINAL_KEY = "openflow.terminal.v1"
 
-function readShowSessions() {
+function readFlag(key: string) {
   try {
-    return localStorage.getItem(SESSIONS_KEY) === "1"
+    return localStorage.getItem(key) === "1"
   } catch {
     return false
   }
 }
 
-function writeShowSessions(open: boolean) {
+function writeFlag(key: string, open: boolean) {
   try {
-    localStorage.setItem(SESSIONS_KEY, open ? "1" : "0")
+    localStorage.setItem(key, open ? "1" : "0")
   } catch {
     // A browser that refuses storage still gets a working panel for this tab.
   }
 }
 
+const NOTE_LABELS: Record<MigrationNote["kind"], string> = {
+  "legacy-model": "models to re-pick",
+  "legacy-agent": "agent settings dropped",
+  "legacy-session": "sessions that cannot be resumed",
+  "unknown-field": "unrecognised fields kept",
+}
+
+/** Most migration lines the hover title lists; the rest are counted. */
+const NOTE_LINES = 12
+
+/** One line for the banner, every note for its hover title. Absent when the migration had nothing to say. */
+function migrationSummary(notes: MigrationNote[]) {
+  if (!notes.length) return undefined
+  const counts = new Map<MigrationNote["kind"], number>()
+  for (const note of notes) counts.set(note.kind, (counts.get(note.kind) ?? 0) + 1)
+  const parts = [...counts].map(([kind, count]) => `${NOTE_LABELS[kind]}: ${count}`)
+  const lines = notes.slice(0, NOTE_LINES).map((note) => note.message)
+  if (notes.length > NOTE_LINES) lines.push(`…and ${notes.length - NOTE_LINES} more`)
+  return { text: `from an earlier build — ${parts.join(", ")} (hover for details)`, title: lines.join("\n") }
+}
+
+/** A pipeline read from disk or a file, brought up to date. `undefined` when it is not a pipeline at all. */
+function readPipeline(raw: unknown) {
+  const { pipeline, notes } = migratePipeline(raw)
+  return isPipeline(pipeline) ? { pipeline, summary: migrationSummary(notes) } : undefined
+}
+
+async function loadRun(id: string) {
+  const { run, notes } = migrateRunLog(await store.run(id))
+  // The migration only stamps and reports; the shape is still the store's `RunLog`.
+  return { log: run as RunLog, summary: migrationSummary(notes) }
+}
+
 export function App() {
   const [status, setStatus] = createSignal("connecting…")
-  const [agents, setAgents] = createSignal<string[]>([])
   const [providers, setProviders] = createSignal<ProviderRow[]>([])
-  const [showProviders, setShowProviders] = createSignal(false)
   const [showSkills, setShowSkills] = createSignal(false)
   const [showMcp, setShowMcp] = createSignal(false)
   const [showSpend, setShowSpend] = createSignal(false)
+  const [showOmp, setShowOmp] = createSignal(false)
+  const [terminalOpen, setTerminalOpen] = createSignal(readFlag(TERMINAL_KEY))
+  const [terminalKind, setTerminalKind] = createSignal<PtyKind>("omp")
   const [gauntletOpen, setGauntletOpen] = createSignal(false)
   const [verifyOpen, setVerifyOpen] = createSignal(false)
   const [alertsOpen, setAlertsOpen] = createSignal(false)
   const [tick, setTick] = createSignal(Date.now())
-  const [engine, setEngine] = createSignal<ServeStatus>()
-  const [restarting, setRestarting] = createSignal(false)
-  /** Set when the engine needs restarting — drives the restart/command dialog. */
-  const [engineHelp, setEngineHelp] = createSignal<ServeStatus>()
-  const [engineWhy, setEngineWhy] = createSignal<string>()
+  /** `omp` as the host's last health answer saw it. Unknown until the first answer, which counts as ready. */
+  const [ompInfo, setOmpInfo] = createSignal<api.HealthInfo["omp"]>()
+  /** The host's sentence for why omp cannot run, with the fix; absent when omp is fine or nothing said. */
+  const [ompProblem, setOmpProblem] = createSignal<string>()
+  const [noticeMeta, setNoticeMeta] = createSignal<NoticeMeta>()
   // `undefined` means the server list has not been read (yet, or at all), which
-  // is not the same as a project with no servers: the generated `<server>_*`
-  // permission rules are derived from this list, so an empty stand-in would
-  // silently drop every deny rule from the agents written to opencode.json.
-  // Starts unknown so a run fired before the first refresh lands refuses too.
+  // is not the same as a project with no servers; the inspector offers the
+  // list, so an unread one must not look like an empty one.
   const [mcpServers, setMcpServers] = createSignal<McpServer[] | undefined>(undefined)
   const [showProjectPicker, setShowProjectPicker] = createSignal(false)
   const [pickingProject, setPickingProject] = createSignal(false)
-  const [providerQuery, setProviderQuery] = createSignal("")
   const [pipelines, setPipelines] = createSignal<PipelineEntry[]>([])
   const [runs, setRuns] = createSignal<RunEntry[]>([])
   const [project, setProject] = createSignal("")
-  const [showSessions, setShowSessions] = createSignal(readShowSessions())
+  const [showSessions, setShowSessions] = createSignal(readFlag(SESSIONS_KEY))
   const [pipe, setPipe] = createSignal<PipeMode>("ancestors")
   const [policy, setPolicy] = createSignal<PermissionPolicy>("auto")
   const [parallel, setParallel] = createSignal(DEFAULT_MAX_PARALLEL)
   const [nodeTimeout, setNodeTimeout] = createSignal(DEFAULT_NODE_TIMEOUT)
   const [issues, setIssues] = createSignal<Preflight>()
-  /** Whether the global config starts OpenFlow's dispatch MCP server. */
-  const [dispatchTool, setDispatchTool] = createSignal<Awaited<ReturnType<typeof store.dispatchToolStatus>>>()
-  const [installing, setInstalling] = createSignal(false)
   let current: Run | undefined
 
+  const ompReady = () => ompInfo()?.available !== false
+  const ompMessage = () => ompProblem() ?? OMP_MISSING
+
   /**
-   * The `providerID/modelID` set a node could actually run right now.
-   *
-   * Not "the models of a connected provider": zen's free tier needs no key, so
-   * a fresh install with no credential at all still has runnable models, and
-   * gating on `unlockedRows` here would block a first-timer's run outright.
+   * The `providerID/modelID` set a node could actually run right now: the
+   * models of every provider omp holds credentials for, or says nothing about.
    */
   const unlockedModels = () => new Set(availableModels(providers()).map((model) => model.value))
 
+  /** Shows a banner. `extra` is for the banner alone: its hover title and the Omp settings button. */
+  function say(kind: "info" | "error", text: string, extra: Omit<NoticeMeta, "text"> = {}) {
+    actions.notice(kind, text)
+    setNoticeMeta({ text, ...extra })
+  }
+
   /**
    * Every error this file reports goes through here rather than through
-   * `actions.notice` directly, so a failure that names the engine re-probes it.
+   * `actions.notice` directly, so a failure that names the host re-probes it.
    * Without that the statusbar keeps asserting "connected" against a dead
-   * server for as long as the tab stays open.
+   * host for as long as the tab stays open.
    */
   function notice(kind: "info" | "error", text: string) {
-    actions.notice(kind, text)
-    if (kind === "error" && namesEngine(text)) void probe()
+    say(kind, text)
+    if (kind === "error" && namesHost(text)) void probe()
   }
 
   /**
    * One health round trip. The only thing that may put the statusbar back to
-   * "connected", and the only thing that clears `engineReachable`.
+   * "connected", and the only thing that clears `hostReachable`. Never throws.
    */
-  async function probe() {
-    if (restarting()) return false
+  async function probe(): Promise<Health> {
     try {
-      await api.health()
-      actions.setEngineReachable(true)
-      setStatus("connected")
-      return true
+      const health = await api.health()
+      actions.setHostReachable(true)
+      setOmpInfo(health.omp)
+      if (health.omp.available) {
+        setOmpProblem(undefined)
+        setStatus(health.omp.version ? `connected · omp ${health.omp.version}` : "connected")
+        return "ready"
+      }
+      // The health answer only says omp is missing; its status view names the problem and the fix.
+      const detail = await omp.status()
+      const problem = detail.ok ? detail.value.problems[0] : undefined
+      setOmpProblem(problem ? `${problem.message}${problem.fix ? ` — ${problem.fix}` : ""}` : undefined)
+      setStatus("omp unavailable")
+      return "omp"
     } catch (error) {
-      actions.setEngineReachable(false)
+      actions.setHostReachable(false)
       setStatus(`offline — ${api.describe(error)}`)
-      return false
+      return "host"
     }
   }
 
   /**
    * Connects (or reconnects, after a project switch) and reloads everything
-   * that is scoped to the project directory: the agent list, the provider
-   * catalog, saved pipelines, recorded runs.
+   * that is scoped to the project directory: the model catalog, saved
+   * pipelines, recorded runs.
    */
   async function bootstrap() {
     setStatus("connecting…")
+    let reachable = true
     try {
       const { context } = await api.connect()
       setProject(context.project)
@@ -288,95 +336,28 @@ export function App() {
       // renders rather than the built-ins alone. Roles follow the project, so
       // this re-runs on a switch too.
       await hydrateCustomRoles()
-      await api.health()
-      actions.setEngineReachable(true)
-      setStatus("connected")
-      const agentList = await api.agents()
-      setAgents(agentList.filter((agent) => !agent.hidden).map((agent) => agent.id))
-      await refreshProviders()
     } catch (error) {
-      // The dev proxy already names the server when it is the thing that is
-      // down, so the prefix is only added when the message lacks it.
       const detail = api.describe(error)
-      actions.setEngineReachable(false)
+      reachable = false
+      actions.setHostReachable(false)
       setStatus(`offline — ${detail}`)
-      actions.notice("error", detail.includes("opencode serve") ? detail : `cannot reach opencode serve: ${detail}`)
+      say("error", `${HOST_DOWN} (${detail})`)
     }
-    setEngine(await store.serverStatus().catch(() => undefined))
+    if (reachable) {
+      const health = await probe()
+      if (health === "host") say("error", HOST_DOWN)
+      if (health === "omp") say("error", ompMessage(), { settings: true })
+      if (health !== "host") await refreshProviders()
+    }
     const entries = await refresh()
     await reopen(entries)
   }
 
-  /**
-   * Restarts `opencode serve` and re-reads everything that only loads at its
-   * boot: agents, models, and the MCP status the panels show. This is the one
-   * action that makes a merged agent, a new skill or an MCP entry actually
-   * live, which until now meant leaving the app for a terminal.
-   *
-   * A host that did not spawn the engine cannot restart it, and says so with
-   * the command rather than failing silently.
-   */
-  /** Opens the restart dialog with whatever this host knows about the engine. */
-  /**
-   * Writes the MCP server into the global config, then offers the restart it
-   * needs — opencode reads config once at boot, so until the engine restarts
-   * the tool exists in the file and not in any card.
-   */
-  async function installDispatchTool() {
-    setInstalling(true)
-    try {
-      const result = await store.installDispatchTool()
-      setDispatchTool(await store.dispatchToolStatus().catch(() => undefined))
-      notice("info", `dispatch tool written to ${result.path}${result.backup ? ` (backup ${result.backup})` : ""}`)
-      if (result.restart)
-        void showEngineHelp(
-          "The dispatch tool is in your config now, and the engine has to restart before cards can call it.",
-        )
-    } catch (error) {
-      notice("error", api.describe(error))
-    } finally {
-      setInstalling(false)
-    }
-  }
-
-  async function showEngineHelp(why?: string) {
-    const status = (await store.serverStatus().catch(() => undefined)) ?? engine()
-    if (!status) return actions.notice("error", "cannot tell how `opencode serve` was started on this host")
-    setEngine(status)
-    setEngineWhy(why)
-    setEngineHelp(status)
-  }
-
-  async function restartEngine() {
-    if (restarting()) return
-    setRestarting(true)
-    setStatus("restarting engine…")
-    actions.notice("info", "restarting opencode serve…")
-    try {
-      const next = await store.restartServer()
-      setEngine(next)
-      setEngineHelp(undefined)
-      setEngineWhy(undefined)
-      // Every cached handle points at the old process; drop them and reconnect.
-      api.disconnect()
-      await bootstrap()
-      actions.notice("info", "engine restarted — agents, skills and mcp servers reloaded")
-    } catch (error) {
-      const info = (error as { info?: ServeStatus }).info
-      if (info && !info.managed) {
-        setEngine(info)
-        setEngineWhy(undefined)
-        setEngineHelp(info)
-        actions.clearNotice()
-      } else {
-        actions.notice("error", api.describe(error))
-        setEngine(await store.serverStatus().catch(() => undefined))
-        actions.setEngineReachable(false)
-        setStatus(`offline — ${api.describe(error)}`)
-      }
-    } finally {
-      setRestarting(false)
-    }
+  /** The Omp settings changed what omp is or can run: read its health, models and providers again. */
+  async function reconnect() {
+    const health = await probe()
+    if (health === "ready" && noticeMeta()?.settings && noticeMeta()?.text === state.notice?.text) actions.clearNotice()
+    if (health !== "host") await refreshProviders()
   }
 
   /**
@@ -385,8 +366,9 @@ export function App() {
    * Only if the store still lists it: a pipeline deleted or renamed outside
    * OpenFlow would otherwise greet the user with a load error on every launch.
    * Loading is silent — this is restoring where they were, not an action they
-   * just took — and it is safe at boot because the canvas is empty until it
-   * runs. A failure leaves the blank canvas rather than blocking startup.
+   * just took — except for what a migration had to say about it. It is safe at
+   * boot because the canvas is empty until it runs. A failure leaves the blank
+   * canvas rather than blocking startup.
    */
   async function reopen(entries: PipelineEntry[]) {
     try {
@@ -395,7 +377,10 @@ export function App() {
       const { context } = await api.connect()
       const last = context.pipeline
       if (!last || !entries.some((entry) => entry.name === last)) return
-      actions.load((await store.pipeline(last)) as Pipeline)
+      const opened = readPipeline(await store.pipeline(last))
+      if (!opened) return
+      actions.load(opened.pipeline)
+      if (opened.summary) say("info", `reopened ${last} — ${opened.summary.text}`, { title: opened.summary.title })
     } catch {
       // The listing said it was there; if it is not, a blank canvas is fine.
     }
@@ -407,20 +392,36 @@ export function App() {
   onMount(bootstrap)
 
   onMount(() => {
-    // A heartbeat, not a poll of anything expensive: one `/api/health` while
-    // the tab is visible and no run is already talking to the server. Without
+    // A heartbeat, not a poll of anything expensive: one `/flow/api/engine/health`
+    // while the tab is visible and no run is already talking to the host. Without
     // it the statusbar only ever learns the truth at boot.
     const timer = setInterval(() => {
-      if (document.hidden || state.running || restarting()) return
+      if (document.hidden || state.running) return
       void probe()
     }, HEALTH_INTERVAL)
     // The clock behind the gauntlet readout. It only has to be right to the
     // minute, and it stops mattering the moment a run finishes.
     const clock = setInterval(() => state.running && setTick(Date.now()), CLOCK_INTERVAL)
     // Coming back to a tab that sat hidden for an hour should not wait out the
-    // interval before admitting the engine died meanwhile.
+    // interval before admitting the host died meanwhile.
     const onVisibility = () => {
       if (!document.hidden) void probe()
+    }
+    // Ctrl+` toggles the terminal. A field elsewhere on the page keeps the key
+    // (it may be typing a backtick); the dock itself never gets here, because it
+    // contains every key typed inside it.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return
+      if (event.key !== "`" && event.code !== "Backquote") return
+      const target = event.target
+      if (
+        target instanceof HTMLElement &&
+        !target.closest(".terminal-dock") &&
+        (target.matches("input, textarea, select") || target.isContentEditable)
+      )
+        return
+      event.preventDefault()
+      setTerminal(!terminalOpen())
     }
     // The one destructive path the app cannot guard with a dialog of its own.
     //
@@ -435,13 +436,37 @@ export function App() {
       event.returnValue = ""
     }
     document.addEventListener("visibilitychange", onVisibility)
+    window.addEventListener("keydown", onKeyDown)
     window.addEventListener("beforeunload", onBeforeUnload)
     onCleanup(() => {
       clearInterval(timer)
       clearInterval(clock)
       document.removeEventListener("visibilitychange", onVisibility)
+      window.removeEventListener("keydown", onKeyDown)
       window.removeEventListener("beforeunload", onBeforeUnload)
     })
+  })
+
+  /**
+   * Opens or closes the terminal dock and remembers the choice. The activity
+   * drawer and the dock share the column under the canvas, so the one opened
+   * last wins: two docks would leave the canvas no height.
+   */
+  function setTerminal(open: boolean) {
+    if (open) actions.expand(undefined)
+    setTerminalOpen(open)
+    writeFlag(TERMINAL_KEY, open)
+  }
+
+  function openTerminal(kind: PtyKind) {
+    setTerminalKind(kind)
+    setTerminal(true)
+  }
+
+  // The other half of the rule above: expanding a card closes the dock. Not
+  // remembered — the user did not turn the terminal off, a card took its place.
+  createEffect(() => {
+    if (state.expanded && terminalOpen()) setTerminalOpen(false)
   })
 
   /**
@@ -484,54 +509,34 @@ export function App() {
   }
 
   /**
-   * Re-reads the catalog and the credential store together.
+   * Re-reads omp's model catalog and its provider list together.
    *
-   * They have to be read as a pair: a model list alone cannot say whether a
-   * provider is missing because no key is stored or because the key stored is
-   * wrong. The third read asks the host which provider environment variables
-   * are set, which is the only way to tell an env-authenticated provider from
-   * the free zen models the server hands out with no key at all. Called after
-   * every key change, since a connected key changes the catalog immediately —
-   * no server restart, unlike an agent merge.
+   * They have to be read as a pair: the model list says what omp can dispatch,
+   * the provider list says which providers have credentials, and only the join
+   * says which models a user can choose. A provider list that fails to load is
+   * treated as unknown, which keeps every model available rather than hiding
+   * models omp would run. Called at boot and whenever the Omp settings change.
    */
   async function refreshProviders() {
-    const integrationList = await readCatalog()
-    // A provider with a key always serves models, so an empty model list beside
-    // a connected provider is the same cold-catalog race — and it reads worse,
-    // since every connected provider then shows as "no runnable models".
-    const modelList = await readModels(integrationList.some((item) => (item.connections ?? []).length > 0))
-    const names = [
-      ...new Set(
-        integrationList.flatMap((item) =>
-          item.methods.flatMap((method) => (method.type === "env" ? (method.names ?? []) : [])),
-        ),
-      ),
-    ]
-    const [env, zen] = await Promise.all([
-      store.envPresent(names).catch(() => ({ present: [] as string[] })),
-      store.zenModels().catch(() => ({ ids: null })),
-    ])
-    // Only providers whose real model list could be read are constrained; the
-    // rest stay as the catalog reports them.
-    const serves = zen.ids ? new Map([["opencode", new Set(zen.ids)]]) : undefined
-    setProviders(providerRows(integrationList, modelList, env.present, serves))
+    // With the host down every read comes back empty, which would read as "no
+    // model is runnable": keep what is on screen instead.
+    if (!state.hostReachable) return
+    let models = await api.models().catch(() => [])
+    // The first read can land while omp is still enumerating its catalog.
+    if (!models.length && ompReady()) {
+      const { promise, resolve } = Promise.withResolvers<void>()
+      setTimeout(resolve, DEFAULT_CATALOG_RETRY)
+      await promise
+      models = await api.models().catch(() => [])
+    }
+    const known = await omp.providers()
+    setProviders(providerRows(models, known.ok ? known.value : undefined))
     // Keep the default-model gate current: a node only inherits the default
-    // when it is still among the models a connected provider can actually run.
+    // when it is still among the models a provider can actually run.
     setAvailableModels(unlockedModels())
   }
 
-  /** `query` carries a provider name the model search could not satisfy. */
-  function openProviders(query?: string) {
-    setProviderQuery(query ?? "")
-    setShowProviders(true)
-    // Nothing to pick means the boot read came back empty. Try again rather
-    // than show a first-time user an empty list with no way out of it.
-    if (!providers().length) void refreshProviders()
-  }
-
   async function refresh() {
-    // Only worth a request when something could show it — see the banner below.
-    if (MCP_REACHES_SESSIONS) setDispatchTool(await store.dispatchToolStatus().catch(() => undefined))
     const entries = await store.pipelines().catch(() => [])
     setPipelines(entries)
     setRuns(await store.runs().catch(() => []))
@@ -578,9 +583,8 @@ export function App() {
         return notice("error", `${conflict} — rename this pipeline in the title bar, then save again`)
       }
       if (!response.ok) return notice("error", body?.error ?? `could not save the pipeline (HTTP ${response.status})`)
-      const generated = await store.saveAgents(state.pipeline.name, agentBlock(state.pipeline, mcpNames()))
       actions.markSaved()
-      actions.notice("info", `saved ${body.path} · agents ${generated.path}`)
+      actions.notice("info", `saved ${body.path}`)
       await refresh()
     } catch (error) {
       notice("error", api.describe(error))
@@ -604,83 +608,28 @@ export function App() {
    * notice, never a throw; a non-empty graph is guarded like a template load.
    */
   async function importPipeline(file: File) {
-    const parsed = parseJson(await file.text())
-    if (!isPipeline(parsed)) return actions.notice("error", "Not a valid OpenFlow pipeline")
+    const opened = readPipeline(parseJson(await file.text()))
+    if (!opened) return actions.notice("error", "Not a valid OpenFlow pipeline")
     if (!confirmReplace()) return
-    actions.load(parsed)
+    actions.load(opened.pipeline)
     // Loading clears `dirty`, but an imported graph is not on disk here yet —
     // closing the tab would still lose it.
     actions.markDirty()
-    actions.notice("info", `imported ${parsed.name}`)
+    say("info", `imported ${opened.pipeline.name}${opened.summary ? ` — ${opened.summary.text}` : ""}`, {
+      title: opened.summary?.title,
+    })
   }
 
   async function load(name: string) {
     if (!name) return
     if (!confirmReplace()) return
     try {
-      const pipeline = (await store.pipeline(name)) as Pipeline
-      actions.load(pipeline)
-      actions.notice("info", `loaded ${name}`)
+      const opened = readPipeline(await store.pipeline(name))
+      if (!opened) return notice("error", `${name} is not a valid OpenFlow pipeline`)
+      actions.load(opened.pipeline)
+      say("info", `loaded ${name}${opened.summary ? ` — ${opened.summary.text}` : ""}`, { title: opened.summary?.title })
     } catch (error) {
       notice("error", api.describe(error))
-    }
-  }
-
-  /**
-   * Folds the generated agent defs into the project's opencode.json (after a
-   * .bak) and points every node at its own agent, so the per-node tool
-   * allowlist actually applies at runtime — sessions can only pick tools
-   * through a named agent. The server skips the write (and the .bak) when the
-   * block is already identical, so this is cheap to call before every run.
-   *
-   * Refuses to write when the MCP server list is unknown: the merge replaces
-   * each agent entry wholesale, so writing a block built from an empty server
-   * list would strip the `<server>_*` deny rules already on disk and quietly
-   * widen what every node can reach. Returns the agent keys alongside the
-   * server's reply.
-   */
-  async function syncAgents() {
-    if (!mcpServers())
-      throw new Error("cannot read the project's mcp servers — refusing to rewrite agents without them")
-    const result = await store.saveAgents(state.pipeline.name, agentBlock(state.pipeline, mcpNames()), true)
-    const keys = state.pipeline.nodes.map((node) => agentKey(state.pipeline, node))
-    for (const node of state.pipeline.nodes) actions.updateAgent(node.id, { name: agentKey(state.pipeline, node) })
-    setAgents([...new Set([...agents(), ...keys])])
-    return { result, keys }
-  }
-
-  async function mergeAgents() {
-    try {
-      const { result, keys } = await syncAgents()
-      if (result.error) return actions.notice("error", result.error)
-
-      // The server caches a project's config, so a merge is invisible to a
-      // server that is already running. Check rather than claim success.
-      const live = new Set((await api.agents().catch(() => [])).map((agent) => agent.id))
-      // An empty list is the other case, and it is not about this merge at all:
-      // a directory the server does not recognise as a project reports no
-      // agents, built-ins included. The drain reads its config from the
-      // engine's own cwd, so ask there before blaming the write — same split
-      // the run's preflight makes, and the reason `git init` is the fix.
-      const drain = live.size ? live : new Set((await api.agentsUnscoped().catch(() => [])).map((agent) => agent.id))
-      const invisible = keys.filter((key) => !drain.has(key))
-      if (invisible.length) {
-        actions.notice(
-          "error",
-          live.size
-            ? `wrote ${result.path}, but the server has not loaded ${invisible.join(", ")} — restart \`opencode serve\`, then reload this page`
-            : `wrote ${result.path}, but this project reports no agents at all — not even the built-in ones, which is what a folder that is not a git repository looks like. Run \`git init\` in it, or point OPENFLOW_PROJECT at a repository.`,
-        )
-        return
-      }
-      actions.notice(
-        "info",
-        result.unchanged
-          ? `agents already up to date in ${result.path}`
-          : `merged into ${result.path}${result.backup ? ` (backup ${result.backup})` : ""}`,
-      )
-    } catch (error) {
-      actions.notice("error", api.describe(error))
     }
   }
 
@@ -762,18 +711,25 @@ export function App() {
    */
   async function resumeRun(id: string) {
     try {
-      const log = await store.run(id)
+      const { log, summary } = await loadRun(id)
       const outputs: Record<string, string> = {}
       const sessions: Record<string, string> = {}
+      const fresh: string[] = []
       for (const node of log.nodes) {
         if (node.status === "done" && node.output !== undefined) outputs[node.id] = node.output
+        // A session the earlier build opened lives in a process this one cannot attach to.
+        else if (node.sessionID && isLegacySession(node.sessionID)) fresh.push(node.role)
         else if (node.sessionID) sessions[node.id] = node.sessionID
       }
       actions.setRun(log)
       const carried = Object.keys(sessions).length
-      actions.notice(
+      say(
         "info",
-        `resuming ${id} — ${Object.keys(outputs).length} card(s) kept, ${carried} continued in session`,
+        `resuming ${id} — ${Object.keys(outputs).length} card(s) kept, ${carried} continued in session` +
+          (fresh.length
+            ? `, ${fresh.length} start fresh because their session is from an earlier build and cannot be resumed (${fresh.join(", ")})`
+            : ""),
+        { title: summary?.title },
       )
       await run(outputs, sessions)
     } catch (error) {
@@ -785,41 +741,28 @@ export function App() {
     // One place tells the user everything that is wrong before a session is
     // ever created. Blocking problems abort; warnings are shown but let the run
     // proceed. The list survives on screen so each problem can select its node.
-    // The engine is re-probed first: an unreachable one empties `unlockedModels`,
-    // and preflight has to know that so it blames the engine rather than every
-    // node's model.
-    await probe()
-    const pre = preflight(state.pipeline, {
-      unlockedModels: unlockedModels(),
-      engineReachable: state.engineReachable,
-    })
-    setIssues(pre.blocking.length || pre.warnings.length ? pre : undefined)
-    if (pre.blocking.length) {
-      // A dead engine has exactly one fix and it is not on this screen, so the
-      // same dialog the stale-agent path opens is offered here too.
-      if (pre.blocking.some((problem) => problem.kind === "engine-unreachable"))
-        void showEngineHelp("`opencode serve` is not answering, so no card can start a session.")
+    // The host is re-probed first: a card needs the host to launch omp and omp
+    // to be there, and with either missing every model reads as locked, so
+    // preflight would blame each node's model instead of the one real cause.
+    const health = await probe()
+    if (health === "host") {
+      setIssues(undefined)
+      return say("error", HOST_DOWN)
+    }
+    if (health === "omp") {
+      setIssues(undefined)
+      say("error", ompMessage(), { settings: true })
+      // The one place the fix lives, so it is offered rather than left to be found.
+      setShowOmp(true)
       return
     }
+    const pre = preflight(state.pipeline, { unlockedModels: unlockedModels() })
+    // A card carried over from an earlier build can name a model this catalog
+    // does not hold; say why before the generic "no connected provider" line.
+    pre.warnings.unshift(...legacyModelProblems(state.pipeline).map((message) => ({ kind: "legacy-model", message })))
+    setIssues(pre.blocking.length || pre.warnings.length ? pre : undefined)
+    if (pre.blocking.length) return
     actions.clearNotice()
-
-    // Fold any pending agent edits into opencode.json before the run so a node
-    // never runs against a stale def. The server no-ops when nothing changed,
-    // so this stays silent unless it actually wrote. It cannot make a running
-    // server reload its cache, though — the engine's own unknown-agent check
-    // still surfaces the "restart the server" case below.
-    //
-    // A failed sync stops the run: the nodes would otherwise go off against
-    // whatever defs happen to be on disk, which is exactly the stale-agent case
-    // this sync exists to prevent.
-    try {
-      const { result } = await syncAgents()
-      if (result.error) return notice("error", result.error)
-      if (result.merged)
-        actions.notice("info", `synced agents into ${result.path}${result.backup ? ` (backup ${result.backup})` : ""}`)
-    } catch (error) {
-      return notice("error", api.describe(error))
-    }
 
     actions.resetRuntime(Object.fromEntries(state.pipeline.nodes.map((node) => [node.id, "queued" as const])))
     actions.setRunning(true)
@@ -831,7 +774,10 @@ export function App() {
         // meantime would pair new instructions with old answers.
         resume || sessions ? (state.run?.input ?? state.input) : state.input,
         {
-          onNode: (id, patch) => actions.patchRuntime(id, patch),
+          // The card's own task is what uplift was asked about, so it is also
+          // the "original" the inspector shows next to what was sent.
+          onNode: (id, patch) =>
+            actions.patchRuntime(id, patch.uplift ? { ...patch, originalPrompt: patch.uplift.original } : patch),
           onNodeEvent: (id, event) => actions.pushEvent(id, event),
           onRun: (log) => actions.setRun(clone(log)),
           onNotice: notice,
@@ -853,12 +799,8 @@ export function App() {
           // The engine settles a question on its own once it times out, so the
           // dialog has to come down even though nobody touched it.
           onQuestionClosed: (requestID) => actions.answerQuestion(requestID, undefined),
-          // A run stopped by stale config has exactly one fix, so hand it over
-          // rather than leaving the user to find the command themselves.
-          onEngineStale: () =>
-            void showEngineHelp(
-              "The engine is running older config than what is on disk — an agent this pipeline needs was merged after it booted.",
-            ),
+          // Blocks the card until a person says what to do with the original prompt.
+          onUpliftFailure: (request) => actions.askUpliftFailure({ requestID: crypto.randomUUID(), ...request }),
         },
         {
           pipe: pipe(),
@@ -892,23 +834,28 @@ export function App() {
         log.status === "error" ? "error" : "info",
         failure ? `run ${log.id} error — ${failure.role}: ${failure.error}` : `run ${log.id} ${log.status}`,
       )
-      // The engine died mid-run. The per-node text already says so, but the fix
-      // lives in the restart dialog, so open it the way the stale-agent case does.
-      //
-      // Confirm it is actually gone before saying so. `namesEngine` matches any
-      // message mentioning the server, and the stale-agent failure names it too
-      // while the engine is answering perfectly well — without this probe that
-      // case opens the dialog claiming the engine "stopped answering", which is
-      // the wrong fix on screen. `onEngineStale` already opens it with the right
-      // words, so staying quiet here loses nothing.
-      if (failure?.error && namesEngine(failure.error) && !(await probe()))
-        void showEngineHelp("The run stopped because `opencode serve` stopped answering.")
+      // The host or omp died mid-run. The per-node text already says so, but
+      // the fix lives in the status bar and the Omp settings, so say it again
+      // in those terms — after confirming: `namesHost` matches any message that
+      // mentions them, and a card can fail with such a message while both are
+      // answering perfectly well.
+      if (failure?.error && namesHost(failure.error)) {
+        const after = await probe()
+        if (after === "host") say("error", HOST_DOWN)
+        if (after === "omp") {
+          say("error", ompMessage(), { settings: true })
+          setShowOmp(true)
+        }
+      }
     } catch (error) {
       notice("error", api.describe(error))
     } finally {
       actions.setRunning(false)
       actions.rejectPermissions()
       actions.rejectQuestions()
+      // The engine has no callback for a decision it stopped waiting on, so a
+      // dialog still up when the run settles has to be dropped here.
+      actions.rejectUpliftFailures()
       current = undefined
       await refresh()
     }
@@ -917,6 +864,7 @@ export function App() {
   async function stop() {
     actions.rejectPermissions()
     actions.rejectQuestions()
+    actions.rejectUpliftFailures()
     await current?.stop()
     actions.notice("info", "stopping run…")
   }
@@ -995,7 +943,7 @@ export function App() {
 
   async function openRun(id: string) {
     try {
-      const log = await store.run(id)
+      const { log, summary } = await loadRun(id)
       actions.setRun(log)
       actions.resetRuntime({})
       for (const node of log.nodes) {
@@ -1004,23 +952,27 @@ export function App() {
           output: node.output,
           error: node.error,
           prompt: node.prompt,
+          originalPrompt: node.uplift?.original,
           sessionID: node.sessionID,
           usage: node.usage,
           diff: node.diff,
           started: node.started,
           finished: node.finished,
           events: node.events,
+          uplift: node.uplift,
+          memory: node.memory,
+          swarm: node.swarm,
         })
       }
-      actions.notice("info", `loaded run ${id}`)
+      say("info", `loaded run ${id}${summary ? ` — ${summary.text}` : ""}`, { title: summary?.title })
     } catch (error) {
       actions.notice("error", api.describe(error))
     }
   }
 
   /**
-   * Enter in the task field starts the run, the way the prompt box in opencode
-   * does. Guarded on `state.running` so a second press cannot open a parallel
+   * Enter in the task field starts the run, the way a chat prompt box does.
+   * Guarded on `state.running` so a second press cannot open a parallel
    * run behind the disabled button, and on `isComposing` so an IME candidate
    * being accepted is not read as a submit.
    */
@@ -1056,7 +1008,7 @@ export function App() {
             onClick={() => {
               const next = !showSessions()
               setShowSessions(next)
-              writeShowSessions(next)
+              writeFlag(SESSIONS_KEY, next)
             }}
           >
             <IconHistory />
@@ -1073,7 +1025,7 @@ export function App() {
           <button
             class="icon-btn"
             type="button"
-            title="save the pipeline and its generated agent defs"
+            title="save the pipeline"
             aria-label="save pipeline"
             onClick={() => void save()}
           >
@@ -1128,43 +1080,11 @@ export function App() {
           <button
             class="icon-btn"
             type="button"
-            title="merge generated agent defs into the project opencode.json"
-            aria-label="merge agents"
-            onClick={mergeAgents}
-          >
-            <IconLayers />
-          </button>
-          <button
-            class="icon-btn"
-            type="button"
-            title="store provider api keys and see which models are usable"
-            aria-label="api keys"
-            onClick={() => openProviders()}
-          >
-            <IconKey />
-          </button>
-          <button
-            class="icon-btn"
-            type="button"
             title="author skills your cards can use"
             aria-label="skills"
             onClick={() => setShowSkills(true)}
           >
-            <IconSliders />
-          </button>
-          <button
-            class="icon-btn"
-            type="button"
-            disabled={restarting()}
-            title={
-              engine()?.managed
-                ? "restart opencode serve — reloads agents, skills and mcp servers"
-                : "how to restart opencode serve (this host did not start it)"
-            }
-            aria-label="restart engine"
-            onClick={restartEngine}
-          >
-            <IconRestart />
+            <IconLayers />
           </button>
           <button
             class="icon-btn"
@@ -1174,6 +1094,28 @@ export function App() {
             onClick={() => setShowMcp(true)}
           >
             <IconPlug />
+          </button>
+          <button
+            class="icon-btn"
+            classList={{ active: showOmp() }}
+            type="button"
+            title="Omp — its status, models and keys, and how cards run it"
+            aria-label="Omp settings"
+            aria-haspopup="dialog"
+            onClick={() => setShowOmp(true)}
+          >
+            <IconSliders />
+          </button>
+          <button
+            class="icon-btn"
+            classList={{ active: terminalOpen() }}
+            type="button"
+            title="terminal — an omp or shell session in this project (Ctrl+`)"
+            aria-label="toggle terminal"
+            aria-pressed={terminalOpen()}
+            onClick={() => setTerminal(!terminalOpen())}
+          >
+            <IconTerminal />
           </button>
         </div>
       </header>
@@ -1406,13 +1348,33 @@ export function App() {
 
       <Show when={state.notice}>
         {(banner) => (
-          <div class="notice" data-kind={banner().kind} onClick={actions.clearNotice}>
+          <div
+            class="notice"
+            data-kind={banner().kind}
+            role={banner().kind === "error" ? "alert" : "status"}
+            aria-live={banner().kind === "error" ? undefined : "polite"}
+            title={noticeMeta()?.text === banner().text ? noticeMeta()?.title : undefined}
+            onClick={actions.clearNotice}
+          >
             <span class="notice-icon">
               <Show when={banner().kind === "error"} fallback={<IconInfo />}>
                 <IconAlert />
               </Show>
             </span>
             <span class="notice-text">{banner().text}</span>
+            <Show when={noticeMeta()?.text === banner().text && noticeMeta()?.settings}>
+              <button
+                class="btn"
+                type="button"
+                aria-label="open the Omp settings"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setShowOmp(true)
+                }}
+              >
+                Omp settings
+              </button>
+            </Show>
             <button
               class="icon-btn notice-close"
               type="button"
@@ -1424,32 +1386,6 @@ export function App() {
             </button>
           </div>
         )}
-      </Show>
-
-      {/* Parked. The install works and the server is correct, but no MCP tool
-          reaches a v2 session in this fork, so offering the config write would
-          promise a fix it cannot deliver — see `MCP_REACHES_SESSIONS`. The
-          route stays live for anyone who wants to install it ahead of upstream;
-          it just is not advertised. Flip the constant to bring this back. */}
-      <Show
-        when={
-          MCP_REACHES_SESSIONS &&
-          modeOf(state.pipeline) === "orchestration" &&
-          dispatchTool() &&
-          !dispatchTool()!.current
-        }
-      >
-        <div class="notice" data-kind="info">
-          <IconInfo />
-          <span class="notice-text">
-            {dispatchTool()!.present
-              ? "The dispatch tool in your global opencode config points at a different checkout — repoint it so orchestrator cards can call it."
-              : "Orchestrator cards have no dispatch tool to call. Installing it writes one entry into your global opencode config, backed up first."}
-          </span>
-          <button class="btn" type="button" disabled={installing()} onClick={() => void installDispatchTool()}>
-            {installing() ? "installing…" : dispatchTool()!.present ? "repoint" : "install"}
-          </button>
-        </div>
       </Show>
 
       <Show when={issues()}>
@@ -1491,7 +1427,7 @@ export function App() {
       </Show>
 
       <Show when={state.permissions.length}>
-        <div class="permissions">
+        <div class="permissions" role="status" aria-live="polite" aria-label="permission requests">
           <For each={state.permissions}>
             {(request) => (
               <div class="permission">
@@ -1533,58 +1469,50 @@ export function App() {
             project={project()}
             onClose={() => {
               setShowSessions(false)
-              writeShowSessions(false)
+              writeFlag(SESSIONS_KEY, false)
             }}
           />
         </Show>
         <Palette />
         <Canvas />
         <Inspector
-          agents={agents()}
           providers={providers()}
           mcpServers={mcpNames()}
-          onManageKeys={openProviders}
+          onManageKeys={() => setShowOmp(true)}
           onManageMcp={() => setShowMcp(true)}
         />
       </main>
 
       <Walkthrough
-        unlockedProviders={unlockedRows(providers()).length}
-        suggestedFree={defaultModel() ? undefined : suggestedFreeDefault(providers())}
-        onOpenProviders={() => openProviders()}
-        onUseFree={async () => {
-          // suggestedFreeDefault picks by catalog order, not liveness — the free
-          // tier's health drifts hour to hour, so probe each candidate with a real
-          // prompt (same check the per-node "test" button runs) until one answers.
-          const candidates = freeModels(providers())
-          if (!candidates.length) return
-          actions.notice("info", "checking free models…")
-          for (const candidate of candidates) {
-            const result = await api.testModel(candidate.value)
-            if (!result.ok) continue
-            setDefaultModel(candidate.value)
-            actions.notice("info", `default model set to ${candidate.value} — new nodes will use it`)
-            return
-          }
-          actions.notice("error", "no free model answered right now — try again in a moment")
-        }}
+        ompReady={ompReady()}
+        ompMessage={ompReady() ? undefined : ompMessage()}
+        modelCount={availableModels(providers()).length}
+        onOpenOmp={() => setShowOmp(true)}
+        onOpenTerminal={() => openTerminal("omp")}
       />
 
-      {/* Below the graph, above the status bar: the expanded card. */}
+      {/* Below the graph, above the status bar: the expanded card, or the
+          terminal — never both, see `setTerminal`. */}
       <Show when={state.expanded}>
         <ActivityDrawer />
       </Show>
+      <TerminalDock
+        open={terminalOpen()}
+        onClose={() => setTerminal(false)}
+        kind={terminalKind()}
+        onOpenSettings={() => setShowOmp(true)}
+      />
 
-      <Show when={showProviders()}>
-        <ProvidersPanel
-          rows={providers()}
-          initialQuery={providerQuery()}
-          onClose={() => setShowProviders(false)}
-          onChanged={refreshProviders}
-          onNotice={notice}
-          onRestart={engine()?.managed ? restartEngine : undefined}
-        />
-      </Show>
+      <OmpSettingsDialog
+        open={showOmp()}
+        onClose={() => setShowOmp(false)}
+        onOpenTerminal={() => {
+          setShowOmp(false)
+          openTerminal("omp")
+        }}
+        onChanged={() => void reconnect()}
+        pipeline={state.pipeline.name}
+      />
 
       <Show when={showSkills()}>
         <SkillsPanel onClose={() => setShowSkills(false)} onNotice={notice} />
@@ -1608,20 +1536,20 @@ export function App() {
         <QuestionDialog request={state.questions[0]!} onAnswer={actions.answerQuestion} />
       </Show>
 
-      <Show when={showProjectPicker()}>
-        <ProjectPicker current={project()} onClose={() => setShowProjectPicker(false)} onSwitched={switchProject} />
-      </Show>
-
-      <Show when={engineHelp()}>
-        {(status) => (
-          <EngineDialog
-            status={status()}
-            because={engineWhy()}
-            restarting={restarting()}
-            onRestart={status().managed ? () => void restartEngine() : undefined}
-            onClose={() => setEngineHelp(undefined)}
+      {/* A card is parked on this: nothing has been sent to it. One at a time,
+          keyed on the failure so each gets a fresh dialog and a fresh focus restore. */}
+      <Show when={state.upliftFailures[0]} keyed>
+        {(failure) => (
+          <UpliftFailureDialog
+            failure={failure}
+            waiting={state.upliftFailures.length - 1}
+            onDecide={actions.resolveUpliftFailure}
           />
         )}
+      </Show>
+
+      <Show when={showProjectPicker()}>
+        <ProjectPicker current={project()} onClose={() => setShowProjectPicker(false)} onSwitched={switchProject} />
       </Show>
 
       <Show when={showSpend()}>
@@ -1659,7 +1587,7 @@ export function App() {
         <div class="statusbar-left">
           <span
             class="statusbar-dot"
-            data-state={status().startsWith("offline") ? "bad" : "ok"}
+            data-state={status().startsWith("offline") || !ompReady() ? "bad" : "ok"}
             title={status()}
             aria-hidden="true"
           />
@@ -1787,42 +1715,6 @@ export function App() {
 function clone(log: RunLog): RunLog {
   return { ...log, nodes: log.nodes.map((node) => ({ ...node })) }
 }
-
-/**
- * Reads the provider catalog, retrying while it comes back empty.
- *
- * `GET /api/integration` answers as soon as the engine is listening, but the
- * catalog behind it is populated separately, so a page that loads the instant
- * the engine comes up can get `200` with nothing in it. An empty catalog is
- * never a real answer — models.dev knows hundreds of providers — and nothing
- * refetches it until a key changes, so without this the first thing a fresh
- * install sees when it clicks "api keys" is an empty list.
- */
-async function readCatalog() {
-  for (const wait of RETRIES) {
-    if (wait) await new Promise((done) => setTimeout(done, wait))
-    const list = await api.integrations().catch(() => [])
-    if (list.length) return list
-  }
-  return []
-}
-
-/**
- * Reads the model list. `expected` says whether an empty answer can be real:
- * a fresh install with no key connected genuinely has no models, and retrying
- * that would only delay the panel that exists to fix it.
- */
-async function readModels(expected: boolean) {
-  for (const wait of RETRIES) {
-    if (wait) await new Promise((done) => setTimeout(done, wait))
-    const list = await api.models().catch(() => [])
-    if (list.length || !expected) return list
-  }
-  return []
-}
-
-/** Backoff for the two catalog reads, in ms before each attempt. */
-const RETRIES = [0, 300, 900, 2000]
 
 /** Parses untrusted file text; a malformed file yields `undefined`, not a throw. */
 function parseJson(text: string): unknown {

@@ -1,4 +1,4 @@
-import { toolMap } from "../server/store"
+import { toolMap } from "../server/card-spec"
 import type { FlowNode } from "./types"
 
 /**

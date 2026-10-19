@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { TOOLS, TOOL_HELP } from "../server/store"
+import { TOOLS } from "../server/card-spec"
+import { TOOL_HELP } from "./tool-help"
 
 describe("TOOL_HELP", () => {
   test("has a non-empty entry for every tool the inspector renders", () => {

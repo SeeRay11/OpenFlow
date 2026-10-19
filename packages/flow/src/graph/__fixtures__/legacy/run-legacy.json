@@ -1,0 +1,37 @@
+{
+  "id": "run-legacy-1",
+  "pipeline": "diamond",
+  "pipelineID": "83a84560-33cf-49a7-a7ac-683b591157cf",
+  "input": "say hello",
+  "status": "done",
+  "started": 1788000000000,
+  "finished": 1788000060000,
+  "nodes": [
+    {
+      "id": "nmsqpvewx1",
+      "role": "planner",
+      "status": "done",
+      "sessionID": "ses_2a1f0c3d8ffeAbCdEf",
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "agent": "plan",
+      "prompt": "hello",
+      "output": "Hello.",
+      "started": 1788000001000,
+      "finished": 1788000010000,
+      "events": [
+        { "id": "text:1", "at": 1788000002000, "kind": "text", "depth": 0, "sessionID": "ses_2a1f0c3d8ffeAbCdEf", "title": "text", "body": "Hello." },
+        { "id": "tool:2", "at": 1788000003000, "kind": "tool", "depth": 1, "sessionID": "ses_child0001", "parentCallID": "call_1", "title": "read" }
+      ]
+    },
+    {
+      "id": "nmsqpvewy2",
+      "role": "worker-a",
+      "status": "done",
+      "sessionID": "ses_3b2e1d4e9ggfBcDeFg",
+      "output": "Done.",
+      "reused": true
+    },
+    { "id": "nmsqpvewy3", "role": "worker-b", "status": "skipped" }
+  ],
+  "customerNote": "kept"
+}

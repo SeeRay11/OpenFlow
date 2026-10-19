@@ -1,22 +1,15 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
-import * as api from "../server/client"
 import { store, type McpServer } from "../server/store"
 import { IconBack, IconClose, IconPlus, IconTrash } from "./icons"
 
 /**
- * Add, edit and inspect the project's MCP servers.
+ * Add, edit and remove the MCP servers of the OpenFlow Omp profile.
  *
- * Two lists are folded into one view on purpose. The *configured* set is the
- * `mcp` block of the project's `opencode.json`, which this panel owns and
- * rewrites. The *live* set is what the running `opencode serve` has actually
- * connected, read from its own `GET /mcp`. They disagree constantly — the
- * server reads config once at boot — and showing only one of them is how a user
- * ends up convinced a server is broken when it is merely not loaded yet. Every
- * row therefore carries its live status, and "not loaded" is spelled out as
- * "restart the server", not as an error.
- *
- * Connect/disconnect act on the live server only; they are a way to retry a
- * failed connection without a restart, not a way to change the config.
+ * The list is the profile's `mcp.json`, which this panel owns and rewrites. Omp
+ * connects to the servers itself when a card's session starts, so there is no
+ * live status to show or connection to manage here: a saved change simply
+ * applies to the next session. Omp has no way to select servers per session, so
+ * every card sees every configured server.
  */
 export function McpPanel(props: {
   onClose: () => void
@@ -24,7 +17,6 @@ export function McpPanel(props: {
   onChanged?: () => void
 }) {
   const [servers, setServers] = createSignal<McpServer[]>([])
-  const [status, setStatus] = createSignal<Record<string, api.McpStatus>>({})
   const [editing, setEditing] = createSignal<Draft>()
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string>()
@@ -43,12 +35,7 @@ export function McpPanel(props: {
   }
 
   async function refresh() {
-    const [configured, live] = await Promise.all([
-      store.mcpServers().catch(() => []),
-      api.mcpStatus().catch(() => ({}) as Record<string, api.McpStatus>),
-    ])
-    setServers(configured)
-    setStatus(live)
+    setServers(await store.mcpServers().catch(() => []))
   }
   onMount(refresh)
 
@@ -128,7 +115,7 @@ export function McpPanel(props: {
         "info",
         result.unchanged && !renamed
           ? `mcp server ${name} is already saved in ${result.path} as it stands`
-          : `saved mcp server ${name}${renamed} to ${result.path}${backup}. Restart \`opencode serve\` to load it.`,
+          : `saved mcp server ${name}${renamed} to ${result.path}${backup}. It applies to the next card session.`,
       )
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure))
@@ -139,31 +126,16 @@ export function McpPanel(props: {
 
   async function remove(draft: Draft) {
     if (!draft.original) return setEditing(undefined)
-    if (!window.confirm(`Remove the mcp server "${draft.original}" from opencode.json?`)) return
+    if (!window.confirm(`Remove the mcp server "${draft.original}" from the OpenFlow Omp profile?`)) return
     setBusy(true)
     try {
       await store.deleteMcpServer(draft.original)
       await refresh()
       props.onChanged?.()
       setEditing(undefined)
-      props.onNotice("info", `removed ${draft.original}. Restart \`opencode serve\` to drop its tools.`)
+      props.onNotice("info", `removed ${draft.original}. It is gone from the next card session.`)
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  /** Reconnect (or disconnect) a server the running instance already knows. */
-  async function toggleLive(server: McpServer, connect: boolean) {
-    setBusy(true)
-    try {
-      if (connect) await api.mcpConnect(server.name)
-      else await api.mcpDisconnect(server.name)
-      await refresh()
-      props.onNotice("info", `${connect ? "connected" : "disconnected"} ${server.name}`)
-    } catch (failure) {
-      props.onNotice("error", `${server.name}: ${api.describe(failure)}`)
     } finally {
       setBusy(false)
     }
@@ -208,8 +180,9 @@ export function McpPanel(props: {
       <>
         <div class="oc-banner">
           <span>
-            Servers are written to the project's <code>opencode.json</code>, so cards and the opencode CLI see the
-            same set.
+            These are the MCP servers of the OpenFlow Omp profile. Omp connects to them when a card starts, so a change
+            applies to the next card session — not to one already running. Omp has no per-session MCP selection: every
+            card sees every configured server.
           </span>
           <button type="button" class="oc-button oc-primary" onClick={create}>
             <IconPlus /> New server
@@ -217,56 +190,26 @@ export function McpPanel(props: {
         </div>
         <div class="oc-dialog-body">
           <For each={servers()}>
-            {(server) => {
-              const live = () => status()[server.name]
-              return (
-                <div class="oc-row">
-                  <button type="button" class="oc-item" disabled={busy()} onClick={() => open(server)}>
-                    <span class="oc-item-label">{server.name}</span>
-                    <span class="oc-tag oc-faint">{server.type}</span>
-                    <span class="oc-tag" data-mcp={live()?.status ?? (server.enabled ? "unloaded" : "disabled")}>
-                      {describeStatus(live(), server.enabled)}
-                    </span>
-                  </button>
-                  <Show when={live()}>
-                    <button
-                      type="button"
-                      class="oc-button"
-                      disabled={busy()}
-                      title={
-                        live()!.status === "connected"
-                          ? "disconnect this server on the running opencode serve"
-                          : "retry the connection without restarting the server"
-                      }
-                      onClick={() => void toggleLive(server, live()!.status !== "connected")}
-                    >
-                      {live()!.status === "connected" ? "disconnect" : "connect"}
-                    </button>
-                  </Show>
-                </div>
-              )
-            }}
+            {(server) => (
+              <div class="oc-row">
+                <button type="button" class="oc-item" disabled={busy()} onClick={() => open(server)}>
+                  <span class="oc-item-label">{server.name}</span>
+                  <span class="oc-tag oc-faint">{server.type}</span>
+                  <span class="oc-tag" data-mcp={server.enabled ? "enabled" : "disabled"}>
+                    {server.enabled ? "enabled" : "disabled"}
+                  </span>
+                </button>
+              </div>
+            )}
           </For>
           <Show when={!servers().length}>
             <div class="oc-menu-empty">
-              No MCP servers configured. Add one — every card can then be given access to it in the inspector.
+              No MCP servers configured. Add one and every card started afterwards can use it.
             </div>
-          </Show>
-          <Show when={unconfigured().length}>
-            <p class="oc-note oc-faint">
-              The running server also has {unconfigured().join(", ")}, which this project's opencode.json does not
-              list — they come from your global config.
-            </p>
           </Show>
         </div>
       </>
     )
-  }
-
-  /** Live servers with no row of their own: configured globally, not per project. */
-  function unconfigured() {
-    const known = new Set(servers().map((server) => server.name))
-    return Object.keys(status()).filter((name) => !known.has(name))
   }
 
   function ServerForm() {
@@ -390,7 +333,7 @@ export function McpPanel(props: {
             checked={draft().enabled}
             onChange={(event) => patch({ enabled: event.currentTarget.checked })}
           />
-          Enabled at server start
+          Enabled
         </label>
 
         <Show when={error()}>{(text) => <p class="oc-error">{text()}</p>}</Show>
@@ -407,27 +350,11 @@ export function McpPanel(props: {
         </div>
 
         <p class="oc-note oc-faint">
-          Values are stored in plain text in <code>opencode.json</code>. For a secret, prefer an environment variable
-          the host already has, or a header this project's config is not shared from.
+          Values are stored in plain text in the OpenFlow profile's <code>mcp.json</code>. For a secret, prefer an
+          environment variable the host already has, or a header that file is not shared from.
         </p>
       </form>
     )
-  }
-}
-
-function describeStatus(live: api.McpStatus | undefined, enabled: boolean) {
-  if (!live) return enabled ? "not loaded — restart server" : "disabled"
-  switch (live.status) {
-    case "connected":
-      return "connected"
-    case "disabled":
-      return "disabled"
-    case "needs_auth":
-      return "needs auth"
-    case "needs_client_registration":
-      return "needs client registration"
-    default:
-      return `failed — ${live.error}`
   }
 }
 

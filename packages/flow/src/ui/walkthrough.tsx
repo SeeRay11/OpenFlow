@@ -19,8 +19,9 @@ const KEY = "openflow.walkthroughDone.v1"
  * live counts and the stored `dismissed` flag in.
  */
 export function walkthroughState(input: {
-  engineReachable: boolean
-  unlockedProviders: number
+  hostReachable: boolean
+  ompReady: boolean
+  modelCount: number
   nodes: number
   edges: number
   dismissed: boolean
@@ -29,9 +30,10 @@ export function walkthroughState(input: {
     visible: input.nodes === 0 && !input.dismissed,
     steps: {
       // First, because nothing else in this list can succeed without it: with
-      // the engine down there are no providers to connect and no models to run.
-      engine: input.engineReachable,
-      provider: input.unlockedProviders > 0,
+      // the host down or omp missing there are no models to list and nothing to
+      // run a card on.
+      omp: input.hostReachable && input.ompReady,
+      models: input.modelCount > 0,
       node: input.nodes > 0,
       // A single node needs no edge to be "connected"; a bigger graph does.
       connect: input.nodes > 0 && (input.edges > 0 || input.nodes === 1),
@@ -48,16 +50,18 @@ function readDismissed() {
 }
 
 export function Walkthrough(props: {
-  unlockedProviders: number
-  suggestedFree?: string
-  onOpenProviders: () => void
-  onUseFree?: () => void
+  ompReady: boolean
+  ompMessage?: string
+  modelCount: number
+  onOpenOmp: () => void
+  onOpenTerminal: () => void
 }) {
   const [dismissed, setDismissed] = createSignal(readDismissed())
   const view = () =>
     walkthroughState({
-      engineReachable: state.engineReachable,
-      unlockedProviders: props.unlockedProviders,
+      hostReachable: state.hostReachable,
+      ompReady: props.ompReady,
+      modelCount: props.modelCount,
       nodes: state.pipeline.nodes.length,
       edges: state.pipeline.edges.length,
       dismissed: dismissed(),
@@ -84,51 +88,53 @@ export function Walkthrough(props: {
           </div>
 
           <ol class="walkthrough-steps">
-            <li class="walkthrough-step" data-done={view().steps.engine ? true : undefined}>
+            <li class="walkthrough-step" data-done={view().steps.omp ? true : undefined}>
               <span class="walkthrough-mark">
-                <Show when={view().steps.engine}>
+                <Show when={view().steps.omp}>
                   <IconCheck />
                 </Show>
               </span>
               <div class="walkthrough-body">
-                <span class="walkthrough-label">Start the engine</span>
+                <span class="walkthrough-label">Check Omp</span>
                 <Show
-                  when={view().steps.engine}
+                  when={view().steps.omp}
                   fallback={
                     <span class="hint">
-                      `opencode serve` is not answering — run `bun openflow.ts` from the repo root, then reload
+                      {state.hostReachable
+                        ? (props.ompMessage ?? "Omp is not ready — open its settings to see why")
+                        : "the OpenFlow host is not answering — run `bun openflow.ts` from the repo root, then reload"}
                     </span>
                   }
                 >
-                  <span class="hint">`opencode serve` is answering — every card runs a session on it</span>
+                  <span class="hint">{props.ompMessage ?? "Omp is ready — every card runs its own Omp session"}</span>
                 </Show>
+                <div class="walkthrough-actions">
+                  <button class="btn" type="button" onClick={props.onOpenOmp}>
+                    Open Omp settings
+                  </button>
+                  <button class="btn" type="button" onClick={props.onOpenTerminal}>
+                    Open terminal
+                  </button>
+                </div>
               </div>
             </li>
 
-            <li class="walkthrough-step" data-done={view().steps.provider ? true : undefined}>
+            <li class="walkthrough-step" data-done={view().steps.models ? true : undefined}>
               <span class="walkthrough-mark">
-                <Show when={view().steps.provider}>
+                <Show when={view().steps.models}>
                   <IconCheck />
                 </Show>
               </span>
               <div class="walkthrough-body">
-                <span class="walkthrough-label">Add a provider key</span>
+                <span class="walkthrough-label">Have a model to run</span>
                 <Show
-                  when={props.suggestedFree}
-                  fallback={<span class="hint">connect a provider so its models can run</span>}
+                  when={view().steps.models}
+                  fallback={<span class="hint">Omp lists no models yet — log in to a provider from the terminal</span>}
                 >
-                  <span class="hint">or run a free model, no key needed</span>
+                  <span class="hint">
+                    {props.modelCount} {props.modelCount === 1 ? "model" : "models"} available
+                  </span>
                 </Show>
-                <div class="walkthrough-actions">
-                  <button class="btn" type="button" onClick={props.onOpenProviders}>
-                    open providers
-                  </button>
-                  <Show when={props.suggestedFree && props.onUseFree}>
-                    <button class="btn" type="button" onClick={() => props.onUseFree!()}>
-                      use a free model
-                    </button>
-                  </Show>
-                </div>
               </div>
             </li>
 

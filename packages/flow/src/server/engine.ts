@@ -2,10 +2,15 @@ import { collisionNote, collisionsIn, exceptUnder, writesOf, type Write } from "
 import { addDiff, attribute, deltaOf } from "../graph/diff"
 import { bestRound, ledgerNote, stalledRounds, verdictSummary, type LedgerRound } from "../graph/ledger"
 import { isolates, mergeNote } from "../graph/worktree"
+import type { EngineApi, ModelInfo, PermissionReply, QuestionInfo } from "../../shared/engine"
+import type { MemoryInfo, MemoryReadRequest, MemoryReadResult, MemoryWriteRequest, MemoryWriteResult } from "../../shared/memory"
+import type { SwarmStatus } from "../../shared/swarm"
+import type { UpliftInfo, UpliftRequest, UpliftResult } from "../../shared/uplift"
 import { fromToolCall, MCP_REACHES_SESSIONS, parseDispatch } from "../graph/dispatch"
 import { isCritic, orchestrationShape } from "../graph/orchestration"
 import {
-  buildPrompt,
+  alreadyUplifted,
+  buildSections,
   criticPrompt,
   dispatchFirstPrompt,
   dispatchResultPrompt,
@@ -18,15 +23,21 @@ import {
   unverifiedNote,
   verdictPrompt,
   verifyPrompt,
-  orchestratorPrompt,
+  orchestratorSections,
+  plainPrompt,
   protocolPrompt,
   reassignPrompt,
-  subOrchestratorPrompt,
+  stripRaw,
+  subOrchestratorSections,
   silentWriterNote,
-  subagentPrompt,
+  subagentSections,
   swarmPrompt,
+  swarmSections,
+  taskOf,
   toolFailureNote,
-  synthesisPrompt,
+  synthesisSections,
+  upliftedPrompt,
+  type PromptSection,
 } from "../graph/prompt"
 import { swarmShape } from "../graph/swarm"
 import { verdictIn } from "../graph/verdict"
@@ -55,7 +66,9 @@ import {
 import { ancestors, downstream, layer, upstream } from "../graph/validate"
 import { applyEvent, createActivity, persistable } from "./activity"
 import * as api from "./client"
-import { store, toolMap, type ServeStatus, type WorktreeRef } from "./store"
+import { cardSpec, swarmOf, toolMap } from "./card-spec"
+import { createStages } from "./stages"
+import { store, type WorktreeRef } from "./store"
 import { mergeSpend, summarize, type PricedModel } from "./usage"
 
 export type NodePatch = {
@@ -75,6 +88,12 @@ export type NodePatch = {
   diff?: CardDiff
   /** Whether the card's last judging turn ran a shell. Absent on any other card. */
   ranShell?: boolean
+  /** Prompt Uplift: the original task, what it became, and why when it did not. */
+  uplift?: UpliftInfo
+  /** Shared memory: what the card read before it ran and what it wrote after. */
+  memory?: MemoryInfo
+  /** Agent Swarm activity under the card's session, as the host last reported it. */
+  swarm?: SwarmStatus
 }
 
 export type EngineHooks = {
@@ -88,14 +107,20 @@ export type EngineHooks = {
   onRun?: (run: RunLog) => void
   onNotice?: (kind: "info" | "error", text: string) => void
   /** Only called under the `manual` policy. Resolve with the reply to send. */
-  onPermission?: (request: PermissionRequest) => Promise<api.PermissionReply>
+  onPermission?: (request: PermissionRequest) => Promise<PermissionReply>
   /** Resolve with one array of chosen labels per question, or undefined to reject. */
   onQuestion?: (request: QuestionRequest) => Promise<string[][] | undefined>
   /**
-   * Called when a run failed because the engine is running older config than
-   * what is on disk — the UI opens its restart affordance.
+   * Prompt Uplift failed for a card and nothing has been sent to it. Resolve with
+   * what to do: run the original prompt, ask uplift again (three attempts in
+   * all), or cancel the card.
+   *
+   * Absent means `cancel` — the original is never run silently, because a card
+   * the user believes was uplifted and was not is the failure this exists to
+   * surface. A stopped run settles a pending decision as `cancel`, the way it
+   * settles a pending question.
    */
-  onEngineStale?: () => void
+  onUpliftFailure?: (request: UpliftFailureRequest) => Promise<"original" | "retry" | "cancel">
   /**
    * Called once a question is settled, including when the engine gave up
    * waiting. Without it a timed-out prompt stays on screen forever, still
@@ -179,12 +204,18 @@ export type RunOptions = {
    * Whether to look for the orchestrator's decision in a tool call before
    * falling back to the fenced block.
    *
-   * Defaults to `MCP_REACHES_SESSIONS`, which is `false`: the v2 session runner
-   * this fork drives has no MCP bridge, so the scan can only ever come back
-   * empty. Tests set it to exercise the channel, and it becomes the default the
-   * day upstream wires MCP into v2.
+   * Defaults to `MCP_REACHES_SESSIONS`, which is `true`: the host answers
+   * `openflow_dispatch` / `openflow_finish` as RPC host tools, and the engine
+   * reads the calls back through `EngineApi.sessionCalls`. Switching it off
+   * leaves only the fenced block, which is what a host without those tools is.
    */
   toolChannel?: boolean
+  /**
+   * How long the end of the run waits for memory writes and session releases,
+   * in milliseconds. They never hold a card, but the run log is more honest if
+   * their outcome lands in it; past this the run ends with them still pending.
+   */
+  backgroundGrace?: number
 }
 
 export const DEFAULT_MAX_PARALLEL = 4
@@ -240,6 +271,9 @@ export const DEFAULT_QUESTION_TIMEOUT = 5 * 60_000
 export const DEFAULT_CHECKPOINT_EVERY = 2_000
 /** How long to wait before re-reading a model catalog that looked incomplete. */
 export const DEFAULT_CATALOG_RETRY = 1_500
+/** Prompt Uplift attempts per task turn, the first included, before a failure ends the card. */
+const UPLIFT_ATTEMPTS = 3
+export const DEFAULT_BACKGROUND_GRACE = 10_000
 
 export type Run = {
   log: RunLog
@@ -252,42 +286,20 @@ export type Run = {
  * client and the real store; tests pass fakes instead of standing up a server.
  */
 export type EngineDeps = {
-  api: Pick<
-    typeof api,
-    | "subscribe"
-    | "createSession"
-    | "prompt"
-    | "waitForIdle"
-    | "transcript"
-    | "interrupt"
-    | "replyPermission"
-    | "replyQuestion"
-    | "rejectQuestion"
-    | "accepts"
-    | "models"
-    | "agents"
-    | "describe"
-  > & {
-    /**
-     * Authoritative per-step usage for a finished session. Optional so a test
-     * double can leave it out — the engine then keeps whatever the event bus
-     * reported, which is the same data one round-trip earlier.
-     */
-    sessionSteps?: typeof api.sessionSteps
-    /**
-     * Tool calls a session made, newest first — how an orchestrator's dispatch
-     * is read. Optional for the same reason as `sessionSteps`: a test double
-     * may leave it out, and a host without the MCP server installed has no tool
-     * calls to read anyway. Absent means the text fallback decides.
-     */
-    sessionCalls?: typeof api.sessionCalls
-    /**
-     * The agent list with no directory on it — what the drain sees. Optional so
-     * a test double can leave it out; absent means an empty scoped list is read
-     * as the stale-config case it was read as before, which is the answer that
-     * was right whenever the directory is a real project.
-     */
-    agentsUnscoped?: typeof api.agentsUnscoped
+  api: EngineApi
+  /**
+   * Prompt Uplift for a card's task turn. Optional so a test double can omit it:
+   * absent means every task is sent as written and the card records no uplift.
+   */
+  uplift?: (request: UpliftRequest) => Promise<UpliftResult>
+  /**
+   * Shared memory across the cards of a run (Agent Substrate, host-side).
+   * Optional for the same reason; `read` fails open and `write` never blocks a
+   * card from finishing.
+   */
+  memory?: {
+    read(request: MemoryReadRequest): Promise<MemoryReadResult>
+    write(request: MemoryWriteRequest): Promise<MemoryWriteResult>
   }
   saveRun: (log: RunLog) => Promise<unknown>
   /**
@@ -321,22 +333,26 @@ export type EngineDeps = {
    * before this behaved.
    */
   scratch?: typeof store.scratch
-  /**
-   * The engine process this host proxies, used to print the exact restart
-   * command in the one error that can only be fixed by restarting it.
-   */
-  serveStatus?: () => Promise<ServeStatus>
 }
+
+const stages = createStages()
 
 const live: EngineDeps = {
   api,
+  uplift: stages.uplift,
+  memory: stages.memory,
   saveRun: (log) => store.saveRun(log),
-  serveStatus: () => store.serverStatus(),
   worktrees: { open: store.openWorktrees, merge: store.mergeWorktrees, cleanup: store.cleanupWorktrees },
   treeStat: () => store.treeStat(),
   checkpoint: (run, round) => store.checkpoint(run, round),
   scratch: (run) => store.scratch(run),
 }
+
+/** What a turn sends: sections for the card's own task turn, a string for every protocol turn. */
+type TurnText = string | PromptSection[]
+
+/** What uplift and memory decided for one task turn. */
+type Staged = { uplifted?: string; memory: string }
 
 /**
  * How much upstream context a node receives.
@@ -369,13 +385,15 @@ export type QuestionRequest = {
   sessionID: string
   nodeID: string
   role: string
-  questions: api.QuestionInfo[]
+  questions: QuestionInfo[]
 }
 
+export type UpliftFailureRequest = { nodeID: string; role: string; reason: string; elapsedMs: number }
+
 /**
- * Executes a canvas over `opencode serve`.
+ * Executes a canvas over the Omp engine (`EngineApi`).
  *
- * One node = one primary session, whatever the mode. Everything a session needs
+ * One node = one Omp session, whatever the mode. Everything a session needs
  * — creating it, prompting it, waiting it out, draining its transcript, pricing
  * it, streaming its activity — is `runNode` below and is shared. What a mode
  * changes is only the *scheduler*: which nodes run, in what order, and what text
@@ -401,8 +419,9 @@ export function start(
   const runFiles = options.attachments ?? []
   const resume = options.resume ?? {}
   const toolChannel = options.toolChannel ?? MCP_REACHES_SESSIONS
+  const backgroundGrace = Math.max(0, options.backgroundGrace ?? DEFAULT_BACKGROUND_GRACE)
   // Preflight only covers what this run will dispatch: a reused node creates no
-  // session, so a model or agent it names having gone missing cannot break it.
+  // session, so a model it names having gone missing cannot break it.
   const dispatching = pipeline.nodes.filter((node) => resume[node.id] === undefined)
   // Preflight says the same thing in words the user can act on, but the engine
   // is callable without it, and running a swarm's graph through the pipeline
@@ -447,6 +466,13 @@ export function start(
   const order = new Map(validation.layers.flatMap((ids, index) => ids.map((id) => [id, index] as const)))
 
   const controller = new AbortController()
+  /**
+   * Settles when the run is stopped. Raced against every wait on something
+   * outside the engine (uplift, memory, a person's decision), so stopping the
+   * run never sits behind a planner that has minutes left to time out.
+   */
+  const stopped = Promise.withResolvers<undefined>()
+  controller.signal.addEventListener("abort", () => stopped.resolve(undefined), { once: true })
   const sessions = new Map<string, string>() // sessionID -> nodeID
   /** nodeID -> the session it opened, so a later turn can prompt into it again. */
   const nodeSession = new Map<string, string>()
@@ -460,6 +486,14 @@ export function start(
   const nodeDir = new Map<string, string>()
   /** Every tree opened this run, so the run can take them all down at the end. */
   const opened = new Map<string, WorktreeRef>()
+  /** sessionID -> why the host reports its process gone. Read by the turn using it. */
+  const dead = new Map<string, string>()
+  /** sessionID -> the abort of the turn waiting on it, so a dead process does not hold the turn until `nodeTimeout`. */
+  const waiting = new Map<string, AbortController>()
+  /** Every session this run opened or adopted and has not yet handed back to the host. */
+  const held = new Set<string>()
+  /** Fire-and-forget work (memory writes, session releases), awaited with a cap when the run ends. */
+  const background = new Set<Promise<unknown>>()
   /**
    * What every orchestration round produced, across the whole run.
    *
@@ -490,6 +524,7 @@ export function start(
     if (resume[id] !== undefined || !sessionID) continue
     nodeSession.set(id, sessionID)
     sessions.set(sessionID, id)
+    held.add(sessionID)
     carried.add(id)
   }
   /** Tool-call ids already read, so an old call cannot decide a new turn. */
@@ -506,7 +541,7 @@ export function start(
   const active = new Set<string>() // sessionIDs still running
   const answered = new Set<string>() // permission requests already replied to
   const asked = new Set<string>() // question requests already handled
-  const catalog = new Map<string, Awaited<ReturnType<typeof api.models>>[number]>()
+  const catalog = new Map<string, ModelInfo>()
   const nodes = new Map(pipeline.nodes.map((node) => [node.id, node] as const))
   const outputs = new Map<string, string>()
   const failed = new Set<string>()
@@ -541,7 +576,6 @@ export function start(
       id: node.id,
       role: node.role,
       status: "queued",
-      agent: node.agent.name,
       model: node.agent.model,
     })),
   }
@@ -690,10 +724,26 @@ export function start(
       // run never created — it is the thing that knows they belong to a node.
       activity.consume(event)
       const sessionID = event.data?.sessionID
+      // A notice may belong to no session at all (the host's own, an extension
+      // that failed to load). One that names a session this run does not own is
+      // another run's, and the stream is shared.
+      if (event.type === "flow.notice") {
+        const owner = sessionID ? sessions.get(sessionID) : undefined
+        if (sessionID && !owner) return
+        const message = String(event.data?.message ?? "")
+        if (!message) return
+        hooks.onNotice?.(event.data?.level === "error" ? "error" : "info", owner ? `${entry(owner).role}: ${message}` : message)
+        return
+      }
       if (!sessionID) return
       const id = sessions.get(sessionID)
       if (!id) return
       switch (event.type) {
+        case "flow.swarm.status":
+          if (event.data?.status) patch(id, { swarm: event.data.status })
+          return
+        case "flow.session.lost":
+          return lose(sessionID, String(event.data?.reason ?? "the session process ended"))
         case "session.next.step.started": {
           const messageID = event.data?.assistantMessageID
           const model = event.data?.model
@@ -754,7 +804,7 @@ export function start(
     const resources = data.resources ?? []
     const node = nodes.get(nodeID)
 
-    let reply: api.PermissionReply = "once"
+    let reply: PermissionReply = "once"
     if (controller.signal.aborted) {
       reply = "reject"
     } else if (gauntlet && node && (isCritic(node) || node.id === tree?.root?.id) && MUTATING.has(data.action)) {
@@ -810,7 +860,7 @@ export function start(
    * rejection is bounded by `questionTimeout` so a run left alone still
    * finishes instead of hanging until the node times out.
    */
-  async function inquire(nodeID: string, sessionID: string, data: { id: string; questions?: api.QuestionInfo[] }) {
+  async function inquire(nodeID: string, sessionID: string, data: { id: string; questions?: QuestionInfo[] }) {
     const requestID = data.id
     if (asked.has(requestID)) return
     asked.add(requestID)
@@ -854,6 +904,239 @@ export function start(
     patch(nodeID, { activity: answers ? "answered" : "question unanswered" })
   }
 
+  /** The text of a turn that was built as sections. */
+  function textOf(turn: TurnText) {
+    return typeof turn === "string" ? turn : plainPrompt(turn)
+  }
+
+  /** Keeps a fire-and-forget promise visible to the end of the run without ever letting it reject. */
+  function track(promise: Promise<unknown>) {
+    background.add(promise)
+    const settle = () => background.delete(promise)
+    promise.then(settle, settle)
+  }
+
+  /**
+   * Hands a session back to the host. Best effort, and once: the host disposes
+   * the process, and nothing the run holds refers to the session afterwards.
+   */
+  function release(sessionID: string) {
+    if (!held.delete(sessionID) || !api.release) return
+    track(api.release(sessionID).catch(() => undefined))
+  }
+
+  /** Forgets a card's session and releases it — for a card that will not be prompted into it again. */
+  function abandon(id: string) {
+    const sessionID = nodeSession.get(id)
+    nodeSession.delete(id)
+    if (sessionID) release(sessionID)
+  }
+
+  /**
+   * The host says a session's process is gone. The turn using it is cut short
+   * and failed as a lost session, which the transport budget below recovers by
+   * opening a new one — the same path a "session not found" from the server
+   * has always taken.
+   */
+  function lose(sessionID: string, reason: string) {
+    dead.set(sessionID, reason)
+    waiting.get(sessionID)?.abort()
+  }
+
+  function assertOpen(sessionID: string) {
+    const reason = dead.get(sessionID)
+    if (reason !== undefined) throw new Error(`session closed: ${reason}`)
+  }
+
+  function patchMemory(id: string, part: MemoryInfo) {
+    patch(id, { memory: { ...entry(id).memory, ...part } })
+  }
+
+  /**
+   * Everything that happens to a card's task before it is sent: Prompt Uplift,
+   * then the memory read. Runs once per turn however many times the send is
+   * retried, because a retry re-sends the same turn rather than a new one.
+   *
+   * `raw:` and `agent.uplift === false` opt the card out of both: a card the
+   * user asked to run as written must not have a spec or a block of recalled
+   * text put in front of it either.
+   */
+  async function stage(node: FlowNode, sections: PromptSection[], raw: boolean): Promise<Staged> {
+    const original = taskOf(sections)
+    const reason = raw ? "raw: prefix" : node.agent.uplift === false ? "uplift is off for this card" : undefined
+    if (reason) {
+      if (deps.uplift) patch(node.id, { uplift: { status: "skipped", original, reason } })
+      return { memory: "" }
+    }
+    const uplifted = deps.uplift ? await upliftTask(node, sections, original) : undefined
+    return { uplifted, memory: await recall(node, original) }
+  }
+
+  /**
+   * Asks uplift for one card, and the user what to do when it cannot.
+   * Resolves the text to send in place of the original, or `undefined` to send
+   * the original; throws `UpliftError` when the card must not run.
+   */
+  async function upliftTask(node: FlowNode, sections: PromptSection[], original: string) {
+    if (!original.trim()) return undefined
+    if (alreadyUplifted(sections)) {
+      patch(node.id, { uplift: { status: "skipped", original, reason: "already a spec" } })
+      return undefined
+    }
+    for (let attempt = 1; ; attempt++) {
+      const started = Date.now()
+      patch(node.id, { uplift: { status: "running", original }, activity: "uplifting prompt" })
+      const result = await Promise.race([
+        deps
+          .uplift!({
+            runId: log.id,
+            nodeId: node.id,
+            role: node.role,
+            original,
+            ...(nodeDir.has(node.id) ? { cwd: nodeDir.get(node.id) } : {}),
+          })
+          .catch(
+            (error): UpliftResult => ({
+              status: "failed",
+              original,
+              reason: api.describe(error),
+              elapsedMs: Date.now() - started,
+            }),
+          ),
+        stopped.promise,
+      ])
+      if (!result) throw new StopError()
+      const info: UpliftInfo = {
+        status: result.status,
+        original,
+        reason: result.reason,
+        source: result.source,
+        graphId: result.graphId,
+        specPath: result.specPath,
+        nodes: result.nodes,
+        degraded: result.degraded,
+        decisions: result.decisions,
+        elapsedMs: result.elapsedMs,
+      }
+      // A conservative fallback spec is what the planner writes when it could
+      // not reach its engine: not an uplift, whatever status carries it.
+      const spec = result.status === "ok" && result.source !== "fallback" ? result.uplifted?.trim() : undefined
+      if (spec) {
+        patch(node.id, { uplift: { ...info, uplifted: result.uplifted } })
+        return result.uplifted!
+      }
+      if (result.status === "skipped") {
+        patch(node.id, { uplift: info })
+        activity.note(
+          node.id,
+          `uplift:${node.id}:${started}`,
+          `prompt uplift skipped${result.reason ? ` — ${result.reason}` : ""}`,
+          undefined,
+          "done",
+        )
+        return undefined
+      }
+
+      const reason =
+        result.reason ??
+        (result.status === "ok"
+          ? result.source === "fallback"
+            ? "the planner fell back to a conservative spec"
+            : "the planner returned no spec"
+          : "the planner failed")
+      patch(node.id, { uplift: { ...info, status: "failed", reason }, activity: "uplift failed — waiting for a decision" })
+      activity.note(node.id, `uplift:${node.id}:${started}`, "prompt uplift failed", reason, "error")
+      const choice =
+        hooks.onUpliftFailure && !controller.signal.aborted
+          ? await Promise.race([
+              hooks
+                .onUpliftFailure({ nodeID: node.id, role: node.role, reason, elapsedMs: result.elapsedMs })
+                .catch(() => "cancel" as const),
+              stopped.promise.then(() => "cancel" as const),
+            ])
+          : "cancel"
+      if (controller.signal.aborted) throw new StopError()
+      if (choice === "original") {
+        patch(node.id, { uplift: { ...info, status: "declined", reason, declined: true } })
+        return undefined
+      }
+      if (choice === "retry" && attempt < UPLIFT_ATTEMPTS) continue
+      throw new UpliftError(reason)
+    }
+  }
+
+  /**
+   * Project memory for one card, as a block to append after its context. Fails
+   * open: a card runs without memory when Substrate is unreachable, and the
+   * card says so rather than failing.
+   */
+  async function recall(node: FlowNode, query: string) {
+    if (!deps.memory || !query.trim()) return ""
+    patchMemory(node.id, { read: { status: "running", items: [] } })
+    const result = await Promise.race([
+      deps.memory
+        .read({ runId: log.id, nodeId: node.id, pipeline: pipeline.name, role: node.role, query })
+        .catch(
+          (error): MemoryReadResult => ({
+            status: "unavailable",
+            block: "",
+            items: [],
+            scopes: [],
+            error: api.describe(error),
+            elapsedMs: 0,
+          }),
+        ),
+      stopped.promise,
+    ])
+    if (!result) throw new StopError()
+    patchMemory(node.id, {
+      read: {
+        status: result.status,
+        items: result.items.map((item) => ({
+          scope: item.scope,
+          subject: item.subject,
+          preview: item.preview,
+          run: item.run,
+          card: item.card,
+          origin: item.origin,
+        })),
+        briefState: result.briefState,
+        error: result.error,
+      },
+    })
+    if (result.status === "unavailable")
+      activity.note(
+        node.id,
+        `memory:${node.id}:read`,
+        "project memory unavailable — running without it",
+        result.error,
+        "error",
+      )
+    return result.status === "ok" ? result.block : ""
+  }
+
+  /**
+   * Writes one finished card to project memory. Never awaited by the card: a
+   * Substrate that is slow or down must not hold a run, and a failure is
+   * patched onto the card where it can be seen.
+   */
+  function remember(node: FlowNode) {
+    if (!deps.memory || resume[node.id] !== undefined) return
+    const row = entry(node.id)
+    if (row.status !== "done" && row.status !== "error" && row.status !== "stopped") return
+    const outcome = row.status
+    const output = outcome === "error" ? (row.error ?? "") : (outputs.get(node.id) ?? row.output ?? "")
+    patchMemory(node.id, { write: { status: "running" } })
+    track(
+      deps.memory
+        .write({ runId: log.id, nodeId: node.id, pipeline: pipeline.name, role: node.role, outcome, output })
+        .then(
+          (result) => patchMemory(node.id, { write: { status: result.status, subject: result.subject, error: result.error } }),
+          (error) => patchMemory(node.id, { write: { status: "unavailable", error: api.describe(error) } }),
+        ),
+    )
+  }
+
   /**
    * One turn of one card: open or reuse its session, prompt it, wait it out,
    * drain the transcript into `outputs`.
@@ -868,7 +1151,7 @@ export function start(
    * re-sending a 4MB screenshot once per round is the same picture at four times
    * the price.
    */
-  async function runTurn(node: FlowNode, build: (skipped: Attachment[]) => string, reuse = false) {
+  async function runTurn(node: FlowNode, build: (skipped: Attachment[]) => TurnText, reuse = false) {
     // A card carried over from an interrupted run is prompted into the session
     // it was already working in, whichever scheduler is asking. Consumed on the
     // first turn: from the second one on it is an ordinary reused session, and
@@ -876,13 +1159,21 @@ export function start(
     const carrying = carried.delete(node.id)
     if (carrying) {
       const opening = build
-      build = (skipped) => `${interruptedNote()}\n\n${opening(skipped)}`
+      // Not a task turn, so never uplifted: the session already holds the task
+      // it was given, and the note alone is what resumes it.
+      build = (skipped) => `${interruptedNote()}\n\n${textOf(opening(skipped))}`
     }
     let sessionID = reuse || carrying ? nodeSession.get(node.id) : undefined
-    // The log has to name the session a carried card is in. Nothing else writes
-    // it — the create path is skipped — so without this the run reports a card
-    // with no session while it is answering in one, and the next interruption
-    // has nothing left to carry forward.
+    // The session an earlier run left open, to be re-attached by the host on
+    // this turn's first `createSession` rather than prompted into blind: a host
+    // that restarted since still has the session's files, and only it can say.
+    let attach = carrying ? sessionID : undefined
+    /** What uplift and memory decided for this turn, kept so a retry re-sends the same text instead of asking again. */
+    let staged: Staged | undefined
+    // The log has to name the session a carried card is in from the first
+    // moment, not only once the host has answered the re-attach: without it a
+    // run interrupted again in between reports a card with no session while it
+    // is answering in one, and has nothing left to carry forward.
     if (carrying && sessionID) patch(node.id, { sessionID })
     // Whether this card's files have already reached the session. A reused one
     // holds them; a retry after a refused prompt does not, so the attachments
@@ -897,28 +1188,15 @@ export function start(
       // Only this turn's tool failures count; a card is prompted into the session
       // it already holds, so every earlier turn's are still on the stream.
       const turnStarted = Date.now()
+      /** Cut short by `flow.session.lost`, so the wait below ends when the process does. */
+      const turnWait = new AbortController()
+      controller.signal.addEventListener("abort", () => turnWait.abort(), { once: true, signal: turnWait.signal })
       patch(node.id, {
         status: "running",
         ...(opened ? {} : { started: Date.now() }),
         activity: opened ? "continuing session" : "starting session",
       })
       try {
-        if (!sessionID) {
-          const session = await api.createSession({
-            agent: node.agent.name,
-            model: node.agent.model,
-            // Fixed for the life of the session, which is why a card keeps the
-            // tree it was first given rather than moving between batches.
-            directory: nodeDir.get(node.id),
-          })
-          sessionID = session.id
-          nodeSession.set(node.id, session.id)
-          sessions.set(session.id, node.id)
-          patch(node.id, { sessionID: session.id })
-        }
-        active.add(sessionID)
-        patch(node.id, { activity: "queued" })
-
         // Run-level files first, then the node's own pins. A file the node's
         // model has no modality for is withheld and named in the text instead,
         // so one blind model in the middle of a chain does not stop the run.
@@ -945,19 +1223,63 @@ export function start(
         // no shell has nothing to redirect and is not told.
         const needsScratch = !!scratchDir && !toldScratch.has(node.id) && toolMap(node.agent.tools).bash !== false
         if (needsScratch) toldScratch.add(node.id)
-        const text = [
-          build(skipped),
+        const appended = [
           ...(model && !api.accepts(model, "image/png") ? [imageBlindNote()] : []),
           ...(needsScratch ? [scratchNote(scratchDir)] : []),
-        ].join("\n\n")
+        ]
+        const turn = build(skipped)
+        // Only a task turn — the card's own instruction, handed over as
+        // sections — goes through uplift and memory. A protocol turn is a
+        // string, and cannot reach either by construction.
+        let text: string
+        if (typeof turn === "string") text = [turn, ...appended].join("\n\n")
+        else {
+          const task = stripRaw(turn)
+          staged ??= await stage(node, task.sections, task.raw)
+          text = [
+            staged.uplifted
+              ? upliftedPrompt(task.sections, staged.uplifted, appended)
+              : [plainPrompt(task.sections), ...appended].join("\n\n"),
+            ...(staged.memory ? [staged.memory] : []),
+          ].join("\n\n")
+        }
+
+        // The session is opened only now that the text is settled, so a card
+        // whose uplift is cancelled never costs a process.
+        if (!sessionID || attach) {
+          const session = await api.createSession({
+            runId: log.id,
+            nodeId: node.id,
+            card: cardSpec(pipeline, node),
+            model: node.agent.model,
+            // Fixed for the life of the session, which is why a card keeps the
+            // tree it was first given rather than moving between batches.
+            directory: nodeDir.get(node.id),
+            permissions: policy,
+            swarm: swarmOf(pipeline, node),
+            ...(attach ? { reuse: attach } : {}),
+          })
+          attach = undefined
+          sessionID = session.id
+          nodeSession.set(node.id, session.id)
+          sessions.set(session.id, node.id)
+          held.add(session.id)
+          patch(node.id, { sessionID: session.id })
+        }
+        active.add(sessionID)
+        waiting.set(sessionID, turnWait)
+        patch(node.id, { activity: "queued" })
         patch(node.id, { prompt: text })
+        assertOpen(sessionID)
 
         await api.prompt(sessionID, text, sendable)
         delivered = true
         if (controller.signal.aborted) throw new StopError()
-        await api.waitForIdle(sessionID, { signal: controller.signal, timeout: nodeTimeout })
+        assertOpen(sessionID)
+        await api.waitForIdle(sessionID, { signal: turnWait.signal, timeout: nodeTimeout })
         active.delete(sessionID)
         if (controller.signal.aborted) throw new StopError()
+        assertOpen(sessionID)
 
         const result = await api.transcript(sessionID)
         if (result.error) throw new Error(result.error)
@@ -1056,16 +1378,21 @@ export function start(
           patch(node.id, { status: "stopped", activity: undefined, finished: Date.now() })
           return
         }
-        const reason = api.describe(error)
+        // Uplift's own refusal is a conclusion, not transport: asking again is
+        // the user's decision (`onUpliftFailure`), never a silent retry, and its
+        // text must not be read by the classifiers below.
+        const own = error instanceof UpliftError
+        const reason = own ? error.message : api.describe(error)
         // A session the server has lost fails every turn prompted into it, so
         // it is forgotten before the retry decision: the next attempt creates a
         // new one instead of re-sending into a dead handle. The card keeps its
         // place in the run either way — only its memory of the turn is gone.
-        const lost = sessionLost(reason)
+        const lost = !own && sessionLost(reason)
         if (sessionID && lost) {
           nodeSession.delete(node.id)
           sessions.delete(sessionID)
           active.delete(sessionID)
+          release(sessionID)
           activity.note(
             node.id,
             `session:${node.id}:${turnStarted}`,
@@ -1080,12 +1407,12 @@ export function start(
         // turn, or the connection to it dropped, before it produced anything —
         // so the same prompt goes back into the same session after a wait
         // rather than costing the run a card.
-        const refused = rateLimited(reason)
+        const refused = !own && rateLimited(reason)
         // A replaced session is retried on the transport budget: opening a new
         // one is only a recovery if something is then sent into it, and the
         // count bounds the case where every new session is lost as fast as it
         // is made.
-        const dropped = !refused && (lost || transient(reason))
+        const dropped = !own && !refused && (lost || transient(reason))
         const attempt = refused ? refusals : drops
         const allowed = refused ? RATE_LIMIT_RETRIES : TRANSIENT_RETRIES
         if ((refused || dropped) && attempt < allowed && rateLimitBackoff > 0) {
@@ -1123,6 +1450,8 @@ export function start(
           finished: Date.now(),
         })
       } finally {
+        turnWait.abort()
+        if (sessionID) waiting.delete(sessionID)
         // Tokens are spent whether the node finished, failed or was stopped, so
         // the bill is read back in every case rather than only on success.
         if (sessionID) await reconcile(node.id, sessionID)
@@ -1236,7 +1565,10 @@ export function start(
       pipe === "direct"
         ? sources
         : [...ancestors(pipeline, node.id)].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0))
-    await runTurn(node, (skipped) => buildPrompt(pipeline, node, context, outputs, input, skipped))
+    await runTurn(node, (skipped) => buildSections(pipeline, node, context, outputs, input, skipped))
+    // A pipeline card runs once, so nothing will prompt into its session again.
+    remember(node)
+    abandon(node.id)
   }
 
   /**
@@ -1249,7 +1581,16 @@ export function start(
   async function runPeer(node: FlowNode, round: number, peers: Map<string, string>) {
     if (failed.has(node.id)) return
     activity.note(node.id, `round:${node.id}:${round}`, `round ${round} of ${roundsOf(pipeline)}`, undefined, "done")
-    await runTurn(node, (skipped) => swarmPrompt(pipeline, node, round, peers, input, skipped), round > 1)
+    await runTurn(
+      node,
+      (skipped) =>
+        round > 1 ? swarmPrompt(pipeline, node, round, peers, input, skipped) : swarmSections(pipeline, node, input, skipped),
+      round > 1,
+    )
+    // A peer's card is finished after its last round, or the moment it fell out.
+    if (round < roundsOf(pipeline) && !failed.has(node.id) && !controller.signal.aborted) return
+    remember(node)
+    abandon(node.id)
   }
 
   /**
@@ -1263,22 +1604,32 @@ export function start(
    *
    * Returns the answer, or undefined when the card failed or the run stopped.
    */
-  async function orchestrate(node: FlowNode, task: string, first: boolean): Promise<string | undefined> {
+  async function orchestrate(node: FlowNode, task: string, first: boolean) {
+    const answer = await orchestration(node, task, first)
+    remember(node)
+    // The root's answer is the run's, so nothing prompts into its session
+    // again. A subtree orchestrator can be dispatched a second time, and is
+    // prompted into the session it holds, so it lives until the run ends.
+    if (first) abandon(node.id)
+    return answer
+  }
+
+  async function orchestration(node: FlowNode, task: string, first: boolean): Promise<string | undefined> {
     const children = tree!.children(node.id)
     const budget = gauntlet ? GAUNTLET_DISPATCHES : dispatchesOf(pipeline)
     // A card dispatched a second time is prompted into the session it already
     // holds, so it still has its briefing and its earlier task — only the job
     // is new.
     const returning = nodeSession.has(node.id)
-    let build = (skipped: Attachment[]) =>
+    let build: (skipped: Attachment[]) => TurnText = (skipped) =>
       returning
         ? reassignPrompt(task)
         : first
-          ? orchestratorPrompt(pipeline, node, input, skipped)
+          ? orchestratorSections(pipeline, node, input, skipped)
           : // Only a card with children reaches here; a leaf goes through
             // `runSubagent`. So this is always somebody's subagent that must
             // itself speak the protocol.
-            subOrchestratorPrompt(pipeline, node, parentOf(node.id)!, task, input, skipped)
+            subOrchestratorSections(pipeline, node, parentOf(node.id)!, task, input, skipped)
     let spent = 0
     /**
      * Re-asks used on the protocol, not on the work.
@@ -1514,7 +1865,7 @@ export function start(
             // It costs the cached prefix and re-sends the reference files, and
             // that is the price of the method.
             if (gauntlet && isCritic(child)) {
-              nodeSession.delete(child.id)
+              abandon(child.id)
               consumed.delete(child.id)
             }
             declared.set(child.id, assignment.files ?? [])
@@ -1846,9 +2197,9 @@ export function start(
    * than killing a run over one flaky request.
    */
   async function decide(node: FlowNode, children: string[]) {
-    // Skipped entirely while the tool channel is parked: no MCP tool can reach
-    // a v2 session in this fork, so every scan would be a request per turn that
-    // cannot find anything. See `MCP_REACHES_SESSIONS`.
+    // Skipped when the channel is switched off for the run (`toolChannel`): the
+    // host then offers no dispatch tools, and every scan would be a request per
+    // turn that cannot find anything. See `MCP_REACHES_SESSIONS`.
     const calls = toolChannel ? ((await api.sessionCalls?.(nodeSession.get(node.id)!).catch(() => [])) ?? []) : []
     const seen = consumed.get(node.id) ?? new Set<string>()
     let decision: ReturnType<typeof parseDispatch> | undefined
@@ -1875,10 +2226,13 @@ export function start(
         returning
           ? reassignPrompt(task)
           : critic
-            ? criticPrompt(pipeline, node, parent, task, input, skipped)
-            : subagentPrompt(pipeline, node, parent, task, input, skipped),
+            ? // A critic judges; it is never uplifted, and never given memory
+              // that could colour the verdict.
+              criticPrompt(pipeline, node, parent, task, input, skipped)
+            : subagentSections(pipeline, node, parent, task, input, skipped),
       true,
     )
+    remember(node)
     if (failed.has(node.id)) return undefined
     return outputs.get(node.id)
   }
@@ -1924,7 +2278,7 @@ export function start(
       // A verdict on work the critic itself helped produce is the failure the
       // fresh session exists to prevent, and in a pipeline the reviewer has
       // usually just run.
-      nodeSession.delete(critic.id)
+      abandon(critic.id)
       consumed.delete(critic.id)
       activity.note(critic.id, `verify:${critic.id}`, "verifying the run's result", undefined, "done")
 
@@ -2002,43 +2356,6 @@ export function start(
         return log
       }
 
-      const gap = await unknownAgents(dispatching, api)
-      if (gap) {
-        // The fix is always the same for the stale-config case — restart the
-        // engine — so the message carries the command for *this* host rather
-        // than the generic name of a binary that may not be on PATH, or may be
-        // a different version than the one this checkout runs.
-        const serve = gap.scope === "config" ? await deps.serveStatus?.().catch(() => undefined) : undefined
-        const restart = serve
-          ? serve.managed
-            ? `use the restart button in the titlebar, or run: ${serve.command}`
-            : `stop \`opencode serve\` where it is running (Ctrl+C in that window), then run this from the OpenFlow repo root:
-${serve.command}`
-          : "restart `opencode serve` where it is running"
-        for (const node of gap.nodes) {
-          failed.add(node.id)
-          patch(node.id, {
-            status: "error",
-            error:
-              gap.scope === "directory"
-                ? `the server does not know an agent named "${node.agent.name}", and it knows no agents at all for this project — not even the built-in ones. That is what a project folder which is not a git repository looks like from here. Run \`git init\` in it, or point OPENFLOW_PROJECT at a repository. Restarting the engine will not change this.`
-                : `the server does not know an agent named "${node.agent.name}" — it reads its config once at boot, so a merged agent stays invisible until it restarts. ${restart}`,
-            finished: Date.now(),
-          })
-        }
-        hooks.onNotice?.(
-          "error",
-          gap.scope === "directory"
-            ? `unknown agent on ${gap.nodes.map((node) => node.role).join(", ")} — the project folder is not a git repository, so it reports no agents at all`
-            : `unknown agent on ${gap.nodes.map((node) => node.role).join(", ")} — the engine needs a restart to see it`,
-        )
-        // Deliberately not opened for the directory case: that dialog offers a
-        // restart, and a restart is exactly what does not fix it.
-        if (gap.scope === "config") hooks.onEngineStale?.()
-        log.status = "error"
-        return log
-      }
-
       // Opened once, before anything is dispatched, so every card's first turn
       // can carry it. A host that cannot make one simply never mentions it.
       scratchDir = (await deps.scratch?.(log.id).catch(() => null))?.path ?? ""
@@ -2067,8 +2384,11 @@ ${serve.command}`
           peer: (id, round) => runPeer(nodes.get(id)!, round, said),
           synthesise: () =>
             runTurn(swarm.synthesizers[0], (skipped) =>
-              synthesisPrompt(pipeline, swarm.synthesizers[0], outputs, input, skipped),
-            ),
+              synthesisSections(pipeline, swarm.synthesizers[0], outputs, input, skipped),
+            ).then(() => {
+              remember(swarm.synthesizers[0])
+              abandon(swarm.synthesizers[0].id)
+            }),
         })
       else if (tree) await orchestrate(tree.root, input, true)
       else await runPipeline(validation.layers, limit, controller.signal, (id) => runNode(nodes.get(id)!), measured)
@@ -2105,6 +2425,17 @@ ${serve.command}`
       // them, and a stack of stale worktrees in the user's repository is the
       // thing that would make this feature not worth having.
       if (opened.size && deps.worktrees) await deps.worktrees.cleanup(log.id, [...opened.values()]).catch(() => {})
+      // Every session the run still holds goes back to the host: the processes
+      // are the host's to dispose, and a run that ended leaves nothing for them
+      // to wait on. Memory writes are given a moment to land so the log shows
+      // what became of them, but never longer than that.
+      for (const sessionID of [...held]) release(sessionID)
+      if (background.size) {
+        const grace = Promise.withResolvers<void>()
+        const timer = setTimeout(grace.resolve, backgroundGrace)
+        await Promise.race([Promise.allSettled([...background]), grace.promise])
+        clearTimeout(timer)
+      }
       controller.abort()
       void bus
       hooks.onRun?.(log)
@@ -2126,6 +2457,13 @@ ${serve.command}`
 class StopError extends Error {
   constructor() {
     super("stopped")
+  }
+}
+
+/** Prompt Uplift failed and the card was not allowed to run on the original. */
+class UpliftError extends Error {
+  constructor(reason: string) {
+    super(`prompt uplift failed: ${reason}`)
   }
 }
 
@@ -2216,50 +2554,4 @@ async function pool<T>(items: T[], limit: number, signal: AbortSignal, work: (it
  */
 function unknownModels(nodes: FlowNode[], catalog: Map<string, unknown>) {
   return nodes.filter((node) => node.agent.model && !catalog.has(node.agent.model))
-}
-
-/**
- * Nodes pointing at an agent the server has never heard of, and which of the
- * two reasons it is.
- *
- * The server reads a project's opencode.json once and caches it, so agents
- * merged after it started are invisible until it restarts. Running anyway is
- * the worst failure mode available: the session comes up with an empty
- * permission ruleset and every tool call dies with "Unable to read ...", which
- * reads like a broken model rather than a stale config.
- *
- * An **empty** list is a different question, and answering it as the same one
- * costs an hour: the built-ins are gone too, which no config merge can cause.
- * That is what a directory the server does not recognise as a project looks
- * like — most often one that is simply not a git repository. The run itself may
- * be perfectly fine, because a session's config is resolved from the engine's
- * own cwd rather than from `OPENFLOW_PROJECT`, so the unscoped list is asked
- * before anything is failed and the cards proceed when the names are in it.
- * Only when they are not is the run stopped, and then the fix is `git init`,
- * not a restart.
- */
-async function unknownAgents(nodes: FlowNode[], api: EngineDeps["api"]) {
-  const named = nodes.filter((node) => node.agent.name)
-  if (!named.length) return undefined
-  const available = await api
-    .agents()
-    .then((list) => new Set(list.map((agent) => agent.id)))
-    .catch(() => undefined)
-  if (!available) return undefined
-
-  if (!available.size) {
-    const drain = await api
-      .agentsUnscoped?.()
-      .then((list) => new Set(list.map((agent) => agent.id)))
-      .catch(() => undefined)
-    // No unscoped read available: the host is a test double or an older build,
-    // and guessing which of the two cases this is would be worse than the
-    // stale-config message that shipped before this check existed.
-    if (!drain) return { scope: "config" as const, nodes: named }
-    const missing = named.filter((node) => !drain.has(node.agent.name!))
-    return missing.length ? { scope: "directory" as const, nodes: missing } : undefined
-  }
-
-  const missing = named.filter((node) => !available.has(node.agent.name!))
-  return missing.length ? { scope: "config" as const, nodes: missing } : undefined
 }

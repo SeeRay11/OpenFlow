@@ -38,7 +38,7 @@ describe("the corpus", () => {
     // shape illegal. It is free, deterministic, and runs in CI — unlike the
     // half of an eval that spends money.
     for (const entry of CORPUS) {
-      const result = preflight(entry.pipeline, { unlockedModels: new Set([EVAL_MODEL]), engineReachable: true })
+      const result = preflight(entry.pipeline, { unlockedModels: new Set([EVAL_MODEL]) })
       expect({ id: entry.id, blocking: result.blocking.map((problem) => problem.kind) }).toEqual({
         id: entry.id,
         blocking: [],
@@ -50,7 +50,6 @@ describe("the corpus", () => {
     for (const entry of CORPUS) {
       const raised = preflight(entry.pipeline, {
         unlockedModels: new Set([EVAL_MODEL]),
-        engineReachable: true,
       }).warnings.map((problem) => problem.kind)
       const undeclared = raised.filter((kind) => !(entry.warns ?? []).includes(kind))
       // Named rather than counted: a new warning appearing on a shipped

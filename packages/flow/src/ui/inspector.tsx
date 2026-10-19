@@ -2,16 +2,16 @@ import { For, Show, createMemo, createSignal } from "solid-js"
 import { upstream } from "../graph/validate"
 import * as api from "../server/client"
 import type { ProviderRow } from "../server/providers"
-import { TOOLS, TOOL_HELP } from "../server/store"
+import { TOOLS } from "../server/card-spec"
+import { TOOL_HELP } from "./tool-help"
 import { actions, primary, runtimeOf, state } from "../state"
 import { Attachments, readFiles } from "./attachments"
+import { MemorySection, StageAnnouncer, SwarmSection, UpliftSection } from "./card-stages"
 import { IconTrash } from "./icons"
 import { ModelPicker } from "./model-picker"
-import { Select } from "./select"
 import { costLabel, formatCost, formatTokens } from "../server/usage"
 
 export function Inspector(props: {
-  agents: string[]
   providers: ProviderRow[]
   /** MCP servers the project configures, by name. */
   mcpServers: string[]
@@ -28,10 +28,9 @@ export function Inspector(props: {
   /**
    * Sends one throwaway prompt to the selected model.
    *
-   * A model being listed does not mean the account may use it — the zen
-   * catalog advertises models that answer `401 Model ... is not supported` —
-   * and a stored key is never verified when it is saved. This is the only
-   * thing that answers "does this actually work" short of a full run.
+   * A model being listed does not mean the account may use it, and a login is
+   * never verified when it is saved. This is the only thing that answers
+   * "does this actually work" short of a full run.
    */
   /** Reads picked files into data URLs and pins them to the node. */
   async function attach(id: string, files: File[]) {
@@ -54,12 +53,13 @@ export function Inspector(props: {
       <Show when={node()} fallback={<div class="empty-state">select a node to edit it</div>}>
         {(selected) => (
           <>
+            <StageAnnouncer nodeID={selected().id} role={selected().role} />
             <div class="panel-section">
               <h2 class="panel-title">node</h2>
 
               <Show when={many()}>
                 <div class="hint">
-                  {state.selection.length} cards selected — role, model, agent, prompt and tools apply to
+                  {state.selection.length} cards selected — role, model, prompt and tools apply to
                   all of them
                 </div>
               </Show>
@@ -81,7 +81,7 @@ export function Inspector(props: {
               </label>
 
               <div class="field-row">
-                <span class="field-label" title="which model runs this card — blank uses the agent's own default">
+                <span class="field-label" title="which model runs this card — blank uses Omp's default model">
                   model
                 </span>
                 <ModelPicker
@@ -92,7 +92,7 @@ export function Inspector(props: {
                 />
               </div>
               <div class="row">
-                <span class="hint">blank runs on the agent's own default</span>
+                <span class="hint">blank runs on Omp's default model</span>
                 <button
                   class="btn"
                   disabled={!selected().agent.model || testing()}
@@ -101,20 +101,6 @@ export function Inspector(props: {
                 >
                   test
                 </button>
-              </div>
-
-              <div class="field-row">
-                <span class="field-label" title="the opencode agent whose tool allowlist this card runs under">
-                  agent
-                </span>
-                <Select
-                  value={selected().agent.name ?? ""}
-                  options={[
-                    { value: "", label: "(server default)" },
-                    ...props.agents.map((agent) => ({ value: agent, label: agent })),
-                  ]}
-                  onChange={(value) => actions.updateSelectedAgent({ name: value })}
-                />
               </div>
 
               <label class="field-row">
@@ -256,9 +242,15 @@ export function Inspector(props: {
               </div>
             </Show>
 
+            {/* Prompt uplift, shared memory and the swarm, in the order a card
+                meets them. Each renders nothing until the card has a record. */}
+            <UpliftSection originalPrompt={runtime()?.originalPrompt} uplift={runtime()?.uplift} />
+            <MemorySection memory={runtime()?.memory} />
+            <SwarmSection swarm={runtime()?.swarm} />
+
             <Show when={runtime()?.prompt}>
               <div class="panel-section">
-                <h2 class="panel-title">sent prompt</h2>
+                <h2 class="panel-title">prompt as sent to the agent</h2>
                 <pre class="transcript">{runtime()!.prompt}</pre>
               </div>
             </Show>

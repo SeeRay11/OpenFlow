@@ -1,0 +1,273 @@
+/*
+ * Prompt uplift, shared memory and the agent swarm on a card.
+ *
+ * Own file so the stages can land without touching styles.css; it only reads
+ * the tokens that file defines. Tone is a `data-tone` attribute, like the
+ * status badge's `data-status`.
+ */
+
+/* chips in the card header ---------------------------------------------- */
+
+.stage-chip {
+  flex-shrink: 0;
+  max-width: 120px;
+  padding: 0 5px;
+  overflow: hidden;
+  border: 0.5px solid var(--v2-border-border-base);
+  border-radius: 3px;
+  background: var(--v2-background-bg-layer-02);
+  color: var(--v2-text-text-faint);
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.05px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-chip[data-tone="ok"] {
+  border-color: var(--v2-state-border-success);
+  background: var(--v2-state-bg-success);
+  color: var(--v2-state-fg-success);
+}
+
+.stage-chip[data-tone="info"] {
+  border-color: var(--v2-state-border-info);
+  background: var(--v2-state-bg-info);
+  color: var(--v2-state-fg-info);
+}
+
+.stage-chip[data-tone="warn"] {
+  border-color: var(--v2-state-border-warning);
+  background: var(--v2-state-bg-warning);
+  color: var(--v2-state-fg-warning);
+}
+
+.stage-chip[data-tone="danger"] {
+  border-color: var(--v2-state-border-danger);
+  background: var(--v2-state-bg-danger);
+  color: var(--v2-state-fg-danger);
+}
+
+/* memory counts are numbers read against each other, like the diff chip */
+.stage-chip-mem {
+  font-family: var(--v2-font-family-mono);
+}
+
+/* the header has to be able to wrap once a card carries several chips */
+.node-header:has(.stage-chip) {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+/* swarm line on the card ------------------------------------------------- */
+
+.stage-swarm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--v2-text-text-muted);
+}
+
+.stage-swarm[data-tone="info"] {
+  color: var(--v2-state-fg-info);
+}
+
+.stage-swarm[data-tone="danger"] {
+  color: var(--v2-state-fg-danger);
+}
+
+.stage-swarm-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-pills {
+  display: flex;
+  flex: 1 1 0;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.stage-pill {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 96px;
+  padding: 0 4px;
+  overflow: hidden;
+  border: 0.5px solid var(--v2-border-border-muted);
+  border-radius: 3px;
+  color: var(--v2-text-text-muted);
+  font-family: var(--v2-font-family-mono);
+  font-size: 10px;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-pill[data-state="running"] {
+  border-color: var(--v2-state-border-info);
+  color: var(--v2-state-fg-info);
+}
+
+.stage-pill[data-state="completed"] {
+  border-color: var(--v2-state-border-success);
+  color: var(--v2-state-fg-success);
+}
+
+.stage-pill[data-state="failed"] {
+  border-color: var(--v2-state-border-danger);
+  color: var(--v2-state-fg-danger);
+}
+
+.stage-pill[data-state="cancelled"] {
+  border-color: var(--v2-state-border-warning);
+  color: var(--v2-state-fg-warning);
+}
+
+.stage-pill-more {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 14px;
+}
+
+/* inspector sections ------------------------------------------------------ */
+
+.stage-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 10px;
+  margin: 0;
+}
+
+.stage-facts dt {
+  color: var(--v2-text-text-faint);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.stage-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.stage-details {
+  margin-top: 6px;
+}
+
+.stage-details > summary {
+  cursor: pointer;
+  color: var(--v2-text-text-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.stage-line {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.stage-line[data-tone="warn"] {
+  color: var(--v2-state-fg-warning);
+}
+
+.stage-line[data-tone="danger"] {
+  color: var(--v2-state-fg-danger);
+}
+
+.stage-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stage-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.stage-row-head {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.stage-row-head > .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-row-preview {
+  color: var(--v2-text-text-muted);
+  font-size: 12px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+/* announcements: present for assistive tech, invisible to everyone else */
+.stage-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* uplift failure dialog ------------------------------------------------- */
+
+.oc-dialog.uplift-dialog {
+  width: min(480px, 100%);
+  min-height: 0;
+}
+
+.uplift-failure-reason {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--v2-state-bg-danger);
+  color: var(--v2-state-fg-danger);
+  font-family: var(--v2-font-family-mono);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.uplift-failure-meta {
+  margin: 6px 0 0;
+}
+
+.uplift-failure-actions {
+  flex-wrap: wrap;
+  padding: 8px 4px 4px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .stage-chip,
+  .stage-pill {
+    transition:
+      color 120ms ease,
+      border-color 120ms ease,
+      background-color 120ms ease;
+  }
+}

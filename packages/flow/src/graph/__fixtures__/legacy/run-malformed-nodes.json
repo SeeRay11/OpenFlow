@@ -1,0 +1,15 @@
+{
+  "id": "run-malformed",
+  "pipeline": "p",
+  "pipelineID": "p1",
+  "input": "",
+  "status": "error",
+  "started": 1,
+  "nodes": [
+    null,
+    "node",
+    { "id": "x", "role": "r", "status": "error", "sessionID": 42 },
+    { "id": "y", "role": "r", "status": "done", "sessionID": "ses_y", "extraMetric": 1 },
+    ["ses_z"]
+  ]
+}

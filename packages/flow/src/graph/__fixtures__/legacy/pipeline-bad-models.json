@@ -1,0 +1,14 @@
+{
+  "id": "fixture-bad-models",
+  "name": "bad models",
+  "nodes": [
+    { "id": "n1", "role": "no-slash", "agent": { "model": "gpt-4", "prompt": "x" }, "position": { "x": 0, "y": 0 } },
+    { "id": "n2", "role": "no-id", "agent": { "model": "anthropic/", "prompt": "x" }, "position": { "x": 1, "y": 0 } },
+    { "id": "n3", "role": "no-provider", "agent": { "model": "/claude", "prompt": "x" }, "position": { "x": 2, "y": 0 } },
+    { "id": "n4", "role": "not-a-string", "agent": { "model": 7, "prompt": "x" }, "position": { "x": 3, "y": 0 } },
+    { "id": "n5", "role": "mixed-case", "agent": { "model": "OpenCode/Big-Pickle", "prompt": "x" }, "position": { "x": 4, "y": 0 } },
+    { "id": "n6", "role": "blank", "agent": { "model": "", "prompt": "x" }, "position": { "x": 5, "y": 0 } },
+    { "id": "n7", "role": "fine", "agent": { "model": "openrouter/openrouter/free", "prompt": "x" }, "position": { "x": 6, "y": 0 } }
+  ],
+  "edges": []
+}

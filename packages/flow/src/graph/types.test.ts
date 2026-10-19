@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { isPipeline } from "./pipeline-io"
 import { pipeline } from "./test-support"
 import {
   DEFAULT_DEPTH,
@@ -22,6 +23,8 @@ import {
   MODES,
   roundsOf,
   type Pipeline,
+  type RunLog,
+  type RunNodeLog,
 } from "./types"
 
 describe("modeOf", () => {
@@ -138,5 +141,69 @@ describe("gauntlet settings", () => {
   test("spend keeps its cents — it is the one budget that is not a count", () => {
     expect(gauntletOf(gauntlet(orchestration(pipeline("a")), { maxSpend: 2.5 }))!.maxSpend).toBe(2.5)
     expect(gauntletOf(gauntlet(orchestration(pipeline("a")), { maxSpend: Number.NaN }))!.maxSpend).toBe(DEFAULT_MAX_SPEND)
+  })
+})
+
+describe("what a card run records", () => {
+  const node: RunNodeLog = {
+    id: "a",
+    role: "coder",
+    status: "done",
+    prompt: "<BUILD_PROMPT>spec</BUILD_PROMPT>",
+    uplift: { status: "ok", original: "do it", uplifted: "<BUILD_PROMPT>spec</BUILD_PROMPT>", elapsedMs: 12 },
+    memory: {
+      read: { status: "ok", items: [{ scope: "repo:o/n", subject: "openflow/x/r/b", preview: "p", origin: "brief" }] },
+      write: { status: "stored", subject: "openflow/x/r/a" },
+    },
+    swarm: {
+      mode: "auto",
+      active: true,
+      counts: { queued: 0, running: 1, completed: 0, failed: 0, cancelled: 0 },
+      agents: [{ agent: "a05-backend", state: "running", at: 1 }],
+      updatedAt: 1,
+    },
+  }
+  const log = (nodes: RunNodeLog[]): RunLog => ({
+    id: "run-1",
+    pipeline: "p",
+    pipelineID: "p1",
+    input: "x",
+    status: "done",
+    started: 1,
+    nodes,
+  })
+
+  test("the original and uplifted prompts, memory and swarm state survive a JSON round trip", () => {
+    const back = JSON.parse(JSON.stringify(log([node]))) as RunLog
+    expect(back.nodes[0]).toEqual(node)
+    expect(back.nodes[0].uplift?.original).toBe("do it")
+    expect(back.nodes[0].prompt).toBe(back.nodes[0].uplift?.uplifted)
+  })
+
+  test("a log written before these fields existed still reads, with them absent", () => {
+    const old = JSON.parse('{"id":"run-0","pipeline":"p","pipelineID":"p1","input":"x","status":"done","started":1,"nodes":[{"id":"a","role":"coder","status":"done","agent":"flow-a","prompt":"sent"}]}') as RunLog
+    expect(old.nodes[0].uplift).toBeUndefined()
+    expect(old.nodes[0].memory).toBeUndefined()
+    expect(old.nodes[0].swarm).toBeUndefined()
+    expect(old.nodes[0].prompt).toBe("sent")
+  })
+})
+
+describe("a card's engine fields in a saved canvas", () => {
+  test("swarm and uplift persist through JSON and a file with them still imports", () => {
+    const graph: Pipeline = { ...pipeline("a"), defaultSwarm: "auto" }
+    graph.nodes[0].agent.swarm = "always"
+    graph.nodes[0].agent.uplift = false
+    const back = JSON.parse(JSON.stringify(graph)) as Pipeline
+    expect(back.defaultSwarm).toBe("auto")
+    expect(back.nodes[0].agent.swarm).toBe("always")
+    expect(back.nodes[0].agent.uplift).toBe(false)
+    expect(isPipeline(back)).toBe(true)
+  })
+
+  test("a file from the opencode era, naming an agent, still imports", () => {
+    const graph = pipeline("a")
+    graph.nodes[0].agent.name = "flow-a"
+    expect(isPipeline(JSON.parse(JSON.stringify(graph)))).toBe(true)
   })
 })

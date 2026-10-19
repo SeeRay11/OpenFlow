@@ -3,6 +3,7 @@ import { diffLabel, diffTitle } from "../graph/diff"
 import { roleColor } from "../graph/roles"
 import type { FlowNode, NodeStatus } from "../graph/types"
 import { actions, runtimeOf, state } from "../state"
+import { MemoryChip, SwarmLine, UpliftChip } from "../ui/card-stages"
 import { NODE_WIDTH } from "./geometry"
 
 /** One line explaining what a card's status word means, for the badge tooltip. */
@@ -101,6 +102,10 @@ export function NodeCard(props: {
             </Show>
           </span>
         </Show>
+        {/* What happened to the card's task around the turn: uplift outcome and
+            shared-memory counts. Each renders nothing until it has a record. */}
+        <UpliftChip uplift={runtime().uplift} />
+        <MemoryChip memory={runtime().memory} />
       </div>
 
       <div class="node-body">
@@ -113,6 +118,7 @@ export function NodeCard(props: {
         <Show when={runtime().activity}>
           <div class="node-line accent">{runtime().activity}</div>
         </Show>
+        <SwarmLine swarm={runtime().swarm} />
         <Show when={runtime().error}>
           <div class="node-error">{runtime().error}</div>
         </Show>

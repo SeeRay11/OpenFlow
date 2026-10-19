@@ -1,0 +1,21 @@
+{
+  "id": "fixture-omp-native",
+  "name": "already omp",
+  "mode": "swarm",
+  "rounds": 2,
+  "nodes": [
+    {
+      "id": "a",
+      "role": "researcher",
+      "agent": { "model": "anthropic/claude-sonnet-4-5", "prompt": "Research." },
+      "position": { "x": 0, "y": 0 }
+    },
+    {
+      "id": "b",
+      "role": "writer",
+      "agent": { "prompt": "Write." },
+      "position": { "x": 200, "y": 0 }
+    }
+  ],
+  "edges": [{ "id": "e1", "source": "a", "target": "b" }]
+}

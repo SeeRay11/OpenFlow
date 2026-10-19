@@ -1,3 +1,6 @@
+import type { MemoryInfo } from "../../shared/memory"
+import type { SwarmMode, SwarmStatus } from "../../shared/swarm"
+import type { UpliftInfo } from "../../shared/uplift"
 import type { LedgerRound } from "./ledger"
 
 export type NodeStatus = "idle" | "queued" | "running" | "done" | "error" | "skipped" | "stopped"
@@ -37,13 +40,16 @@ export type Attachment = {
 }
 
 export type FlowAgent = {
-  /** Existing opencode agent to run this node as. Empty = server default. */
+  /**
+   * An opencode agent name, from before cards ran on Omp. Tolerated on parse so
+   * an old file still loads; nothing reads it.
+   */
   name?: string
-  /** "providerID/modelID". Empty = agent/server default. */
+  /** "providerID/modelID". Empty = Omp's configured default model. */
   model?: string
   /** Role instructions, prepended to every prompt this node sends. */
   prompt: string
-  /** Tool allowlist written into the generated agent config. */
+  /** Tool toggles in OpenFlow's vocabulary, folded by `toolMap` into the card's launch spec. */
   tools?: Record<string, boolean>
   /**
    * MCP servers this node may use, by config name. `undefined` means the node
@@ -53,6 +59,16 @@ export type FlowAgent = {
   mcp?: string[]
   /** Files pinned to this node, sent with every run. */
   attachments?: Attachment[]
+  /**
+   * Agent Swarm under this card's Omp session. Absent inherits the canvas's
+   * `defaultSwarm`, and then the host's settings.
+   */
+  swarm?: SwarmMode
+  /**
+   * `false` sends this card's task as written, skipping Prompt Uplift. Absent
+   * means uplifted — a per-card opt-out, never an opt-in.
+   */
+  uplift?: boolean
 }
 
 export type FlowNode = {
@@ -130,6 +146,13 @@ export type Pipeline = {
    * an answer that has been judged.
    */
   verify?: Verify
+  /**
+   * The Agent Swarm mode every card launches with unless its own
+   * `agent.swarm` says otherwise. Absent defers to the host's settings.
+   * Named apart from `mode: "swarm"`, which is how the canvas schedules cards;
+   * this is whether a card's own Omp session loads the swarm extension.
+   */
+  defaultSwarm?: SwarmMode
 }
 
 /**
@@ -314,8 +337,16 @@ export type RunNodeLog = {
   /** Attachment names actually sent, and those the model could not read. */
   attachments?: { sent: string[]; skipped: string[] }
   model?: string
+  /** An opencode agent name, from a run logged before cards ran on Omp. Never written now. */
   agent?: string
+  /** The text actually sent to the session: uplifted, with context and memory, when those ran. */
   prompt?: string
+  /** Prompt Uplift: the original task and what it became, so both survive in the log. */
+  uplift?: UpliftInfo
+  /** Shared memory: what this card read before it ran and what it wrote after. */
+  memory?: MemoryInfo
+  /** Agent Swarm activity under this card's session. */
+  swarm?: SwarmStatus
   output?: string
   error?: string
   started?: number

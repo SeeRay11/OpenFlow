@@ -6,7 +6,7 @@ export const ORCHESTRATOR_ROLE = "orchestrator"
 /**
  * The role a card must carry to judge a gauntlet's work.
  *
- * It is opencode's own `reviewer`, not a new role: reviewing against a standard
+ * It is the stock `reviewer` role, not a new one: reviewing against a standard
  * is what that card already is, and a gauntlet only changes what it is pointed
  * at and how often. Read off the role text the same way a swarm reads its
  * synthesizer, so designating a critic is renaming a card rather than setting a

@@ -1,5 +1,5 @@
 import type { NodeEvent } from "../graph/types"
-import type { BusEvent } from "./client"
+import type { BusEvent } from "../../shared/engine"
 
 /**
  * How much of one body is kept while the app holds the run in memory. Long
@@ -14,7 +14,7 @@ export const EVENT_LIMIT = 300
 /** Events kept per node in the saved run log. */
 export const PERSIST_EVENT_LIMIT = 200
 
-/** The tool opencode spawns a subagent with. Its child session is nested under it. */
+/** The tool omp spawns a subagent with. Its child session is nested under it. */
 const SUBAGENT_TOOL = "task"
 
 /**
@@ -70,6 +70,9 @@ export function createActivity(options: ActivityOptions) {
    * would lose its arguments the moment it finished.
    */
   const names = new Map<string, string>()
+
+  /** Notices carry no id of their own; each is its own row. */
+  let notices = 0
 
   function place(sessionID: string) {
     const own = options.owner(sessionID)
@@ -221,6 +224,21 @@ export function createActivity(options: ActivityOptions) {
             title: names.get(data.callID) ?? "tool",
             status: "error",
             body: message(data.error) ?? render(data.result) ?? "failed",
+          })
+        }
+
+        // omp's `notice` and extension errors. A notice with no session
+        // belongs to no card, and `consume` already returned for it.
+        case "flow.notice": {
+          const text = String(data.message ?? "")
+          if (!text) return
+          notices += 1
+          return emit(sessionID, {
+            id: `notice:${notices}`,
+            kind: "note",
+            title: oneLine(text, 120),
+            status: data.level === "error" ? "error" : undefined,
+            body: text,
           })
         }
 

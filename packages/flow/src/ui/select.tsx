@@ -15,14 +15,13 @@ export type SelectOption = {
 }
 
 /**
- * One dropdown, built as opencode's own menus are.
+ * One dropdown, shared by every menu in OpenFlow.
  *
- * The native `<select>` cannot be styled into opencode's popover — its list is
- * drawn by the OS — so every menu in OpenFlow goes through this instead:
+ * The native `<select>` cannot be styled into the popover look used across the
+ * app — its list is drawn by the OS — so every menu goes through this instead:
  * a 28px trigger, a floating panel with 4px radius rows, a check on the row
- * that is selected, and ↑/↓/Enter/Escape wired the way
- * `packages/app/src/components/dialog-select-model.tsx` wires them. Search only
- * appears when the list is long enough to need it.
+ * that is selected, and ↑/↓/Enter/Escape navigation. Search only appears when
+ * the list is long enough to need it.
  *
  * It is fully controlled. Pass `value=""` on menus that are actions rather than
  * state (open a pipeline, open a run) and nothing sticks after the pick.
@@ -44,7 +43,7 @@ export function Select(props: {
   variant?: "field" | "ghost"
   placement?: "bottom" | "top"
   align?: "start" | "end"
-  /** Menu width in px. Defaults to opencode's 284px popover. */
+  /** Menu width in px. Defaults to the 284px popover the model picker uses. */
   width?: number
   /** Force the search row on or off. Default: on above 8 options. */
   search?: boolean
@@ -233,7 +232,7 @@ export function Select(props: {
                           title={option.title ?? option.label}
                           disabled={option.disabled}
                           // Keeps the click from pulling focus off the search
-                          // row, the way opencode's own rows do.
+                          // row.
                           onPointerDown={(event) => event.preventDefault()}
                           onMouseEnter={() => !option.disabled && setActive(option.value)}
                           onClick={() => choose(option.value)}

@@ -1,6 +1,6 @@
 import { For, Show, createSignal } from "solid-js"
 import { allRoles, removeCustomRole, saveCustomRole, type Role } from "../graph/roles"
-import { TOOLS } from "../server/store"
+import { TOOLS } from "../server/card-spec"
 import { IconClose, IconTrash } from "./icons"
 
 const DEFAULT_COLOR = "#9ad1f0"

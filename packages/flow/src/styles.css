@@ -1,9 +1,9 @@
 /*
- * OpenFlow wears opencode's clothes.
+ * Design tokens and shared surfaces for the OpenFlow page.
  *
- * The flow page is a standalone vite entry — it does not load
- * `@opencode-ai/ui`, so the design tokens cannot be imported, only copied. The
- * two blocks below are verbatim transcriptions of
+ * The flow page is a standalone vite entry — it does not load the app's shared
+ * UI package, so its design tokens cannot be imported, only copied. The two
+ * blocks below are verbatim transcriptions of
  * `packages/ui/src/v2/styles/colors.css` (primitives) and the two
  * `[data-color-scheme]` rules in `packages/ui/src/v2/styles/theme.css`
  * (semantics). Nothing else in this file may state a colour: every rule
@@ -590,7 +590,7 @@ textarea:focus-visible,
   box-shadow: 0 0 0 1px var(--v2-border-border-focus);
 }
 
-/* opencode's controls settle rather than move; nothing here animates position */
+/* controls settle rather than move; nothing here animates position */
 .btn,
 .icon-btn,
 .field,
@@ -1184,8 +1184,8 @@ main {
 }
 
 /* sessions ---------------------------------------------------------------
-   A fourth column, left of the palette, holding the sessions `opencode serve`
-   already has for this project. It is unmounted rather than hidden when
+   A fourth column, left of the palette, holding the sessions the host holds
+   for this project. It is unmounted rather than hidden when
    collapsed, so the canvas gets the width back and the list stops polling. */
 
 .sessions {
@@ -1641,7 +1641,7 @@ main {
 /*
  * The grid is drawn at 6% white on the base surface — one shade off invisible.
  * It exists so a drag has something to read against; the moment it is legible
- * as a pattern the canvas stops looking like opencode and starts looking like a
+ * as a pattern the canvas stops looking like a canvas and starts looking like a
  * diagramming tool.
  */
 .canvas {
@@ -2001,10 +2001,10 @@ main {
   margin-top: 2px;
 }
 
-/* opencode menus and dialogs -------------------------------------------- */
+/* menus and dialogs ------------------------------------------------------ */
 
 /*
- * `.oc` used to carry opencode's font and a private palette. `body` carries the
+ * `.oc` used to carry its own font and a private palette. `body` carries the
  * type now and `:root` carries the tokens, so the class survives only as the
  * stacking context a floating root needs — the markup still emits it, and a
  * dialog that shares a stacking context with the canvas is a bug waiting.
@@ -2051,8 +2051,8 @@ main {
   font: inherit;
   letter-spacing: inherit;
   text-align: left;
-  /* opencode's rows do not take the pointer cursor, and they keep a margin so
-     a row scrolled into view by the keyboard is not flush with the edge */
+  /* rows do not take the pointer cursor, and they keep a margin so a row
+     scrolled into view by the keyboard is not flush with the edge */
   cursor: default;
   scroll-margin: 6px 0;
 }
@@ -2083,8 +2083,8 @@ main {
   font-weight: 560;
 }
 
-/* opencode sets row titles a notch above body weight — 530, not the 440 the
-   rest of the interface runs at */
+/* Row titles sit a notch above body weight — 530, not the 440 the rest of the
+   interface runs at */
 .oc-item-label {
   flex: 1;
   min-width: 0;
@@ -2337,9 +2337,9 @@ main {
 /* providers dialog ------------------------------------------------------ */
 
 /*
- * Top-anchored, not centred. opencode pins its dialogs to where the top edge
- * of a full-height one would sit and lets the body grow downwards, so the
- * frame does not jump up and down as a search filters the list under it.
+ * Top-anchored, not centred. Dialogs are pinned to where the top edge of a
+ * full-height one would sit and the body grows downwards, so the frame does not
+ * jump up and down as a search filters the list under it.
  */
 .oc-backdrop {
   position: fixed;

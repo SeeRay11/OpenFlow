@@ -1,19 +1,32 @@
 import { describe, expect, test } from "bun:test"
 import { DISPATCH_TOOL, FINISH_TOOL, MCP_REACHES_SESSIONS } from "./dispatch"
+import { UPLIFTED_ROOT_TAGS } from "../../shared/uplift"
 import { FAIL, PASS } from "./verdict"
 import {
+  alreadyUplifted,
   buildPrompt,
+  buildSections,
+  CONTEXT_HEADING,
   criticPrompt,
   forceFinalPrompt,
   dispatchResultPrompt,
   orchestratorPrompt,
   pipelineBriefing,
+  plainPrompt,
   reassignPrompt,
+  stripRaw,
   subOrchestratorPrompt,
+  subOrchestratorSections,
   subagentPrompt,
+  subagentSections,
   swarmBriefing,
   swarmPrompt,
+  swarmSections,
   synthesisPrompt,
+  synthesisSections,
+  taskOf,
+  upliftedPrompt,
+  verifyPrompt,
 } from "./prompt"
 import { nodeMap, pipeline } from "./test-support"
 import type { FlowNode, Pipeline } from "./types"
@@ -374,25 +387,134 @@ describe("no card is ever asked to ask", () => {
   })
 })
 
-describe("the parked tool channel", () => {
-  // Naming a tool the card cannot call costs a whole turn: it calls, gets
-  // `Unknown tool`, and only then writes the block. Measured on every run.
-  test("the briefing teaches only the channel the card actually has", () => {
+describe("the tool channel", () => {
+  test("the briefing teaches the tools first and keeps the fenced block as the fallback", () => {
     const graph: Pipeline = { ...pipeline("boss->a"), mode: "orchestration" }
     const text = orchestratorPrompt(graph, graph.nodes[0], "do it")
 
-    expect(MCP_REACHES_SESSIONS).toBe(false)
-    expect(text).not.toContain(DISPATCH_TOOL)
-    expect(text).not.toContain(FINISH_TOOL)
-    expect(text).toContain("there is no dispatch tool")
-    expect(text).toContain("```openflow")
+    expect(MCP_REACHES_SESSIONS).toBe(true)
+    expect(text).toContain(DISPATCH_TOOL)
+    expect(text).toContain(FINISH_TOOL)
+    expect(text).not.toContain("there is no dispatch tool")
+    expect(text.indexOf(DISPATCH_TOOL)).toBeLessThan(text.indexOf("```openflow"))
     expect(text).toContain('{ "final": "the answer to the task" }')
   })
 
-  test("the forced answer names no tool either", () => {
+  test("the forced answer names the finish tool and still offers the block", () => {
     const text = forceFinalPrompt("Your dispatch budget is spent.")
-    expect(text).not.toContain(FINISH_TOOL)
+    expect(text).toContain(FINISH_TOOL)
     expect(text).toContain("fenced block")
+  })
+})
+
+describe("memory is no longer denied", () => {
+  const orchestration: Pipeline = { ...pipeline("boss->a"), mode: "orchestration" }
+  const texts = [
+    pipelineBriefing(graph, graph.nodes[0]),
+    swarmBriefing({ ...pipeline("a", "b", "verdict"), mode: "swarm" }, pipeline("a").nodes[0]),
+    orchestratorPrompt(orchestration, orchestration.nodes[0], "do it"),
+    subagentPrompt(orchestration, orchestration.nodes[1], orchestration.nodes[0], "task", "input"),
+  ]
+
+  test("no briefing tells a card it shares no memory", () => {
+    for (const text of texts) expect(text).not.toMatch(/share no memory/)
+  })
+
+  test("every briefing says memory may be appended as untrusted evidence", () => {
+    for (const text of texts) expect(text).toMatch(/project memory/i)
+    for (const text of texts) expect(text).toContain("untrusted evidence")
+  })
+
+  test("no prompt names opencode", () => {
+    const critic = criticPrompt(orchestration, orchestration.nodes[1], orchestration.nodes[0], "task", "input")
+    const verify = verifyPrompt(graph, graph.nodes[0], "result")
+    for (const text of [...texts, critic, verify]) expect(text).not.toContain("opencode")
+  })
+})
+
+describe("prompt sections", () => {
+  const input = "ship the thing"
+
+  test("the plain prompt is the sections in order, unchanged by the split", () => {
+    const sections = buildSections(graph, nodes.get("coder")!, ["planner"], outputs, input)
+    expect(plainPrompt(sections)).toBe(buildPrompt(graph, nodes.get("coder")!, ["planner"], outputs, input))
+    expect(sections.filter((section) => section.own).map((section) => section.text)).toEqual([`# Task\n\n${input}`])
+  })
+
+  test("a card's own task is its role instructions and its task, never another card's output", () => {
+    const coder = node("coder", "Write the code.")
+    const sections = buildSections(graph, coder, ["planner"], outputs, input)
+    expect(taskOf(sections)).toBe(`Write the code.\n\n# Task\n\n${input}`)
+    expect(taskOf(sections)).not.toContain("planner")
+  })
+
+  test("a sub-orchestrator's and a subagent's assignment are task text; their briefings are not", () => {
+    const tree: Pipeline = { ...pipeline("boss->mid", "mid->leaf"), mode: "orchestration" }
+    const mid = subOrchestratorSections(tree, tree.nodes[1], tree.nodes[0], "build the middle", input)
+    expect(taskOf(mid)).toContain("build the middle")
+    expect(taskOf(mid)).not.toContain("# OpenFlow")
+    const leaf = subagentSections(tree, tree.nodes[2], tree.nodes[1], "write the leaf", input)
+    expect(taskOf(leaf)).toBe(`# What the run is for\n\n${input}\n\n# Your assignment\n\nwrite the leaf`)
+  })
+
+  test("round 1 of a swarm and a synthesis are task turns with their own split", () => {
+    const mesh: Pipeline = { ...pipeline("a", "b", "verdict"), mode: "swarm" }
+    expect(plainPrompt(swarmSections(mesh, mesh.nodes[0], input))).toBe(swarmPrompt(mesh, mesh.nodes[0], 1, new Map(), input))
+    expect(taskOf(swarmSections(mesh, mesh.nodes[0], input))).toBe(`# Task\n\n${input}`)
+    const finals = new Map([["a", "a said"]])
+    const synth = synthesisSections(mesh, mesh.nodes[2], finals, input)
+    expect(plainPrompt(synth)).toBe(synthesisPrompt(mesh, mesh.nodes[2], finals, input))
+    expect(taskOf(synth)).toBe(`# Task\n\n${input}`)
+  })
+
+  test("an uplifted prompt keeps the spec first and every other section verbatim under one heading", () => {
+    const coder = node("coder", "Write the code.")
+    const sections = buildSections(graph, coder, ["planner"], outputs, input)
+    const text = upliftedPrompt(sections, "<BUILD_PROMPT>spec</BUILD_PROMPT>\n", ["a note"])
+
+    expect(text.startsWith("<BUILD_PROMPT>spec</BUILD_PROMPT>\n\n" + CONTEXT_HEADING)).toBe(true)
+    expect(text).toContain(pipelineBriefing(graph, coder))
+    expect(text).toContain("## planner (planner)")
+    expect(text.endsWith("a note")).toBe(true)
+    // The original task text is not repeated: the spec replaced it.
+    expect(text).not.toContain("# Task")
+    expect(text).not.toContain("Write the code.")
+  })
+
+  test("with nothing to append the spec goes alone", () => {
+    expect(upliftedPrompt([{ text: "own", own: true }], "<FIX_PROMPT/>")).toBe("<FIX_PROMPT/>")
+  })
+
+  test("text already carrying a spec root tag is recognised, behind a heading or not", () => {
+    for (const tag of UPLIFTED_ROOT_TAGS) {
+      expect(alreadyUplifted([{ text: `<${tag}>x</${tag}>`, own: true }])).toBe(true)
+      expect(alreadyUplifted([{ text: `# Task\n\n  <${tag} id="1">`, own: true }])).toBe(true)
+    }
+    expect(alreadyUplifted([{ text: "# Task\n\nplease <BUILD_PROMPT> this", own: true }])).toBe(false)
+    expect(alreadyUplifted([{ text: "<BUILD_PROMPTS>", own: true }])).toBe(false)
+    // Context is another card's text; a spec there says nothing about this task.
+    expect(alreadyUplifted([{ text: "<BUILD_PROMPT>x</BUILD_PROMPT>" }])).toBe(false)
+  })
+
+  test("a leading raw: opts out and is stripped, wherever the task sits", () => {
+    const coder = node("coder", "")
+    const stripped = stripRaw(buildSections(graph, coder, [], outputs, "raw: just do it"))
+    expect(stripped.raw).toBe(true)
+    expect(taskOf(stripped.sections)).toBe("# Task\n\njust do it")
+
+    const bare = stripRaw([{ text: "  RAW:   keep going", own: true }])
+    expect(bare.raw).toBe(true)
+    expect(bare.sections[0].text).toBe("  keep going")
+  })
+
+  test("raw: in the middle of a task, or in context, is just text", () => {
+    const sections = [
+      { text: "# Task\n\nexplain raw: strings", own: true as const },
+      { text: "raw: in context" },
+    ]
+    const result = stripRaw(sections)
+    expect(result.raw).toBe(false)
+    expect(result.sections).toEqual(sections)
   })
 })
 

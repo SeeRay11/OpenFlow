@@ -1,0 +1,78 @@
+{
+  "id": "16b0c27b-0262-4842-9e88-2fc8dda62280",
+  "name": "feature-build",
+  "nodes": [
+    {
+      "id": "nmsqpnwo61",
+      "role": "planner",
+      "agent": {
+        "prompt": "You are the planner. Break the task into concrete, ordered steps. Name the files and interfaces involved. Do not write implementation code. End with a numbered plan. Answer in at most 2 short sentences. Do not use tools.",
+        "tools": {
+          "read": true,
+          "grep": true,
+          "glob": true,
+          "write": false,
+          "edit": false,
+          "bash": false
+        },
+        "model": "opencode/nemotron-3.5-lightning-free"
+      },
+      "position": {
+        "x": 40,
+        "y": 40
+      }
+    },
+    {
+      "id": "nmsqpnwo72",
+      "role": "architect",
+      "agent": {
+        "prompt": "You are the architect. Given the plan, decide module boundaries, data shapes, and the public interfaces. Output signatures and file layout. No implementation. Answer in at most 2 short sentences. Do not use tools.",
+        "tools": {
+          "read": true,
+          "grep": true,
+          "glob": true,
+          "write": false,
+          "edit": false,
+          "bash": false
+        },
+        "model": "opencode/nemotron-3.5-lightning-free"
+      },
+      "position": {
+        "x": 340,
+        "y": 40
+      }
+    },
+    {
+      "id": "nmsqpnwo83",
+      "role": "coder",
+      "agent": {
+        "prompt": "You are the coder. Implement exactly what the upstream plan and architecture specify. Keep diffs tight. Answer in at most 2 short sentences. Do not use tools.",
+        "tools": {
+          "read": true,
+          "grep": true,
+          "glob": true,
+          "write": true,
+          "edit": true,
+          "bash": true
+        },
+        "model": "opencode/nemotron-3.5-lightning-free"
+      },
+      "position": {
+        "x": 640,
+        "y": 40
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "emsqpnwu30",
+      "source": "nmsqpnwo61",
+      "target": "nmsqpnwo72"
+    },
+    {
+      "id": "emsqpnwu31",
+      "source": "nmsqpnwo72",
+      "target": "nmsqpnwo83"
+    }
+  ]
+}

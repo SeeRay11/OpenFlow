@@ -9,10 +9,10 @@ export type Role = {
   agent: FlowAgent
 }
 
-// planner, architect, coder, reviewer and custom carry opencode's own agent
-// colours (plan, writer, build, review, explore) at their dark values, so a role
-// reads the same here as it does in the app — do not "fix" them back to a
-// generic palette. `synthesizer` is OpenFlow's own and says so where it sits.
+// planner, architect, coder, reviewer and custom carry the agent colours the
+// rest of the app uses (plan, writer, build, review, explore) at their dark
+// values, so a role reads the same here as it does there — do not "fix" them
+// back to a generic palette. `synthesizer` is OpenFlow's own and says so where it sits.
 export const ROLES: Role[] = [
   {
     id: "planner",
@@ -57,7 +57,7 @@ export const ROLES: Role[] = [
       tools: { read: true, grep: true, glob: true, edit: false, bash: false },
     },
   },
-  // The two below are OpenFlow's own, because opencode has no agent that does
+  // The two below are OpenFlow's own, because none of the five above does
   // either job: reading a whole swarm and deciding, and handing work out to
   // cards it can see. Cyan and amber are the hues the five above leave free.
   {

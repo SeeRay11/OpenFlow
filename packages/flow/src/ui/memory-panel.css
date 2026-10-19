@@ -1,0 +1,214 @@
+/* Memory panel (the "Memory" tab of the Omp settings dialog) -------------- */
+
+.mem-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.mem-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mem-toolbar h3,
+.mem-entries h4 {
+  margin: 0;
+  font-weight: 530;
+}
+
+.mem-toolbar h3 {
+  font-size: 14px;
+}
+
+.mem-entries h4 {
+  font-size: 13px;
+}
+
+.mem-pipeline {
+  font-family: var(--oc-font-mono);
+  font-weight: 440;
+}
+
+.mem-note,
+.mem-retention {
+  margin: 0;
+  color: var(--oc-text-muted);
+}
+
+.mem-retention {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--oc-layer-02);
+}
+
+.mem-live {
+  min-height: 1.4em;
+  margin: 0;
+  color: var(--oc-text-muted);
+}
+
+.mem-live[data-failed="true"] {
+  color: var(--oc-danger);
+}
+
+.mem-alert {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 0.5px solid var(--v2-state-border-danger, var(--oc-border-base));
+  border-radius: 6px;
+  color: var(--oc-danger);
+}
+
+.mem-alert > span {
+  flex: 1;
+}
+
+.mem-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0;
+}
+
+.mem-facts dt {
+  color: var(--oc-text-muted);
+}
+
+.mem-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mem-facts dd[data-ok="false"] {
+  color: var(--oc-danger);
+}
+
+.mem-problems {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 8px 12px 8px 28px;
+  border-radius: 6px;
+  background: var(--oc-layer-02);
+  color: var(--oc-text-muted);
+}
+
+.mem-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 0.5px solid var(--oc-border-muted);
+}
+
+.mem-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mem-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 0.5px solid var(--oc-border-muted);
+  border-radius: 6px;
+}
+
+.mem-entry[data-retracted="true"] {
+  background: var(--oc-layer-02);
+  color: var(--oc-text-muted);
+}
+
+.mem-entry[data-retracted="true"] .mem-preview {
+  text-decoration: line-through;
+}
+
+.mem-entry-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.mem-subject {
+  min-width: 0;
+  font-family: var(--oc-font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.mem-tag {
+  padding: 0 6px;
+  border: 0.5px solid var(--oc-border-base);
+  border-radius: 4px;
+  color: var(--oc-text-muted);
+  font-size: 11px;
+}
+
+.mem-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  color: var(--oc-text-muted);
+  font-size: 12px;
+}
+
+.mem-preview {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.mem-forget {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.mem-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 0.5px solid var(--v2-state-border-danger, var(--oc-border-base));
+  border-radius: 6px;
+}
+
+.mem-confirm p {
+  margin: 0;
+  color: var(--oc-text-muted);
+}
+
+.mem-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Status-tab sections the dialog adds for the swarm and memory lines. */
+.mem-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 0.5px solid var(--oc-border-muted);
+}
+
+.mem-subhead {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 530;
+}

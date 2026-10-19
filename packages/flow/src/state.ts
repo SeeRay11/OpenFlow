@@ -15,6 +15,9 @@ import type {
 import { applyEvent } from "./server/activity"
 import type { QuestionInfo } from "./server/client"
 import { emptyPipeline, modeOf, type FlowMode, type Gauntlet, type Verify } from "./graph/types"
+import type { MemoryInfo } from "../shared/memory"
+import type { SwarmStatus } from "../shared/swarm"
+import type { UpliftInfo } from "../shared/uplift"
 import { pathThrough, wouldCycle } from "./graph/validate"
 
 export type NodeRuntime = {
@@ -32,6 +35,11 @@ export type NodeRuntime = {
   diff?: CardDiff
   /** What the card has done, in order — see `NodeEvent`. */
   events?: NodeEvent[]
+  /** The card's own task text before prompt uplift; `prompt` is what was actually sent. */
+  originalPrompt?: string
+  uplift?: UpliftInfo
+  memory?: MemoryInfo
+  swarm?: SwarmStatus
 }
 
 export type PendingPermission = {
@@ -47,6 +55,16 @@ export type PendingQuestion = {
   nodeID: string
   role: string
   questions: QuestionInfo[]
+}
+
+export type UpliftChoice = "original" | "retry" | "cancel"
+
+export type PendingUpliftFailure = {
+  requestID: string
+  nodeID: string
+  role: string
+  reason: string
+  elapsedMs: number
 }
 
 export type FlowState = {
@@ -70,17 +88,21 @@ export type FlowState = {
   notice?: { kind: "info" | "error"; text: string }
   permissions: PendingPermission[]
   questions: PendingQuestion[]
+  /** Cards parked on a failed prompt uplift, oldest first; the dialog shows the first. */
+  upliftFailures: PendingUpliftFailure[]
   /** Graph edits made since the last load or save — what a replace would destroy. */
   dirty: boolean
   /**
-   * Whether `opencode serve` answered the last time anything asked it.
+   * Whether the OpenFlow host (`/flow/api`, the process started by `bun openflow.ts`)
+   * answered the last time anything asked it.
    *
-   * The single source of truth for engine reachability. With the engine down
-   * every provider read comes back empty, and every surface that reads a model
+   * The single source of truth for host reachability. With the host down every
+   * model and provider read comes back empty, and every surface that reads a model
    * list would otherwise conclude "no provider is connected" — confidently and
-   * wrongly. Optimistic until the first probe lands, which is milliseconds.
+   * wrongly. Optimistic until the first probe lands, which is milliseconds. Whether
+   * `omp` itself is installed is a separate fact (`health.omp.available`).
    */
-  engineReachable: boolean
+  hostReachable: boolean
 }
 
 const [state, setState] = createStore<FlowState>({
@@ -92,8 +114,9 @@ const [state, setState] = createStore<FlowState>({
   attachments: [],
   permissions: [],
   questions: [],
+  upliftFailures: [],
   dirty: false,
-  engineReachable: true,
+  hostReachable: true,
 })
 
 export { state }
@@ -109,6 +132,9 @@ type PermissionReply = "once" | "always" | "reject"
 
 /** Same idea for questions: `undefined` is a rejection, not an empty answer. */
 const asking = new Map<string, (answers: string[][] | undefined) => void>()
+
+/** And for uplift failures: the card is parked until one of the three choices comes back. */
+const deciding = new Map<string, (choice: UpliftChoice) => void>()
 
 let counter = 0
 function nodeID() {
@@ -443,8 +469,8 @@ export const actions = {
     setState("dirty", true)
   },
 
-  setEngineReachable(reachable: boolean) {
-    setState("engineReachable", reachable)
+  setHostReachable(reachable: boolean) {
+    setState("hostReachable", reachable)
   },
 
   setInput(input: string) {
@@ -578,6 +604,33 @@ export const actions = {
     setState("questions", [])
   },
 
+  /**
+   * Blocks one card on a failed prompt uplift and resolves with the person's
+   * choice. The dialog shows one failure at a time; every one of them stays
+   * pending (and its card parked) until it is decided or the run is stopped.
+   */
+  askUpliftFailure(request: PendingUpliftFailure) {
+    const { promise, resolve } = Promise.withResolvers<UpliftChoice>()
+    deciding.set(request.requestID, resolve)
+    setState("upliftFailures", (pending) => [...pending, request])
+    return promise
+  },
+
+  resolveUpliftFailure(requestID: string, choice: UpliftChoice) {
+    deciding.get(requestID)?.(choice)
+    deciding.delete(requestID)
+    setState("upliftFailures", (pending) => pending.filter((request) => request.requestID !== requestID))
+  },
+
+  /** Stop path: every card still waiting on an uplift decision is cancelled, so none hangs. */
+  rejectUpliftFailures() {
+    for (const [requestID, resolve] of deciding) {
+      resolve("cancel")
+      deciding.delete(requestID)
+    }
+    setState("upliftFailures", [])
+  },
+
   /** Stopping a run must not leave the UI holding unanswered prompts. */
   rejectPermissions() {
     for (const [requestID, resolve] of waiting) {
@@ -588,6 +641,8 @@ export const actions = {
   },
 
   resetRuntime(statuses: Record<string, NodeStatus>) {
+    // Decisions left over from the previous run belong to cards that no longer exist.
+    actions.rejectUpliftFailures()
     setState(
       produce((draft) => {
         draft.runtime = {}

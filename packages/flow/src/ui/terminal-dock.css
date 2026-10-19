@@ -1,0 +1,171 @@
+/* Terminal dock ---------------------------------------------------------- */
+
+/*
+ * The activity drawer's shell, for a shell: a row of the app column between the
+ * canvas and the status bar, not an overlay, so the graph keeps its own space.
+ * The grip and the bar are the drawer's, restated here because styles.css is not
+ * this component's to edit.
+ */
+.terminal-dock {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-height: 0;
+  max-height: 70vh;
+  border-top: 1px solid var(--v2-border-border-muted);
+  background: var(--v2-background-bg-layer-01);
+}
+
+.terminal-grip {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 7px;
+  cursor: ns-resize;
+  z-index: 1;
+}
+
+.terminal-grip:hover {
+  background: var(--v2-border-border-focus);
+}
+
+.terminal-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  min-height: 36px;
+  padding: 4px 8px 4px 12px;
+  border-bottom: 0.5px solid var(--v2-border-border-muted);
+}
+
+.terminal-title {
+  font-weight: 560;
+  white-space: nowrap;
+}
+
+.terminal-spacer {
+  flex: 1;
+  min-width: 8px;
+}
+
+/* omp | shell: two buttons that read as one control */
+.terminal-kind {
+  display: inline-flex;
+  border: 0.5px solid var(--v2-border-border-base);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.terminal-kind button {
+  height: 24px;
+  padding: 0 10px;
+  color: var(--v2-text-text-muted);
+}
+
+.terminal-kind button + button {
+  border-left: 0.5px solid var(--v2-border-border-base);
+}
+
+.terminal-kind button:hover {
+  color: var(--v2-text-text-base);
+}
+
+.terminal-kind button[aria-pressed="true"] {
+  background: var(--v2-background-bg-layer-03);
+  color: var(--v2-text-text-base);
+  font-weight: 530;
+}
+
+.terminal-status {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--v2-text-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-status[data-phase="connected"] {
+  color: var(--v2-state-fg-success);
+}
+
+.terminal-status[data-phase="error"],
+.terminal-status[data-phase="disconnected"] {
+  color: var(--v2-state-fg-danger);
+}
+
+.terminal-leave {
+  white-space: nowrap;
+}
+
+.terminal-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.terminal-surface {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px 8px;
+  overflow: hidden;
+  background: var(--v2-background-bg-layer-01);
+}
+
+.terminal-surface canvas {
+  display: block;
+}
+
+/* what the terminal cannot say for itself: starting, failed, ended, dropped */
+.terminal-banner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  text-align: center;
+  color: var(--v2-text-text-muted);
+  background: color-mix(in srgb, var(--v2-background-bg-layer-01) 88%, transparent);
+}
+
+.terminal-banner p {
+  max-width: 60ch;
+  margin: 0;
+  color: var(--v2-text-text-base);
+  overflow-wrap: anywhere;
+}
+
+.terminal-banner-error p {
+  color: var(--v2-state-fg-danger);
+}
+
+.terminal-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.terminal-strip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-top: 0.5px solid var(--v2-border-border-muted);
+  background: var(--v2-background-bg-layer-02);
+  color: var(--v2-text-text-base);
+}
+
+.terminal-strip[data-phase="disconnected"] {
+  color: var(--v2-state-fg-danger);
+}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { DISPATCH_TOOL, FENCE, FINISH_TOOL, fromToolCall, parseDispatch } from "./dispatch"
+import { DISPATCH_TOOL, FENCE, FINISH_TOOL, fromToolCall, MCP_REACHES_SESSIONS, parseDispatch } from "./dispatch"
 
 const children = ["n1", "n2"]
 const block = (body: string) => "```" + FENCE + "\n" + body + "\n```"
@@ -188,6 +188,12 @@ describe("parseDispatch without a fence", () => {
 })
 
 describe("fromToolCall", () => {
+  test("the tool channel is the primary one, under the names the host registers", () => {
+    expect(MCP_REACHES_SESSIONS).toBe(true)
+    expect(DISPATCH_TOOL).toBe("openflow_dispatch")
+    expect(FINISH_TOOL).toBe("openflow_finish")
+  })
+
   test("reads a dispatch call", () => {
     expect(
       fromToolCall(DISPATCH_TOOL, { assignments: [{ card: "n1", task: " read it " }] }, children),
@@ -196,6 +202,12 @@ describe("fromToolCall", () => {
 
   test("reads a finish call", () => {
     expect(fromToolCall(FINISH_TOOL, { answer: "  done  " }, children)).toEqual({ kind: "final", answer: "done" })
+  })
+
+  test("a host tool call and the fenced block agree on a finish", () => {
+    expect(fromToolCall(FINISH_TOOL, { answer: "done" }, children)).toEqual(
+      parseDispatch(block('{ "final": "done" }'), children),
+    )
   })
 
   test("a tool that is not ours is not a decision", () => {

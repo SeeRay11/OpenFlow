@@ -267,3 +267,12 @@ export function IconQuestion() {
     </Svg>
   )
 }
+
+export function IconTerminal() {
+  return (
+    <Svg>
+      <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.75" />
+      <path d="M4.75 6.25l2 1.75-2 1.75M8.5 10h2.75" />
+    </Svg>
+  )
+}

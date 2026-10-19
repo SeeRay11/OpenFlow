@@ -19,8 +19,7 @@ import {
 /**
  * These numbers are the product's honesty guarantee, so they are pinned
  * against hand-computed values rather than against whatever the code happens
- * to return. The arithmetic mirrors opencode's own — see
- * `packages/opencode/src/session/session.ts`.
+ * to return.
  */
 
 const tokens = (part: Partial<TokenTotals>): TokenTotals => ({ ...NO_TOKENS, ...part })
@@ -37,7 +36,7 @@ const sonnet: PricedModel = {
   ],
 }
 
-const free: PricedModel = { providerID: "opencode", id: "zen-free", cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }] }
+const free: PricedModel = { providerID: "freehost", id: "free-model", cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }] }
 const unknown: PricedModel = { providerID: "mystery", id: "model-x", cost: [] }
 
 const step = (model: string, part: Partial<TokenTotals>, id: string = crypto.randomUUID()): StepUsage => ({
@@ -97,7 +96,7 @@ describe("summarize", () => {
   })
 
   test("a genuinely free model costs zero and stays priced", () => {
-    const spend = summarize([step("opencode/zen-free", { input: 5_000, output: 900 })], catalog(free))
+    const spend = summarize([step("freehost/free-model", { input: 5_000, output: 900 })], catalog(free))
     expect(spend.cost).toBe(0)
     expect(spend.unpriced).toEqual([])
     expect(spend.models[0].priced).toBe(true)
@@ -155,11 +154,11 @@ describe("rollups", () => {
 
   test("groups by provider, dearest first", () => {
     const spend = summarize(
-      [step("anthropic/claude-sonnet-4", { input: 100_000 }), step("opencode/zen-free", { input: 9_000 })],
+      [step("anthropic/claude-sonnet-4", { input: 100_000 }), step("freehost/free-model", { input: 9_000 })],
       catalog(sonnet, free),
     )
     const rows = byProvider(spend)
-    expect(rows.map((row) => row.provider)).toEqual(["anthropic", "opencode"])
+    expect(rows.map((row) => row.provider)).toEqual(["anthropic", "freehost"])
     expect(rows[0].cost).toBeCloseTo(0.3, 12)
     expect(rows[1].cost).toBe(0)
   })

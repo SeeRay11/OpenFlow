@@ -2,6 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import type { NodeEvent } from "../graph/types"
 import { costLabel } from "../server/usage"
 import { actions, runtimeOf, state } from "../state"
+import { swarmLine } from "./card-stages-model"
 import { IconChevron, IconClose } from "./icons"
 
 /** Half the window, which is what "expand the card" means here. */
@@ -93,6 +94,13 @@ export function ActivityDrawer() {
             </Show>
             <Show when={runtime()?.usage?.steps}>
               <span class="hint">{costLabel(runtime()!.usage!)}</span>
+            </Show>
+            <Show when={swarmLine(runtime()?.swarm)}>
+              {(line) => (
+                <span class="hint" title={line().title}>
+                  {line().text}
+                </span>
+              )}
             </Show>
             <Show when={runtime()?.activity}>
               <span class="activity-now">{runtime()!.activity}</span>

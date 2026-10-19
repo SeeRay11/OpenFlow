@@ -1,0 +1,34 @@
+{
+  "id": "fixture-orchestration",
+  "name": "orchestrated",
+  "mode": "orchestration",
+  "depth": 3,
+  "dispatches": 4,
+  "isolate": true,
+  "gauntlet": { "maxSpend": 10, "maxMinutes": 90, "stall": 4 },
+  "verify": { "model": "opencode/big-pickle", "prompt": "Is it done?" },
+  "futureSetting": { "enabled": true },
+  "nodes": [
+    {
+      "id": "root",
+      "role": "orchestrator",
+      "agent": {
+        "name": "orchestrator",
+        "model": "opencode/big-pickle",
+        "prompt": "Coordinate.",
+        "attachments": [
+          { "id": "a1", "name": "notes.txt", "mime": "text/plain", "url": "data:text/plain;base64,aGk=", "size": 2 }
+        ]
+      },
+      "position": { "x": 0, "y": 0 },
+      "collapsed": true
+    },
+    {
+      "id": "child",
+      "role": "worker",
+      "agent": { "model": "openrouter/openrouter/free", "prompt": "Work.", "tools": { "bash": true } },
+      "position": { "x": 300, "y": 0 }
+    }
+  ],
+  "edges": [{ "id": "e1", "source": "root", "target": "child", "label": "dispatch" }]
+}

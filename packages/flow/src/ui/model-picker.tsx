@@ -1,30 +1,19 @@
 import { For, Show, createMemo, createSignal, onCleanup } from "solid-js"
-import {
-  freeModels,
-  groupMatches,
-  readyRows,
-  searchModels,
-  searchProviders,
-  unlockedRows,
-  type ProviderRow,
-} from "../server/providers"
+import { groupMatches, readyRows, searchModels, searchProviders, unlockedRows, type ProviderRow } from "../server/providers"
 import { defaultModel, setDefaultModel } from "../graph/default-model"
 import { state } from "../state"
 import { IconChevron, IconClose, IconSearch, IconSliders } from "./icons"
 
 /**
- * The model field, built as opencode's own model menu.
+ * The model field: a 284px popover with a search row, provider headings, one
+ * row per model, and a single action pinned under a divider at the bottom.
+ * Arrow keys move, Enter picks, Escape closes, and typing filters — the pointer
+ * never has to be involved.
  *
- * Same shape as `packages/app/src/components/dialog-select-model.tsx`: a 284px
- * popover, a search row, provider headings, one row per model, and a single
- * action pinned under a divider at the bottom. Arrow keys move, Enter picks,
- * Escape closes, and typing filters — the pointer never has to be involved.
- *
- * What it will not do is show a model for a provider nobody connected. The
- * server hands out the free zen models to a browser that has never seen a key
- * ([../server/providers.ts], `unlockedRows`), so an unfiltered list would open
- * on a fresh install already full of models. Empty until a key exists is the
- * honest state, and the empty state is a link to the place that fixes it.
+ * It will not offer a model whose provider Omp lists as logged out
+ * ([../server/providers.ts], `unlockedRows`): that run would fail at the first
+ * prompt. Such providers surface only when the query names them, as a pointer
+ * to the terminal, because logging in happens in Omp, not here.
  */
 export function ModelPicker(props: {
   value?: string
@@ -42,23 +31,15 @@ export function ModelPicker(props: {
   const CONNECT = "action:connect"
   const matches = createMemo(() => searchModels(props.rows, query()))
   const groups = createMemo(() => groupMatches(matches()))
-  const FREE = "free:"
-  /**
-   * Free zen models pinned above every provider, but only with an empty query —
-   * a search should behave exactly as it did before. These carry a `free:` key
-   * prefix so arrow-key nav reaches them even though the same model can also
-   * appear, un-pinned, under its provider group.
-   */
-  const free = createMemo(() => (query().trim() ? [] : freeModels(props.rows)))
   const unlocked = createMemo(() => unlockedRows(props.rows))
   const ready = createMemo(() => readyRows(props.rows))
   /**
-   * Providers the query names but nobody connected.
+   * Providers the query names but Omp reports as logged out.
    *
-   * Searching "anthropic" with no anthropic key would otherwise answer "no
-   * models" and leave the user to guess whether the provider exists, is
-   * misspelled, or simply has no key — the one case where the empty list is
-   * not the whole answer.
+   * Searching "anthropic" without a login would otherwise answer "no models"
+   * and leave the user to guess whether the provider exists, is misspelled, or
+   * simply has no credentials — the one case where the empty list is not the
+   * whole answer.
    */
   const lockedMatches = createMemo(() =>
     query().trim() ? searchProviders(props.rows.filter((row) => !row.unlocked), query()).slice(0, 3) : [],
@@ -68,7 +49,6 @@ export function ModelPicker(props: {
   /** Only offer "set as default" when a model is chosen and is not already it. */
   const canSetDefault = createMemo(() => Boolean(props.value) && props.value !== defaultModel())
   const keys = createMemo(() => [
-    ...free().map((model) => `${FREE}${model.value}`),
     ...matches().map((model) => model.value),
     ...(props.value ? [CLEAR] : []),
     ...(canSetDefault() ? [DEFAULT] : []),
@@ -118,8 +98,6 @@ export function ModelPicker(props: {
     if (event.key !== "Enter" || event.isComposing) return
     event.preventDefault()
     if (active() === CONNECT) return connect()
-    // A pinned free row picks the plain model value its `free:` key wraps.
-    if (active().startsWith(FREE)) return choose(active().slice(FREE.length))
     // "clear" carries a key of its own because the value it picks is "", which
     // a truthiness check would swallow.
     if (active() === CLEAR) return choose("")
@@ -185,51 +163,22 @@ export function ModelPicker(props: {
           <div class="oc-divider" />
 
           <div class="oc-menu-list">
-            <Show when={free().length}>
-              <div class="oc-group">Free — no key needed</div>
-              <For each={free()}>
-                {(model) => (
-                  <button
-                    type="button"
-                    class="oc-item"
-                    data-key={`${FREE}${model.value}`}
-                    data-active={active() === `${FREE}${model.value}` ? true : undefined}
-                    data-selected={props.value === model.value ? true : undefined}
-                    title={model.value}
-                    onMouseEnter={() => setActive(`${FREE}${model.value}`)}
-                    onClick={() => choose(model.value)}
-                  >
-                    <span class="oc-item-label">{model.name}</span>
-                    <span class="oc-tag" title="free — no key needed, shared quota">
-                      free
-                    </span>
-                  </button>
-                )}
-              </For>
-              <div class="oc-divider" />
-            </Show>
-
             <Show
               when={matches().length}
               fallback={
                 <>
                   {/*
                     An empty list has two very different causes and only one is
-                    the user's to fix. With the engine down the catalog could
-                    not be read at all, so "no provider connected yet" would be
-                    a wrong answer pointing at the wrong dialog.
+                    the user's to fix. With the host down the catalog could not
+                    be read at all, so "nothing logged in" would be a wrong
+                    answer pointing at the wrong place.
                   */}
                   <div class="oc-menu-empty">
                     <Show
-                      when={state.engineReachable}
-                      fallback={
-                        <>
-                          No models — `opencode serve` is not answering. Restart the engine from the toolbar, then
-                          reopen this menu.
-                        </>
-                      }
+                      when={state.hostReachable}
+                      fallback={<>No models — the OpenFlow host is not answering. Reopen this menu once it is back.</>}
                     >
-                      <Show when={unlocked().length} fallback={<>No provider connected yet.</>}>
+                      <Show when={unlocked().length} fallback={<>No provider logged in to Omp yet.</>}>
                         No models match “{query()}”.
                       </Show>
                     </Show>
@@ -237,8 +186,8 @@ export function ModelPicker(props: {
                   <For each={lockedMatches()}>
                     {(row) => (
                       <button type="button" class="oc-item" onClick={() => connect(row.name)}>
-                        <span class="oc-item-label oc-faint">Connect {row.name}</span>
-                        <span class="oc-tag">not connected</span>
+                        <span class="oc-item-label oc-faint">{row.name}</span>
+                        <span class="oc-tag">log in with the terminal</span>
                       </button>
                     )}
                   </For>
@@ -257,30 +206,11 @@ export function ModelPicker(props: {
                           data-key={model.value}
                           data-active={active() === model.value ? true : undefined}
                           data-selected={props.value === model.value ? true : undefined}
-                          title={
-                            model.runnable
-                              ? model.value
-                              : `${model.value} — this server has no route for ${model.api}, so a run fails with UnsupportedApiError`
-                          }
+                          title={model.value}
                           onMouseEnter={() => setActive(model.value)}
                           onClick={() => choose(model.value)}
                         >
                           <span class="oc-item-label">{model.name}</span>
-                          {/*
-                            Same tag the pinned section carries, so a free model
-                            found by searching is not mistaken for a billed one.
-                            The quota is shared and real — `mimo-v2.5-free`
-                            answers 429 — so saying so here pre-explains that
-                            failure instead of letting it read as a bug.
-                          */}
-                          <Show when={model.free}>
-                            <span class="oc-tag" title="free — no key needed, shared quota">
-                              free
-                            </span>
-                          </Show>
-                          <Show when={!model.runnable}>
-                            <span class="oc-tag">no runner</span>
-                          </Show>
                         </button>
                       )}
                     </For>
@@ -332,7 +262,7 @@ export function ModelPicker(props: {
             onClick={() => connect()}
           >
             <IconSliders />
-            <span class="oc-item-label">Providers</span>
+            <span class="oc-item-label">Manage models in Omp settings</span>
             <span class="oc-tag">{ready().length}</span>
           </button>
         </div>

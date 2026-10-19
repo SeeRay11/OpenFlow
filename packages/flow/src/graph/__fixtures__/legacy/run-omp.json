@@ -1,0 +1,12 @@
+{
+  "id": "run-omp-1",
+  "pipeline": "already omp",
+  "pipelineID": "fixture-omp-native",
+  "input": "go",
+  "status": "done",
+  "started": 1790000000000,
+  "nodes": [
+    { "id": "a", "role": "researcher", "status": "done", "sessionID": "s_01HABC", "model": "anthropic/claude-sonnet-4-5" },
+    { "id": "b", "role": "writer", "status": "idle" }
+  ]
+}
