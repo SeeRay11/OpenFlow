@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import { HttpError } from "../host/respond"
+import { buildLaunch, PROBE_MODEL } from "./launch"
 import { createModelCatalog, toModelInfo } from "./models"
 import { createHarness, rpcError, type Harness } from "./testing/fake-process"
 
@@ -60,6 +61,15 @@ describe("catalog", () => {
     expect(await fs.stat(input?.session.directory as string).catch(() => undefined)).toBeUndefined()
   })
 
+  test("the catalog process launches with --model set to the probe model, so omp starts on a profile with no default model", async () => {
+    h.fake.setup((proc) => proc.on("get_available_models", { models: [SONNET] }))
+    await catalog().list()
+    const input = h.launches[0]
+    expect(input?.session.model).toBe(PROBE_MODEL)
+    const argv = buildLaunch(input as NonNullable<typeof input>).argv
+    expect(argv[argv.indexOf("--model") + 1]).toBe(PROBE_MODEL)
+  })
+
   test("concurrent callers share one flight; later callers hit the cache", async () => {
     const release = Promise.withResolvers<void>()
     const asked = Promise.withResolvers<void>()
@@ -88,6 +98,67 @@ describe("catalog", () => {
     await models.list()
     expect(h.fake.procs).toHaveLength(2)
     expect(h.fake.procs.every((proc) => proc.closeCalls === 1)).toBe(true)
+  })
+
+  test("a changed credential stamp re-reads the catalog; an unchanged one is served from the cache", async () => {
+    h.fake.setup((proc) => proc.on("get_available_models", { models: [SONNET] }))
+    let stamp = "1:10|"
+    const models = createModelCatalog({ ...h.deps, stamp: async () => stamp })
+    await models.list()
+    await models.list()
+    expect(h.fake.procs).toHaveLength(1)
+    stamp = "2:20|"
+    await models.list()
+    expect(h.fake.procs).toHaveLength(2)
+    await models.list()
+    expect(h.fake.procs).toHaveLength(2)
+  })
+
+  test("a stamp that throws counts as an empty stamp", async () => {
+    h.fake.setup((proc) => proc.on("get_available_models", { models: [SONNET] }))
+    let broken = true
+    const models = createModelCatalog({
+      ...h.deps,
+      async stamp() {
+        if (broken) throw new Error("no profile directory")
+        return ""
+      },
+    })
+    await models.list()
+    await models.list()
+    expect(h.fake.procs).toHaveLength(1)
+    // Empty and thrown are the same key: the answer cached under one is served under the other.
+    broken = false
+    await models.list()
+    expect(h.fake.procs).toHaveLength(1)
+  })
+
+  test("reset forgets the cached answer even when the stamp is unchanged, and drops a read already in flight", async () => {
+    const release = Promise.withResolvers<void>()
+    const asked = Promise.withResolvers<void>()
+    h.fake.setup((proc, index) =>
+      proc.on("get_available_models", async () => {
+        if (index === 0) {
+          asked.resolve()
+          await release.promise
+        }
+        return { models: [SONNET] }
+      }),
+    )
+    const models = createModelCatalog({ ...h.deps, stamp: async () => "same" })
+    const stale = models.list()
+    await asked.promise
+    models.reset()
+    release.resolve()
+    await stale
+    // The flight that started before the reset was not cached.
+    await models.list()
+    expect(h.fake.procs).toHaveLength(2)
+    await models.list()
+    expect(h.fake.procs).toHaveLength(2)
+    models.reset()
+    await models.list()
+    expect(h.fake.procs).toHaveLength(3)
   })
 
   test("a failure is a 502 with actionable text, closes the process, and is never cached", async () => {

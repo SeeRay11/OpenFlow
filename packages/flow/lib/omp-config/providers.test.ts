@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test"
 import { stat } from "node:fs/promises"
 import { DEFAULT_OMP_SETTINGS, type OmpSettings } from "../../shared/omp"
+import { buildLaunch, PROBE_MODEL } from "../omp/launch"
 import type { BuildLaunch, LaunchInput, LaunchSpec, OmpProcess, SpawnOmp } from "../omp/rpc-types"
 import { createProviders, parseProviders } from "./providers"
 
@@ -97,6 +98,15 @@ describe("createProviders", () => {
     await expect(stat(input!.stateDir)).rejects.toThrow()
   })
 
+  test("launches with --model set to the probe model, so omp starts on a profile with no default model", async () => {
+    const h = harness()
+    await createProviders({ env: { PATH: "/bin" }, spawn: h.spawn, launch: h.launch }).list(settings, "/opt/omp")
+    const [input] = h.inputs
+    expect(input?.session.model).toBe(PROBE_MODEL)
+    const argv = buildLaunch(input as NonNullable<typeof input>).argv
+    expect(argv[argv.indexOf("--model") + 1]).toBe(PROBE_MODEL)
+  })
+
   test("serves the cache for 60 seconds, then asks again", async () => {
     const h = harness()
     const providers = createProviders({ env: {}, spawn: h.spawn, launch: h.launch })
@@ -118,6 +128,40 @@ describe("createProviders", () => {
     providers.reset()
     await providers.list(settings, "/opt/omp")
     expect(h.spawns).toBe(4)
+  })
+
+  test("a changed credential stamp asks omp again; an unchanged one is served from the cache", async () => {
+    const h = harness()
+    let stamp = "1:10|"
+    const providers = createProviders({ env: {}, spawn: h.spawn, launch: h.launch, stamp: async () => stamp })
+    await providers.list(settings, "/opt/omp")
+    await providers.list(settings, "/opt/omp")
+    expect(h.spawns).toBe(1)
+    stamp = "2:20|"
+    await providers.list(settings, "/opt/omp")
+    expect(h.spawns).toBe(2)
+    await providers.list(settings, "/opt/omp")
+    expect(h.spawns).toBe(2)
+  })
+
+  test("a stamp that throws counts as an empty stamp", async () => {
+    const h = harness()
+    let broken = true
+    const providers = createProviders({
+      env: {},
+      spawn: h.spawn,
+      launch: h.launch,
+      async stamp() {
+        if (broken) throw new Error("no profile directory")
+        return ""
+      },
+    })
+    await providers.list(settings, "/opt/omp")
+    await providers.list(settings, "/opt/omp")
+    expect(h.spawns).toBe(1)
+    broken = false
+    await providers.list(settings, "/opt/omp")
+    expect(h.spawns).toBe(1)
   })
 
   test("concurrent callers share one process", async () => {

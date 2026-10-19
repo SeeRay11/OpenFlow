@@ -22,6 +22,8 @@ export function walkthroughState(input: {
   hostReachable: boolean
   ompReady: boolean
   modelCount: number
+  /** True once the first catalog read has settled (listed models or not); false while it is in flight. */
+  modelsLoaded: boolean
   nodes: number
   edges: number
   dismissed: boolean
@@ -38,6 +40,8 @@ export function walkthroughState(input: {
       // A single node needs no edge to be "connected"; a bigger graph does.
       connect: input.nodes > 0 && (input.edges > 0 || input.nodes === 1),
     },
+    // The catalog takes seconds to arrive; until it does, "no models" is not an answer yet.
+    loadingModels: input.hostReachable && input.ompReady && !input.modelsLoaded && input.modelCount === 0,
   }
 }
 
@@ -53,6 +57,7 @@ export function Walkthrough(props: {
   ompReady: boolean
   ompMessage?: string
   modelCount: number
+  modelsLoaded: boolean
   onOpenOmp: () => void
   onOpenTerminal: () => void
 }) {
@@ -62,6 +67,7 @@ export function Walkthrough(props: {
       hostReachable: state.hostReachable,
       ompReady: props.ompReady,
       modelCount: props.modelCount,
+      modelsLoaded: props.modelsLoaded,
       nodes: state.pipeline.nodes.length,
       edges: state.pipeline.edges.length,
       dismissed: dismissed(),
@@ -129,7 +135,11 @@ export function Walkthrough(props: {
                 <span class="walkthrough-label">Have a model to run</span>
                 <Show
                   when={view().steps.models}
-                  fallback={<span class="hint">Omp lists no models yet — log in to a provider from the terminal</span>}
+                  fallback={
+                    <span class="hint">
+                      {view().loadingModels ? "Loading models…" : "Omp lists no models yet — log in to a provider from the terminal"}
+                    </span>
+                  }
                 >
                   <span class="hint">
                     {props.modelCount} {props.modelCount === 1 ? "model" : "models"} available

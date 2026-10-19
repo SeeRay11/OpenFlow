@@ -4,8 +4,11 @@ import os from "node:os"
 import path from "node:path"
 import { DEFAULT_OMP_SETTINGS, MIN_OMP_VERSION, type OmpProviderRow, type OmpSettings } from "../../shared/omp"
 import { resetOmpCheck } from "../omp/binary"
+import { buildLaunch } from "../omp/launch"
+import type { OmpProcess, SpawnOmp } from "../omp/rpc-types"
 import { defaultRun, type Run } from "./config"
 import { installFakeOmp } from "./fake-omp"
+import { createOmpConfig } from "./index"
 import type { Providers } from "./providers"
 import { createStatusChecker } from "./status"
 
@@ -138,5 +141,32 @@ describe("createStatusChecker", () => {
     checker.reset()
     await checker.status(settings)
     expect(paths).toBe(2)
+  })
+})
+
+describe("status through the omp-config module", () => {
+  test("a profile with every provider unauthenticated reports no-credentials and no profile problem", async () => {
+    await installFakeOmp(dir)
+    // Like real omp: an rpc process without --model aborts on a profile with no default model.
+    const spawn: SpawnOmp = (spec) =>
+      ({
+        ready: spec.argv.includes("--model")
+          ? Promise.resolve({ protocolVersion: 2 })
+          : Promise.reject(new Error("omp exited before it was ready (code 1)")),
+        async command() {
+          return {
+            providers: [
+              { id: "anthropic", name: "Anthropic", available: true, authenticated: false },
+              { id: "openrouter", name: "OpenRouter", available: true, authenticated: false },
+            ],
+          } as never
+        },
+        async close() {},
+      }) as Partial<OmpProcess> as OmpProcess
+    const module = createOmpConfig({ stateDir: () => path.join(dir, "state"), env: { PATH: dir }, spawn, launch: buildLaunch })
+    const status = await module.status()
+    expect(status.providers).toEqual({ authenticated: 0, total: 2 })
+    expect(status.problems.map((problem) => problem.code)).toEqual(["no-credentials"])
+    expect(status.problems[0]?.fix).toContain("Copy logins")
   })
 })

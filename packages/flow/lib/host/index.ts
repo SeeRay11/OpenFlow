@@ -43,7 +43,9 @@ export function createHost(options: HostOptions): Host {
   const omp = createOmpConfig({ stateDir: () => stateDir(env), env, spawn: spawnOmp, launch: buildLaunch })
   const settings = omp.settings
   const swarm = createSwarmHost({ settings, env })
-  const engine = createEngineHost({ project, stateRoot: root, settings, spawn: spawnOmp, launch: buildLaunch, swarm, env })
+  const engine = createEngineHost({ project, stateRoot: root, settings, spawn: spawnOmp, launch: buildLaunch, swarm, env, stamp: omp.stamp })
+  // Copy logins rewrites the profile's logins, so the catalog it cached is stale; the stamp would notice too.
+  omp.loginsChanged(engine.resetModels)
   const uplift = createUplift({ project, stateRoot: root, settings, env })
   const substrate = createSubstrate({ project, settings, env })
   const terminal = createTerminal({

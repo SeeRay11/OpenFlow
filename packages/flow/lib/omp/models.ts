@@ -5,8 +5,10 @@ import type { ModelInfo, Price } from "../../shared/engine"
 import type { OmpSettings } from "../../shared/omp"
 import { HttpError } from "../host/respond"
 import { checkOmp, resolveBinary } from "./binary"
+import { PROBE_MODEL } from "./launch"
 import { asArray, asNumber, asRecord, asString } from "./messages"
 import type { BuildLaunch, OmpProcess, SpawnOmp } from "./rpc-types"
+import { readStamp, type CredentialStamp } from "./stamp"
 
 /**
  * The model catalog, read from omp itself: `get_available_models` on a
@@ -23,10 +25,14 @@ export type ModelCatalogDeps = {
   spawn: SpawnOmp
   launch: BuildLaunch
   env?: NodeJS.ProcessEnv
+  /** The profile's credential stamp, read on every `list()` and folded into the cache key; see `stamp.ts`. */
+  stamp?: CredentialStamp
 }
 
 export interface ModelCatalog {
   list(): Promise<ModelInfo[]>
+  /** Forgets the cached answer: the profile's logins changed. */
+  reset(): void
 }
 
 export type ModelCatalogOptions = { ttlMs?: number; timeoutMs?: number }
@@ -89,7 +95,7 @@ export function createModelCatalog(deps: ModelCatalogDeps, options: ModelCatalog
       const spec = deps.launch({
         settings,
         binary,
-        session: { runId: "models", nodeId: "catalog", card: { key: "models", role: "catalog" }, directory: dir, permissions: "auto" },
+        session: { runId: "models", nodeId: "catalog", card: { key: "models", role: "catalog" }, model: PROBE_MODEL, directory: dir, permissions: "auto" },
         stateDir: path.join(dir, "state"),
         env,
       })
@@ -118,15 +124,14 @@ export function createModelCatalog(deps: ModelCatalogDeps, options: ModelCatalog
   return {
     async list() {
       const settings = await deps.settings()
-      const key = `${settings.binary}|${settings.profile}`
+      const key = `${settings.binary}|${settings.profile}|${await readStamp(deps.stamp)}`
       if (cached && cached.key === key && Date.now() - cached.at < ttlMs) return cached.models
       if (flight && flight.key === key) return flight.promise
-      const promise = read(settings).then(
-        (models) => {
-          cached = { key, at: Date.now(), models }
-          return models
-        },
-      )
+      const promise = read(settings).then((models) => {
+        // A reset while this read was in flight means its answer may predate the new logins.
+        if (flight?.promise === promise) cached = { key, at: Date.now(), models }
+        return models
+      })
       const current = { key, promise }
       flight = current
       // Cleared on success and on failure alike: a failure is never cached.
@@ -135,6 +140,10 @@ export function createModelCatalog(deps: ModelCatalogDeps, options: ModelCatalog
       }
       promise.then(clear, clear)
       return promise
+    },
+    reset() {
+      cached = undefined
+      flight = undefined
     },
   }
 }

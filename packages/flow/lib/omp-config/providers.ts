@@ -2,7 +2,9 @@ import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import type { OmpProviderRow, OmpSettings } from "../../shared/omp"
+import { PROBE_MODEL } from "../omp/launch"
 import type { BuildLaunch, OmpProcess, SpawnOmp } from "../omp/rpc-types"
+import { readStamp, type CredentialStamp } from "../omp/stamp"
 
 /**
  * Which providers the configured profile can log in to, and which it already
@@ -21,10 +23,12 @@ export type ProvidersDeps = {
   env: NodeJS.ProcessEnv
   spawn: SpawnOmp
   launch: BuildLaunch
+  /** The profile's credential stamp, read on every `list()` and folded into the cache key. */
+  stamp?: CredentialStamp
 }
 
 export type Providers = {
-  /** Cached for 60 s per (binary, profile); concurrent callers share one process. */
+  /** Cached for 60 s per (binary, profile, credential stamp); concurrent callers share one process. */
   list(settings: OmpSettings, binary: string): Promise<OmpProviderRow[]>
   reset(): void
 }
@@ -64,6 +68,7 @@ export function createProviders(deps: ProvidersDeps): Providers {
           runId: "omp-config",
           nodeId: "providers",
           card: { key: "omp-config-providers", role: "providers" },
+          model: PROBE_MODEL,
           directory,
           permissions: "auto",
         },
@@ -87,13 +92,14 @@ export function createProviders(deps: ProvidersDeps): Providers {
 
   return {
     async list(settings, binary) {
-      const key = `${binary}|${settings.profile}`
+      const key = `${binary}|${settings.profile}|${await readStamp(deps.stamp)}`
       if (cached && cached.key === key && Date.now() - cached.at < CACHE_MS) return cached.rows
       if (inflight && inflight.key === key) return inflight.promise
 
       const promise = query(settings, binary)
         .then((rows) => {
-          cached = { key, at: Date.now(), rows }
+          // A reset while this query was in flight means its answer may predate the new logins.
+          if (inflight?.promise === promise) cached = { key, at: Date.now(), rows }
           return rows
         })
         .finally(() => {

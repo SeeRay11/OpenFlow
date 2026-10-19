@@ -32,6 +32,7 @@ import {
   hintId,
   parseEntry,
   problemActions,
+  problemsOfferTerminal,
   readOnlyReason,
   remoteFrom,
   searchEntries,
@@ -128,7 +129,7 @@ export type OmpSettingsDialogProps = {
   onClose: () => void
   /** Show the in-app terminal. The dialog closes itself right after, and does not take focus back from it. */
   onOpenTerminal: () => void
-  /** Called after OpenFlow's Omp settings or one of omp's own options changed. */
+  /** Called after OpenFlow's Omp settings, one of omp's own options, or the profile's logins (Copy logins) changed. */
   onChanged?: () => void
   /** The pipeline whose memory the Memory tab lists and forgets. Without one the tab shows only the memory status. */
   pipeline?: string
@@ -274,6 +275,8 @@ function Dialog(props: Omit<OmpSettingsDialogProps, "open">) {
       queueMicrotask(() => copyButton?.focus())
       return
     }
+    // The profile can run different models now: the app reads its models and providers again.
+    props.onChanged?.()
     await loadStatus()
     if (!closed) checkButton?.focus()
   }
@@ -526,9 +529,11 @@ function Dialog(props: Omit<OmpSettingsDialogProps, "open">) {
                 <button type="button" class="oc-button" ref={checkButton} onClick={() => void loadStatus()}>
                   Check again
                 </button>
-                <button type="button" class="oc-button" onClick={openTerminal}>
-                  Open terminal
-                </button>
+                <Show when={!problemsOfferTerminal(value.problems)}>
+                  <button type="button" class="oc-button" onClick={openTerminal}>
+                    Open terminal
+                  </button>
+                </Show>
               </div>
             </>
           )}

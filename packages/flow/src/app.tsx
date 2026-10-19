@@ -1,5 +1,5 @@
 import type { PtyKind } from "../shared/terminal"
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js"
 import { Canvas } from "./canvas/canvas"
 import {
   depthOf,
@@ -236,6 +236,8 @@ async function loadRun(id: string) {
 export function App() {
   const [status, setStatus] = createSignal("connecting…")
   const [providers, setProviders] = createSignal<ProviderRow[]>([])
+  /** False until the first catalog read settles; the first-run walkthrough says "Loading models…" until then. */
+  const [modelsLoaded, setModelsLoaded] = createSignal(false)
   const [showSkills, setShowSkills] = createSignal(false)
   const [showMcp, setShowMcp] = createSignal(false)
   const [showSpend, setShowSpend] = createSignal(false)
@@ -267,6 +269,7 @@ export function App() {
   const [nodeTimeout, setNodeTimeout] = createSignal(DEFAULT_NODE_TIMEOUT)
   const [issues, setIssues] = createSignal<Preflight>()
   let current: Run | undefined
+  let providersRequest = 0
 
   const ompReady = () => ompInfo()?.available !== false
   const ompMessage = () => ompProblem() ?? OMP_MISSING
@@ -353,7 +356,7 @@ export function App() {
     await reopen(entries)
   }
 
-  /** The Omp settings changed what omp is or can run: read its health, models and providers again. */
+  /** The logins or the Omp settings may have changed what omp is or can run: read its health, models and providers again. */
   async function reconnect() {
     const health = await probe()
     if (health === "ready" && noticeMeta()?.settings && noticeMeta()?.text === state.notice?.text) actions.clearNotice()
@@ -469,6 +472,29 @@ export function App() {
     if (state.expanded && terminalOpen()) setTerminalOpen(false)
   })
 
+  // Logins change what omp can run, and they are typed in the terminal or the Omp
+  // dialog without this app hearing about it: read models and providers again
+  // when either closes. The host's catalog is keyed on the profile's credential
+  // files, so an unchanged profile costs nothing.
+  createEffect(
+    on(
+      terminalOpen,
+      (open, wasOpen) => {
+        if (wasOpen && !open) void reconnect()
+      },
+      { defer: true },
+    ),
+  )
+  createEffect(
+    on(
+      showOmp,
+      (open, wasOpen) => {
+        if (wasOpen && !open) void reconnect()
+      },
+      { defer: true },
+    ),
+  )
+
   /**
    * Asked by every path that replaces the graph — new, open, import. `dirty` is
    * what keeps it quiet: a pipeline just loaded or just saved has nothing to
@@ -515,12 +541,15 @@ export function App() {
    * the provider list says which providers have credentials, and only the join
    * says which models a user can choose. A provider list that fails to load is
    * treated as unknown, which keeps every model available rather than hiding
-   * models omp would run. Called at boot and whenever the Omp settings change.
+   * models omp would run. Called at boot and whenever the logins may have changed:
+   * the Omp settings changed, Copy logins ran, or the terminal or the Omp dialog closed.
    */
   async function refreshProviders() {
     // With the host down every read comes back empty, which would read as "no
     // model is runnable": keep what is on screen instead.
     if (!state.hostReachable) return
+    // Refreshes now come from several places; only the newest one may write.
+    const mine = ++providersRequest
     let models = await api.models().catch(() => [])
     // The first read can land while omp is still enumerating its catalog.
     if (!models.length && ompReady()) {
@@ -530,10 +559,12 @@ export function App() {
       models = await api.models().catch(() => [])
     }
     const known = await omp.providers()
+    if (mine !== providersRequest) return
     setProviders(providerRows(models, known.ok ? known.value : undefined))
     // Keep the default-model gate current: a node only inherits the default
     // when it is still among the models a provider can actually run.
     setAvailableModels(unlockedModels())
+    setModelsLoaded(true)
   }
 
   async function refresh() {
@@ -758,7 +789,7 @@ export function App() {
     }
     const pre = preflight(state.pipeline, { unlockedModels: unlockedModels() })
     // A card carried over from an earlier build can name a model this catalog
-    // does not hold; say why before the generic "no connected provider" line.
+    // does not hold; say why before the generic "no logged-in provider" line.
     pre.warnings.unshift(...legacyModelProblems(state.pipeline).map((message) => ({ kind: "legacy-model", message })))
     setIssues(pre.blocking.length || pre.warnings.length ? pre : undefined)
     if (pre.blocking.length) return
@@ -1487,6 +1518,7 @@ export function App() {
         ompReady={ompReady()}
         ompMessage={ompReady() ? undefined : ompMessage()}
         modelCount={availableModels(providers()).length}
+        modelsLoaded={modelsLoaded()}
         onOpenOmp={() => setShowOmp(true)}
         onOpenTerminal={() => openTerminal("omp")}
       />

@@ -31,6 +31,7 @@ import {
   groupEntries,
   parseEntry,
   problemActions,
+  problemsOfferTerminal,
   readOnlyReason,
   remoteFrom,
   searchEntries,
@@ -306,6 +307,13 @@ describe("status", () => {
     expect(problemActions({ code: "no-models", message: "" })).toEqual(["terminal"])
     expect(problemActions({ code: "spawn", message: "" })).toEqual(["settings", "terminal"])
     expect(problemActions({ code: "profile", message: "" })).toEqual(["settings", "terminal"])
+  })
+
+  test("the status actions row repeats Open terminal only when no problem card already offers it", () => {
+    expect(problemsOfferTerminal([])).toBe(false)
+    expect(problemsOfferTerminal([{ code: "missing", message: "" }])).toBe(false)
+    expect(problemsOfferTerminal([{ code: "no-credentials", message: "" }])).toBe(true)
+    expect(problemsOfferTerminal([{ code: "missing", message: "" }, { code: "profile", message: "" }])).toBe(true)
   })
 
   test("the copy-logins button is offered for a missing-credentials problem in a named profile only", () => {

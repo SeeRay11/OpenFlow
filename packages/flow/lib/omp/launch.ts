@@ -16,6 +16,16 @@ import type { BuildLaunch, LaunchInput, LaunchSpec } from "./rpc-types"
  * (omp://approval-mode.md), and leaves everything else untouched.
  */
 
+/**
+ * The `--model` pattern of the throwaway probe processes (provider list, model
+ * catalog). An `omp --mode rpc` process aborts at startup when the profile has
+ * no default model; the probes never prompt, and any pattern that matches the
+ * catalog starts omp (it fuzzy-matches `--model`), so a one-letter pattern
+ * cannot go stale when model names change. Cards never use it: a card without
+ * a model must omit `--model` (the user's configured default).
+ */
+export const PROBE_MODEL = "a"
+
 type Overlay = Record<string, unknown>
 
 /** OpenFlow's tool vocabulary -> the omp tool names a `false` toggle denies. `skill` and `webfetch` have none: see `describeLaunch`. */

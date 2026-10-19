@@ -58,7 +58,8 @@ beforeAll(async () => {
   writeFileSync(scriptFile, "[]")
   writeFileSync(logFile, "")
 
-  // `omp --version` and `omp config path` are answered here; everything else is the RPC stub.
+  // `omp --version`, `omp config path` and `omp auth export|import` are answered here; everything else is the RPC stub.
+  // The catalog size follows `model-count` (written by a test) or else the byte size of the profile's `agent.db`.
   // Each real run records its pid first: `exec` keeps it, so these are the stub processes.
   wrapper = path.join(dir, "omp")
   writeFileSync(
@@ -67,6 +68,10 @@ beforeAll(async () => {
       "#!/bin/sh",
       'case " $* " in *" --version "*) echo "omp/18.12.2"; exit 0;; esac',
       `case " $* " in *" config path "*) echo "${configDir}"; exit 0;; esac`,
+      `case " $* " in *" auth export "*) echo '{"version":1,"credentials":[{"provider":"stub","credential":{"type":"api_key"}}]}'; exit 0;; esac`,
+      `case " $* " in *" auth import "*) cat > /dev/null; exit 0;; esac`,
+      `if [ -f "${configDir}/agent.db" ]; then export STUB_OMP_MODELS=$(wc -c < "${configDir}/agent.db" | tr -d ' '); fi`,
+      `if [ -f "${dir}/model-count" ]; then export STUB_OMP_MODELS=$(cat "${dir}/model-count"); fi`,
       `echo $$ >> "${pidFile}"`,
       `export STUB_OMP_SCRIPT="${scriptFile}" STUB_OMP_LOG="${logFile}"`,
       `exec "${process.execPath}" "${STUB_OMP}" "$@"`,
@@ -252,6 +257,39 @@ describe("engine", () => {
     expect(health).toMatchObject({ ok: true, omp: { available: true, version: "18.12.2" } })
     const models = await get<ModelInfo[]>(engineRoutes.models)
     expect(models.map((model) => `${model.providerID}/${model.id}`)).toEqual(["stub/model-0", "stub/model-1"])
+  })
+
+  test("a login that rewrites the profile's agent.db shows in the next catalog read, with no wait for the cache to expire", async () => {
+    const agentDb = path.join(configDir, "agent.db")
+    mkdirSync(configDir, { recursive: true })
+    const count = async () => (await get<ModelInfo[]>(engineRoutes.models)).length
+    expect(await count()).toBe(2)
+    expect(await count()).toBe(2)
+    // The wrapper sizes the stub's catalog by the byte size of agent.db, as a login would change what omp can use.
+    writeFileSync(agentDb, "abc")
+    expect(await count()).toBe(3)
+    writeFileSync(agentDb, "abcde")
+    expect(await count()).toBe(5)
+    rmSync(agentDb)
+    expect(await count()).toBe(2)
+  })
+
+  test("Copy logins drops the cached catalog even when the credential files look unchanged", async () => {
+    const knob = path.join(dir, "model-count")
+    expect((await get<ModelInfo[]>(engineRoutes.models)).length).toBe(2)
+    writeFileSync(knob, "7")
+    try {
+      // Nothing touched agent.db, so the stamp is the same and the cache still answers.
+      expect((await get<ModelInfo[]>(engineRoutes.models)).length).toBe(2)
+      const copied = await send(OMP_ROUTES.authImport, "POST")
+      expect(copied.status).toBe(200)
+      expect((await get<ModelInfo[]>(engineRoutes.models)).length).toBe(7)
+    } finally {
+      rmSync(knob, { force: true })
+    }
+    // Back to the default catalog for the tests that follow.
+    expect((await send(OMP_ROUTES.authImport, "POST")).status).toBe(200)
+    expect((await get<ModelInfo[]>(engineRoutes.models)).length).toBe(2)
   })
 
   test("a scripted turn streams step, text, tool and step.ended events, then reads back", async () => {

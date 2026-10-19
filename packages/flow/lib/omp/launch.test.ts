@@ -5,7 +5,7 @@ import path from "node:path"
 import { DEFAULT_OMP_SETTINGS } from "../../shared/omp"
 import type { SwarmLaunch } from "../../shared/swarm"
 import { resolveBinary } from "./binary"
-import { buildLaunch, describeLaunch } from "./launch"
+import { buildLaunch, describeLaunch, PROBE_MODEL } from "./launch"
 import { spawnOmp } from "./rpc"
 import type { LaunchInput } from "./rpc-types"
 
@@ -94,6 +94,13 @@ describe("buildLaunch: argv", () => {
     expect(argv).not.toContain("--profile")
     expect(argv).not.toContain("--no-extensions")
     expect(argv).not.toContain("--model")
+  })
+
+  test("a probe session carries the one-letter probe model; a card session without a model still omits --model", () => {
+    expect(PROBE_MODEL).toBe("a")
+    const probe = buildLaunch(input({}, { model: PROBE_MODEL })).argv
+    expect(probe[probe.indexOf("--model") + 1]).toBe("a")
+    expect(buildLaunch(input()).argv).not.toContain("--model")
   })
 
   test("--max-time is whole minutes, at least one", () => {

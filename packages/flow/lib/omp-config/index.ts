@@ -1,6 +1,8 @@
 import type { OmpSettings, OmpStatus } from "../../shared/omp"
 import type { HostHandler } from "../host/respond"
+import { resolveBinary } from "../omp/binary"
 import type { BuildLaunch, SpawnOmp } from "../omp/rpc-types"
+import { credentialStamp } from "../omp/stamp"
 import { createAuth } from "./auth"
 import { createConfig, createRun, RUN_TIMEOUT_MS, type Run } from "./config"
 import { createProviders } from "./providers"
@@ -27,13 +29,20 @@ export type OmpConfigModule = {
   status(): Promise<OmpStatus>
   /** Fires after settings are saved or reset. Returns the unsubscribe function. */
   changed(listener: () => void): () => void
+  /** Fires after Copy logins succeeded. Returns the unsubscribe function. */
+  loginsChanged(listener: () => void): () => void
+  /**
+   * The current profile's credential stamp (see `omp/stamp.ts`): changes when a login, a logout or an
+   * `auth import` rewrites the profile's `agent.db`. Cheap; safe to call from inside a provider read.
+   */
+  stamp(): Promise<string>
 }
 
 export function createOmpConfig(deps: OmpConfigDeps): OmpConfigModule {
   const env = deps.env ?? process.env
   const run: Run = deps.run ?? createRun(deps.runTimeoutMs ?? RUN_TIMEOUT_MS)
   const store = createSettingsStore({ stateDir: deps.stateDir, env })
-  const providers = createProviders({ env, spawn: deps.spawn, launch: deps.launch })
+  const providers = createProviders({ env, spawn: deps.spawn, launch: deps.launch, stamp })
   const checker = createStatusChecker({ run, env, providers })
   const config = createConfig({ run, env })
   const auth = createAuth({ run, env })
@@ -46,10 +55,35 @@ export function createOmpConfig(deps: OmpConfigDeps): OmpConfigModule {
 
   const settings = async () => (await store.load()).settings
 
+  // Reads the config directory the status check already caches and never calls `status()`, so the
+  // provider list can use it for its own cache key without recursing into itself.
+  async function stamp(): Promise<string> {
+    const current = await settings()
+    const binary = resolveBinary(current, env)
+    return credentialStamp(binary ? await checker.configDir(current, binary) : undefined)
+  }
+
+  const loginListeners = new Set<() => void>()
+
   return {
-    handle: createRoutes({ store, checker, config, providers, auth, env }),
+    handle: createRoutes({
+      store,
+      checker,
+      config,
+      providers,
+      auth,
+      env,
+      loginsChanged() {
+        for (const listener of loginListeners) listener()
+      },
+    }),
     settings,
     status: async () => checker.status(await settings()),
     changed: store.changed,
+    loginsChanged(listener) {
+      loginListeners.add(listener)
+      return () => loginListeners.delete(listener)
+    },
+    stamp,
   }
 }

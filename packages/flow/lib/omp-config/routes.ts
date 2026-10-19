@@ -14,6 +14,8 @@ export type RouteParts = {
   providers: Providers
   auth: Auth
   env: NodeJS.ProcessEnv
+  /** Called after Copy logins succeeded, once the check and the provider list are reset. */
+  loginsChanged(): void
 }
 
 function methodNotAllowed(allowed: string): Response {
@@ -87,6 +89,7 @@ export function createRoutes(parts: RouteParts): HostHandler {
       // The new logins change what the check and the provider list answer.
       resetOmpCheck()
       parts.providers.reset()
+      parts.loginsChanged()
       const status = await parts.checker.status(loaded.settings)
       return json(200, { imported, status: { ...status, warnings: loaded.warnings } } satisfies OmpAuthImportResult)
     }

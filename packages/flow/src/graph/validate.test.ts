@@ -388,10 +388,14 @@ describe("preflight", () => {
     expect(preflight(graph, unlocked()).blocking.map((problem) => problem.kind)).toEqual(["no-model"])
   })
 
-  test("a model that no connected provider can run blocks and names the node", () => {
-    const result = preflight(withModel(pipeline("a"), "groq/llama"), unlocked("opencode/x"))
+  test("a model that no logged-in provider can run blocks, names the node and says where to log in", () => {
+    const graph = withModel(pipeline("a"), "groq/llama")
+    const result = preflight(graph, unlocked("opencode/x"))
     expect(result.blocking.map((problem) => problem.kind)).toEqual(["locked-model"])
     expect(result.blocking[0].nodeId).toBe("a")
+    expect(result.blocking[0].message).toBe(
+      `Node '${graph.nodes[0].role}' uses groq/llama, which no logged-in provider can run — log in in Omp settings or pick another model`,
+    )
   })
 
   test("a fully wired graph on unlocked models has no blocking problems", () => {
@@ -447,7 +451,7 @@ describe("preflight", () => {
     expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
   })
 
-  test("a reachable engine still blocks a model no connected provider can run", () => {
+  test("a reachable engine still blocks a model no logged-in provider can run", () => {
     const graph = withModel(pipeline("a"), "groq/llama")
     const result = preflight(graph, unlocked("opencode/x"))
     expect(result.blocking.map((problem) => problem.kind)).toEqual(["locked-model"])

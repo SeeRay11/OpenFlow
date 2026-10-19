@@ -358,6 +358,11 @@ export function problemActions(problem: OmpProblem): ProblemAction[] {
   }
 }
 
+/** Whether a problem card already offers the terminal, so the status actions row need not repeat the button. */
+export function problemsOfferTerminal(problems: OmpProblem[]): boolean {
+  return problems.some((problem) => problemActions(problem).includes("terminal"))
+}
+
 // ------------------------------------------------------------ copy logins
 
 export type CopyStep = "idle" | "confirm" | "running"

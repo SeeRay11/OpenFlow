@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { walkthroughState } from "./walkthrough"
 
-const base = { hostReachable: true, ompReady: true, modelCount: 0, nodes: 0, edges: 0, dismissed: false }
+const base = { hostReachable: true, ompReady: true, modelCount: 0, modelsLoaded: true, nodes: 0, edges: 0, dismissed: false }
 
 describe("walkthroughState", () => {
   test("a fresh empty canvas is visible with nothing done", () => {
@@ -19,6 +19,24 @@ describe("walkthroughState", () => {
   test("a listed model ticks the models step", () => {
     expect(walkthroughState({ ...base, modelCount: 1 }).steps.models).toBe(true)
     expect(walkthroughState(base).steps.models).toBe(false)
+  })
+
+  test("while the catalog is in flight the models step is loading: neither done nor an empty-catalog answer", () => {
+    const loading = walkthroughState({ ...base, modelsLoaded: false })
+    expect(loading.steps.models).toBe(false)
+    expect(loading.loadingModels).toBe(true)
+    expect(walkthroughState(base).loadingModels).toBe(false)
+  })
+
+  test("listed models end the loading state even before the read settles", () => {
+    const result = walkthroughState({ ...base, modelCount: 3, modelsLoaded: false })
+    expect(result.steps.models).toBe(true)
+    expect(result.loadingModels).toBe(false)
+  })
+
+  test("nothing is loading when the host is down or omp is not ready: the first step says why", () => {
+    expect(walkthroughState({ ...base, modelsLoaded: false, hostReachable: false }).loadingModels).toBe(false)
+    expect(walkthroughState({ ...base, modelsLoaded: false, ompReady: false }).loadingModels).toBe(false)
   })
 
   test("a node hides the overlay and ticks the node step", () => {

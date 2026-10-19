@@ -7,6 +7,11 @@ export type StatusDeps = { run: Run; env: NodeJS.ProcessEnv; providers: Provider
 
 export type StatusChecker = {
   status(settings: OmpSettings): Promise<OmpStatus>
+  /**
+   * The profile's omp config directory, from the same cached `config path` answer `status` uses. Never
+   * touches the provider list, so the credential stamp can call it from inside a provider read.
+   */
+  configDir(settings: OmpSettings, binary: string): Promise<string | undefined>
   reset(): void
 }
 
@@ -18,10 +23,29 @@ export type StatusChecker = {
  * the settings change.
  */
 export function createStatusChecker(deps: StatusDeps): StatusChecker {
-  const dirs = new Map<string, string>()
+  const dirs = new Map<string, Promise<string | undefined>>()
+
+  function configDir(settings: OmpSettings, binary: string): Promise<string | undefined> {
+    const key = `${binary}|${settings.profile}`
+    const known = dirs.get(key)
+    if (known) return known
+    const found = deps
+      .run(binary, [...profileArgs(settings), "config", "path"], childEnv(deps.env))
+      .then(
+        (result) => (result.code === 0 ? result.stdout.trim() || undefined : undefined),
+        () => undefined,
+      )
+    dirs.set(key, found)
+    // A failed lookup is not remembered: the next call asks again.
+    void found.then((dir) => {
+      if (!dir && dirs.get(key) === found) dirs.delete(key)
+    })
+    return found
+  }
 
   return {
     reset: () => dirs.clear(),
+    configDir,
     async status(settings) {
       const base = await checkOmp(settings, deps.env)
       const status: OmpStatus = { ...base, problems: [...base.problems], checkedAt: Date.now() }
@@ -29,15 +53,7 @@ export function createStatusChecker(deps: StatusDeps): StatusChecker {
       if (!binary || status.problems.length) return status
 
       const profile = settings.profile || "default"
-      const key = `${binary}|${settings.profile}`
-      let dir = dirs.get(key)
-      if (!dir) {
-        const result = await deps
-          .run(binary, [...profileArgs(settings), "config", "path"], childEnv(deps.env))
-          .catch(() => undefined)
-        dir = result?.code === 0 ? result.stdout.trim() : undefined
-        if (dir) dirs.set(key, dir)
-      }
+      const dir = await configDir(settings, binary)
       if (dir) status.configDir = dir
 
       const problems: OmpProblem[] = []

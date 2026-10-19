@@ -92,7 +92,7 @@ export function preflight(pipeline: Pipeline, ctx: { unlockedModels: Set<string>
       blocking.push({
         nodeId: node.id,
         kind: "locked-model",
-        message: `Node '${node.role}' uses ${model}, which no connected provider can run — add its key or pick another model`,
+        message: `Node '${node.role}' uses ${model}, which no logged-in provider can run — log in in Omp settings or pick another model`,
       })
     }
 

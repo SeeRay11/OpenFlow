@@ -22,6 +22,7 @@ import { createHostTools, hostToolsCommand, type HostTools } from "./host-tools"
 import { asNumber, asRecord, asString, createMessageStore, providerError, type MessageStore } from "./messages"
 import { requireBinary } from "./models"
 import type { BuildLaunch, OmpExit, OmpProcess, SpawnOmp } from "./rpc-types"
+import type { CredentialStamp } from "./stamp"
 import { createUiRequests, type UiRequests } from "./ui-requests"
 
 /**
@@ -43,6 +44,8 @@ export type EngineHostDeps = {
   launch: BuildLaunch
   swarm?: SwarmHost
   env?: NodeJS.ProcessEnv
+  /** The profile's credential stamp; the model catalog re-reads when it changes. */
+  stamp?: CredentialStamp
   /** A live session with no frames, no prompt in flight and no HTTP activity for this long is closed (and stays resumable). Default 30 minutes. */
   idleReapMs?: number
 }

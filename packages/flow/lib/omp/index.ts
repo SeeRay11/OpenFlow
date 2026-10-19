@@ -12,6 +12,8 @@ export type EngineHost = {
   dispose(): Promise<void>
   /** Sessions with a process attached right now. */
   live(): number
+  /** Forgets the cached model catalog: the profile's logins changed. */
+  resetModels(): void
 }
 
 export function createEngineHost(deps: EngineHostDeps): EngineHost {
@@ -22,6 +24,7 @@ export function createEngineHost(deps: EngineHostDeps): EngineHost {
   return {
     handle: guarded(routes),
     live: () => sessions.live(),
+    resetModels: models.reset,
     async dispose() {
       bus.close()
       await sessions.close()
