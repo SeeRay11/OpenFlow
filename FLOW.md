@@ -693,8 +693,11 @@ authority where this and it disagree.
   id and answer 404 `request-not-found` for an earlier incarnation's id or the bare omp id; omp gets its
   own raw id (`entry.raw`); `asked()` replays carry the same public id. Dialogs are keyed
   `sessionID:requestID` (`requestKey` in `src/state.ts`), the id treated as opaque, and the engine's
-  `answered` / `asked` sets remember ids for the whole run, so a delayed replay of an answered ask is
-  never shown again, a restarted process (new prefix) is asked normally, and a still-pending ask replayed
+  `answered` / `asked` sets remember an id for the run after a SUCCESSFUL reply or a 404 (`gone()`), so a
+  delayed replay of an answered ask is never shown again; a reply that fails before reaching the host
+  (network error, 5xx, timeout, a failed reject) deletes the key so the host's replay of the still-pending
+  request opens the dialog again, the key stays held while the reply is in flight, and after Stop
+  (`controller.signal.aborted`) nothing is released or reopened. A restarted process (new prefix) is asked normally, and a still-pending ask replayed
   after a stream reset is shown once.
 - **A project switch is refused while any engine session is open.** `POST /project` answers 409
   `project-busy` while ANY session is live (idle between turns included) or starting, a create is in

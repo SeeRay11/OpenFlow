@@ -1183,10 +1183,15 @@ only the public id and answer 404 `request-not-found` for an id from an earlier
 process or for the bare omp id, so a stale answer can never answer a new process's
 prompt; omp still receives its own raw id. A replayed ask carries the same public
 id as when first raised. Dialogs are keyed by session and public id together, so
-two sessions cannot overwrite each other. The engine remembers answered ids for the
-whole run, so a delayed replay of an already-answered ask is never shown again,
-while a restarted process asks under a new prefix and is asked normally; a
-still-pending ask replayed after a stream reset is shown once.
+two sessions cannot overwrite each other. After a successful reply, or a 404
+`request-not-found`, the engine remembers the id for the rest of the run, so a
+delayed replay of an already-answered ask is never shown again, while a restarted
+process asks under a new prefix and is asked normally. A reply that fails before
+reaching the host (a network error, a 5xx, a timeout, or a failed reject) releases
+the id, so the host's replay of the still-pending request opens the dialog again;
+while a reply is in flight the id stays held, so a replay opens no second dialog;
+and after Stop nothing is released or reopened. A still-pending ask replayed after
+a stream reset is shown once.
 
 ### Questions during a run (human in the loop)
 

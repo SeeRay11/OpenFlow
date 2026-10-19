@@ -941,8 +941,13 @@ export function start(
     try {
       await api.replyPermission(sessionID, requestID, reply)
     } catch (error) {
-      // The host withdrew the request (the turn ended, the session went): nothing is waiting for an answer.
-      if (!gone(error)) hooks.onNotice?.("error", `permission reply failed: ${api.describe(error)}`)
+      // The host withdrew the request (the turn ended, the session went): nothing is waiting for an answer, and the id stays
+      // remembered. Any other failure means the reply never landed and the host will replay the request under the same id:
+      // released, so that replay is decided again. The run being over is not a reason to decide.
+      if (!gone(error)) {
+        if (!controller.signal.aborted) answered.delete(key)
+        hooks.onNotice?.("error", `permission reply failed: ${api.describe(error)}`)
+      }
       return
     }
 
@@ -997,7 +1002,13 @@ export function start(
       if (answers) await api.replyQuestion(sessionID, requestID, answers)
       else await api.rejectQuestion(sessionID, requestID)
     } catch (error) {
-      if (!gone(error)) hooks.onNotice?.("error", `question reply failed: ${api.describe(error)}`)
+      // Nothing is waiting for an answer any more when the host says it no longer has the request (404): the id stays
+      // remembered. Any other failure means the reply never landed, so the host still holds the request and will replay it
+      // under the same id: the id is released so that replay is asked again. The run being over is not a reason to ask.
+      if (!gone(error)) {
+        if (!controller.signal.aborted) asked.delete(key)
+        hooks.onNotice?.("error", `question reply failed: ${api.describe(error)}`)
+      }
       return
     }
 

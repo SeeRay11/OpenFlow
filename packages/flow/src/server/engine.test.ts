@@ -98,6 +98,10 @@ type HarnessOptions = {
   createStopsOnAbort?: boolean
   /** Makes every permission and question reply fail, with this HTTP status when given. */
   replyFails?: { status?: number }
+  /** The first replies fail, one entry each, in order: a status for an HTTP refusal, `{}` for a network error. Later ones succeed. */
+  failFirstReplies?: Array<{ status?: number }>
+  /** Holds every reply until it resolves: a reply still in flight. */
+  replyGate?: Promise<void>
   /** Session ids the host can no longer re-attach: a `reuse` naming one fails like a 404. */
   missingSessions?: string[]
   /** Subset of `models` that accepts image input. */
@@ -203,7 +207,10 @@ function harness(options: HarnessOptions = {}) {
 
   /** Resolves when the engine has told the host to drop a question. */
   const rejected = deferred()
-  function failReply() {
+  async function failReply() {
+    await options.replyGate
+    const next = options.failFirstReplies?.shift()
+    if (next) throw Object.assign(new Error(next.status ? "host refused" : "fetch failed"), next.status ? { status: next.status } : {})
     if (!options.replyFails) return
     throw Object.assign(new Error("request not found or already answered"), { status: options.replyFails.status })
   }
@@ -251,13 +258,13 @@ function harness(options: HarnessOptions = {}) {
     },
     async replyQuestion(sessionID: string, requestID: string, answers: string[][]) {
       questionReplies.push({ sessionID, requestID, answers })
-      failReply()
+      await failReply()
       return {}
     },
     async rejectQuestion(sessionID: string, requestID: string) {
       questionRejects.push({ sessionID, requestID })
       rejected.resolve()
-      failReply()
+      await failReply()
       return {}
     },
     async waitForIdle(sessionID: string, waitOptions: { signal?: AbortSignal; timeout?: number } = {}) {
@@ -292,7 +299,7 @@ function harness(options: HarnessOptions = {}) {
     },
     async replyPermission(sessionID: string, requestID: string, reply: PermissionReply) {
       replies.push({ sessionID, requestID, reply })
-      failReply()
+      await failReply()
       return {}
     },
     ...(options.release
@@ -2003,6 +2010,196 @@ describe("questions", () => {
     expect(h.notices.filter((notice) => notice.kind === "error")).toEqual([])
     h.release("a")
     await run.done
+  })
+
+  describe("a reply that did not reach the host", () => {
+
+    for (const [label, failure] of [
+      ["answered with a 500", { status: 500 }],
+      ["lost to a network error", {}],
+    ] as const) {
+      test(`a question ${label} is asked again when the host replays it, and then stays answered`, async () => {
+        let shown = 0
+        const h = harness({
+          behavior: { a: { hold: true } },
+          failFirstReplies: [failure],
+          onQuestion: async () => {
+            shown++
+            return [["postgres"]]
+          },
+        })
+        const run = h.run(pipeline("a"))
+        await flush()
+
+        h.question("a", { id: "ep1.1", questions: [ask] })
+        await flush()
+        expect(shown).toBe(1)
+        expect(h.notices.some((notice) => notice.kind === "error" && notice.text.includes("question reply failed"))).toBe(true)
+
+        // The stream came back and the host replays the request that is still pending.
+        h.question("a", { id: "ep1.1", questions: [ask] })
+        await flush()
+        expect(shown).toBe(2)
+        expect(h.questionReplies).toHaveLength(2)
+
+        // It went through this time: another replay is ignored.
+        h.question("a", { id: "ep1.1", questions: [ask] })
+        await flush()
+        expect(shown).toBe(2)
+        h.release("a")
+        await run.done
+      })
+
+      test(`a permission ${label} is decided again when the host replays it, and then stays answered`, async () => {
+        const h = harness({ behavior: { a: { hold: true } }, failFirstReplies: [failure] })
+        const run = h.run(pipeline("a"))
+        await flush()
+
+        h.ask("a", { id: "ep1.1", action: "read" })
+        await flush()
+        h.ask("a", { id: "ep1.1", action: "read" })
+        await flush()
+        expect(h.replies).toHaveLength(2)
+
+        h.ask("a", { id: "ep1.1", action: "read" })
+        await flush()
+        expect(h.replies).toHaveLength(2)
+        h.release("a")
+        await run.done
+      })
+    }
+
+    test("a reply the host answered 404 keeps the id: a replay is not shown again", async () => {
+      let shown = 0
+      const h = harness({
+        behavior: { a: { hold: true } },
+        failFirstReplies: [{ status: 404 }],
+        onQuestion: async () => {
+          shown++
+          return [["postgres"]]
+        },
+      })
+      const run = h.run(pipeline("a"))
+      await flush()
+
+      h.question("a", { id: "ep1.1", questions: [ask] })
+      await flush()
+      h.question("a", { id: "ep1.1", questions: [ask] })
+      await flush()
+
+      expect(shown).toBe(1)
+      expect(h.notices.filter((notice) => notice.kind === "error")).toEqual([])
+      h.release("a")
+      await run.done
+    })
+
+    test("a permission the host answered 404 keeps the id too", async () => {
+      const h = harness({ behavior: { a: { hold: true } }, failFirstReplies: [{ status: 404 }] })
+      const run = h.run(pipeline("a"))
+      await flush()
+
+      h.ask("a", { id: "ep1.1", action: "read" })
+      await flush()
+      h.ask("a", { id: "ep1.1", action: "read" })
+      await flush()
+
+      expect(h.replies).toHaveLength(1)
+      h.release("a")
+      await run.done
+    })
+
+    test("a replay that arrives while the reply is still in flight does not open a second dialog", async () => {
+      const gate = Promise.withResolvers<void>()
+      let shown = 0
+      const h = harness({
+        behavior: { a: { hold: true } },
+        replyGate: gate.promise,
+        onQuestion: async () => {
+          shown++
+          return [["postgres"]]
+        },
+      })
+      const run = h.run(pipeline("a"))
+      await flush()
+
+      h.question("a", { id: "ep1.1", questions: [ask] })
+      await flush()
+      h.question("a", { id: "ep1.1", questions: [ask] })
+      h.ask("a", { id: "ep1.2", action: "read" })
+      await flush()
+      h.ask("a", { id: "ep1.2", action: "read" })
+      await flush()
+      expect(shown).toBe(1)
+
+      gate.resolve()
+      await flush()
+      expect(h.questionReplies).toHaveLength(1)
+      expect(h.replies).toHaveLength(1)
+      h.release("a")
+      await run.done
+    })
+
+    test("a rejection that failed is retried on the replay; one that went through is not", async () => {
+      const h = harness({ behavior: { a: { hold: true } }, failFirstReplies: [{ status: 502 }], onQuestion: async () => undefined })
+      const run = h.run(pipeline("a"))
+      await flush()
+
+      h.question("a", { id: "ep1.1", questions: [ask] })
+      await flush()
+      h.question("a", { id: "ep1.1", questions: [ask] })
+      await flush()
+      expect(h.questionRejects).toHaveLength(2)
+
+      h.question("a", { id: "ep1.1", questions: [ask] })
+      await flush()
+      expect(h.questionRejects).toHaveLength(2)
+      h.release("a")
+      await run.done
+    })
+
+    test("a question the engine rejected for a person who never answered keeps the id once the host took the rejection", async () => {
+      const h = harness({ behavior: { a: { hold: true } }, onQuestion: () => new Promise<string[][]>(() => {}) })
+      const run = h.run(pipeline("a"), "go", { questionTimeout: 100 })
+      await flush()
+
+      h.question("a", { id: "ep1.1", questions: [ask] })
+      await h.rejected.promise
+      await flush()
+      h.question("a", { id: "ep1.1", questions: [ask] })
+      await flush()
+
+      expect(h.questionRejects).toHaveLength(1)
+      h.release("a")
+      await run.done
+    })
+
+    test("a reply that fails after the run was stopped does not release the id", async () => {
+      const gate = Promise.withResolvers<void>()
+      let shown = 0
+      const h = harness({
+        behavior: { a: { hold: true } },
+        replyGate: gate.promise,
+        failFirstReplies: [{ status: 500 }],
+        onQuestion: async () => {
+          shown++
+          return [["postgres"]]
+        },
+      })
+      const run = h.run(pipeline("a"))
+      await flush()
+
+      h.question("a", { id: "ep1.1", questions: [ask] })
+      await flush()
+      void run.stop()
+      gate.resolve()
+      h.release("a")
+      await flush()
+      h.question("a", { id: "ep1.1", questions: [ask] })
+      await flush()
+      await run.done
+
+      expect(shown).toBe(1)
+    })
   })
 })
 

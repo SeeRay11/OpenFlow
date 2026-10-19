@@ -162,8 +162,10 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
 - Publish every permission and question request under a public id
   `<epoch>.<ompId>` (epoch random per omp process): reply routes accept only that
   id and answer 404 `request-not-found` for an earlier process's id or the bare omp
-  id, and the engine remembers answered ids for the whole run so a delayed replay
-  is never shown again while a restarted process is asked normally.
+  id, and the engine remembers an id for the run after a successful reply or a 404
+  so a delayed replay is never shown again, while a reply that fails before
+  reaching the host releases it so the host's replay reopens the dialog; a restarted
+  process is asked normally.
 - Keep a role deleted while the project's roles are still being read deleted, and
   save a legacy skill under its own name as a plain migration (any other name that
   is taken is refused with 409 `name-taken`).
