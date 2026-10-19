@@ -1,7 +1,7 @@
 import type { CardSpec } from "../../shared/engine"
 import { SWARM_MODES, type SwarmMode } from "../../shared/swarm"
-import { orchestrationShape } from "../graph/orchestration"
-import { modeOf, type FlowNode, type Pipeline } from "../graph/types"
+import { isCritic, orchestrationShape } from "../graph/orchestration"
+import { gauntletOf, modeOf, type FlowNode, type Pipeline } from "../graph/types"
 
 /**
  * Tool names an `agent.tools` map can switch off, in OpenFlow's own vocabulary.
@@ -74,10 +74,19 @@ export function swarmOf(pipeline: Pipeline, node: FlowNode): SwarmMode | undefin
   return fallback && SWARM_MODES.includes(fallback) ? fallback : undefined
 }
 
-/** Everything the host needs to launch one card, in OpenFlow's own vocabulary. */
+/**
+ * Everything the host needs to launch one card, in OpenFlow's own vocabulary.
+ *
+ * In a gauntlet the critics and the root orchestrator judge and assign; none of
+ * them may change the work. That is derived into the launch as an `edit` deny
+ * rather than answered at a permission prompt, because under `auto` omp never
+ * asks. `bash` stays as authored: a critic proves its verdict by running things.
+ */
 export function cardSpec(pipeline: Pipeline, node: FlowNode): CardSpec {
-  const tools = toolMap(node.agent.tools)
-  const orchestrates = modeOf(pipeline) === "orchestration" && orchestrationShape(pipeline).children(node.id).length > 0
+  const shape = orchestrationShape(pipeline)
+  const judges = gauntletOf(pipeline) !== undefined && (isCritic(node) || shape.root?.id === node.id)
+  const tools = judges ? { ...toolMap(node.agent.tools), edit: false } : toolMap(node.agent.tools)
+  const orchestrates = modeOf(pipeline) === "orchestration" && shape.children(node.id).length > 0
   return {
     key: agentKey(pipeline, node),
     role: node.role,

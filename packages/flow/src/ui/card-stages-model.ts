@@ -159,14 +159,22 @@ export function upliftPrompts(originalPrompt: string | undefined, uplift: Uplift
   return { original: original || undefined, uplifted: uplift?.uplifted || undefined }
 }
 
-/** Dialog copy for one blocked card. `waiting` counts the failures queued behind it. */
-export function upliftFailureView(failure: { role: string; reason: string; elapsedMs: number }, waiting: number) {
+/**
+ * Dialog copy for one blocked card. `waiting` counts the failures queued behind it.
+ * `canRetry` is false on the last attempt: the engine fails the card then, so
+ * offering a retry would be offering a button that cancels.
+ */
+export function upliftFailureView(
+  failure: { role: string; reason: string; elapsedMs: number; attempt: number; attempts: number },
+  waiting: number,
+) {
   const took = formatElapsed(failure.elapsedMs)
   return {
     title: `Prompt uplift failed for ${failure.role}`,
     reason: failure.reason,
     elapsed: took ? `after ${took}` : undefined,
     queue: waiting > 0 ? `${plural(waiting, "more card")} waiting for a decision` : undefined,
+    canRetry: failure.attempt < failure.attempts,
   }
 }
 

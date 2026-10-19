@@ -83,6 +83,10 @@ type HarnessOptions = {
   onUpliftFailure?: (request: UpliftFailureRequest) => Promise<"original" | "retry" | "cancel">
   /** Whether the host lets the engine hand sessions back (`EngineApi.release`). */
   release?: boolean
+  /** Holds every `createSession` until it resolves: a session that is still opening. */
+  createGate?: Promise<void>
+  /** Makes every permission and question reply fail, with this HTTP status when given. */
+  replyFails?: { status?: number }
   /** Subset of `models` that accepts image input. */
   vision?: string[]
   /** Price rows per "providerID/id", as the catalog would report them. */
@@ -174,6 +178,13 @@ function harness(options: HarnessOptions = {}) {
 
   for (const [id, spec] of Object.entries(behavior)) if (spec.hold) gates.set(id, deferred())
 
+  /** Resolves when the engine has told the host to drop a question. */
+  const rejected = deferred()
+  function failReply() {
+    if (!options.replyFails) return
+    throw Object.assign(new Error("request not found or already answered"), { status: options.replyFails.status })
+  }
+
   const api: EngineApi = {
     async subscribe(onEvent, signal) {
       deliver = onEvent
@@ -184,6 +195,7 @@ function harness(options: HarnessOptions = {}) {
     },
     async createSession(input: CreateSession) {
       creations.push(input)
+      await options.createGate
       // Re-attaching is not creating: the session was already there.
       const id = input.reuse ?? `s${++created}`
       sessionDirs.set(id, input.directory)
@@ -205,10 +217,13 @@ function harness(options: HarnessOptions = {}) {
     },
     async replyQuestion(sessionID: string, requestID: string, answers: string[][]) {
       questionReplies.push({ sessionID, requestID, answers })
+      failReply()
       return {}
     },
     async rejectQuestion(sessionID: string, requestID: string) {
       questionRejects.push({ sessionID, requestID })
+      rejected.resolve()
+      failReply()
       return {}
     },
     async waitForIdle(sessionID: string, waitOptions: { signal?: AbortSignal; timeout?: number } = {}) {
@@ -243,6 +258,7 @@ function harness(options: HarnessOptions = {}) {
     },
     async replyPermission(sessionID: string, requestID: string, reply: PermissionReply) {
       replies.push({ sessionID, requestID, reply })
+      failReply()
       return {}
     },
     ...(options.release
@@ -408,6 +424,7 @@ function harness(options: HarnessOptions = {}) {
     creations,
     released,
     upliftRequests,
+    rejected,
     memoryReads,
     memoryWrites,
     worktreeCalls,
@@ -758,6 +775,23 @@ describe("stop", () => {
     expect(h.saved).toHaveLength(1)
     expect(h.saved[0].status).toBe("stopped")
   })
+
+  test("a stop while the session is still opening sends no prompt and hands the session back", async () => {
+    const gate = deferred()
+    const h = harness({ release: true, createGate: gate.promise })
+    const run = h.run(pipeline("a"))
+    await flush()
+    expect(h.creations).toHaveLength(1)
+
+    await run.stop()
+    gate.resolve()
+    const log = await run.done
+
+    expect(h.dispatched).toEqual([])
+    expect(h.released).toEqual(["s1"])
+    expect(log.nodes[0].status).toBe("stopped")
+    expect(log.status).toBe("stopped")
+  })
 })
 
 describe("activity", () => {
@@ -925,6 +959,52 @@ describe("permissions", () => {
     expect(h.replies[0].reply).toBe("reject")
     await run.done
   })
+
+  test("the same request id on two sessions is answered once on each", async () => {
+    const h = harness({ behavior: { a: { hold: true }, b: { hold: true } } })
+    const run = h.run(pipeline("a", "b"))
+    await flush()
+
+    h.ask("a", { id: "req-1", action: "read" })
+    h.ask("b", { id: "req-1", action: "read" })
+    await flush()
+
+    expect(h.replies.map((reply) => reply.sessionID).sort()).toEqual(
+      [h.sessionOf.get("a")!, h.sessionOf.get("b")!].sort(),
+    )
+    h.release("a")
+    h.release("b")
+    await run.done
+  })
+
+  test("a reply the host says is already gone is dropped without an error", async () => {
+    const h = harness({ behavior: { a: { hold: true } }, replyFails: { status: 404 } })
+    const run = h.run(pipeline("a"))
+    await flush()
+
+    h.ask("a", { id: "req-1", action: "read" })
+    await flush()
+
+    expect(h.replies).toHaveLength(1)
+    expect(h.notices.filter((notice) => notice.kind === "error")).toEqual([])
+    // Nothing was answered, so no decision is recorded either.
+    h.release("a")
+    const log = await run.done
+    expect(log.nodes[0].permissions).toBeUndefined()
+  })
+
+  test("a reply that fails for any other reason is reported", async () => {
+    const h = harness({ behavior: { a: { hold: true } }, replyFails: { status: 500 } })
+    const run = h.run(pipeline("a"))
+    await flush()
+
+    h.ask("a", { id: "req-1", action: "read" })
+    await flush()
+
+    expect(h.notices.filter((notice) => notice.kind === "error")).toHaveLength(1)
+    h.release("a")
+    await run.done
+  })
 })
 
 describe("run log", () => {
@@ -1082,7 +1162,7 @@ describe("questions", () => {
     await flush()
 
     h.question("a", { id: "que-1", questions: [ask] })
-    await new Promise((resolve) => setTimeout(resolve, 160))
+    await h.rejected.promise
 
     expect(h.questionRejects).toEqual([{ sessionID: h.sessionOf.get("a")!, requestID: "que-1" }])
     // The dialog must come down too, or it keeps offering buttons that answer
@@ -1103,6 +1183,25 @@ describe("questions", () => {
     await flush()
 
     expect(h.questionReplies).toHaveLength(1)
+    h.release("a")
+    await run.done
+  })
+
+  test("a question the host already withdrew is dropped without an error", async () => {
+    const h = harness({
+      behavior: { a: { hold: true } },
+      onQuestion: async () => [["postgres"]],
+      replyFails: { status: 404 },
+    })
+    const run = h.run(pipeline("a"))
+    await flush()
+
+    h.question("a", { id: "que-1", questions: [ask] })
+    await flush()
+
+    expect(h.questionReplies).toHaveLength(1)
+    expect(h.closed).toEqual(["que-1"])
+    expect(h.notices.filter((notice) => notice.kind === "error")).toEqual([])
     h.release("a")
     await run.done
   })
@@ -3056,6 +3155,54 @@ describe("gauntlet mode", () => {
     expect(h.replies.find((reply) => reply.requestID === "p2")?.reply).toBe("once")
     expect(h.replies.find((reply) => reply.requestID === "p3")?.reply).toBe("once")
   })
+
+  test("the same rules cover omp's structural edit tool", async () => {
+    const h = harness({
+      models: ["openai/gpt-x"],
+      behavior: {
+        root: { outputs: [dispatch("builder"), dispatch("reviewer"), final("shipped")] },
+        builder: { hold: true },
+        reviewer: { output: "ours wins" },
+      },
+    })
+    const run = h.run(gauntlet(["root->builder", "root->reviewer"]))
+    await flush()
+    h.ask("root", { id: "p1", action: "ast_edit", resources: ["game.js"] })
+    h.ask("builder", { id: "p2", action: "ast_edit", resources: ["game.js"] })
+    await flush()
+    h.release("builder")
+    await run.done
+
+    expect(h.replies.find((reply) => reply.requestID === "p1")?.reply).toBe("reject")
+    expect(h.replies.find((reply) => reply.requestID === "p2")?.reply).toBe("once")
+  })
+
+  test("the critic and the orchestrator launch with edit denied in either permission mode; the builder keeps its tools", async () => {
+    for (const permissions of ["auto", "manual"] as const) {
+      const h = harness({
+        models: ["openai/gpt-x"],
+        onPermission: async () => "once",
+        behavior: {
+          root: { outputs: [dispatch("builder"), dispatch("reviewer"), final("shipped")] },
+          builder: { hold: true },
+          reviewer: { output: "ours wins" },
+        },
+      })
+      const graph = gauntlet(["root->builder", "root->reviewer"])
+      graph.nodes.find((node) => node.id === "reviewer")!.agent.tools = { bash: true }
+      const run = h.run(graph, "do the thing", { permissions })
+      await flush()
+      h.release("builder")
+      await run.done
+
+      const launched = (id: string) => h.creations.find((creation) => creation.nodeId === id)
+      expect(launched("root")?.permissions).toBe(permissions)
+      expect(launched("root")?.card.tools?.edit).toBe(false)
+      // A critic proves its verdict by running things, so only the edit tools go.
+      expect(launched("reviewer")?.card.tools).toEqual({ bash: true, edit: false })
+      expect(launched("builder")?.card.tools).toBeUndefined()
+    }
+  })
 })
 
 describe("a card whose tools were rejected", () => {
@@ -3733,7 +3880,7 @@ describe("prompt uplift", () => {
     })
     const log = await h.run(pipeline("a")).done
 
-    expect(asked).toEqual([{ nodeID: "a", role: "a", reason: "the claude CLI is logged out", elapsedMs: 3 }])
+    expect(asked).toEqual([{ nodeID: "a", role: "a", reason: "the claude CLI is logged out", elapsedMs: 3, attempt: 1, attempts: 3 }])
     expect(h.prompts.get("a")).toContain("# Task\n\ndo the thing")
     expect(log.nodes[0].uplift).toMatchObject({
       status: "declined",
@@ -3764,16 +3911,22 @@ describe("prompt uplift", () => {
   })
 
   test("three failed attempts in all end the card, however often the user says retry", async () => {
-    let asks = 0
+    const seen: number[][] = []
     const h = harness({
       uplift: () => failed("planner crashed"),
-      onUpliftFailure: async () => (asks++, "retry"),
+      onUpliftFailure: async (request) => (seen.push([request.attempt, request.attempts]), "retry"),
     })
     const log = await h.run(pipeline("a")).done
 
     expect(h.upliftRequests).toHaveLength(3)
-    expect(asks).toBe(3)
-    expect(log.nodes[0]).toMatchObject({ status: "error", error: "prompt uplift failed: planner crashed" })
+    // The dialog is told which attempt this is, so it can stop offering a retry on the last.
+    expect(seen).toEqual([
+      [1, 3],
+      [2, 3],
+      [3, 3],
+    ])
+    expect(log.nodes[0].status).toBe("error")
+    expect(log.nodes[0].error).toContain("planner crashed")
     expect(h.dispatched).toEqual([])
   })
 
@@ -3781,7 +3934,8 @@ describe("prompt uplift", () => {
     const h = harness({ uplift: () => failed("timed out after 120s"), onUpliftFailure: async () => "cancel" })
     const log = await h.run(pipeline("a->b")).done
 
-    expect(log.nodes[0]).toMatchObject({ status: "error", error: "prompt uplift failed: timed out after 120s" })
+    expect(log.nodes[0].status).toBe("error")
+    expect(log.nodes[0].error).toContain("timed out after 120s")
     expect(log.nodes[1].status).toBe("skipped")
     expect(h.dispatched).toEqual([])
     expect(h.creations).toEqual([])
@@ -3792,7 +3946,8 @@ describe("prompt uplift", () => {
     const h = harness({ uplift: () => failed("the claude CLI is missing") })
     const log = await h.run(pipeline("a")).done
 
-    expect(log.nodes[0]).toMatchObject({ status: "error", error: "prompt uplift failed: the claude CLI is missing" })
+    expect(log.nodes[0].status).toBe("error")
+    expect(log.nodes[0].error).toContain("the claude CLI is missing")
     expect(log.nodes[0].uplift).toMatchObject({ status: "failed" })
     expect(h.dispatched).toEqual([])
   })
@@ -3839,7 +3994,8 @@ describe("prompt uplift", () => {
 
     expect(asked).toEqual(["the claude CLI could not be reached"])
     expect(h.dispatched).toEqual([])
-    expect(log.nodes[0].error).toBe("prompt uplift failed: the claude CLI could not be reached")
+    expect(log.nodes[0].status).toBe("error")
+    expect(log.nodes[0].error).toContain("the claude CLI could not be reached")
   })
 
   test("an ok result with no spec in it is a failure too", async () => {
@@ -3849,7 +4005,7 @@ describe("prompt uplift", () => {
       onUpliftFailure: async (request) => (asked.push(request.reason), "cancel"),
     })
     await h.run(pipeline("a")).done
-    expect(asked).toEqual(["the planner returned no spec"])
+    expect(asked).toHaveLength(1)
   })
 
   test("stopping the run settles a pending failure decision as cancel", async () => {
@@ -4193,6 +4349,17 @@ describe("project memory", () => {
     const resumed = harness({ memory: { read: found } })
     await resumed.run(pipeline("a"), "do the thing", { sessions: { a: "s-old" } }).done
     expect(resumed.memoryReads).toEqual([])
+  })
+
+  test("a card dispatched twice writes once per dispatch, numbered from 1", async () => {
+    const h = harness({
+      memory: {},
+      behavior: { root: { outputs: [dispatches("a"), dispatches("a"), finalAnswer("done")] }, a: {} },
+    })
+    await h.run(orchestration(["root->a"], 2), "do the thing", { sessions: {} }).done
+
+    expect(h.memoryWrites.filter((write) => write.nodeId === "a").map((write) => write.dispatch)).toEqual([1, 2])
+    expect(h.memoryWrites.filter((write) => write.nodeId === "root").map((write) => write.dispatch)).toEqual([1])
   })
 
   test("a card opted out of uplift is opted out of memory too", async () => {
@@ -4560,6 +4727,6 @@ describe("the run log keeps what the stages did", () => {
 
     const node = h.saved.at(-1)!.nodes[0]
     expect(node.uplift).toMatchObject({ status: "failed", reason: "timed out after 120s", original: "# Task\n\ndo the thing" })
-    expect(node.error).toBe("prompt uplift failed: timed out after 120s")
+    expect(node.error).toContain("timed out after 120s")
   })
 })

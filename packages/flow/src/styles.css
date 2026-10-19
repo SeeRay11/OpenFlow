@@ -1970,6 +1970,7 @@ main {
   height: 18px;
   flex-shrink: 0;
   margin-top: 1px;
+  position: relative;
   border: 1px solid var(--v2-border-border-base);
   border-radius: 50%;
   color: var(--v2-state-fg-success);
@@ -1977,6 +1978,16 @@ main {
 
 .walkthrough-step[data-done] .walkthrough-mark {
   border-color: var(--v2-state-fg-success);
+}
+
+/* The step's state as text for assistive tech; the tick alone is a picture. */
+.walkthrough-state {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 .walkthrough-body {

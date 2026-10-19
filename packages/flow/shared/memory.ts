@@ -70,6 +70,13 @@ export type MemoryWriteRequest = {
   outcome: "done" | "error" | "stopped"
   /** The card's final answer (or its error text). Redacted and cut host-side. */
   output: string
+  /**
+   * Which dispatch of this card the output belongs to (1-based). A sub-agent an
+   * orchestrator dispatches more than once writes once per dispatch; folding the
+   * ordinal into the idempotency key and the subject keeps a later answer from
+   * colliding with the first. Absent means the first (or only) dispatch.
+   */
+  dispatch?: number
 }
 
 export type MemoryWriteResult = {

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import type { ModelInfo } from "../../shared/engine"
 import { ENGINE_BASE } from "../../shared/engine"
 import { OMP_ROUTES, type OmpProviderRow } from "../../shared/omp"
-import * as client from "./client"
+import { models, setOrigin } from "./client"
 import {
   availableModels,
   groupMatches,
@@ -13,7 +13,7 @@ import {
   unlockedRows,
 } from "./providers"
 
-const models: ModelInfo[] = [
+const catalog: ModelInfo[] = [
   { providerID: "anthropic", id: "claude-opus-5", name: "Claude Opus 5", reasoning: true, contextWindow: 200_000 },
   { providerID: "anthropic", id: "claude-haiku-5", name: "Claude Haiku 5" },
   { providerID: "openai", id: "gpt-5", name: "GPT-5" },
@@ -31,7 +31,7 @@ const providers: OmpProviderRow[] = [
 
 describe("providerRows", () => {
   test("groups models by provider and builds the provider/model value a node stores", () => {
-    const rows = providerRows(models, providers)
+    const rows = providerRows(catalog, providers)
     const anthropic = rows.find((row) => row.id === "anthropic")
     expect(anthropic?.name).toBe("Anthropic")
     expect(anthropic?.models.map((model) => model.value)).toEqual([
@@ -49,42 +49,42 @@ describe("providerRows", () => {
   })
 
   test("a model without a name shows its id, and a model id containing a slash stays whole", () => {
-    const openrouter = providerRows(models, providers).find((row) => row.id === "openrouter")
+    const openrouter = providerRows(catalog, providers).find((row) => row.id === "openrouter")
     expect(openrouter?.models[0]).toMatchObject({ value: "openrouter/meta/llama-4", name: "meta/llama-4", reasoning: false })
   })
 
   test("authenticated providers unlock; an explicit false locks", () => {
-    const rows = providerRows(models, providers)
+    const rows = providerRows(catalog, providers)
     expect(rows.find((row) => row.id === "anthropic")).toMatchObject({ authenticated: true, unlocked: true })
     expect(rows.find((row) => row.id === "openai")).toMatchObject({ authenticated: false, unlocked: false })
   })
 
   test("a provider omp serves models for but does not list is unknown, therefore available", () => {
-    const row = providerRows(models, providers).find((entry) => entry.id === "local-llm")
+    const row = providerRows(catalog, providers).find((entry) => entry.id === "local-llm")
     expect(row).toMatchObject({ authenticated: undefined, unlocked: true, name: "local-llm" })
     expect(row?.models).toHaveLength(1)
   })
 
   test("without a provider list nothing is locked", () => {
-    const rows = providerRows(models)
+    const rows = providerRows(catalog)
     expect(rows.every((row) => row.unlocked)).toBe(true)
-    expect(availableModels(rows)).toHaveLength(models.length)
+    expect(availableModels(rows)).toHaveLength(catalog.length)
   })
 
   test("providers with no models are still rows, so a search can offer to connect them", () => {
-    const rows = providerRows(models, providers)
+    const rows = providerRows(catalog, providers)
     expect(rows.find((row) => row.id === "xai")).toMatchObject({ models: [], unlocked: true })
     expect(rows.find((row) => row.id === "zai")).toMatchObject({ models: [], unlocked: false })
   })
 
   test("rows with something to pick come first, locked and empty ones last", () => {
-    const order = providerRows(models, providers).map((row) => row.id)
+    const order = providerRows(catalog, providers).map((row) => row.id)
     expect(order).toEqual(["anthropic", "local-llm", "openrouter", "xai", "openai", "zai"])
   })
 })
 
 describe("availability", () => {
-  const rows = providerRows(models, providers)
+  const rows = providerRows(catalog, providers)
 
   test("availableModels is every model of an unlocked provider", () => {
     expect(availableModels(rows).map((model) => model.value).sort()).toEqual([
@@ -102,7 +102,7 @@ describe("availability", () => {
 })
 
 describe("searchModels", () => {
-  const rows = providerRows(models, providers)
+  const rows = providerRows(catalog, providers)
 
   test("an empty query lists every available model in row order", () => {
     expect(searchModels(rows, "").map((model) => model.value)).toEqual([
@@ -137,7 +137,7 @@ describe("searchModels", () => {
 })
 
 describe("searchProviders", () => {
-  const rows = providerRows(models, providers)
+  const rows = providerRows(catalog, providers)
 
   test("an empty query keeps every row", () => {
     expect(searchProviders(rows, "  ")).toHaveLength(rows.length)
@@ -151,7 +151,7 @@ describe("searchProviders", () => {
 
 describe("groupMatches", () => {
   test("regroups a flat match list under provider headings, in order", () => {
-    const rows = providerRows(models, providers)
+    const rows = providerRows(catalog, providers)
     const groups = groupMatches(searchModels(rows, ""))
     expect(groups.map((group) => [group.providerID, group.providerName, group.models.length])).toEqual([
       ["anthropic", "Anthropic", 2],
@@ -166,21 +166,21 @@ describe("from the host", () => {
     port: 0,
     fetch(request) {
       const path = new URL(request.url).pathname
-      if (path === `${ENGINE_BASE}/models`) return Response.json(models)
+      if (path === `${ENGINE_BASE}/models`) return Response.json(catalog)
       if (path === OMP_ROUTES.providers) return Response.json(providers)
       return Response.json({ error: "no such route" }, { status: 404 })
     },
   })
 
-  beforeAll(() => client.setOrigin(server.url.origin))
+  beforeAll(() => setOrigin(server.url.origin))
   afterAll(async () => {
-    client.setOrigin("")
+    setOrigin("")
     await server.stop(true)
   })
 
   test("the catalog and the provider list a browser fetches join into the picker's rows", async () => {
     const fetched = (await (await fetch(`${server.url.origin}${OMP_ROUTES.providers}`)).json()) as OmpProviderRow[]
-    const rows = providerRows(await client.models(), fetched)
+    const rows = providerRows(await models(), fetched)
     expect(availableModels(rows).map((model) => model.value)).toContain("anthropic/claude-opus-5")
     expect(availableModels(rows).map((model) => model.value)).not.toContain("openai/gpt-5")
   })

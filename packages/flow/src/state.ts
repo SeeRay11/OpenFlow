@@ -65,6 +65,9 @@ export type PendingUpliftFailure = {
   role: string
   reason: string
   elapsedMs: number
+  /** Which attempt just failed, and how many the engine allows: the last one is not offered a retry. */
+  attempt: number
+  attempts: number
 }
 
 export type FlowState = {

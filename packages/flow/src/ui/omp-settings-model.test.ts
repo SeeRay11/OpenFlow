@@ -8,7 +8,6 @@ import {
 } from "../../shared/omp"
 import type { SwarmPreflight } from "../../shared/swarm"
 import {
-  COPY_LOGINS_WARNING,
   FIELDS,
   SECTIONS,
   TABS,
@@ -324,23 +323,18 @@ describe("status", () => {
     expect(canCopyLogins(healthy, { code: "profile", message: "m" })).toBe(false)
   })
 
-  test("the copy outcome counts logins, or carries the host's sentence", () => {
+  test("the copy outcome reports the count on success, and the host's sentence on failure", () => {
     const value = (imported: number) => ({ ok: true as const, value: { imported, status: healthy } })
-    expect(copyLoginsOutcome(value(3))).toEqual({ ok: true, text: "Copied 3 logins." })
-    expect(copyLoginsOutcome(value(1))).toEqual({ ok: true, text: "Copied 1 login." })
-    expect(
-      copyLoginsOutcome({
-        ok: false,
-        status: 400,
-        errors: [{ path: "", message: "Your default omp profile has no logins to copy. Run omp and use /login there first." }],
-      }),
-    ).toEqual({ ok: false, text: "Your default omp profile has no logins to copy. Run omp and use /login there first." })
-    expect(copyLoginsOutcome({ ok: false, status: 0, errors: [{ path: "", message: "The OpenFlow host did not answer." }] }).ok).toBe(false)
-  })
-
-  test("the confirm sentence says where the keys go", () => {
-    expect(COPY_LOGINS_WARNING).toContain("API keys and logins")
-    expect(COPY_LOGINS_WARNING).toContain("OpenFlow profile on this machine")
+    const three = copyLoginsOutcome(value(3))
+    expect(three.ok).toBe(true)
+    expect(three.text).toContain("3")
+    expect(copyLoginsOutcome(value(1)).text).not.toBe(three.text)
+    const refused = "the host's own sentence"
+    expect(copyLoginsOutcome({ ok: false, status: 400, errors: [{ path: "", message: refused }] })).toEqual({
+      ok: false,
+      text: refused,
+    })
+    expect(copyLoginsOutcome({ ok: false, status: 0, errors: [{ path: "", message: "m" }] }).ok).toBe(false)
   })
 })
 

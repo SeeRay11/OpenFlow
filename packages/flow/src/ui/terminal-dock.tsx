@@ -298,12 +298,18 @@ function Dock(props: { kind: PtyKind; onClose(): void; onOpenSettings?(): void }
     event.preventDefault()
     const move = (moved: PointerEvent) =>
       setHeight(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, 1 - moved.clientY / window.innerHeight)))
-    const up = () => {
+    const stop = () => {
       window.removeEventListener("pointermove", move)
-      window.removeEventListener("pointerup", up)
+      window.removeEventListener("pointerup", stop)
+      window.removeEventListener("pointercancel", stop)
+      const index = cleanups.indexOf(stop)
+      if (index >= 0) cleanups.splice(index, 1)
     }
     window.addEventListener("pointermove", move)
-    window.addEventListener("pointerup", up)
+    window.addEventListener("pointerup", stop)
+    window.addEventListener("pointercancel", stop)
+    // Unmounting mid-drag must not leave the window listeners behind.
+    cleanups.push(stop)
   }
 
   onMount(() => {

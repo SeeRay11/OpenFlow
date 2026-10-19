@@ -173,7 +173,15 @@ describe("runtime", () => {
 })
 
 describe("uplift, memory and swarm on the runtime", () => {
-  const failure = (requestID: string, nodeID = "n1") => ({ requestID, nodeID, role: "planner", reason: "timed out", elapsedMs: 1200 })
+  const failure = (requestID: string, nodeID = "n1") => ({
+    requestID,
+    nodeID,
+    role: "planner",
+    reason: "timed out",
+    elapsedMs: 1200,
+    attempt: 1,
+    attempts: 3,
+  })
 
   test("patches carry the new fields and keep earlier ones", () => {
     const [id] = graph("planner")

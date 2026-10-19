@@ -114,7 +114,15 @@ function reason(error: unknown): string | undefined {
   return json && json !== "{}" && json !== "[]" ? json : undefined
 }
 
-/** A non-2xx answer as an Error whose text is the wire's own, status appended. */
+/** A non-2xx answer: the wire's own text, status appended, and the status itself for callers that branch on it. */
+class HttpError extends Error {
+  readonly status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
 async function failure(response: Response) {
   const text = await response.text().catch(() => "")
   let body: unknown
@@ -123,7 +131,7 @@ async function failure(response: Response) {
   } catch {
     // Not JSON (an HTML error page from a proxy): the status is all there is.
   }
-  return new Error(describe(body, response))
+  return new HttpError(describe(body, response), response.status)
 }
 
 async function call<T>(path: string, init: { method?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {

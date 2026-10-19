@@ -267,6 +267,9 @@ function Dialog(props: Omit<OmpSettingsDialogProps, "open">) {
     setCopyStep("running")
     setCopyResult(undefined)
     const outcome = copyLoginsOutcome(await omp.importAuth())
+    // The host has already copied the logins and reset its model catalog, so the app refreshes
+    // even when the dialog was closed while this ran.
+    if (outcome.ok) props.onChanged?.()
     if (closed) return
     setCopyStep("idle")
     setCopyResult(outcome)
@@ -275,8 +278,6 @@ function Dialog(props: Omit<OmpSettingsDialogProps, "open">) {
       queueMicrotask(() => copyButton?.focus())
       return
     }
-    // The profile can run different models now: the app reads its models and providers again.
-    props.onChanged?.()
     await loadStatus()
     if (!closed) checkButton?.focus()
   }

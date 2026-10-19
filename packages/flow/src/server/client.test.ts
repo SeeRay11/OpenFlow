@@ -1,12 +1,33 @@
-import { afterAll, beforeAll, beforeEach, describe as suite, expect, test } from "bun:test"
-import type { BusEvent, EngineApi, WaitResult } from "../../shared/engine"
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
+import type { BusEvent, WaitResult } from "../../shared/engine"
 import { ENGINE_BASE } from "../../shared/engine"
-import * as client from "./client"
-
-const { accepts, describe, formatModel, parseModel } = client
-
-/** Compile-time proof that the module is a complete `EngineApi`. */
-export const engineApi = client satisfies EngineApi
+import {
+  accepts,
+  connect,
+  createSession,
+  disconnect,
+  formatModel,
+  health,
+  interrupt,
+  models,
+  parseModel,
+  project,
+  prompt,
+  rejectQuestion,
+  release,
+  releaseRun,
+  replyPermission,
+  replyQuestion,
+  sessionCalls,
+  sessionSteps,
+  sessionTranscript,
+  sessions,
+  setOrigin,
+  subscribe,
+  testModel,
+  transcript,
+  waitForIdle,
+} from "./client"
 
 type Seen = { method: string; path: string; search: string; body: unknown }
 
@@ -115,14 +136,15 @@ const server = Bun.serve({
       return reply(200, [{ messageID: "m1", model: "anthropic/claude-opus-5", tokens: { input: 1, output: 2, reasoning: 0, cacheRead: 0, cacheWrite: 0 } }])
     }
     if (tail === "/calls") return reply(200, [{ id: "c1", name: "bash", input: { command: "ls" } }])
+    if (tail === "/permission/withdrawn") return reply(404, { error: "permission request not found or already answered: withdrawn" })
     if (tail.startsWith("/permission/") || tail.startsWith("/question/")) return reply(200, { ok: true })
     return reply(404, { error: `session not found: ${id}` })
   },
 })
 
-beforeAll(() => client.setOrigin(server.url.origin))
+beforeAll(() => setOrigin(server.url.origin))
 afterAll(async () => {
-  client.setOrigin("")
+  setOrigin("")
   await server.stop(true)
 })
 beforeEach(() => {
@@ -138,49 +160,7 @@ beforeEach(() => {
   waitHeld = Promise.withResolvers<void>()
 })
 
-suite("describe", () => {
-  test("prefers a message field over the raw body", () => {
-    expect(describe({ message: "Model claude-opus-5 is not supported" })).toBe("Model claude-opus-5 is not supported")
-  })
-
-  test("reads a message nested under data", () => {
-    expect(describe({ data: { message: "no such agent" } })).toBe("no such agent")
-  })
-
-  test("reads the error field of an engine wire body", () => {
-    expect(describe({ error: "session not found: ses_9" })).toBe("session not found: ses_9")
-  })
-
-  test("prefers message over error when a body carries both", () => {
-    expect(describe({ message: "engine is down", error: "engine is down" })).toBe("engine is down")
-  })
-
-  test("ignores a non-string error field rather than printing [object Object]", () => {
-    expect(describe({ error: { code: 500 } })).toBe('{"error":{"code":500}}')
-  })
-
-  test("an empty body renders as the status, never as {}", () => {
-    const response = new Response(null, { status: 502, statusText: "Bad Gateway" })
-    expect(describe({}, response)).toBe("HTTP 502 Bad Gateway")
-    expect(describe(undefined, response)).toBe("HTTP 502 Bad Gateway")
-  })
-
-  test("appends the status to a body that does say something", () => {
-    const response = new Response(null, { status: 503, statusText: "Service Unavailable" })
-    expect(describe({ error: "omp is not installed" }, response)).toBe("omp is not installed (HTTP 503 Service Unavailable)")
-  })
-
-  test("a successful response adds nothing", () => {
-    expect(describe(new Error("boom"), new Response(null, { status: 200 }))).toBe("boom")
-  })
-
-  test("falls back to the _tag, then to unknown", () => {
-    expect(describe({ _tag: "ProviderAuthError" })).toBe("ProviderAuthError")
-    expect(describe(undefined)).toBe("unknown error")
-  })
-})
-
-suite("models", () => {
+describe("models", () => {
   test("parseModel splits on the first slash, keeping nested ids whole", () => {
     expect(parseModel("openrouter/anthropic/claude-opus-5")).toEqual({
       providerID: "openrouter",
@@ -206,139 +186,151 @@ suite("models", () => {
   })
 })
 
-suite("context and catalog over the wire", () => {
+describe("context and catalog over the wire", () => {
   test("connect caches the context, disconnect drops it", async () => {
-    expect(() => client.project()).toThrow("not connected")
-    const first = await client.connect()
+    expect(() => project()).toThrow("not connected")
+    const first = await connect()
     expect(first.context.project).toBe("/tmp/project")
-    expect(client.project()).toBe("/tmp/project")
-    await client.connect()
+    expect(project()).toBe("/tmp/project")
+    await connect()
     expect(seen.filter((entry) => entry.path === "/flow/api/context")).toHaveLength(1)
-    client.disconnect()
-    expect(() => client.project()).toThrow("not connected")
+    disconnect()
+    expect(() => project()).toThrow("not connected")
   })
 
   test("health, models, sessions and a transcript read their routes", async () => {
-    expect((await client.health()).omp.version).toBe("18.12.2")
-    expect((await client.models())[0].id).toBe("claude-opus-5")
-    expect((await client.sessions(5))[0].title).toBe("coder")
+    expect((await health()).omp.version).toBe("18.12.2")
+    expect((await models())[0].id).toBe("claude-opus-5")
+    expect((await sessions(5))[0].title).toBe("coder")
     expect(seen.at(-1)?.search).toBe("?limit=5")
-    expect(await client.sessionTranscript("ses_1", 7)).toEqual([{ role: "user", text: "hello" }])
+    expect(await sessionTranscript("ses_1", 7)).toEqual([{ role: "user", text: "hello" }])
     expect(seen.at(-1)?.path).toBe(`${ENGINE_BASE}/sessions/ses_1/transcript`)
     expect(seen.at(-1)?.search).toBe("?limit=7")
   })
 
   test("steps, calls and the final transcript come back as the wire shapes", async () => {
-    expect((await client.sessionSteps("ses_1"))[0].messageID).toBe("m1")
-    expect(await client.sessionCalls("ses_1", 3)).toEqual([{ id: "c1", name: "bash", input: { command: "ls" } }])
+    expect((await sessionSteps("ses_1"))[0].messageID).toBe("m1")
+    expect(await sessionCalls("ses_1", 3)).toEqual([{ id: "c1", name: "bash", input: { command: "ls" } }])
     expect(seen.at(-1)?.search).toBe("?limit=3")
     finals.set("ses_1", { text: "done" })
-    expect(await client.transcript("ses_1")).toEqual({ text: "done" })
+    expect(await transcript("ses_1")).toEqual({ text: "done" })
   })
 })
 
-suite("sessions", () => {
+describe("sessions", () => {
   test("createSession posts the spec and returns the id", async () => {
     const spec = { runId: "r1", nodeId: "n1", card: { key: "coder-n1", role: "coder" }, model: "anthropic/claude-opus-5" }
-    expect(await client.createSession(spec)).toEqual({ id: "ses_1" })
+    expect(await createSession(spec)).toEqual({ id: "ses_1" })
     expect(seen.at(-1)).toMatchObject({ method: "POST", path: `${ENGINE_BASE}/sessions`, body: spec })
   })
 
   test("a provider failure keeps its status wording so the engine can classify it", async () => {
-    const failure = await client
-      .createSession({ runId: "r1", nodeId: "n1", card: { key: "k", role: "r" }, model: "openrouter/rate-limited" })
-      .catch((error: Error) => error)
+    const failure = await createSession({
+      runId: "r1",
+      nodeId: "n1",
+      card: { key: "k", role: "r" },
+      model: "openrouter/rate-limited",
+    }).catch((error: Error) => error)
     expect(failure).toBeInstanceOf(Error)
     expect((failure as Error).message).toMatch(/HTTP 429 Too Many Requests: slow down/)
   })
 
   test("a failed route surfaces the wire's own sentence with the status", async () => {
-    const failure = await client.transcript("gone").catch((error: Error) => error)
+    const failure = await transcript("gone").catch((error: Error) => error)
     expect((failure as Error).message).toBe("session not found: gone (HTTP 404 Not Found)")
   })
 
   test("prompt sends text, and only the file fields the wire defines", async () => {
-    await client.prompt("ses_1", "hi", [{ name: "a.png", url: "data:image/png;base64,AA==", mime: "image/png" }])
+    await prompt("ses_1", "hi", [{ name: "a.png", url: "data:image/png;base64,AA==", mime: "image/png" }])
     expect(seen.at(-1)).toMatchObject({
       method: "POST",
       path: `${ENGINE_BASE}/sessions/ses_1/prompt`,
       body: { text: "hi", files: [{ name: "a.png", url: "data:image/png;base64,AA==", mime: "image/png" }] },
     })
-    await client.prompt("ses_1", "plain")
+    await prompt("ses_1", "plain")
     expect(seen.at(-1)?.body).toEqual({ text: "plain" })
   })
 
   test("permission and question answers go to their routes, ids encoded", async () => {
-    await client.replyPermission("ses_1", "per/1", "always")
+    await replyPermission("ses_1", "per/1", "always")
     expect(seen.at(-1)).toMatchObject({ path: `${ENGINE_BASE}/sessions/ses_1/permission/per%2F1`, body: { reply: "always" } })
-    await client.replyQuestion("ses_1", "q1", [["yes"]])
+    await replyQuestion("ses_1", "q1", [["yes"]])
     expect(seen.at(-1)).toMatchObject({ path: `${ENGINE_BASE}/sessions/ses_1/question/q1`, body: { answers: [["yes"]] } })
-    await client.rejectQuestion("ses_1", "q1")
+    await rejectQuestion("ses_1", "q1")
     expect(seen.at(-1)).toMatchObject({ method: "POST", path: `${ENGINE_BASE}/sessions/ses_1/question/q1/reject` })
   })
 
+  test("a reply to a request the host no longer has fails with the HTTP status, for callers that treat 404 as already gone", async () => {
+    const error = await replyPermission("ses_1", "withdrawn", "once").then(
+      () => undefined,
+      (caught: unknown) => caught,
+    )
+    expect(error).toBeInstanceOf(Error)
+    expect(error).toMatchObject({ status: 404 })
+  })
+
   test("interrupt never throws, release disposes, releaseRun names the run", async () => {
-    await client.interrupt("broken")
-    await client.interrupt("ses_1")
-    await client.release("ses_1")
+    await interrupt("broken")
+    await interrupt("ses_1")
+    await release("ses_1")
     expect(seen.at(-1)).toMatchObject({ method: "DELETE", path: `${ENGINE_BASE}/sessions/ses_1` })
-    await client.releaseRun("r1")
+    await releaseRun("r1")
     expect(seen.at(-1)).toMatchObject({ path: `${ENGINE_BASE}/runs/release`, body: { runId: "r1" } })
   })
 })
 
-suite("waitForIdle", () => {
+describe("waitForIdle", () => {
   test("a completed settle resolves and forwards the timeout", async () => {
     waits.set("ses_1", { status: "idle", result: "completed" })
-    await client.waitForIdle("ses_1", { timeout: 1234, interval: 500 })
+    await waitForIdle("ses_1", { timeout: 1234, interval: 500 })
     expect(seen.at(-1)).toMatchObject({ method: "POST", path: `${ENGINE_BASE}/sessions/ses_1/wait`, body: { timeoutMs: 1234 } })
   })
 
   test("an error result throws the host's text", async () => {
     waits.set("ses_1", { status: "idle", result: "error", error: "Provider request failed with HTTP 401 Unauthorized" })
-    await expect(client.waitForIdle("ses_1")).rejects.toThrow("Provider request failed with HTTP 401 Unauthorized")
+    await expect(waitForIdle("ses_1")).rejects.toThrow("Provider request failed with HTTP 401 Unauthorized")
   })
 
   test("an abort nobody asked for is an error, one the caller asked for is silent", async () => {
     waits.set("ses_1", { status: "idle", result: "aborted" })
-    await expect(client.waitForIdle("ses_1")).rejects.toThrow("the session was interrupted")
+    await expect(waitForIdle("ses_1")).rejects.toThrow("the session was interrupted")
     const controller = new AbortController()
     controller.abort()
-    await client.waitForIdle("ses_1", { signal: controller.signal })
+    await waitForIdle("ses_1", { signal: controller.signal })
   })
 
   test("a result that aborts while the caller's signal fires is silent", async () => {
     waits.set("ses_1", { status: "idle", result: "aborted" })
     const controller = new AbortController()
-    const pending = client.waitForIdle("ses_1", { signal: controller.signal })
+    const pending = waitForIdle("ses_1", { signal: controller.signal })
     controller.abort()
     await pending
   })
 
   test("missing throws its sentence, with or without a budget", async () => {
-    await expect(client.waitForIdle("ses_2")).rejects.toThrow("session not found: ses_2")
-    await expect(client.waitForIdle("ses_2", { timeout: 1000, slice: 10 })).rejects.toThrow("session not found: ses_2")
+    await expect(waitForIdle("ses_2")).rejects.toThrow("session not found: ses_2")
+    await expect(waitForIdle("ses_2", { timeout: 1000, slice: 10 })).rejects.toThrow("session not found: ses_2")
   })
 
   test("a session that is missing or failed after some slices still maps to its sentence", async () => {
     waitQueue.set("ses_1", [{ status: "timeout" }, { status: "missing" }])
-    await expect(client.waitForIdle("ses_1", { timeout: 1000, slice: 10 })).rejects.toThrow("session not found: ses_1")
+    await expect(waitForIdle("ses_1", { timeout: 1000, slice: 10 })).rejects.toThrow("session not found: ses_1")
     waitQueue.set("ses_1", [{ status: "timeout" }, { status: "idle", result: "error", error: "Provider request failed with HTTP 401 Unauthorized" }])
-    await expect(client.waitForIdle("ses_1", { timeout: 1000, slice: 10 })).rejects.toThrow("Provider request failed with HTTP 401 Unauthorized")
+    await expect(waitForIdle("ses_1", { timeout: 1000, slice: 10 })).rejects.toThrow("Provider request failed with HTTP 401 Unauthorized")
   })
 
   test("re-polls in slices until the session settles, never holding a request longer than a slice", async () => {
     waitQueue.set("ses_1", [{ status: "timeout" }, { status: "timeout" }, { status: "idle", result: "completed" }])
     const asked: number[] = []
     onWait = (timeoutMs) => asked.push(timeoutMs)
-    await client.waitForIdle("ses_1", { timeout: 5000, slice: 50 })
+    await waitForIdle("ses_1", { timeout: 5000, slice: 50 })
     expect(asked).toHaveLength(3)
     expect(asked.every((timeoutMs) => timeoutMs <= 50)).toBe(true)
   })
 
   test("with no budget it loops until the session settles, asking a slice each time", async () => {
     waitQueue.set("ses_1", [{ status: "timeout" }, { status: "idle", result: "completed" }])
-    await client.waitForIdle("ses_1", { slice: 25 })
+    await waitForIdle("ses_1", { slice: 25 })
     expect(seen.map((entry) => entry.body)).toEqual([{ timeoutMs: 25 }, { timeoutMs: 25 }])
   })
 
@@ -347,7 +339,7 @@ suite("waitForIdle", () => {
     const asked: number[] = []
     onWait = (timeoutMs) => asked.push(timeoutMs)
     const started = Date.now()
-    await expect(client.waitForIdle("running", { timeout, slice: 40 })).rejects.toThrow("timed out waiting for the session to finish")
+    await expect(waitForIdle("running", { timeout, slice: 40 })).rejects.toThrow("timed out waiting for the session to finish")
     expect(Date.now() - started).toBeGreaterThanOrEqual(timeout)
     expect(asked.length).toBeGreaterThan(1)
     expect(asked.every((timeoutMs) => timeoutMs <= 40)).toBe(true)
@@ -359,13 +351,13 @@ suite("waitForIdle", () => {
     waitQueue.set("ses_1", [{ status: "timeout" }, { status: "timeout" }, { status: "timeout" }])
     const controller = new AbortController()
     onWait = () => controller.abort()
-    await client.waitForIdle("ses_1", { timeout: 5000, slice: 10, signal: controller.signal })
+    await waitForIdle("ses_1", { timeout: 5000, slice: 10, signal: controller.signal })
     expect(seen).toHaveLength(1)
   })
 
   test("aborting the signal ends a long-poll the host is still holding", async () => {
     const controller = new AbortController()
-    const pending = client.waitForIdle("hang", { signal: controller.signal })
+    const pending = waitForIdle("hang", { signal: controller.signal })
     // The request is in flight once the host has seen it.
     await waitHeld.promise
     controller.abort()
@@ -374,7 +366,7 @@ suite("waitForIdle", () => {
   })
 })
 
-suite("subscribe", () => {
+describe("subscribe", () => {
   function collect() {
     const events: BusEvent[] = []
     return { events, onEvent: (event: BusEvent) => events.push(event) }
@@ -393,7 +385,7 @@ suite("subscribe", () => {
       'data: {"type":"unterminated"}\n',
     ]
     const { events, onEvent } = collect()
-    await client.subscribe(onEvent, new AbortController().signal)
+    await subscribe(onEvent, new AbortController().signal)
     expect(events.map((event) => event.type)).toEqual(["a", "b", "c", "d"])
     expect(events[0].data).toEqual({ sessionID: "s1" })
     expect(events[1].data).toEqual({ x: 1 })
@@ -403,7 +395,7 @@ suite("subscribe", () => {
   test("a CR ending a chunk waits for its LF instead of ending the line twice", async () => {
     eventChunks = ['data: {"type":"a"}\r', '\n\r\ndata: {"type":"b"}\r\n\r\n']
     const { events, onEvent } = collect()
-    await client.subscribe(onEvent, new AbortController().signal)
+    await subscribe(onEvent, new AbortController().signal)
     expect(events.map((event) => event.type)).toEqual(["a", "b"])
   })
 
@@ -412,7 +404,7 @@ suite("subscribe", () => {
     // delivering `{"type":"a",` alone. Held back, both lines belong to one event.
     eventChunks = ['data: {"type":"a",\r', '\ndata: "data":{"x":1}}\r\n\r\n']
     const { events, onEvent } = collect()
-    await client.subscribe(onEvent, new AbortController().signal)
+    await subscribe(onEvent, new AbortController().signal)
     expect(events).toEqual([{ type: "a", data: { x: 1 } }])
   })
 
@@ -421,7 +413,7 @@ suite("subscribe", () => {
     eventChunks = ['data: {"type":"first"}\n\n']
     const controller = new AbortController()
     const first = Promise.withResolvers<void>()
-    const subscribed = client.subscribe(() => first.resolve(), controller.signal)
+    const subscribed = subscribe(() => first.resolve(), controller.signal)
     await first.promise
     controller.abort()
     await subscribed
@@ -431,16 +423,16 @@ suite("subscribe", () => {
   test("an already-aborted signal never opens the stream", async () => {
     const controller = new AbortController()
     controller.abort()
-    await client.subscribe(() => {}, controller.signal)
+    await subscribe(() => {}, controller.signal)
     expect(seen.some((entry) => entry.path === `${ENGINE_BASE}/events`)).toBe(false)
   })
 })
 
-suite("testModel", () => {
+describe("testModel", () => {
   test("a model that answers is ok, and the throwaway session is released", async () => {
     waits.set("ses_1", { status: "idle", result: "completed" })
     finals.set("ses_1", { text: "ok" })
-    const result = await client.testModel("anthropic/claude-opus-5")
+    const result = await testModel("anthropic/claude-opus-5")
     expect(result.ok).toBe(true)
     const create = seen.find((entry) => entry.method === "POST" && entry.path === `${ENGINE_BASE}/sessions`)
     expect(create?.body).toMatchObject({
@@ -455,18 +447,18 @@ suite("testModel", () => {
   test("a provider error in the transcript is the failure, and the session is still released", async () => {
     waits.set("ses_1", { status: "idle", result: "completed" })
     finals.set("ses_1", { text: "", error: "HTTP 401 Unauthorized" })
-    const result = await client.testModel("openai/gpt-5")
+    const result = await testModel("openai/gpt-5")
     expect(result).toMatchObject({ ok: false, error: "HTTP 401 Unauthorized" })
     expect(seen.at(-1)?.method).toBe("DELETE")
   })
 
   test("an empty answer is not ok", async () => {
     waits.set("ses_1", { status: "idle", result: "completed" })
-    expect(await client.testModel("openai/gpt-5")).toMatchObject({ ok: false, error: "the model returned no text" })
+    expect(await testModel("openai/gpt-5")).toMatchObject({ ok: false, error: "the model returned no text" })
   })
 
   test("a session that cannot be created reports the host's error and releases nothing", async () => {
-    const result = await client.testModel("openrouter/rate-limited")
+    const result = await testModel("openrouter/rate-limited")
     expect(result.ok).toBe(false)
     expect(result.error).toMatch(/HTTP 429/)
     expect(seen.some((entry) => entry.method === "DELETE")).toBe(false)

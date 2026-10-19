@@ -53,6 +53,18 @@ function readDismissed() {
   }
 }
 
+/** The tick beside a step, with its state as text: the icon and `data-done` mean nothing to a screen reader. */
+function StepMark(props: { done: boolean }) {
+  return (
+    <span class="walkthrough-mark">
+      <span class="walkthrough-state">{props.done ? "done: " : "to do: "}</span>
+      <Show when={props.done}>
+        <IconCheck />
+      </Show>
+    </span>
+  )
+}
+
 export function Walkthrough(props: {
   ompReady: boolean
   ompMessage?: string
@@ -95,11 +107,7 @@ export function Walkthrough(props: {
 
           <ol class="walkthrough-steps">
             <li class="walkthrough-step" data-done={view().steps.omp ? true : undefined}>
-              <span class="walkthrough-mark">
-                <Show when={view().steps.omp}>
-                  <IconCheck />
-                </Show>
-              </span>
+              <StepMark done={view().steps.omp} />
               <div class="walkthrough-body">
                 <span class="walkthrough-label">Check Omp</span>
                 <Show
@@ -126,11 +134,7 @@ export function Walkthrough(props: {
             </li>
 
             <li class="walkthrough-step" data-done={view().steps.models ? true : undefined}>
-              <span class="walkthrough-mark">
-                <Show when={view().steps.models}>
-                  <IconCheck />
-                </Show>
-              </span>
+              <StepMark done={view().steps.models} />
               <div class="walkthrough-body">
                 <span class="walkthrough-label">Have a model to run</span>
                 <Show
@@ -149,11 +153,7 @@ export function Walkthrough(props: {
             </li>
 
             <li class="walkthrough-step" data-done={view().steps.node ? true : undefined}>
-              <span class="walkthrough-mark">
-                <Show when={view().steps.node}>
-                  <IconCheck />
-                </Show>
-              </span>
+              <StepMark done={view().steps.node} />
               <div class="walkthrough-body">
                 <span class="walkthrough-label">Add a node</span>
                 <span class="hint">pick a template or drag a role from the palette</span>
@@ -161,11 +161,7 @@ export function Walkthrough(props: {
             </li>
 
             <li class="walkthrough-step" data-done={view().steps.connect ? true : undefined}>
-              <span class="walkthrough-mark">
-                <Show when={view().steps.connect}>
-                  <IconCheck />
-                </Show>
-              </span>
+              <StepMark done={view().steps.connect} />
               <div class="walkthrough-body">
                 <span class="walkthrough-label">Connect nodes</span>
                 <span class="hint">drag a node's right port onto another's left port</span>
@@ -173,7 +169,7 @@ export function Walkthrough(props: {
             </li>
 
             <li class="walkthrough-step">
-              <span class="walkthrough-mark" />
+              <StepMark done={false} />
               <div class="walkthrough-body">
                 <span class="walkthrough-label">Run</span>
                 <span class="hint">type a task above and press Run</span>

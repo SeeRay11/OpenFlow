@@ -29,7 +29,7 @@ export function UpliftFailureDialog(props: {
   const bodyId = `uplift-failure-body-${id}`
   const view = () => upliftFailureView(props.failure, props.waiting ?? 0)
   let dialog!: HTMLElement
-  let retry!: HTMLButtonElement
+  let retry: HTMLButtonElement | undefined
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
 
   const decide = (choice: UpliftChoice) => props.onDecide(props.failure.requestID, choice)
@@ -40,6 +40,8 @@ export function UpliftFailureDialog(props: {
     if (event.key === "Escape") {
       event.preventDefault()
       event.stopPropagation()
+      // Holding Esc auto-repeats, and each repeat would cancel the next queued card unseen.
+      if (event.repeat) return
       return decide("cancel")
     }
     if (event.key !== "Tab") return
@@ -51,7 +53,8 @@ export function UpliftFailureDialog(props: {
   }
 
   onMount(() => {
-    retry.focus()
+    // Retry is the safe, repeatable choice; on the last attempt it is gone, so land on the first button.
+    ;(retry ?? dialog.querySelector<HTMLElement>("button"))?.focus()
     window.addEventListener("keydown", onKeyDown, true)
   })
 
@@ -94,15 +97,17 @@ export function UpliftFailureDialog(props: {
           >
             Run with original prompt
           </button>
-          <button
-            ref={retry}
-            type="button"
-            class="oc-button oc-primary"
-            title="run the uplift again"
-            onClick={() => decide("retry")}
-          >
-            Retry uplift
-          </button>
+          <Show when={view().canRetry}>
+            <button
+              ref={retry}
+              type="button"
+              class="oc-button oc-primary"
+              title="run the uplift again"
+              onClick={() => decide("retry")}
+            >
+              Retry uplift
+            </button>
+          </Show>
           <button
             type="button"
             class="oc-button oc-danger"

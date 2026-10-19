@@ -91,6 +91,40 @@ describe("cardSpec", () => {
     // The same edges in a pipeline are wiring, not dispatch.
     expect(cardSpec({ ...tree, mode: "pipeline" }, tree.nodes[0]).dispatch).toBeUndefined()
   })
+
+  describe("in a gauntlet", () => {
+    const gauntlet = (): Pipeline => ({
+      ...pipeline("root->builder", "root->reviewer"),
+      mode: "orchestration",
+      gauntlet: { bar: "it works" },
+    })
+    const spec = (graph: Pipeline, id: string) => cardSpec(graph, graph.nodes.find((node) => node.id === id)!)
+
+    test("the critic and the orchestrator cannot edit, whatever their own toggles say", () => {
+      const graph = gauntlet()
+      graph.nodes.find((node) => node.id === "root")!.agent.tools = { edit: true }
+      for (const id of ["root", "reviewer"]) expect(spec(graph, id).tools?.edit).toBe(false)
+    })
+
+    test("a critic keeps the shell: it proves its verdict by running things", () => {
+      const graph = gauntlet()
+      graph.nodes.find((node) => node.id === "reviewer")!.agent.tools = { bash: true, write: true }
+      expect(spec(graph, "reviewer").tools).toEqual({ bash: true, edit: false })
+    })
+
+    test("a builder is launched as authored", () => {
+      const graph = gauntlet()
+      expect(spec(graph, "builder")).not.toHaveProperty("tools")
+      graph.nodes.find((node) => node.id === "builder")!.agent.tools = { edit: true }
+      expect(spec(graph, "builder").tools).toEqual({ edit: true })
+    })
+
+    test("the same cards are untouched when the canvas is not a gauntlet", () => {
+      const graph = { ...gauntlet(), gauntlet: undefined }
+      expect(spec(graph, "root")).not.toHaveProperty("tools")
+      expect(spec(graph, "reviewer")).not.toHaveProperty("tools")
+    })
+  })
 })
 
 describe("swarmOf", () => {

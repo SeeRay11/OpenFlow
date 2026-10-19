@@ -36,10 +36,11 @@ const PIPELINE_KEYS = [
   "gauntlet",
   "isolate",
   "verify",
+  "defaultSwarm",
   MIGRATED,
 ]
 const NODE_KEYS = ["id", "role", "agent", "position"]
-const AGENT_KEYS = ["model", "prompt", "tools", "mcp", "attachments"]
+const AGENT_KEYS = ["model", "prompt", "tools", "mcp", "attachments", "swarm", "uplift"]
 const EDGE_KEYS = ["id", "source", "target"]
 
 const RUN_KEYS = [
@@ -76,6 +77,9 @@ const RUN_NODE_KEYS = [
   "started",
   "finished",
   "reused",
+  "uplift",
+  "memory",
+  "swarm",
   "usage",
   "diff",
   "steps",

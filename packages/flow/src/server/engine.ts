@@ -236,7 +236,7 @@ export const DEFAULT_MAX_PARALLEL = 4
  * protocol. A card that edits through a shell command is a smaller problem
  * than a critic that cannot run anything.
  */
-const MUTATING = new Set(["edit", "write", "patch"])
+const MUTATING = new Set(["edit", "write", "patch", "ast_edit"])
 
 /**
  * How many times a card may be re-asked for a control block before its run
@@ -388,7 +388,15 @@ export type QuestionRequest = {
   questions: QuestionInfo[]
 }
 
-export type UpliftFailureRequest = { nodeID: string; role: string; reason: string; elapsedMs: number }
+export type UpliftFailureRequest = {
+  nodeID: string
+  role: string
+  reason: string
+  elapsedMs: number
+  /** Which attempt just failed, 1-based, out of `attempts`: on the last one a retry is not offered. */
+  attempt: number
+  attempts: number
+}
 
 /**
  * Executes a canvas over the Omp engine (`EngineApi`).
@@ -539,7 +547,9 @@ export function start(
    */
   const declared = new Map<string, string[]>()
   const active = new Set<string>() // sessionIDs still running
-  const answered = new Set<string>() // permission requests already replied to
+  const answered = new Set<string>() // `sessionID:requestID` of permission requests already replied to
+  /** How many times each card has been dispatched, so a later answer can be told from the first in memory. */
+  const dispatches = new Map<string, number>()
   const asked = new Set<string>() // question requests already handled
   const catalog = new Map<string, ModelInfo>()
   const nodes = new Map(pipeline.nodes.map((node) => [node.id, node] as const))
@@ -799,8 +809,9 @@ export function start(
    */
   async function answer(nodeID: string, sessionID: string, data: { id: string; action: string; resources?: string[] }) {
     const requestID = data.id
-    if (answered.has(requestID)) return
-    answered.add(requestID)
+    const key = `${sessionID}:${requestID}`
+    if (answered.has(key)) return
+    answered.add(key)
     const resources = data.resources ?? []
     const node = nodes.get(nodeID)
 
@@ -833,7 +844,8 @@ export function start(
     try {
       await api.replyPermission(sessionID, requestID, reply)
     } catch (error) {
-      hooks.onNotice?.("error", `permission reply failed: ${api.describe(error)}`)
+      // The host withdrew the request (the turn ended, the session went): nothing is waiting for an answer.
+      if (!gone(error)) hooks.onNotice?.("error", `permission reply failed: ${api.describe(error)}`)
       return
     }
 
@@ -885,7 +897,7 @@ export function start(
       if (answers) await api.replyQuestion(sessionID, requestID, answers)
       else await api.rejectQuestion(sessionID, requestID)
     } catch (error) {
-      hooks.onNotice?.("error", `question reply failed: ${api.describe(error)}`)
+      if (!gone(error)) hooks.onNotice?.("error", `question reply failed: ${api.describe(error)}`)
       return
     }
 
@@ -1053,7 +1065,14 @@ export function start(
         hooks.onUpliftFailure && !controller.signal.aborted
           ? await Promise.race([
               hooks
-                .onUpliftFailure({ nodeID: node.id, role: node.role, reason, elapsedMs: result.elapsedMs })
+                .onUpliftFailure({
+                  nodeID: node.id,
+                  role: node.role,
+                  reason,
+                  elapsedMs: result.elapsedMs,
+                  attempt,
+                  attempts: UPLIFT_ATTEMPTS,
+                })
                 .catch(() => "cancel" as const),
               stopped.promise.then(() => "cancel" as const),
             ])
@@ -1129,10 +1148,20 @@ export function start(
     if (row.status !== "done" && row.status !== "error" && row.status !== "stopped") return
     const outcome = row.status
     const output = outcome === "error" ? (row.error ?? "") : (outputs.get(node.id) ?? row.output ?? "")
+    const dispatch = dispatches.get(node.id)
     patchMemory(node.id, { write: { status: "running" } })
     track(
       deps.memory
-        .write({ runId: log.id, nodeId: node.id, pipeline: pipeline.name, role: node.role, outcome, output })
+        .write({
+          runId: log.id,
+          nodeId: node.id,
+          pipeline: pipeline.name,
+          role: node.role,
+          outcome,
+          output,
+          // A pipeline or swarm card runs once; only a dispatched card can have a second answer to tell apart.
+          ...(dispatch ? { dispatch } : {}),
+        })
         .then(
           (result) => patchMemory(node.id, { write: { status: result.status, subject: result.subject, error: result.error } }),
           (error) => patchMemory(node.id, { write: { status: "unavailable", error: api.describe(error) } }),
@@ -1270,6 +1299,9 @@ export function start(
           sessions.set(session.id, node.id)
           held.add(session.id)
           patch(node.id, { sessionID: session.id })
+          // A stop that landed while the session was opening must not start a turn in it:
+          // it is already held, so teardown releases it.
+          if (controller.signal.aborted) throw new StopError()
         }
         active.add(sessionID)
         waiting.set(sessionID, turnWait)
@@ -1610,6 +1642,7 @@ export function start(
    * Returns the answer, or undefined when the card failed or the run stopped.
    */
   async function orchestrate(node: FlowNode, task: string, first: boolean) {
+    dispatches.set(node.id, (dispatches.get(node.id) ?? 0) + 1)
     const answer = await orchestration(node, task, first)
     remember(node)
     // The root's answer is the run's, so nothing prompts into its session
@@ -2223,6 +2256,7 @@ export function start(
 
   /** A leaf card: one turn, one assignment, no protocol to speak. */
   async function runSubagent(node: FlowNode, parent: FlowNode, task: string) {
+    dispatches.set(node.id, (dispatches.get(node.id) ?? 0) + 1)
     const returning = nodeSession.has(node.id)
     const critic = gauntlet && isCritic(node)
     await runTurn(
@@ -2457,6 +2491,14 @@ export function start(
       await Promise.all([...active].map((sessionID) => api.interrupt(sessionID)))
     },
   }
+}
+
+/**
+ * The host answered 404 to a permission or question reply: the request was
+ * already withdrawn or settled, so there is nothing left to answer.
+ */
+function gone(error: unknown) {
+  return typeof error === "object" && error !== null && "status" in error && error.status === 404
 }
 
 class StopError extends Error {

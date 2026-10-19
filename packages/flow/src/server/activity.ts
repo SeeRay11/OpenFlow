@@ -180,7 +180,7 @@ export function createActivity(options: ActivityOptions) {
 
         case "session.next.tool.called": {
           const name = (data.tool as string) ?? "tool"
-          const title = describe(name, data.input)
+          const title = toolTitle(name, data.input)
           names.set(data.callID, title)
           if (name === SUBAGENT_TOOL) spawning.set(sessionID, data.callID)
           return emit(sessionID, {
@@ -300,7 +300,7 @@ export function clip(text: string, limit: number) {
 }
 
 /** `grep pattern="handler" path=src` — the row a reader scans. */
-export function describe(tool: string, input: unknown) {
+export function toolTitle(tool: string, input: unknown) {
   if (!input || typeof input !== "object") return tool
   const record = input as Record<string, unknown>
   const parts: string[] = []

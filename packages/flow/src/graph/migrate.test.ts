@@ -112,6 +112,32 @@ describe("migratePipeline", () => {
     expect(isPipeline(result.pipeline)).toBe(true)
   })
 
+  test("a pipeline authored with swarm and uplift fields is not flagged or stamped", () => {
+    const raw = {
+      id: "p",
+      name: "fresh",
+      defaultSwarm: "auto",
+      nodes: [{ id: "n1", role: "a", position: { x: 0, y: 0 }, agent: { prompt: "x", swarm: "off", uplift: false } }],
+      edges: [],
+    }
+    const result = migratePipeline(raw)
+    expect(result.notes).toEqual([])
+    expect(result.pipeline).toEqual(raw)
+  })
+
+  test("a field no build defines is still flagged on the pipeline, the card and the agent", () => {
+    const { pipeline, notes } = migratePipeline({
+      id: "p",
+      name: "x",
+      defaultSwarm: "auto",
+      nodes: [{ id: "n1", role: "a", position: { x: 0, y: 0 }, agent: { prompt: "x", swarm: "off", mystery: 1 } }],
+      edges: [],
+      mystery: 1,
+    })
+    expect(notes.filter((note) => note.kind === "unknown-field")).toHaveLength(2)
+    expect(rec(pipeline).migratedFromOpencode).toBe(1)
+  })
+
   test("unknown fields at every level are preserved and named, never valued", () => {
     const { pipeline, notes } = migratePipeline(fixture("pipeline-orchestration"))
     const doc = rec(pipeline)
@@ -233,6 +259,34 @@ describe("migrateRunLog", () => {
     const result = migrateRunLog(raw)
     expect(result.notes).toEqual([])
     expect(result.run).toEqual(raw)
+  })
+
+  test("a run log with uplift, memory and swarm stage data is not flagged or stamped", () => {
+    const raw = {
+      id: "r",
+      pipeline: "p",
+      pipelineID: "p",
+      input: "x",
+      status: "done",
+      started: 1,
+      nodes: [{ id: "n1", role: "a", status: "done", uplift: { original: "a" }, memory: { read: 0 }, swarm: { mode: "off" } }],
+    }
+    const result = migrateRunLog(raw)
+    expect(result.notes).toEqual([])
+    expect(result.run).toEqual(raw)
+  })
+
+  test("a run-node field no build defines is still flagged", () => {
+    const { notes } = migrateRunLog({
+      id: "r",
+      pipeline: "p",
+      pipelineID: "p",
+      input: "x",
+      status: "done",
+      started: 1,
+      nodes: [{ id: "n1", role: "a", status: "done", uplift: {}, mystery: 1 }],
+    })
+    expect(notes.map((note) => note.kind)).toEqual(["unknown-field"])
   })
 
   test("malformed nodes never throw; legacy sessions among them are still found", () => {

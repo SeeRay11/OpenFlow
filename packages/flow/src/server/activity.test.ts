@@ -1,15 +1,15 @@
-import { describe as group, expect, test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import type { NodeEvent } from "../graph/types"
 import {
   applyEvent,
   clip,
   createActivity,
-  describe as label,
   EVENT_LIMIT,
   LIVE_BODY_LIMIT,
   PERSIST_BODY_LIMIT,
   PERSIST_EVENT_LIMIT,
   persistable,
+  toolTitle,
 } from "./activity"
 
 function collector(owner: Record<string, string>) {
@@ -22,7 +22,7 @@ function collector(owner: Record<string, string>) {
   return { activity, seen, last: () => seen[seen.length - 1] }
 }
 
-group("createActivity", () => {
+describe("createActivity", () => {
   test("streams text deltas into one growing row", () => {
     const { activity, seen, last } = collector({ s1: "n1" })
     activity.consume({ type: "session.next.text.delta", data: { sessionID: "s1", textID: "t1", delta: "he" } })
@@ -166,7 +166,7 @@ group("createActivity", () => {
   })
 })
 
-group("applyEvent", () => {
+describe("applyEvent", () => {
   const base: NodeEvent = { id: "a", at: 1, kind: "tool", depth: 0, title: "grep" }
 
   test("replaces a row in place rather than appending it again", () => {
@@ -187,7 +187,7 @@ group("applyEvent", () => {
   })
 })
 
-group("persistable", () => {
+describe("persistable", () => {
   test("keeps the tail and clips the bodies", () => {
     const events: NodeEvent[] = Array.from({ length: PERSIST_EVENT_LIMIT + 10 }, (_, index) => ({
       id: `e${index}`,
@@ -204,16 +204,16 @@ group("persistable", () => {
   })
 })
 
-group("helpers", () => {
+describe("helpers", () => {
   test("clip leaves a short body alone", () => {
     expect(clip("short", 10)).toBe("short")
   })
 
   test("a tool with no interesting arguments is just its name", () => {
-    expect(label("todoread", {})).toBe("todoread")
+    expect(toolTitle("todoread", {})).toBe("todoread")
   })
 
   test("an argument is flattened onto one line", () => {
-    expect(label("bash", { command: "ls\n  -la" })).toBe("bash command=ls -la")
+    expect(toolTitle("bash", { command: "ls\n  -la" })).toBe("bash command=ls -la")
   })
 })

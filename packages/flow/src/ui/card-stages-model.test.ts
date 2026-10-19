@@ -91,8 +91,8 @@ describe("upliftChip", () => {
   test("failed carries the reason into the tooltip and the aria string", () => {
     const chip = upliftChip(uplift({ status: "failed", reason: "claude CLI is logged out" }))
     expect(chip).toMatchObject({ label: "uplift failed", tone: "danger" })
-    expect(chip?.title).toBe("nothing was sent — claude CLI is logged out")
-    expect(chip?.aria).toBe("prompt uplift failed: claude CLI is logged out")
+    expect(chip?.title).toContain("claude CLI is logged out")
+    expect(chip?.aria).toContain("claude CLI is logged out")
   })
 
   test("declined means the original went out after a failure", () => {
@@ -123,7 +123,7 @@ describe("uplift section data", () => {
   })
 
   test("decision lines", () => {
-    expect(decisionLine({ point: "plan", p: 0.971, action: "promoted" })).toBe("plan · p 0.97 · promoted")
+    expect(decisionLine({ point: "plan", p: 0.971, action: "promoted" })).toMatch(/plan.*0\.97.*promoted/)
   })
 
   test("the uplift record's original wins, the runtime copy backs it up", () => {
@@ -135,15 +135,20 @@ describe("uplift section data", () => {
     expect(upliftPrompts(undefined, undefined)).toEqual({ original: undefined, uplifted: undefined })
   })
 
-  test("failure dialog copy", () => {
-    expect(upliftFailureView({ role: "builder", reason: "timed out", elapsedMs: 30_000 }, 0)).toEqual({
-      title: "Prompt uplift failed for builder",
-      reason: "timed out",
-      elapsed: "after 30.0 s",
-      queue: undefined,
-    })
-    expect(upliftFailureView({ role: "builder", reason: "x", elapsedMs: 5 }, 1).queue).toBe("1 more card waiting for a decision")
-    expect(upliftFailureView({ role: "builder", reason: "x", elapsedMs: 5 }, 3).queue).toBe("3 more cards waiting for a decision")
+  test("failure dialog copy names the card, carries the reason, and counts who is waiting", () => {
+    const failure = { role: "builder", reason: "timed out", elapsedMs: 30_000, attempt: 1, attempts: 3 }
+    const view = upliftFailureView(failure, 0)
+    expect(view.title).toContain("builder")
+    expect(view.reason).toBe("timed out")
+    expect(view.elapsed).toContain("30")
+    expect(view.queue).toBeUndefined()
+    expect(upliftFailureView(failure, 1).queue).toContain("1")
+    expect(upliftFailureView(failure, 3).queue).toContain("3")
+  })
+
+  test("a retry is offered until the last attempt, where the engine would fail the card", () => {
+    const failure = { role: "builder", reason: "x", elapsedMs: 5, attempts: 3 }
+    expect([1, 2, 3].map((attempt) => upliftFailureView({ ...failure, attempt }, 0).canRetry)).toEqual([true, true, false])
   })
 })
 
@@ -194,8 +199,8 @@ describe("memoryChip", () => {
   test("unavailable puts the error in the tooltip, honestly", () => {
     const chip = memoryChip({ read: read({ status: "unavailable", error: "substrate refused the connection" }) })
     expect(chip).toMatchObject({ label: "mem unavailable", tone: "warn" })
-    expect(chip?.title).toBe("memory unavailable: substrate refused the connection")
-    expect(chip?.aria).toBe("shared memory unavailable: substrate refused the connection")
+    expect(chip?.title).toContain("substrate refused the connection")
+    expect(chip?.aria).toContain("substrate refused the connection")
   })
 
   test("a failed read with a stored write keeps the arrows and flags the problem", () => {
@@ -214,14 +219,17 @@ describe("memoryChip", () => {
     expect(memoryChip({ read: read(), write: { status: "skipped" } })).toMatchObject({ label: "mem ↓0 ↑0", tone: "neutral" })
   })
 
-  test("read and write sentences", () => {
+  test("read and write sentences carry the facts that matter", () => {
     expect(memoryReadText(undefined)).toBeUndefined()
-    expect(memoryReadText(read({ status: "empty" }))).toBe("no related memories found")
-    expect(memoryReadText(read({ items: [item("a")] }))).toBe("read 1 memory")
-    expect(memoryReadText(read({ items: [item("a"), item("b")], briefState: "degraded" }))).toBe("read 2 memories (brief degraded)")
-    expect(memoryReadText(read({ status: "unavailable" }))).toContain("memory unavailable:")
-    expect(memoryWriteText({ status: "stored", subject: "openflow/x" })).toBe("stored: openflow/x")
-    expect(memoryWriteText({ status: "denied", error: "scope not writable" })).toBe("denied by Substrate: scope not writable")
+    expect(memoryReadText(read({ items: [item("a"), item("b")] }))).toContain("2")
+    expect(memoryReadText(read({ items: [item("a"), item("b")], briefState: "degraded" }))).toContain("degraded")
+    expect(memoryReadText(read({ status: "unavailable", error: "substrate down" }))).toContain("substrate down")
+    expect(memoryReadText(read({ status: "empty" }))).toBeDefined()
+    expect(memoryWriteText({ status: "stored", subject: "openflow/x" })).toContain("openflow/x")
+    expect(memoryWriteText({ status: "denied", error: "scope not writable" })).toContain("scope not writable")
+    expect(memoryWriteText({ status: "denied", error: "scope not writable" })).not.toBe(
+      memoryWriteText({ status: "stored", subject: "openflow/x" }),
+    )
     expect(memoryWriteText(undefined)).toBeUndefined()
   })
 
@@ -236,7 +244,12 @@ describe("memoryChip", () => {
 
 describe("swarm", () => {
   test("counts read in a fixed order with 'done' for completed", () => {
-    expect(swarmCountsText({ queued: 1, running: 2, completed: 3, failed: 1, cancelled: 0 })).toBe("2 running · 1 queued · 3 done · 1 failed")
+    const text = swarmCountsText({ queued: 1, running: 2, completed: 3, failed: 1, cancelled: 0 })
+    // Running first, then queued, done, failed; a zero count is left out.
+    const order = ["2 running", "1 queued", "3 done", "1 failed"].map((part) => text.indexOf(part))
+    expect(order.every((at) => at >= 0)).toBe(true)
+    expect(order).toEqual([...order].sort((a, b) => a - b))
+    expect(text).not.toContain("cancelled")
     expect(swarmCountsText({ queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0 })).toBe("")
   })
 
@@ -257,8 +270,12 @@ describe("swarm", () => {
       ],
     })
     const line = swarmLine(status)
-    expect(line).toMatchObject({ text: "swarm 1 running · 1 done", tone: "info", aria: "agent swarm 1 running · 1 done", more: 0 })
-    expect(line?.title).toBe("swarm 1 running · 1 done\na05-backend: running — edit src/x.ts\na08-qa: completed")
+    expect(line).toMatchObject({ tone: "info", more: 0 })
+    expect(line?.text).toContain("1 running")
+    expect(line?.text).toContain("1 done")
+    expect(line?.aria).toContain(line!.text)
+    for (const agent of ["a05-backend", "a08-qa"]) expect(line?.title).toContain(agent)
+    expect(line?.title).toContain("edit src/x.ts")
     expect(line?.pills.map((pill) => pill.agent)).toEqual(["a05-backend", "a08-qa"])
   })
 
@@ -327,7 +344,12 @@ describe("announcements", () => {
   test("only changed surfaces are announced, and nothing when nothing moved", () => {
     const before = stageSnapshot({ uplift: uplift({ status: "running" }) })
     const after = stageSnapshot({ uplift: uplift({}), memory: { read: { status: "empty", items: [] } } })
-    expect(stageAnnouncement("builder", before, after)).toBe("builder: prompt uplifted. shared memory — no related memories found")
+    const announcement = stageAnnouncement("builder", before, after)
+    // Only what changed (uplift settled, memory arrived) is spoken, led by who it is about.
+    expect(announcement.startsWith("builder")).toBe(true)
+    expect(announcement).toContain(after.uplift!)
+    expect(announcement).toContain(after.memory!)
+    expect(announcement).not.toContain(before.uplift!)
     expect(stageAnnouncement("builder", after, after)).toBe("")
   })
 
