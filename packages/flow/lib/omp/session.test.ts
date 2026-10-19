@@ -6,6 +6,7 @@ import { EMPTY_SWARM_COUNTS, type SwarmHost, type SwarmLaunch, type SwarmMode, t
 import { HttpError } from "../host/respond"
 import { DISPATCH_TOOL, FINISH_TOOL } from "../../src/graph/dispatch"
 import { buildPrompt, createSessionHost, type EngineHostDeps, safeSegment, SESSION_SUBDIR, type SessionHost } from "./session"
+import { pruneState } from "./prune"
 import { assistantMessage, createHarness, frames, rpcError, type FakeProcess, type Harness } from "./testing/fake-process"
 
 // The harness' omp is a `#!/bin/sh` script the host executes for its version probe; Windows cannot run that.
@@ -783,6 +784,62 @@ hosted("reuse", () => {
       { role: "user", text: "earlier" },
       { role: "assistant", text: "earlier answer" },
     ])
+  })
+})
+
+hosted("pruned state", () => {
+  const LATER = () => Date.now() + 60 * 24 * 60 * 60 * 1000
+
+  test("a run with a session in the host is held until it is disposed from memory and its directory is not pruned", async () => {
+    const { id } = await open()
+    expect(host.holds(safeSegment("run1"))).toBe(true)
+    expect(host.holds(safeSegment("other"))).toBe(false)
+    expect(await pruneState({ root: h.stateRoot, now: LATER, isLive: host.holds })).toEqual({ removed: [], errors: 0 })
+    expect(await host.list(10)).toHaveLength(1)
+    await host.releaseRun("run1")
+    expect(host.holds(safeSegment("run1"))).toBe(false)
+    // The files stay for resume until the prune takes them.
+    expect((await host.list(10)).map((row) => row.id)).toEqual([id])
+  })
+
+  test("a pruned session is no longer listed and resuming it is the usual 404", async () => {
+    const { id } = await open()
+    await host.close()
+    const restarted = createSessionHost(h.deps, { emit: (event) => events.push(event), tickMs: 3_600_000 })
+    try {
+      expect((await restarted.list(10)).map((row) => row.id)).toEqual([id])
+      expect(await pruneState({ root: h.stateRoot, now: LATER, isLive: restarted.holds })).toEqual({ removed: [safeSegment("run1")], errors: 0 })
+      expect(await restarted.list(10)).toEqual([])
+      const error = await failure(restarted.create({ ...BODY, reuse: id }))
+      expect(error.status).toBe(404)
+      expect(error.message).toBe(`session not found: ${id}`)
+      expect(h.fake.procs).toHaveLength(1)
+    } finally {
+      await restarted.close()
+    }
+  })
+
+  test("listing tolerates run directories vanishing while it reads", async () => {
+    await open({ ...BODY, runId: "a" })
+    await open({ ...BODY, runId: "b" })
+    await host.close()
+    const restarted = createSessionHost(h.deps, { emit: (event) => events.push(event), tickMs: 3_600_000 })
+    try {
+      const [rows] = await Promise.all([restarted.list(10), fs.rm(path.join(h.stateRoot, "a"), { recursive: true, force: true })])
+      expect(rows.length).toBeGreaterThanOrEqual(1)
+      expect(await restarted.list(10)).toHaveLength(1)
+    } finally {
+      await restarted.close()
+    }
+  })
+
+  test("a create in flight holds its run before any session is registered", async () => {
+    h.fake.next({ holdReady: true })
+    const pending = host.create(BODY)
+    while (h.fake.procs.length === 0) await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(host.holds(safeSegment("run1"))).toBe(true)
+    ;(h.fake.procs[0] as FakeProcess).release()
+    await pending
   })
 })
 

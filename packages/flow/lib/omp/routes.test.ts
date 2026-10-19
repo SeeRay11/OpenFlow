@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { existsSync } from "node:fs"
+import fs from "node:fs/promises"
+import path from "node:path"
 import { ENGINE_BASE, engineRoutes, sessionRoute, type BusEvent } from "../../shared/engine"
 import { createEngineHost, type EngineHost } from "./index"
 import { createEventBus } from "./routes"
@@ -341,5 +344,47 @@ describe("event bus", () => {
     } finally {
       await server.stop(true)
     }
+  })
+})
+
+describe("startup prune", () => {
+  async function runDir(name: string, when: Date) {
+    const state = path.join(h.stateRoot, name, "n1")
+    await fs.mkdir(state, { recursive: true })
+    await fs.writeFile(path.join(state, "role.md"), "x")
+    for (const target of [path.join(state, "role.md"), state, path.dirname(state)]) await fs.utimes(target, when, when)
+  }
+
+  test("removes expired runs once, shortly after the host is created, and reports what it did", async () => {
+    const now = Date.now()
+    await runDir("expired", new Date(now - 45 * 24 * 60 * 60 * 1000))
+    await runDir("fresh", new Date(now - 24 * 60 * 60 * 1000))
+    const pruning = createEngineHost({ ...h.deps, prune: { delayMs: 0, now: () => now } })
+    try {
+      expect(await pruning.pruned).toEqual({ removed: ["expired"], errors: 0 })
+      expect(existsSync(path.join(h.stateRoot, "expired"))).toBe(false)
+      expect(existsSync(path.join(h.stateRoot, "fresh", "n1", "role.md"))).toBe(true)
+    } finally {
+      await pruning.dispose()
+    }
+  })
+
+  test("a failing prune never reaches the caller: it is counted", async () => {
+    // The state root is a file: it cannot be read as a directory.
+    await fs.writeFile(h.stateRoot, "not a directory")
+    const pruning = createEngineHost({ ...h.deps, prune: { delayMs: 0 } })
+    try {
+      expect((await pruning.pruned).errors).toBe(1)
+    } finally {
+      await pruning.dispose()
+    }
+  })
+
+  test("disposing before the delay cancels it", async () => {
+    await runDir("expired", new Date(0))
+    const pruning = createEngineHost({ ...h.deps, prune: { delayMs: 60_000 } })
+    await pruning.dispose()
+    expect(await pruning.pruned).toEqual({ removed: [], errors: 0 })
+    expect(existsSync(path.join(h.stateRoot, "expired"))).toBe(true)
   })
 })

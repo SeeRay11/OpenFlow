@@ -53,6 +53,14 @@ export type EngineHostDeps = {
   maxLive?: number
   /** How long a new omp may take to become ready (and to open a saved session) before it is killed. Default 60 s. */
   readyTimeoutMs?: number
+  /** The startup prune of old run state; `delayMs` after the host is created. */
+  prune?: {
+    /** Default 15 s. */
+    delayMs?: number
+    /** Default `STATE_RETENTION_DAYS`. */
+    maxAgeMs?: number
+    now?: () => number
+  }
 }
 
 export type SessionHostOptions = {
@@ -69,6 +77,8 @@ export interface SessionHost {
   interrupt(id: string): Promise<void>
   dispose(id: string): Promise<void>
   releaseRun(runId: string): Promise<number>
+  /** True while the host holds a session (live, idle or lost) or a start for this run directory name (`safeSegment(runId)`): its state must not be pruned. */
+  holds(runDir: string): boolean
   replyPermission(id: string, requestID: string, reply: PermissionReply): void
   replyQuestion(id: string, requestID: string, answers: string[][]): void
   rejectQuestion(id: string, requestID: string): void
@@ -197,7 +207,6 @@ async function parseCreate(body: unknown, project: string): Promise<CreateReques
   if (card.role !== undefined && typeof card.role !== "string") throw bad("card.role must be a string")
   if (card.prompt !== undefined && typeof card.prompt !== "string") throw bad("card.prompt must be a string")
   if (card.dispatch !== undefined && typeof card.dispatch !== "boolean") throw bad("card.dispatch must be a boolean")
-  if (card.mcp !== undefined && !(Array.isArray(card.mcp) && card.mcp.every((name) => typeof name === "string"))) throw bad("card.mcp must be a list of strings")
   const tools = card.tools === undefined ? undefined : asRecord(card.tools)
   if (card.tools !== undefined && (!tools || !Object.values(tools).every((value) => typeof value === "boolean"))) throw bad("card.tools must map tool names to booleans")
 
@@ -290,6 +299,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   const sessions = new Map<string, Session>()
   /** In-flight metadata writes; teardown awaits them so none lands after a directory is removed. */
   const writes = new Set<Promise<void>>()
+  /** Run directories with a create in flight, counted: the directory exists before the session is registered. */
+  const claims = new Map<string, number>()
   const idleReapMs = deps.idleReapMs ?? DEFAULT_IDLE_REAP_MS
   const maxLive = deps.maxLive ?? DEFAULT_MAX_LIVE
   const env = () => deps.env ?? process.env
@@ -663,27 +674,42 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     return found
   }
 
+  async function launch(request: CreateRequest, stateDir: string): Promise<{ id: string }> {
+    if (request.reuse) return reuse(request, stateDir)
+    await fs.mkdir(stateDir, { recursive: true, mode: 0o700 })
+    // One card, one session at a time: a replaced critic session must not still hold the session directory.
+    for (const other of [...sessions.values()]) {
+      if (other.request.runId !== request.runId || other.request.nodeId !== request.nodeId) continue
+      sessions.delete(other.id)
+      await stop(other, "disposed")
+    }
+    // Registered before it starts, with no await in between, so releaseRun, dispose and close see it and the limit counts it.
+    const session = makeSession(`s_${randomBytes(6).toString("hex")}`, request, stateDir)
+    sessions.set(session.id, session)
+    await begin(session, false).catch((error: unknown) => {
+      if (sessions.get(session.id) === session) sessions.delete(session.id)
+      throw error
+    })
+    if (session.state === "live") await writeMeta(session).catch(() => undefined)
+    return { id: session.id }
+  }
+
   return {
     async create(body) {
       const request = await parseCreate(body, deps.project())
-      const stateDir = path.join(deps.stateRoot(), safeSegment(request.runId), safeSegment(request.nodeId))
-      if (request.reuse) return reuse(request, stateDir)
-      await fs.mkdir(stateDir, { recursive: true, mode: 0o700 })
-      // One card, one session at a time: a replaced critic session must not still hold the session directory.
-      for (const other of [...sessions.values()]) {
-        if (other.request.runId !== request.runId || other.request.nodeId !== request.nodeId) continue
-        sessions.delete(other.id)
-        await stop(other, "disposed")
+      const runDir = safeSegment(request.runId)
+      claims.set(runDir, (claims.get(runDir) ?? 0) + 1)
+      try {
+        return await launch(request, path.join(deps.stateRoot(), runDir, safeSegment(request.nodeId)))
+      } finally {
+        const left = (claims.get(runDir) ?? 1) - 1
+        if (left > 0) claims.set(runDir, left)
+        else claims.delete(runDir)
       }
-      // Registered before it starts, with no await in between, so releaseRun, dispose and close see it and the limit counts it.
-      const session = makeSession(`s_${randomBytes(6).toString("hex")}`, request, stateDir)
-      sessions.set(session.id, session)
-      await begin(session, false).catch((error: unknown) => {
-        if (sessions.get(session.id) === session) sessions.delete(session.id)
-        throw error
-      })
-      if (session.state === "live") await writeMeta(session).catch(() => undefined)
-      return { id: session.id }
+    },
+
+    holds(runDir) {
+      return claims.has(runDir) || [...sessions.values()].some((session) => session.state !== "disposed" && safeSegment(session.request.runId) === runDir)
     },
 
     async prompt(id, request) {
