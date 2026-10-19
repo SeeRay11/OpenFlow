@@ -201,7 +201,7 @@ describe("a card's engine fields in a saved canvas", () => {
     expect(isPipeline(back)).toBe(true)
   })
 
-  test("a file from the opencode era, naming an agent, still imports", () => {
+  test("a file saved before cards ran on Omp, naming an agent, still imports", () => {
     const graph = pipeline("a")
     graph.nodes[0].agent.name = "flow-a"
     expect(isPipeline(JSON.parse(JSON.stringify(graph)))).toBe(true)

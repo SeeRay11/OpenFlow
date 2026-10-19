@@ -1,12 +1,12 @@
 /**
  * Who is allowed to reach the store.
  *
- * `/flow/api` writes pipelines and run logs into the project and merges agents
- * into its `opencode.json`, and nothing authenticates the caller. On loopback
- * that is the user talking to their own machine. Bound to a real interface it
- * is a remote file-write hole in whatever repository OpenFlow is pointed at, so
- * both hosts — the vite dev server and `server.ts` — refuse unless it is asked
- * for explicitly.
+ * `/flow/api` writes pipelines and run logs into the project, starts omp
+ * processes that can edit it and run commands in it, and nothing authenticates
+ * the caller. On loopback that is the user talking to their own machine. Bound
+ * to a real interface it is remote code execution in whatever repository
+ * OpenFlow is pointed at, so both hosts — the vite dev server and `server.ts` —
+ * refuse unless it is asked for explicitly.
  */
 const LOOPBACK = new Set(["127.0.0.1", "::1", "[::1]", "localhost"])
 
@@ -34,7 +34,7 @@ export function remoteBindRefusal(options: {
   const host = options.host === true ? "every interface" : String(options.host)
   return (
     `refusing to serve OpenFlow on ${host}: the /flow/api store writes files into ${options.project} ` +
-    `and merges into its opencode.json, with no authentication.\n` +
+    `and starts agents that can run commands there, with no authentication.\n` +
     `set FLOW_ALLOW_REMOTE=1 if that is genuinely what you want.`
   )
 }

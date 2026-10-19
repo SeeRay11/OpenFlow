@@ -56,8 +56,8 @@ describe("the swarm template", () => {
 
   test("passes its own mode's shape rules on drop", () => {
     const graph = built()
-    for (const node of graph.nodes) node.agent.model = "opencode/x"
-    expect(preflight(graph, { unlockedModels: new Set(["opencode/x"]) }).blocking).toEqual([])
+    for (const node of graph.nodes) node.agent.model = "test/x"
+    expect(preflight(graph, { unlockedModels: new Set(["test/x"]) }).blocking).toEqual([])
   })
 })
 
@@ -79,7 +79,7 @@ describe("the orchestration template", () => {
 
   test("passes its own mode's shape rules on drop", () => {
     const graph = built()
-    for (const node of graph.nodes) node.agent.model = "opencode/x"
-    expect(preflight(graph, { unlockedModels: new Set(["opencode/x"]) }).blocking).toEqual([])
+    for (const node of graph.nodes) node.agent.model = "test/x"
+    expect(preflight(graph, { unlockedModels: new Set(["test/x"]) }).blocking).toEqual([])
   })
 })

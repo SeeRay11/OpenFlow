@@ -1,7 +1,7 @@
 /**
  * The icon set the interface needs, inline.
  *
- * opencode's app pulls these from `@opencode-ai/ui`, which brings a whole
+ * The upstream app pulls these from its UI package, which brings a whole
  * component library (Kobalte, tailwind, an icon sprite) with it. OpenFlow is a
  * single vite page with hand-written CSS, so the shapes are redrawn here at the
  * same 16px stroke weight rather than dragging that dependency in for a dozen
@@ -85,7 +85,7 @@ export function IconPlus() {
   )
 }
 
-/** Save — a disk, the same shape opencode uses for a write action. */
+/** Save — a disk, the same shape the upstream app uses for a write action. */
 export function IconSave() {
   return (
     <Svg>

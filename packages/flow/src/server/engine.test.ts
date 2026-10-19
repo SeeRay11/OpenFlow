@@ -506,8 +506,8 @@ describe("validation", () => {
 
   test("fails every node when a model is not one the server offers", async () => {
     const graph = pipeline("a->b")
-    graph.nodes[0].agent.model = "opencode/ghost-model"
-    const h = harness({ models: ["opencode/real-model"] })
+    graph.nodes[0].agent.model = "test/ghost-model"
+    const h = harness({ models: ["test/real-model"] })
 
     // This model is missing on purpose, so skip the re-read that exists for a
     // catalog still filling after a restart — there is nothing to wait for.
@@ -520,10 +520,10 @@ describe("validation", () => {
 
   test("re-reads a catalog that was still filling instead of calling the model unknown", async () => {
     const graph = pipeline("a")
-    graph.nodes[0].agent.model = "opencode/real-model"
+    graph.nodes[0].agent.model = "test/real-model"
     // A restarted engine answers /api/health before its catalog is complete, so
     // the first read is short and the model looks like it does not exist.
-    const h = harness({ models: [], modelsRefilled: ["opencode/real-model"] })
+    const h = harness({ models: [], modelsRefilled: ["test/real-model"] })
 
     const log = await h.run(graph, "do the thing", { catalogRetry: 1 }).done
 
@@ -534,8 +534,8 @@ describe("validation", () => {
 
   test("accepts a model the server does offer", async () => {
     const graph = pipeline("a")
-    graph.nodes[0].agent.model = "opencode/real-model"
-    const h = harness({ models: ["opencode/real-model"] })
+    graph.nodes[0].agent.model = "test/real-model"
+    const h = harness({ models: ["test/real-model"] })
 
     const log = await h.run(graph).done
 
@@ -1114,8 +1114,8 @@ describe("attachments", () => {
 
   test("sends run files to a model that reads them", async () => {
     const graph = pipeline("a")
-    graph.nodes[0].agent.model = "opencode/sees"
-    const h = harness({ models: ["opencode/sees"], vision: ["opencode/sees"] })
+    graph.nodes[0].agent.model = "test/sees"
+    const h = harness({ models: ["test/sees"], vision: ["test/sees"] })
 
     const log = await h.run(graph, "look", { attachments: [png] }).done
 
@@ -1126,8 +1126,8 @@ describe("attachments", () => {
 
   test("withholds an image from a blind model and names it in the prompt instead", async () => {
     const graph = pipeline("a")
-    graph.nodes[0].agent.model = "opencode/blind"
-    const h = harness({ models: ["opencode/blind"] })
+    graph.nodes[0].agent.model = "test/blind"
+    const h = harness({ models: ["test/blind"] })
 
     const log = await h.run(graph, "look", { attachments: [png, note] }).done
 
@@ -1140,9 +1140,9 @@ describe("attachments", () => {
 
   test("one blind node does not stop the nodes behind it", async () => {
     const graph = pipeline("a->b")
-    graph.nodes[0].agent.model = "opencode/blind"
-    graph.nodes[1].agent.model = "opencode/sees"
-    const h = harness({ models: ["opencode/blind", "opencode/sees"], vision: ["opencode/sees"] })
+    graph.nodes[0].agent.model = "test/blind"
+    graph.nodes[1].agent.model = "test/sees"
+    const h = harness({ models: ["test/blind", "test/sees"], vision: ["test/sees"] })
 
     const log = await h.run(graph, "look", { attachments: [png] }).done
 
@@ -1153,9 +1153,9 @@ describe("attachments", () => {
 
   test("a card's own files are sent on top of the run's", async () => {
     const graph = pipeline("a")
-    graph.nodes[0].agent.model = "opencode/sees"
+    graph.nodes[0].agent.model = "test/sees"
     graph.nodes[0].agent.attachments = [note]
-    const h = harness({ models: ["opencode/sees"], vision: ["opencode/sees"] })
+    const h = harness({ models: ["test/sees"], vision: ["test/sees"] })
 
     await h.run(graph, "look", { attachments: [png] }).done
 
@@ -1435,9 +1435,9 @@ describe("resume", () => {
 
   test("a reused node's model no longer being offered does not fail the run", async () => {
     const graph = pipeline("a->b")
-    graph.nodes[0].agent.model = "opencode/retired-model"
-    graph.nodes[1].agent.model = "opencode/real-model"
-    const h = harness({ models: ["opencode/real-model"] })
+    graph.nodes[0].agent.model = "test/retired-model"
+    graph.nodes[1].agent.model = "test/real-model"
+    const h = harness({ models: ["test/real-model"] })
 
     const log = await h.run(graph, "do the thing", { catalogRetry: 0, resume: { a: "a from last time" } }).done
 
@@ -4416,7 +4416,7 @@ describe("what a session is created with", () => {
       model: "openai/gpt-x",
       tools: { write: true, bash: false, ghost: true },
       mcp: ["docs"],
-      // A name from the opencode era is tolerated and never used.
+      // An agent name from before cards ran on Omp is tolerated and never used.
       name: "flow-a",
     }
     const h = harness({ models: ["openai/gpt-x"] })

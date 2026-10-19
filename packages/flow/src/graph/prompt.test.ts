@@ -202,7 +202,7 @@ describe("swarm prompts", () => {
   function swarm(rounds = 3): Pipeline {
     const graph = pipeline("alpha", "beta", "verdict")
     graph.nodes[2].role = "synthesizer"
-    for (const entry of graph.nodes) entry.agent.model = "opencode/x"
+    for (const entry of graph.nodes) entry.agent.model = "test/x"
     return { ...graph, mode: "swarm", rounds }
   }
 
@@ -213,8 +213,8 @@ describe("swarm prompts", () => {
     const text = swarmBriefing(graph, at(graph, "alpha"))
 
     expect(text).toContain("2 agent(s), 3 round(s)")
-    expect(text).toContain("- alpha (alpha) · opencode/x  <-- YOU ARE HERE")
-    expect(text).toContain("- beta (beta) · opencode/x")
+    expect(text).toContain("- alpha (alpha) · test/x  <-- YOU ARE HERE")
+    expect(text).toContain("- beta (beta) · test/x")
     expect(text).toContain("verdict: synthesizer (verdict)")
     // The point of the mode: a swarm that agrees because nobody argued has
     // burned every session in it for one opinion.
@@ -303,7 +303,7 @@ describe("orchestration prompts", () => {
   /** A boss with two specialists, one of which has a card of its own. */
   function tree(): Pipeline {
     const graph = pipeline("boss->coder", "boss->reviewer", "coder->helper")
-    for (const entry of graph.nodes) entry.agent.model = "opencode/x"
+    for (const entry of graph.nodes) entry.agent.model = "test/x"
     graph.nodes[1].agent.prompt = "You are the coder.\nKeep diffs tight."
     return { ...graph, mode: "orchestration", dispatches: 2 }
   }
@@ -522,7 +522,7 @@ describe("gauntlet prompts", () => {
   /** An orchestrator with one builder and one critic, running as a gauntlet. */
   function gauntlet(bar = "the reference build, screenshot by screenshot"): Pipeline {
     const graph = pipeline("boss->coder", "boss->reviewer")
-    for (const entry of graph.nodes) entry.agent.model = "opencode/x"
+    for (const entry of graph.nodes) entry.agent.model = "test/x"
     return { ...graph, mode: "orchestration", dispatches: 2, gauntlet: { bar } }
   }
   const at = (graph: Pipeline, id: string) => graph.nodes.find((entry) => entry.id === id)!

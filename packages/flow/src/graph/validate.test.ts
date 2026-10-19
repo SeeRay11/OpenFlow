@@ -127,66 +127,66 @@ describe("preflight", () => {
   })
 
   test("a cycle blocks", () => {
-    const result = preflight(withModel(pipeline("a->b", "b->c", "c->a"), "opencode/x"), unlocked("opencode/x"))
+    const result = preflight(withModel(pipeline("a->b", "b->c", "c->a"), "test/x"), unlocked("test/x"))
     expect(result.blocking.some((problem) => problem.kind === "structure")).toBe(true)
   })
 
   test("an explicit pipeline mode behaves exactly like an absent one", () => {
-    const graph = withModel(pipeline("a->b"), "opencode/x")
-    expect(preflight({ ...graph, mode: "pipeline" }, unlocked("opencode/x"))).toEqual(
-      preflight(graph, unlocked("opencode/x")),
+    const graph = withModel(pipeline("a->b"), "test/x")
+    expect(preflight({ ...graph, mode: "pipeline" }, unlocked("test/x"))).toEqual(
+      preflight(graph, unlocked("test/x")),
     )
   })
 
   test("an unconnected card only warns in pipeline mode — a swarm's peers carry no edges", () => {
-    const graph = withModel(pipeline("a->b", "loner"), "opencode/x")
-    expect(preflight(graph, unlocked("opencode/x")).warnings.map((problem) => problem.kind)).toEqual(["isolated"])
-    expect(preflight(swarm(graph), unlocked("opencode/x")).warnings.map((problem) => problem.kind)).not.toContain(
+    const graph = withModel(pipeline("a->b", "loner"), "test/x")
+    expect(preflight(graph, unlocked("test/x")).warnings.map((problem) => problem.kind)).toEqual(["isolated"])
+    expect(preflight(swarm(graph), unlocked("test/x")).warnings.map((problem) => problem.kind)).not.toContain(
       "isolated",
     )
   })
 
   test("a swarm runs on its node list — no synthesizer means nothing writes the verdict", () => {
-    const graph = swarm(withModel(pipeline("a", "b"), "opencode/x"), { synthesizer: false })
-    expect(preflight(graph, unlocked("opencode/x")).blocking.map((problem) => problem.kind)).toEqual(["no-synthesizer"])
+    const graph = swarm(withModel(pipeline("a", "b"), "test/x"), { synthesizer: false })
+    expect(preflight(graph, unlocked("test/x")).blocking.map((problem) => problem.kind)).toEqual(["no-synthesizer"])
   })
 
   test("a swarm of one has nobody to debate", () => {
-    const graph = swarm(withModel(pipeline("a"), "opencode/x"))
-    expect(preflight(graph, unlocked("opencode/x")).blocking.map((problem) => problem.kind)).toEqual([
+    const graph = swarm(withModel(pipeline("a"), "test/x"))
+    expect(preflight(graph, unlocked("test/x")).blocking.map((problem) => problem.kind)).toEqual([
       "swarm-too-small",
     ])
   })
 
   test("two synthesizers block, naming the extra card", () => {
-    const graph = swarm(withModel(pipeline("a", "b", "s2"), "opencode/x"))
+    const graph = swarm(withModel(pipeline("a", "b", "s2"), "test/x"))
     graph.nodes[2].role = "synthesizer"
     // The first synthesizer in node order is the one the engine would run, so
     // every one after it is what preflight points at.
-    const result = preflight(graph, unlocked("opencode/x"))
+    const result = preflight(graph, unlocked("test/x"))
     expect(result.blocking.map((problem) => [problem.kind, problem.nodeId])).toEqual([
       ["duplicate-synthesizer", "verdict"],
     ])
   })
 
   test("a well-formed swarm passes, and its leftover wiring only warns", () => {
-    const clean = swarm(withModel(pipeline("a", "b"), "opencode/x"))
-    expect(preflight(clean, unlocked("opencode/x")).blocking).toEqual([])
-    expect(preflight(clean, unlocked("opencode/x")).warnings).toEqual([])
+    const clean = swarm(withModel(pipeline("a", "b"), "test/x"))
+    expect(preflight(clean, unlocked("test/x")).blocking).toEqual([])
+    expect(preflight(clean, unlocked("test/x")).warnings).toEqual([])
 
     // Switching a pipeline to swarm keeps its edges, which now do nothing.
-    const rewired = swarm(withModel(pipeline("a->b"), "opencode/x"))
-    expect(preflight(rewired, unlocked("opencode/x")).blocking).toEqual([])
-    expect(preflight(rewired, unlocked("opencode/x")).warnings.map((problem) => problem.kind)).toEqual([
+    const rewired = swarm(withModel(pipeline("a->b"), "test/x"))
+    expect(preflight(rewired, unlocked("test/x")).blocking).toEqual([])
+    expect(preflight(rewired, unlocked("test/x")).warnings.map((problem) => problem.kind)).toEqual([
       "ignored-edges",
     ])
   })
 
   test("peers with nothing to tell them apart warn — same role, model and instructions", () => {
-    const graph = swarm(withModel(pipeline("a", "b", "c"), "opencode/x"))
+    const graph = swarm(withModel(pipeline("a", "b", "c"), "test/x"))
     for (const node of graph.nodes.slice(0, 3)) node.role = "coder"
 
-    const result = preflight(graph, unlocked("opencode/x"))
+    const result = preflight(graph, unlocked("test/x"))
     expect(result.blocking).toEqual([])
     expect(result.warnings.map((problem) => problem.kind)).toEqual(["identical-peers"])
     expect(result.warnings[0].message).toContain("coder, coder, coder")
@@ -197,27 +197,27 @@ describe("preflight", () => {
     // Role is the axis the palette hands the user, but it is not the only one:
     // a different model or different instructions is a real reason to disagree,
     // and warning about those would train the user to ignore the warning.
-    const byRole = swarm(withModel(pipeline("a", "b"), "opencode/x"))
-    expect(preflight(byRole, unlocked("opencode/x")).warnings).toEqual([])
+    const byRole = swarm(withModel(pipeline("a", "b"), "test/x"))
+    expect(preflight(byRole, unlocked("test/x")).warnings).toEqual([])
 
-    const byModel = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    const byModel = swarm(withModel(pipeline("a", "b"), "test/x"))
     for (const node of byModel.nodes.slice(0, 2)) node.role = "coder"
-    byModel.nodes[1].agent.model = "opencode/y"
-    expect(preflight(byModel, unlocked("opencode/x", "opencode/y")).warnings).toEqual([])
+    byModel.nodes[1].agent.model = "test/y"
+    expect(preflight(byModel, unlocked("test/x", "test/y")).warnings).toEqual([])
 
-    const byPrompt = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    const byPrompt = swarm(withModel(pipeline("a", "b"), "test/x"))
     for (const node of byPrompt.nodes.slice(0, 2)) node.role = "coder"
     byPrompt.nodes[1].agent.prompt = "argue for the simplest thing that works"
-    expect(preflight(byPrompt, unlocked("opencode/x")).warnings).toEqual([])
+    expect(preflight(byPrompt, unlocked("test/x")).warnings).toEqual([])
   })
 
   test("identical peers are grouped, so two twins and a third card warn once", () => {
-    const graph = swarm(withModel(pipeline("a", "b", "c"), "opencode/x"))
+    const graph = swarm(withModel(pipeline("a", "b", "c"), "test/x"))
     graph.nodes[0].role = "coder"
     graph.nodes[1].role = "coder"
     graph.nodes[2].role = "architect"
 
-    const warnings = preflight(graph, unlocked("opencode/x")).warnings
+    const warnings = preflight(graph, unlocked("test/x")).warnings
     expect(warnings.map((problem) => problem.kind)).toEqual(["identical-peers"])
     expect(warnings[0].message).toContain("coder, coder")
     expect(warnings[0].message).not.toContain("architect")
@@ -228,21 +228,21 @@ describe("preflight", () => {
     // running the same model as the debate is normal. Only the debating cards
     // can fail to disagree with each other, so the count the user is asked to
     // act on is the peers', not the whole canvas'.
-    const graph = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    const graph = swarm(withModel(pipeline("a", "b"), "test/x"))
     graph.nodes[0].role = "coder"
     graph.nodes[1].role = "coder"
 
-    const warnings = preflight(graph, unlocked("opencode/x")).warnings
+    const warnings = preflight(graph, unlocked("test/x")).warnings
     expect(warnings.map((problem) => problem.kind)).toEqual(["identical-peers"])
     expect(warnings[0].message).toContain("2 sessions")
   })
 
   test("a peer that can write files warns — peers run at once in one directory", () => {
-    const graph = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    const graph = swarm(withModel(pipeline("a", "b"), "test/x"))
     graph.nodes[0].role = "coder"
     graph.nodes[0].agent.tools = { read: true, edit: true, bash: false }
 
-    const warnings = preflight(graph, unlocked("opencode/x")).warnings
+    const warnings = preflight(graph, unlocked("test/x")).warnings
     expect(warnings.map((problem) => problem.kind)).toEqual(["swarm-writers"])
     expect(warnings[0].message).toStartWith("coder can write files")
   })
@@ -250,30 +250,30 @@ describe("preflight", () => {
   test("an unlisted tool inherits the default agent's allow, so `{ read: true }` is a writer", () => {
     // `permissionBlock` writes a rule only for tools the map names; edit and
     // bash left unnamed stay at the default agent's allow.
-    const graph = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    const graph = swarm(withModel(pipeline("a", "b"), "test/x"))
     graph.nodes[1].agent.tools = { read: true }
-    expect(preflight(graph, unlocked("opencode/x")).warnings.map((problem) => problem.kind)).toEqual([
+    expect(preflight(graph, unlocked("test/x")).warnings.map((problem) => problem.kind)).toEqual([
       "swarm-writers",
     ])
   })
 
   test("bash alone is enough to write, so denying edit does not clear the warning", () => {
-    const graph = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    const graph = swarm(withModel(pipeline("a", "b"), "test/x"))
     graph.nodes[1].agent.tools = { read: true, edit: false, bash: true }
-    expect(preflight(graph, unlocked("opencode/x")).warnings.map((problem) => problem.kind)).toEqual([
+    expect(preflight(graph, unlocked("test/x")).warnings.map((problem) => problem.kind)).toEqual([
       "swarm-writers",
     ])
   })
 
   test("the synthesizer may write — it runs alone, after every round", () => {
-    const graph = swarm(withModel(pipeline("a", "b"), "opencode/x"))
+    const graph = swarm(withModel(pipeline("a", "b"), "test/x"))
     graph.nodes[2].agent.tools = { read: true, edit: true, bash: true }
-    expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
+    expect(preflight(graph, unlocked("test/x")).warnings).toEqual([])
   })
 
   test("a cycle left behind by a pipeline does not block a swarm — swarm reads no edges", () => {
-    const graph = swarm(withModel(pipeline("a->b", "b->a"), "opencode/x"))
-    expect(preflight(graph, unlocked("opencode/x")).blocking).toEqual([])
+    const graph = swarm(withModel(pipeline("a->b", "b->a"), "test/x"))
+    expect(preflight(graph, unlocked("test/x")).blocking).toEqual([])
   })
 
   /** Turns a built graph into an orchestration with the caps the run will use. */
@@ -282,20 +282,20 @@ describe("preflight", () => {
   }
 
   test("an orchestrator with its subagents wired under it passes", () => {
-    const graph = orchestrated(withModel(pipeline("root->a", "root->b"), "opencode/x"))
-    const result = preflight(graph, unlocked("opencode/x"))
+    const graph = orchestrated(withModel(pipeline("root->a", "root->b"), "test/x"))
+    const result = preflight(graph, unlocked("test/x"))
     expect(result.blocking).toEqual([])
     expect(result.warnings).toEqual([])
   })
 
   test("a card with nobody to dispatch to blocks — that is a pipeline of one", () => {
-    const graph = orchestrated(withModel(pipeline("root"), "opencode/x"))
-    expect(preflight(graph, unlocked("opencode/x")).blocking.map((problem) => problem.kind)).toEqual(["no-subagents"])
+    const graph = orchestrated(withModel(pipeline("root"), "test/x"))
+    expect(preflight(graph, unlocked("test/x")).blocking.map((problem) => problem.kind)).toEqual(["no-subagents"])
   })
 
   test("a second card nothing points at blocks, because a run has one result", () => {
-    const graph = orchestrated(withModel(pipeline("root->a", "other->b"), "opencode/x"))
-    const result = preflight(graph, unlocked("opencode/x"))
+    const graph = orchestrated(withModel(pipeline("root->a", "other->b"), "test/x"))
+    const result = preflight(graph, unlocked("test/x"))
     expect(result.blocking.map((problem) => [problem.kind, problem.nodeId])).toEqual([
       ["duplicate-orchestrator", "other"],
     ])
@@ -304,37 +304,37 @@ describe("preflight", () => {
   test("a diamond blocks — a card answers to exactly one orchestrator", () => {
     // Two parents means the second dispatch would re-prompt a session that is
     // still working on the first one's task.
-    const graph = orchestrated(withModel(pipeline("root->a", "root->b", "a->shared", "b->shared"), "opencode/x"))
-    const result = preflight(graph, unlocked("opencode/x"))
+    const graph = orchestrated(withModel(pipeline("root->a", "root->b", "a->shared", "b->shared"), "test/x"))
+    const result = preflight(graph, unlocked("test/x"))
     expect(result.blocking.map((problem) => [problem.kind, problem.nodeId])).toEqual([
       ["shared-subagent", "shared"],
     ])
   })
 
   test("a tree deeper than the depth cap blocks, naming both numbers", () => {
-    const graph = orchestrated(withModel(pipeline("root->a", "a->b", "b->c"), "opencode/x"), { depth: 2 })
-    const result = preflight(graph, unlocked("opencode/x"))
+    const graph = orchestrated(withModel(pipeline("root->a", "a->b", "b->c"), "test/x"), { depth: 2 })
+    const result = preflight(graph, unlocked("test/x"))
     expect(result.blocking.map((problem) => problem.kind)).toEqual(["too-deep"])
     expect(result.blocking[0].message).toContain("3 level(s) deep")
     expect(result.blocking[0].message).toContain("limit is 2")
 
     // Raising the cap is the other half of the fix, and it works.
-    expect(preflight(orchestrated(graph, { depth: 3 }), unlocked("opencode/x")).blocking).toEqual([])
+    expect(preflight(orchestrated(graph, { depth: 3 }), unlocked("test/x")).blocking).toEqual([])
   })
 
   test("a cycle is still a cycle, whatever the mode calls its edges", () => {
-    const graph = orchestrated(withModel(pipeline("root->a", "a->b", "b->a"), "opencode/x"))
-    expect(preflight(graph, unlocked("opencode/x")).blocking.map((problem) => problem.kind)).toEqual(["structure"])
+    const graph = orchestrated(withModel(pipeline("root->a", "a->b", "b->a"), "test/x"))
+    expect(preflight(graph, unlocked("test/x")).blocking.map((problem) => problem.kind)).toEqual(["structure"])
   })
 
   test("a graph that can fan out past a dozen sessions warns before it is run", () => {
     // Depth multiplies: four cards under the root, each dispatchable three
     // times, is the number a user cannot work out by looking at the canvas.
     const graph = orchestrated(
-      withModel(pipeline("root->a", "root->b", "root->c", "root->d"), "opencode/x"),
+      withModel(pipeline("root->a", "root->b", "root->c", "root->d"), "test/x"),
       { dispatches: 3 },
     )
-    const result = preflight(graph, unlocked("opencode/x"))
+    const result = preflight(graph, unlocked("test/x"))
     expect(result.blocking).toEqual([])
     expect(result.warnings.map((problem) => problem.kind)).toEqual(["fan-out"])
     expect(result.warnings[0].message).toContain("13 sessions")
@@ -382,7 +382,7 @@ describe("preflight", () => {
     expect(result.blocking[0].message).toContain("'a'")
   })
 
-  test("a legacy opencode agent name on a node is tolerated and changes nothing", () => {
+  test("a legacy agent name on a node is tolerated and changes nothing", () => {
     const graph = pipeline("a")
     graph.nodes[0].agent.name = "reviewer"
     expect(preflight(graph, unlocked()).blocking.map((problem) => problem.kind)).toEqual(["no-model"])
@@ -390,7 +390,7 @@ describe("preflight", () => {
 
   test("a model that no logged-in provider can run blocks, names the node and says where to log in", () => {
     const graph = withModel(pipeline("a"), "groq/llama")
-    const result = preflight(graph, unlocked("opencode/x"))
+    const result = preflight(graph, unlocked("test/x"))
     expect(result.blocking.map((problem) => problem.kind)).toEqual(["locked-model"])
     expect(result.blocking[0].nodeId).toBe("a")
     expect(result.blocking[0].message).toBe(
@@ -399,30 +399,30 @@ describe("preflight", () => {
   })
 
   test("a fully wired graph on unlocked models has no blocking problems", () => {
-    const graph = withModel(pipeline("a->b", "b->c"), "opencode/x")
-    const result = preflight(graph, unlocked("opencode/x"))
+    const graph = withModel(pipeline("a->b", "b->c"), "test/x")
+    const result = preflight(graph, unlocked("test/x"))
     expect(result.blocking).toEqual([])
   })
 
   test("a node that sets no tool permissions warns but does not block", () => {
     // The launch spec carries a tool list only from `agent.tools`, so a node
     // that declares none runs with every tool — edit and bash included.
-    const graph = withModel(pipeline("a"), "opencode/x")
+    const graph = withModel(pipeline("a"), "test/x")
     graph.nodes[0].agent.tools = undefined
-    const result = preflight(graph, unlocked("opencode/x"))
+    const result = preflight(graph, unlocked("test/x"))
     expect(result.blocking).toEqual([])
     expect(result.warnings.map((problem) => problem.kind)).toEqual(["unrestricted-write"])
   })
 
   test("declaring tools is what restricts a node, so it silences the warning", () => {
-    const graph = withModel(pipeline("a"), "opencode/x")
+    const graph = withModel(pipeline("a"), "test/x")
     graph.nodes[0].agent.tools = { bash: true }
-    expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
+    expect(preflight(graph, unlocked("test/x")).warnings).toEqual([])
   })
 
   test("an isolated node in a multi-node graph warns", () => {
-    const graph = withModel(pipeline("a->b", "lonely"), "opencode/x")
-    const result = preflight(graph, unlocked("opencode/x"))
+    const graph = withModel(pipeline("a->b", "lonely"), "test/x")
+    const result = preflight(graph, unlocked("test/x"))
     expect(result.warnings.map((problem) => [problem.kind, problem.nodeId])).toEqual([["isolated", "lonely"]])
   })
 
@@ -430,30 +430,30 @@ describe("preflight", () => {
     // The key carries the node id, so this only happens if two nodes are given
     // the same id — but a collision would share one state directory between
     // them, which is worth refusing rather than running.
-    const graph = withModel(pipeline("a", "b"), "opencode/x")
+    const graph = withModel(pipeline("a", "b"), "test/x")
     graph.nodes[1].id = graph.nodes[0].id
     graph.nodes[1].role = graph.nodes[0].role
 
-    const result = preflight(graph, unlocked("opencode/x"))
+    const result = preflight(graph, unlocked("test/x"))
 
     expect(result.blocking.map((problem) => problem.kind)).toEqual(["duplicate-agent"])
     expect(result.blocking[0].message).toContain("test-a-a")
   })
 
   test("two nodes sharing only a role are fine", () => {
-    const graph = withModel(pipeline("a->b"), "opencode/x")
+    const graph = withModel(pipeline("a->b"), "test/x")
     graph.nodes[1].role = graph.nodes[0].role
-    expect(preflight(graph, unlocked("opencode/x")).blocking).toEqual([])
+    expect(preflight(graph, unlocked("test/x")).blocking).toEqual([])
   })
 
   test("a lone single node is not treated as isolated", () => {
-    const graph = withModel(pipeline("a"), "opencode/x")
-    expect(preflight(graph, unlocked("opencode/x")).warnings).toEqual([])
+    const graph = withModel(pipeline("a"), "test/x")
+    expect(preflight(graph, unlocked("test/x")).warnings).toEqual([])
   })
 
   test("a reachable engine still blocks a model no logged-in provider can run", () => {
     const graph = withModel(pipeline("a"), "groq/llama")
-    const result = preflight(graph, unlocked("opencode/x"))
+    const result = preflight(graph, unlocked("test/x"))
     expect(result.blocking.map((problem) => problem.kind)).toEqual(["locked-model"])
   })
 })
@@ -554,22 +554,22 @@ describe("preflight: gauntlet", () => {
 
   function gauntlet(spec: string[], settings: Pipeline["gauntlet"] = { bar: "beat the reference build" }) {
     return {
-      ...withModel(pipeline(...spec), "opencode/x"),
+      ...withModel(pipeline(...spec), "test/x"),
       mode: "orchestration" as const,
       gauntlet: settings,
     }
   }
 
   const kinds = (graph: Pipeline) => ({
-    blocking: preflight(graph, unlocked("opencode/x")).blocking.map((problem) => problem.kind),
-    warnings: preflight(graph, unlocked("opencode/x")).warnings.map((problem) => problem.kind),
+    blocking: preflight(graph, unlocked("test/x")).blocking.map((problem) => problem.kind),
+    warnings: preflight(graph, unlocked("test/x")).warnings.map((problem) => problem.kind),
   })
 
   test("a builder and a critic under one orchestrator passes, with the caps stated", () => {
     const result = kinds(gauntlet(["root->builder", "root->reviewer"]))
     expect(result.blocking).toEqual([])
     expect(result.warnings).toEqual(["gauntlet-cost"])
-    expect(preflight(gauntlet(["root->builder", "root->reviewer"]), unlocked("opencode/x")).warnings[0].message).toContain(
+    expect(preflight(gauntlet(["root->builder", "root->reviewer"]), unlocked("test/x")).warnings[0].message).toContain(
       "$5",
     )
   })
@@ -622,13 +622,13 @@ describe("preflight: verification", () => {
     ...pipeline(...spec),
     nodes: pipeline(...spec).nodes.map((node) => ({
       ...node,
-      agent: { ...node.agent, model: "opencode/x", tools: { read: true } },
+      agent: { ...node.agent, model: "test/x", tools: { read: true } },
     })),
     verify,
   })
   const kinds = (target: Pipeline) => ({
-    blocking: preflight(target, { unlockedModels: new Set(["opencode/x"]) }).blocking.map((problem) => problem.kind),
-    warnings: preflight(target, { unlockedModels: new Set(["opencode/x"]) }).warnings.map((problem) => problem.kind),
+    blocking: preflight(target, { unlockedModels: new Set(["test/x"]) }).blocking.map((problem) => problem.kind),
+    warnings: preflight(target, { unlockedModels: new Set(["test/x"]) }).warnings.map((problem) => problem.kind),
   })
 
   test("blocks when nothing on the canvas has the reviewer role", () => {
@@ -662,10 +662,10 @@ describe("preflight: verification", () => {
 })
 
 describe("preflight: a verifier judging its own answer", () => {
-  const unlocked = { unlockedModels: new Set(["opencode/x"]) }
+  const unlocked = { unlockedModels: new Set(["test/x"]) }
   const withModel = (graph: Pipeline) => ({
     ...graph,
-    nodes: graph.nodes.map((node) => ({ ...node, agent: { ...node.agent, model: "opencode/x", tools: { read: true } } })),
+    nodes: graph.nodes.map((node) => ({ ...node, agent: { ...node.agent, model: "test/x", tools: { read: true } } })),
   })
 
   test("warns when the only reviewer is also the card whose output ends the run", () => {

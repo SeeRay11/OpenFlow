@@ -9,8 +9,8 @@ beforeEach(() => {
 describe("default model preference", () => {
   test("get/set round-trips and clears", () => {
     expect(defaultModel()).toBeUndefined()
-    setDefaultModel("opencode/grok-code-free")
-    expect(defaultModel()).toBe("opencode/grok-code-free")
+    setDefaultModel("test/grok-code-free")
+    expect(defaultModel()).toBe("test/grok-code-free")
     setDefaultModel(undefined)
     expect(defaultModel()).toBeUndefined()
   })
@@ -18,26 +18,26 @@ describe("default model preference", () => {
 
 describe("nodeModel", () => {
   test("a preset's own model always wins, whatever the default", () => {
-    expect(nodeModel("anthropic/claude", new Set(), "opencode/free")).toBe("anthropic/claude")
+    expect(nodeModel("anthropic/claude", new Set(), "test/free")).toBe("anthropic/claude")
   })
 
   test("applies the default only when it is in the available set", () => {
-    expect(nodeModel(undefined, new Set(["opencode/free"]), "opencode/free")).toBe("opencode/free")
+    expect(nodeModel(undefined, new Set(["test/free"]), "test/free")).toBe("test/free")
   })
 
   test("leaves the model blank when the default is not available", () => {
-    expect(nodeModel(undefined, new Set(["opencode/other"]), "opencode/free")).toBeUndefined()
+    expect(nodeModel(undefined, new Set(["test/other"]), "test/free")).toBeUndefined()
   })
 
   test("leaves the model blank when there is no default", () => {
-    expect(nodeModel(undefined, new Set(["opencode/free"]), undefined)).toBeUndefined()
+    expect(nodeModel(undefined, new Set(["test/free"]), undefined)).toBeUndefined()
   })
 
   test("reads the live signals when no arguments are passed", () => {
-    setAvailableModels(new Set(["opencode/free"]))
-    setDefaultModel("opencode/free")
-    expect(nodeModel(undefined)).toBe("opencode/free")
-    setDefaultModel("opencode/locked")
+    setAvailableModels(new Set(["test/free"]))
+    setDefaultModel("test/free")
+    expect(nodeModel(undefined)).toBe("test/free")
+    setDefaultModel("test/locked")
     expect(nodeModel(undefined)).toBeUndefined()
   })
 })

@@ -428,8 +428,8 @@ describe("skills", () => {
   test("writes nothing into the project: no config, no .openflow/skills", async () => {
     await call("PUT", "/flow/api/skills/summarize", { body: skill })
 
-    expect(await fs.readdir(dir)).not.toContain("opencode.json")
-    expect(await fs.readdir(dir)).not.toContain(".openflow")
+    const own: Record<string, true> = { "omp-profile": true, state: true }
+    expect((await fs.readdir(dir)).filter((entry) => !Object.hasOwn(own, entry))).toEqual([])
   })
 
   test("reads a skill back split into frontmatter and body", async () => {

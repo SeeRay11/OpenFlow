@@ -49,15 +49,15 @@ describe("nodes", () => {
   })
 
   test("applies the default model to a preset that has none, when it is available", () => {
-    setAvailableModels(new Set(["opencode/grok-code-free"]))
-    setDefaultModel("opencode/grok-code-free")
+    setAvailableModels(new Set(["test/grok-code-free"]))
+    setDefaultModel("test/grok-code-free")
     const [id] = graph("coder")
-    expect(state.pipeline.nodes.find((node) => node.id === id)!.agent.model).toBe("opencode/grok-code-free")
+    expect(state.pipeline.nodes.find((node) => node.id === id)!.agent.model).toBe("test/grok-code-free")
   })
 
   test("leaves the model blank when the default is not currently available", () => {
-    setAvailableModels(new Set(["opencode/other"]))
-    setDefaultModel("opencode/grok-code-free")
+    setAvailableModels(new Set(["test/other"]))
+    setDefaultModel("test/grok-code-free")
     const [id] = graph("coder")
     expect(state.pipeline.nodes.find((node) => node.id === id)!.agent.model).toBeUndefined()
   })
@@ -96,12 +96,12 @@ describe("nodes", () => {
     const [id] = graph("planner")
     actions.moveNode(id, { x: 40, y: 90 })
     actions.updateNode(id, { role: "renamed" })
-    actions.updateAgent(id, { model: "opencode/x" })
+    actions.updateAgent(id, { model: "test/x" })
 
     const node = state.pipeline.nodes[0]
     expect(node.position).toEqual({ x: 40, y: 90 })
     expect(node.role).toBe("renamed")
-    expect(node.agent.model).toBe("opencode/x")
+    expect(node.agent.model).toBe("test/x")
   })
 })
 

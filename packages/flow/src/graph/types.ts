@@ -41,7 +41,7 @@ export type Attachment = {
 
 export type FlowAgent = {
   /**
-   * An opencode agent name, from before cards ran on Omp. Tolerated on parse so
+   * An agent name from before cards ran on Omp. Tolerated on parse so
    * an old file still loads; nothing reads it.
    */
   name?: string
@@ -217,7 +217,7 @@ export type QuestionExchange = {
 }
 
 /**
- * Token counts exactly as `opencode serve` reported them for a settled step.
+ * Token counts exactly as omp reported them for a settled step.
  *
  * `input` excludes cached tokens (they are counted under `cacheRead` /
  * `cacheWrite`) and `output` excludes reasoning, matching the server's own
@@ -337,7 +337,7 @@ export type RunNodeLog = {
   /** Attachment names actually sent, and those the model could not read. */
   attachments?: { sent: string[]; skipped: string[] }
   model?: string
-  /** An opencode agent name, from a run logged before cards ran on Omp. Never written now. */
+  /** An agent name from a run logged before cards ran on Omp. Never written now. */
   agent?: string
   /** The text actually sent to the session: uplifted, with context and memory, when those ran. */
   prompt?: string

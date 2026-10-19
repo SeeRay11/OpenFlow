@@ -86,7 +86,7 @@ export type FlowSwarmEvent = { type: "flow.swarm.status"; data: { sessionID: str
 
 /**
  * Everything the host needs to launch one card, in OpenFlow's own vocabulary.
- * Replaces "merge agents into opencode.json and restart the engine": a changed
+ * Replaces merging agents into an engine config and restarting it: a changed
  * card simply launches a fresh process with the new spec.
  */
 export type CardSpec = {
