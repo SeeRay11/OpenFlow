@@ -3,21 +3,23 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { recallPipeline, recallProject, statePath } from "./last-session"
-import type { ServeStatus, Supervisor } from "./opencode-process"
-import { backupConfig, browseDirectory, flowPaths, handleFlow, slug, type FlowPaths } from "./store"
+import { browseDirectory, flowPaths, handleFlow, slug, type FlowPaths } from "./store"
 
 /**
  * This is the surface that writes to a user's real repository — pipelines, run
- * logs, and a merge into their opencode.json — so it is tested against a real
- * temporary directory rather than a mocked filesystem.
+ * logs — and to the Omp profile's MCP config and skills, so it is tested
+ * against a real temporary directory rather than a mocked filesystem.
  */
 
 let dir: string
+let profile: string
 let paths: FlowPaths
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "openflow-store-"))
   paths = flowPaths(dir)
+  // Not created: a profile that has never been written to has no directory yet.
+  profile = path.join(dir, "omp-profile", "agent")
   // A project switch remembers the folder for the next launch; without this
   // the suite would overwrite the developer's own `~/.openflow/state.json`.
   process.env.OPENFLOW_STATE_DIR = path.join(dir, "state")
@@ -30,35 +32,19 @@ afterEach(async () => {
 
 const read = (file: string) => fs.readFile(file, "utf8")
 
+/** `profile: null` is a host that does not know the Omp profile's directory. */
 function call(
   method: string,
   route: string,
-  options: { body?: unknown; search?: string; serve?: Supervisor } = {},
+  options: { body?: unknown; search?: string; profile?: string | null } = {},
 ) {
   return handleFlow(paths, {
     method,
     path: route,
     search: new URLSearchParams(options.search ?? ""),
     json: async () => options.body ?? {},
-    serve: options.serve,
+    profileDir: async () => (options.profile === undefined ? profile : (options.profile ?? undefined)),
   })
-}
-
-/** Stand-in for the engine's process handle. */
-function supervisor(status: Partial<ServeStatus>, onRestart?: () => Promise<ServeStatus>): Supervisor {
-  const full = (): ServeStatus => ({
-    managed: false,
-    running: true,
-    url: "http://127.0.0.1:4096",
-    command: "opencode serve --port 4096",
-    ...status,
-  })
-  return {
-    status: async () => full(),
-    ensure: async () => full(),
-    restart: onRestart ?? (async () => full()),
-    stop: async () => {},
-  }
 }
 
 const graph = { id: "p1", name: "feature-build", nodes: [{ id: "n1" }], edges: [] }
@@ -421,366 +407,70 @@ describe("runs", () => {
   })
 })
 
-describe("agents", () => {
-  const agent = { agent: { "feature-build-planner": { mode: "primary", prompt: "plan" } } }
-
-  /**
-   * A merge lands in the *global* config, not the project's: a session's
-   * location is the engine's cwd, so agents written into the target project are
-   * not there when the run drains, and the run fails with "the server does not
-   * know an agent named …". `XDG_CONFIG_HOME` keeps that out of the developer's
-   * own config.
-   */
-  let global: string
-
-  beforeEach(async () => {
-    process.env.XDG_CONFIG_HOME = path.join(dir, "xdg")
-    global = path.join(dir, "xdg", "opencode", "opencode.json")
-    await fs.mkdir(path.dirname(global), { recursive: true })
-  })
-
-  afterEach(() => {
-    delete process.env.XDG_CONFIG_HOME
-  })
-
-  test("writes only the generated block unless a merge is asked for", async () => {
-    const result = await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent })
-
-    expect(result!.body).toMatchObject({ merged: false })
-    const written = JSON.parse(await read(path.join(paths.generated, "feature-build.opencode.json")))
-    expect(written.agent).toEqual(agent.agent)
-    await expect(read(global)).rejects.toThrow()
-  })
-
-  test("merge creates the config when the project has none", async () => {
-    const result = await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
-
-    expect(result!.body).toMatchObject({ merged: true, backup: undefined })
-    const config = JSON.parse(await read(global))
-    expect(config.agent).toEqual(agent.agent)
-  })
-
-  test("merge keeps what the project already had", async () => {
-    await fs.writeFile(global, JSON.stringify({ model: "opencode/x", agent: { mine: {} } }))
-
-    await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
-
-    const config = JSON.parse(await read(global))
-    expect(config.model).toBe("opencode/x")
-    expect(Object.keys(config.agent).sort()).toEqual(["feature-build-planner", "mine"])
-  })
-
-  test("a second merge does not overwrite the original backup", async () => {
-    const target = global
-    await fs.writeFile(target, JSON.stringify({ agent: { mine: {} } }))
-    const changed = { agent: { "feature-build-planner": { mode: "primary", prompt: "replan" } } }
-
-    await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
-    const second = await call("POST", "/flow/api/pipelines/feature-build/agents", { body: changed, search: "merge=1" })
-
-    expect(second!.body).toMatchObject({ backup: `${target}.prev.bak` })
-    expect(JSON.parse(await read(`${target}.bak`)).agent).toEqual({ mine: {} })
-  })
-
-  test("a merge that changes nothing does not touch the config or leave a backup", async () => {
-    const target = global
-    await fs.writeFile(target, JSON.stringify({ agent: { mine: {} } }))
-
-    await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
-    const before = await read(target)
-    const second = await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
-
-    expect(second!.body).toMatchObject({ merged: false, unchanged: true })
-    expect(second!.body).not.toHaveProperty("backup")
-    expect(await read(target)).toBe(before)
-    // The first merge's `.bak`, not a second `.prev.bak`, is the only backup.
-    await expect(read(`${target}.prev.bak`)).rejects.toThrow()
-  })
-
-  test("a merge drops the agents this pipeline no longer generates, and nothing else", async () => {
-    const marked = (id: string, role: string, pipeline = "feature-build") => ({
-      description: `OpenFlow node ${id} (${role}) of pipeline ${pipeline}`,
-    })
-    await fs.writeFile(
-      global,
-      JSON.stringify({
-        agent: {
-          "feature-build-planner": marked("n1", "planner"),
-          // Renamed away: generated for this pipeline, no longer in the block.
-          "feature-build-scout": marked("n0", "scout"),
-          // Another pipeline's, and a hand-written one that merely looks generated.
-          "release-notes-writer": marked("n9", "writer", "release-notes"),
-          "feature-build-mine": {},
-        },
-      }),
-    )
-
-    await call("POST", "/flow/api/pipelines/feature-build/agents", {
-      body: { agent: { "feature-build-planner": marked("n1", "planner") } },
-      search: "merge=1",
-    })
-
-    const config = JSON.parse(await read(global))
-    expect(Object.keys(config.agent).sort()).toEqual([
-      "feature-build-mine",
-      "feature-build-planner",
-      "release-notes-writer",
-    ])
-  })
-
-  test("an unchanged merge with no config to merge into names the generated file", async () => {
-    const result = await call("POST", "/flow/api/pipelines/feature-build/agents", {
-      body: { agent: {} },
-      search: "merge=1",
-    })
-
-    expect(result!.body).toMatchObject({
-      path: path.join(paths.generated, "feature-build.opencode.json"),
-      unchanged: true,
-    })
-    await expect(read(global)).rejects.toThrow()
-  })
-
-  test("refuses to merge into a config it cannot parse", async () => {
-    await fs.writeFile(global, "{not json")
-
-    const result = await call("POST", "/flow/api/pipelines/feature-build/agents", { body: agent, search: "merge=1" })
-
-    expect(result!.body).toMatchObject({ merged: false, error: expect.stringContaining("not valid JSON") })
-    expect(await read(global)).toBe("{not json")
-  })
-
-  test("cleans up after a pipeline whose name needed slugging", async () => {
-    // The route carries the slug (`my-flow`); the descriptions carry the raw
-    // name (`My Flow`). Matching the slug against them recognised nothing, so
-    // no stale agent was ever dropped and every rename added a generation.
-    const marked = (id: string, role: string) => ({
-      description: `OpenFlow node ${id} (${role}) of pipeline My Flow`,
-    })
-    await fs.writeFile(
-      global,
-      JSON.stringify({ agent: { "my-flow-planner": marked("n1", "planner"), "my-flow-scout": marked("n0", "scout") } }),
-    )
-
-    await call("POST", `/flow/api/pipelines/${encodeURIComponent("My Flow")}/agents`, {
-      body: { agent: { "my-flow-planner": marked("n1", "planner") } },
-      search: "merge=1",
-    })
-
-    expect(Object.keys(JSON.parse(await read(global)).agent)).toEqual(["my-flow-planner"])
-  })
-
-  test("takes the raw name from the body when a caller sends one", async () => {
-    // The block here carries no description to read the raw name back off, so
-    // only `pipeline` in the body can supply it.
-    await fs.writeFile(
-      global,
-      JSON.stringify({ agent: { "my-flow-scout": { description: "OpenFlow node n0 (scout) of pipeline My Flow" } } }),
-    )
-
-    await call("POST", "/flow/api/pipelines/my-flow/agents", {
-      body: { pipeline: "My Flow", agent: { "my-flow-planner": { mode: "primary" } } },
-      search: "merge=1",
-    })
-
-    expect(Object.keys(JSON.parse(await read(global)).agent)).toEqual(["my-flow-planner"])
-  })
-})
-
-describe("opencode's own config dialect", () => {
-  const configPath = () => path.join(dir, "opencode.json")
-
-  // opencode parses opencode.json with jsonc-parser and allowTrailingComma, so
-  // a commented config is a *valid* one. Reading it as strict JSON failed every
-  // config write: the agent merge, the MCP panel, and skill registration.
-  test("reads a config with comments and a trailing comma", async () => {
-    await fs.writeFile(
-      configPath(),
-      `{
-  // the search server
-  "mcp": {
-    /* local */
-    "context7": { "type": "local", "command": ["a"] },
-  },
-}
-`,
-    )
-
-    const rows = (await call("GET", "/mcp"))?.body as any[]
-    expect(rows.map((row) => row.name)).toEqual(["context7"])
-    expect(rows[0]).toMatchObject({ type: "local", command: ["a"] })
-  })
-
-  test("refuses to rewrite a commented config, and says so rather than crying invalid JSON", async () => {
-    const source = `{\n  // keep me\n  "model": "opencode/x"\n}\n`
-    await fs.writeFile(configPath(), source)
-
-    const response = await call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } })
-
-    // Re-serialising would silently delete the comment, so the write is
-    // refused — but the reason has to name the real problem.
-    expect(response?.status).toBe(400)
-    expect((response?.body as any).error).toContain("has comments")
-    expect(await read(configPath())).toBe(source)
-  })
-
-  test("a trailing comma alone is no reason to refuse a write", async () => {
-    await fs.writeFile(configPath(), `{\n  "model": "opencode/x",\n}\n`)
-
-    const response = await call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } })
-
-    expect(response?.status).toBe(200)
-    const config = JSON.parse(await read(configPath()))
-    expect(config.model).toBe("opencode/x")
-    expect(config.mcp.one).toMatchObject({ type: "local" })
-  })
-
-  test("a comma or a comment marker inside a value is left alone", async () => {
-    const model = 'a, } b // c /* d */ "'
-    await fs.writeFile(configPath(), JSON.stringify({ model, mcp: {} }))
-
-    await call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } })
-
-    expect(JSON.parse(await read(configPath())).model).toBe(model)
-  })
-
-  test("a skill lands unregistered rather than silently, when the config will not take the source", async () => {
-    // registerSkillSource runs before the SKILL.md write for this reason: a
-    // skill registered nowhere is one the agent can never see.
-    await fs.writeFile(configPath(), `{\n  // keep me\n}\n`)
-
-    const result = await call("PUT", "/flow/api/skills/summarize", { body: { name: "Summarize", content: "x" } })
-
-    expect(result!.body).toMatchObject({ registered: false, error: expect.stringContaining("has comments") })
-    await expect(read(path.join(paths.skills, "summarize", "SKILL.md"))).resolves.toContain("name: Summarize")
-  })
-})
-
-describe("concurrent config writes", () => {
-  // Clicking Run (which merges agents) while an MCP server or a skill is being
-  // saved meant both read the same pre-state and the later write discarded the
-  // earlier one. Two tabs, or the vite host beside `bun start`, make it routine.
-  test("an mcp save and a skill registration both land", async () => {
-    await Promise.all([
-      call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } }),
-      call("PUT", "/flow/api/skills/summarize", { body: { name: "Summarize", content: "x" } }),
-    ])
-
-    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
-    expect(config.mcp.one).toMatchObject({ type: "local" })
-    expect(config.skills).toEqual({ paths: ["./.openflow/skills"] })
-  })
-
-  test("an agent merge and an mcp save do not discard each other", async () => {
-    // They no longer write the same file at all — agents go to the global
-    // config, because that is the only one a run reads, and MCP servers stay
-    // with the project. Both still have to land.
-    process.env.XDG_CONFIG_HOME = path.join(dir, "xdg")
-    await fs.mkdir(path.join(dir, "xdg", "opencode"), { recursive: true })
-    try {
-      await Promise.all([
-        call("POST", "/flow/api/pipelines/feature-build/agents", {
-          body: { agent: { "feature-build-planner": { mode: "primary" } } },
-          search: "merge=1",
-        }),
-        call("PUT", "/mcp/two", { body: { type: "local", command: ["b"] } }),
-      ])
-
-      expect(JSON.parse(await read(path.join(dir, "xdg", "opencode", "opencode.json"))).agent).toHaveProperty(
-        "feature-build-planner",
-      )
-      expect(JSON.parse(await read(path.join(dir, "opencode.json"))).mcp.two).toMatchObject({ type: "local" })
-    } finally {
-      delete process.env.XDG_CONFIG_HOME
-    }
-  })
-
-  test("two mcp saves at once both survive", async () => {
-    await Promise.all([
-      call("PUT", "/mcp/alpha", { body: { type: "local", command: ["a"] } }),
-      call("PUT", "/mcp/beta", { body: { type: "remote", url: "https://b" } }),
-    ])
-
-    expect(Object.keys(JSON.parse(await read(path.join(dir, "opencode.json"))).mcp).sort()).toEqual(["alpha", "beta"])
-  })
-})
-
 describe("skills", () => {
   const skill = { name: "Summarize", description: "Condense text", content: "# Summarize\n\nBe brief." }
+  const skillsDir = () => path.join(profile, "skills")
+  const legacyFile = (name: string) => path.join(paths.skills, name, "SKILL.md")
 
-  test("writes SKILL.md with frontmatter and registers the source once", async () => {
+  async function writeLegacy(name: string, description = "Old one") {
+    await fs.mkdir(path.join(paths.skills, name), { recursive: true })
+    await fs.writeFile(legacyFile(name), `---\nname: ${name}\ndescription: ${description}\n---\n\nold body\n`)
+  }
+
+  test("writes SKILL.md with frontmatter into the profile's skills directory", async () => {
     const result = await call("PUT", "/flow/api/skills/summarize", { body: skill })
+    const file = path.join(skillsDir(), "summarize", "SKILL.md")
 
-    expect(result!.body).toMatchObject({ name: "summarize", registered: true })
-    const md = await read(path.join(paths.skills, "summarize", "SKILL.md"))
-    expect(md).toContain("name: Summarize")
-    expect(md).toContain("description: Condense text")
-    expect(md.endsWith("Be brief.\n")).toBe(true)
+    expect(result!.body).toEqual({ name: "summarize", path: file })
+    expect(await read(file)).toBe("---\nname: Summarize\ndescription: Condense text\n---\n# Summarize\n\nBe brief.\n")
+  })
 
-    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
-    expect(config.skills).toEqual({ paths: ["./.openflow/skills"] })
+  test("writes nothing into the project: no config, no .openflow/skills", async () => {
+    await call("PUT", "/flow/api/skills/summarize", { body: skill })
+
+    expect(await fs.readdir(dir)).not.toContain("opencode.json")
+    expect(await fs.readdir(dir)).not.toContain(".openflow")
   })
 
   test("reads a skill back split into frontmatter and body", async () => {
     await call("PUT", "/flow/api/skills/summarize", { body: skill })
     const loaded = (await call("GET", "/flow/api/skills/summarize"))!.body as any
     expect(loaded).toMatchObject({ name: "Summarize", folder: "summarize", description: "Condense text" })
-    expect(loaded.content.trim()).toBe("# Summarize\n\nBe brief.")
+    expect(loaded.content).toContain("Be brief.")
+    expect(loaded.legacy).toBeUndefined()
   })
 
   test("an edit round-trip keeps the frontmatter name instead of the folder slug", async () => {
     await call("PUT", "/flow/api/skills/summarize", { body: skill })
     const loaded = (await call("GET", "/flow/api/skills/summarize"))!.body as any
 
-    await call("PUT", `/flow/api/skills/${loaded.folder}`, { body: { ...skill, name: loaded.name } })
-
-    expect(await read(path.join(paths.skills, "summarize", "SKILL.md"))).toContain("name: Summarize")
+    await call("PUT", "/flow/api/skills/summarize", { body: { ...loaded, content: "# Edited" } })
+    expect(((await call("GET", "/flow/api/skills/summarize"))!.body as any).name).toBe("Summarize")
   })
 
-  test("registering the source is idempotent and never duplicates it", async () => {
-    await call("PUT", "/flow/api/skills/one", { body: skill })
-    const second = await call("PUT", "/flow/api/skills/two", { body: { ...skill, name: "Two" } })
-
-    expect(second!.body).toMatchObject({ registered: false })
-    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
-    expect(config.skills).toEqual({ paths: ["./.openflow/skills"] })
-  })
-
-  test("keeps an existing config and backs it up when first registering", async () => {
-    await fs.writeFile(path.join(dir, "opencode.json"), JSON.stringify({ model: "opencode/x" }))
-    const result = await call("PUT", "/flow/api/skills/summarize", { body: skill })
-
-    expect(result!.body).toMatchObject({ registered: true, backup: path.join(dir, "opencode.json") + ".bak" })
-    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
-    expect(config.model).toBe("opencode/x")
-    expect(config.skills).toEqual({ paths: ["./.openflow/skills"] })
-  })
-
-  test("repairs a bare skills array left by an older build", async () => {
-    await fs.writeFile(path.join(dir, "opencode.json"), JSON.stringify({ skills: ["./.openflow/skills", "./other"] }))
-
-    await call("PUT", "/flow/api/skills/summarize", { body: skill })
-
-    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
-    expect(config.skills).toEqual({ paths: ["./.openflow/skills", "./other"] })
-  })
-
-  test("keeps skills.urls when adding the path", async () => {
-    await fs.writeFile(path.join(dir, "opencode.json"), JSON.stringify({ skills: { urls: ["https://x/skills/"] } }))
-
-    await call("PUT", "/flow/api/skills/summarize", { body: skill })
-
-    const config = JSON.parse(await read(path.join(dir, "opencode.json")))
-    expect(config.skills).toEqual({ urls: ["https://x/skills/"], paths: ["./.openflow/skills"] })
-  })
-
-  test("lists newest first, folder skipped when it has no SKILL.md", async () => {
+  test("lists newest first, skipping folders without a SKILL.md and stray files", async () => {
     await call("PUT", "/flow/api/skills/alpha", { body: skill })
     await call("PUT", "/flow/api/skills/beta", { body: { ...skill, name: "Beta" } })
-    await fs.mkdir(path.join(paths.skills, "empty"), { recursive: true })
+    await fs.mkdir(path.join(skillsDir(), "empty"), { recursive: true })
+    await fs.writeFile(path.join(skillsDir(), "stray.txt"), "x")
+    await fs.utimes(path.join(skillsDir(), "alpha", "SKILL.md"), 2000, 2000)
+    await fs.utimes(path.join(skillsDir(), "beta", "SKILL.md"), 1000, 1000)
 
     const list = (await call("GET", "/flow/api/skills"))!.body as any[]
-    expect(list.map((entry) => entry.name).sort()).toEqual(["alpha", "beta"])
+    expect(list.map((entry) => entry.name)).toEqual(["alpha", "beta"])
+    expect(list[0]).toMatchObject({ description: "Condense text" })
+    expect(list.some((entry) => "legacy" in entry)).toBe(false)
+  })
+
+  test("lists a skill folder that is a symlink", async () => {
+    const elsewhere = path.join(dir, "shared", "linked")
+    await fs.mkdir(elsewhere, { recursive: true })
+    await fs.writeFile(path.join(elsewhere, "SKILL.md"), "---\nname: linked\ndescription: Shared\n---\n\nbody\n")
+    await fs.mkdir(skillsDir(), { recursive: true })
+    await fs.symlink(elsewhere, path.join(skillsDir(), "linked"), "dir")
+
+    const list = (await call("GET", "/flow/api/skills"))!.body as any[]
+    expect(list.map((entry) => entry.name)).toEqual(["linked"])
   })
 
   test("lists nothing before anything is saved", async () => {
@@ -793,24 +483,100 @@ describe("skills", () => {
 
   test("deletes the folder", async () => {
     await call("PUT", "/flow/api/skills/gone", { body: skill })
-    await call("DELETE", "/flow/api/skills/gone")
+    const result = await call("DELETE", "/flow/api/skills/gone")
+    expect(result!.body).toEqual({ name: "gone", removed: true })
     expect((await call("GET", "/flow/api/skills/gone"))!.status).toBe(404)
+    expect((await call("DELETE", "/flow/api/skills/gone"))!.body).toEqual({ name: "gone", removed: false })
   })
 
   test("keeps a traversing name inside the skills directory", async () => {
     const result = await call("PUT", `/flow/api/skills/${encodeURIComponent("../../evil")}`, { body: skill })
-    expect((result!.body as any).path).toBe(path.join(paths.skills, "evil", "SKILL.md"))
-    await expect(read(path.join(dir, "..", "evil", "SKILL.md"))).rejects.toThrow()
+    expect((result!.body as any).path).toBe(path.join(skillsDir(), "evil", "SKILL.md"))
+    await expect(read(path.join(profile, "..", "evil", "SKILL.md"))).rejects.toThrow()
   })
 
-  test("does not register the source when the config cannot be parsed", async () => {
-    await fs.writeFile(path.join(dir, "opencode.json"), "{not json")
-    const result = await call("PUT", "/flow/api/skills/summarize", { body: skill })
+  describe("legacy skills under .openflow/skills", () => {
+    test("are listed beside the profile's, marked legacy", async () => {
+      await writeLegacy("old")
+      await call("PUT", "/flow/api/skills/new", { body: skill })
 
-    expect(result!.body).toMatchObject({ registered: false, error: expect.stringContaining("not valid JSON") })
-    // the SKILL.md is still written — only the config is left untouched
-    await expect(read(path.join(paths.skills, "summarize", "SKILL.md"))).resolves.toContain("name: Summarize")
-    expect(await read(path.join(dir, "opencode.json"))).toBe("{not json")
+      const list = (await call("GET", "/flow/api/skills"))!.body as any[]
+      const byName = Object.fromEntries(list.map((entry) => [entry.name, entry]))
+      expect(Object.keys(byName).sort()).toEqual(["new", "old"])
+      expect(byName.old).toMatchObject({ description: "Old one", legacy: true })
+      expect(byName.new.legacy).toBeUndefined()
+    })
+
+    test("can be read for editing, still marked legacy", async () => {
+      await writeLegacy("old")
+      expect(((await call("GET", "/flow/api/skills/old"))!.body as any)).toMatchObject({
+        name: "old",
+        folder: "old",
+        legacy: true,
+        path: legacyFile("old"),
+      })
+    })
+
+    test("saving one writes the profile and leaves the legacy copy alone", async () => {
+      await writeLegacy("old")
+      const before = await read(legacyFile("old"))
+
+      const saved = await call("PUT", "/flow/api/skills/old", { body: { ...skill, name: "old" } })
+
+      expect((saved!.body as any).path).toBe(path.join(skillsDir(), "old", "SKILL.md"))
+      expect(await read(legacyFile("old"))).toBe(before)
+    })
+
+    test("once re-saved, the profile's copy is the only one listed or read", async () => {
+      await writeLegacy("old")
+      await call("PUT", "/flow/api/skills/old", { body: { ...skill, name: "old", description: "Fresh" } })
+
+      const list = (await call("GET", "/flow/api/skills"))!.body as any[]
+      expect(list).toHaveLength(1)
+      expect(list[0]).toMatchObject({ name: "old", description: "Fresh" })
+      expect(list[0].legacy).toBeUndefined()
+      expect(((await call("GET", "/flow/api/skills/old"))!.body as any).legacy).toBeUndefined()
+    })
+
+    test("deleting acts on the profile only", async () => {
+      await writeLegacy("old")
+
+      const result = await call("DELETE", "/flow/api/skills/old")
+
+      expect(result!.body).toEqual({ name: "old", removed: false })
+      await expect(read(legacyFile("old"))).resolves.toContain("old body")
+    })
+  })
+
+  describe("without a known profile directory", () => {
+    test("writing and deleting are 409, and touch nothing", async () => {
+      const put = await call("PUT", "/flow/api/skills/summarize", { body: skill, profile: null })
+      const del = await call("DELETE", "/flow/api/skills/summarize", { profile: null })
+
+      for (const response of [put, del]) {
+        expect(response!.status).toBe(409)
+        expect(response!.body).toEqual({ error: "omp profile directory unknown: open Omp settings" })
+      }
+      expect(await fs.readdir(dir)).toEqual([])
+    })
+
+    test("reading still shows the legacy skills", async () => {
+      await writeLegacy("old")
+      const list = (await call("GET", "/flow/api/skills", { profile: null }))!.body as any[]
+      expect(list).toMatchObject([{ name: "old", legacy: true }])
+      expect((await call("GET", "/flow/api/skills/old", { profile: null }))!.status).toBe(200)
+      expect((await call("GET", "/flow/api/skills/ghost", { profile: null }))!.status).toBe(404)
+    })
+  })
+
+  test("a request without a profileDir at all behaves as an unknown profile", async () => {
+    const response = await handleFlow(paths, {
+      method: "PUT",
+      path: "/flow/api/skills/summarize",
+      search: new URLSearchParams(),
+      json: async () => skill,
+    })
+    expect(response!.status).toBe(409)
   })
 })
 
@@ -968,107 +734,231 @@ describe("routes: the pipeline to reopen", () => {
   })
 })
 
-describe("backupConfig", () => {
-  test("puts the first copy in .bak and later ones in .prev.bak", async () => {
-    // .bak is the config as it was before OpenFlow first touched it. Losing it
-    // is quiet, because a project's opencode.json is usually gitignored.
-    const target = path.join(dir, "opencode.json")
-
-    expect(await backupConfig(target, "original")).toBe(`${target}.bak`)
-    expect(await backupConfig(target, "merged once")).toBe(`${target}.prev.bak`)
-    expect(await backupConfig(target, "merged twice")).toBe(`${target}.prev.bak`)
-
-    expect(await read(`${target}.bak`)).toBe("original")
-    expect(await read(`${target}.prev.bak`)).toBe("merged twice")
-  })
-})
-
 describe("mcp servers", () => {
-  const configPath = () => path.join(dir, "opencode.json")
+  const configPath = () => path.join(profile, "mcp.json")
+  const config = async () => JSON.parse(await read(configPath()))
+  const local = { type: "local", command: ["bunx", "-y", "@upstash/context7-mcp"] }
 
-  test("lists nothing when the project has no config", async () => {
+  test("lists nothing when the profile has no mcp.json", async () => {
     expect((await call("GET", "/mcp"))?.body).toEqual([])
   })
 
-  test("writes a local server into the project config", async () => {
+  test("writes a local server as an omp stdio entry, creating the profile directory", async () => {
     const response = await call("PUT", "/mcp/context7", {
-      body: { type: "local", command: ["bunx", "-y", "@upstash/context7-mcp"], environment: { KEY: "v" } },
+      body: { ...local, environment: { KEY: "v" }, cwd: "/work", timeout: 5000 },
     })
 
-    expect(response?.status).toBe(200)
-    const config = JSON.parse(await read(configPath()))
-    expect(config.mcp.context7).toEqual({
-      type: "local",
-      command: ["bunx", "-y", "@upstash/context7-mcp"],
-      environment: { KEY: "v" },
-      enabled: true,
+    expect(response!.status).toBe(200)
+    expect(response!.body).toEqual({ name: "context7", path: configPath(), backup: undefined })
+    expect(await config()).toEqual({
+      $schema: expect.stringContaining("mcp-schema.json"),
+      mcpServers: {
+        context7: {
+          type: "stdio",
+          command: "bunx",
+          args: ["-y", "@upstash/context7-mcp"],
+          cwd: "/work",
+          env: { KEY: "v" },
+          timeout: 5000,
+          enabled: true,
+        },
+      },
     })
   })
 
-  test("saving a server the config already describes writes nothing", async () => {
-    const body = { type: "local", command: ["bunx", "-y", "@upstash/context7-mcp"] }
-
-    await call("PUT", "/mcp/context7", { body })
-    const before = await read(configPath())
-    const second = await call("PUT", "/mcp/context7", { body })
-
-    expect(second?.body).toMatchObject({ unchanged: true })
-    expect(second?.body).not.toHaveProperty("backup")
-    expect(await read(configPath())).toBe(before)
-    // The project had no config before the first write, so there was nothing to
-    // copy aside; a re-save must not invent a backup of OpenFlow's own output.
-    await expect(read(`${configPath()}.bak`)).rejects.toThrow()
-  })
-
-  test("writes a remote server with headers", async () => {
+  test("writes a remote server as http, with headers", async () => {
     await call("PUT", "/mcp/hosted", {
-      body: { type: "remote", url: "https://mcp.example.com/sse", headers: { Authorization: "Bearer x" } },
+      body: { type: "remote", url: " https://mcp.example.com/mcp ", headers: { Authorization: "Bearer x" } },
     })
 
-    const config = JSON.parse(await read(configPath()))
-    expect(config.mcp.hosted).toEqual({
-      type: "remote",
-      url: "https://mcp.example.com/sse",
+    expect((await config()).mcpServers.hosted).toEqual({
+      type: "http",
+      url: "https://mcp.example.com/mcp",
       headers: { Authorization: "Bearer x" },
       enabled: true,
     })
   })
 
-  test("refuses a server that could not start, rather than writing a config opencode rejects", async () => {
-    const local = await call("PUT", "/mcp/broken", { body: { type: "local", command: [] } })
-    const remote = await call("PUT", "/mcp/broken", { body: { type: "remote", url: "  " } })
+  test("reads entries back in the browser's shape", async () => {
+    await fs.mkdir(profile, { recursive: true })
+    await fs.writeFile(
+      configPath(),
+      JSON.stringify({
+        mcpServers: {
+          fs: { command: "npx", args: ["-y", "srv", "/tmp"], env: { A: "1" }, cwd: "/w", timeout: 9 },
+          gh: { type: "http", url: "https://gh", headers: { X: "y" }, enabled: false },
+          legacy: { type: "sse", url: "https://sse" },
+          bare: { url: "https://only-a-url" },
+          junk: "not an entry",
+        },
+      }),
+    )
 
-    expect(local?.status).toBe(400)
-    expect(remote?.status).toBe(400)
-    expect(await fs.access(configPath()).then(() => true, () => false)).toBe(false)
-  })
-
-  test("drops empty header and environment rows the form leaves behind", async () => {
-    await call("PUT", "/mcp/tidy", {
-      body: { type: "local", command: ["run"], environment: { "": "orphan", KEY: "kept" } },
-    })
-
-    const config = JSON.parse(await read(configPath()))
-    expect(config.mcp.tidy.environment).toEqual({ KEY: "kept" })
-  })
-
-  test("keeps other config and backs it up before rewriting", async () => {
-    await fs.writeFile(configPath(), JSON.stringify({ agent: { planner: {} } }, null, 2))
-
-    await call("PUT", "/mcp/one", { body: { type: "local", command: ["run"] } })
-
-    const config = JSON.parse(await read(configPath()))
-    expect(config.agent).toEqual({ planner: {} })
-    expect(JSON.parse(await read(`${configPath()}.bak`)).mcp).toBeUndefined()
+    expect((await call("GET", "/mcp"))?.body).toEqual([
+      { name: "bare", type: "remote", enabled: true, url: "https://only-a-url", headers: undefined, timeout: undefined },
+      {
+        name: "fs",
+        type: "local",
+        enabled: true,
+        command: ["npx", "-y", "srv", "/tmp"],
+        cwd: "/w",
+        environment: { A: "1" },
+        timeout: 9,
+      },
+      { name: "gh", type: "remote", enabled: false, url: "https://gh", headers: { X: "y" }, timeout: undefined },
+      { name: "legacy", type: "remote", enabled: true, url: "https://sse", headers: undefined, timeout: undefined },
+    ])
   })
 
   test("round-trips through the list route", async () => {
     await call("PUT", "/mcp/beta", { body: { type: "remote", url: "https://b" } })
-    await call("PUT", "/mcp/alpha", { body: { type: "local", command: ["a"], enabled: false } })
+    await call("PUT", "/mcp/alpha", {
+      body: { type: "local", command: ["a", "--flag"], environment: { K: "v" }, enabled: false },
+    })
 
-    const rows = (await call("GET", "/mcp"))?.body as any[]
-    expect(rows.map((row) => row.name)).toEqual(["alpha", "beta"])
-    expect(rows[0]).toMatchObject({ type: "local", enabled: false, command: ["a"] })
+    const list = (await call("GET", "/mcp"))!.body as any[]
+    expect(list.map((entry) => [entry.name, entry.type, entry.enabled])).toEqual([
+      ["alpha", "local", false],
+      ["beta", "remote", true],
+    ])
+    expect(list[0]).toMatchObject({ command: ["a", "--flag"], environment: { K: "v" } })
+    expect(list[1]).toMatchObject({ url: "https://b" })
+  })
+
+  test("a name omp would parse differently is rewritten, not stored as typed", async () => {
+    await call("PUT", `/mcp/${encodeURIComponent("my server")}`, { body: local })
+    expect(Object.keys((await config()).mcpServers)).toEqual(["my-server"])
+  })
+
+  test("saving a server the config already describes writes nothing", async () => {
+    await call("PUT", "/mcp/context7", { body: local })
+    const before = await read(configPath())
+
+    const again = await call("PUT", "/mcp/context7", { body: local })
+
+    expect(again!.body).toMatchObject({ name: "context7", unchanged: true })
+    expect(await read(configPath())).toBe(before)
+    await expect(read(`${configPath()}.bak`)).rejects.toThrow()
+  })
+
+  test("keeps every other server, every unknown key and the file's indentation", async () => {
+    await fs.mkdir(profile, { recursive: true })
+    const original = {
+      $schema: "https://example.test/schema.json",
+      mcpServers: {
+        keep: { type: "http", url: "https://k", oauth: { clientId: "c" }, instructions: false },
+        mine: { command: "old", auth: { type: "bearer" }, requestIdFormat: "string" },
+      },
+      disabledServers: ["elsewhere"],
+      custom: { deep: [1, { two: 2 }] },
+    }
+    const raw = JSON.stringify(original, null, 4) + "\n"
+    await fs.writeFile(configPath(), raw)
+
+    const response = await call("PUT", "/mcp/mine", { body: { type: "local", command: ["new", "--x"] } })
+
+    expect(response!.body).toMatchObject({ name: "mine", backup: `${configPath()}.bak` })
+    const written = await read(configPath())
+    expect(written).toStartWith('{\n    "$schema"')
+    expect(JSON.parse(written)).toEqual({
+      ...original,
+      mcpServers: {
+        keep: original.mcpServers.keep,
+        mine: {
+          auth: { type: "bearer" },
+          requestIdFormat: "string",
+          type: "stdio",
+          command: "new",
+          args: ["--x"],
+          enabled: true,
+        },
+      },
+    })
+    expect(await read(`${configPath()}.bak`)).toBe(raw)
+  })
+
+  test("the backup is the original and a second rewrite does not replace it", async () => {
+    await fs.mkdir(profile, { recursive: true })
+    const raw = JSON.stringify({ mcpServers: { first: { command: "a" } } })
+    await fs.writeFile(configPath(), raw)
+
+    await call("PUT", "/mcp/second", { body: { type: "local", command: ["b"] } })
+    await call("PUT", "/mcp/third", { body: { type: "local", command: ["c"] } })
+    await call("DELETE", "/mcp/first")
+
+    expect(await read(`${configPath()}.bak`)).toBe(raw)
+    expect(Object.keys((await config()).mcpServers)).toEqual(["second", "third"])
+  })
+
+  test("a server saved as sse stays sse", async () => {
+    await fs.mkdir(profile, { recursive: true })
+    await fs.writeFile(configPath(), JSON.stringify({ mcpServers: { live: { type: "sse", url: "https://old" } } }))
+
+    await call("PUT", "/mcp/live", { body: { type: "remote", url: "https://new" } })
+
+    expect((await config()).mcpServers.live).toEqual({ type: "sse", url: "https://new", enabled: true })
+  })
+
+  test("switching transport drops the other transport's fields but keeps unknown keys", async () => {
+    await fs.mkdir(profile, { recursive: true })
+    await fs.writeFile(
+      configPath(),
+      JSON.stringify({ mcpServers: { s: { command: "run", args: ["a"], env: { K: "v" }, cwd: "/w", oauth: { id: 1 } } } }),
+    )
+
+    await call("PUT", "/mcp/s", { body: { type: "remote", url: "https://s" } })
+
+    expect((await config()).mcpServers.s).toEqual({ oauth: { id: 1 }, type: "http", url: "https://s", enabled: true })
+  })
+
+  test("drops empty header and environment rows the form leaves behind", async () => {
+    await call("PUT", "/mcp/tidy", {
+      body: { type: "local", command: ["run", ""], environment: { "": "orphan", KEY: "kept" } },
+    })
+    expect((await config()).mcpServers.tidy).toMatchObject({ command: "run", env: { KEY: "kept" } })
+    expect((await config()).mcpServers.tidy.args).toBeUndefined()
+  })
+
+  describe("enablement", () => {
+    test("a server on omp's disabledServers list reads as disabled, and saving it enabled lifts it off", async () => {
+      await fs.mkdir(profile, { recursive: true })
+      await fs.writeFile(
+        configPath(),
+        JSON.stringify({ mcpServers: { a: { command: "a" }, b: { command: "b" } }, disabledServers: ["a", "x"] }),
+      )
+      expect(((await call("GET", "/mcp"))!.body as any[]).map((entry) => entry.enabled)).toEqual([false, true])
+
+      await call("PUT", "/mcp/a", { body: { type: "local", command: ["a"] } })
+
+      expect((await config()).disabledServers).toEqual(["x"])
+      expect(((await call("GET", "/mcp"))!.body as any[]).map((entry) => entry.enabled)).toEqual([true, true])
+    })
+
+    test("saving a server disabled leaves disabledServers alone", async () => {
+      await fs.mkdir(profile, { recursive: true })
+      await fs.writeFile(configPath(), JSON.stringify({ mcpServers: {}, disabledServers: ["x"] }))
+      await call("PUT", "/mcp/a", { body: { type: "local", command: ["a"], enabled: false } })
+      expect((await config()).disabledServers).toEqual(["x"])
+      expect((await config()).mcpServers.a.enabled).toBe(false)
+    })
+
+    test("enabledServers switches an enabled:false entry back on", async () => {
+      await fs.mkdir(profile, { recursive: true })
+      await fs.writeFile(
+        configPath(),
+        JSON.stringify({ mcpServers: { a: { command: "a", enabled: false } }, enabledServers: ["a"] }),
+      )
+      expect(((await call("GET", "/mcp"))!.body as any[])[0].enabled).toBe(true)
+    })
+  })
+
+  test("refuses a server that could not start, rather than writing a config omp rejects", async () => {
+    const local = await call("PUT", "/mcp/broken", { body: { type: "local", command: [] } })
+    const remote = await call("PUT", "/mcp/broken", { body: { type: "remote", url: "  " } })
+
+    expect(local!.status).toBe(400)
+    expect(remote!.status).toBe(400)
+    await expect(read(configPath())).rejects.toThrow()
   })
 
   test("delete removes only the named server", async () => {
@@ -1077,75 +967,83 @@ describe("mcp servers", () => {
 
     const response = await call("DELETE", "/mcp/one")
 
-    expect(response?.body).toMatchObject({ name: "one", removed: true })
-    expect(Object.keys(JSON.parse(await read(configPath())).mcp)).toEqual(["two"])
+    expect(response!.body).toMatchObject({ name: "one", removed: true, backup: `${configPath()}.bak` })
+    expect(Object.keys((await config()).mcpServers)).toEqual(["two"])
   })
 
-  test("deleting something that was never configured is not an error", async () => {
+  test("deleting something that was never configured is not an error, and creates nothing", async () => {
     expect((await call("DELETE", "/mcp/ghost"))?.body).toMatchObject({ removed: false })
+    await expect(fs.access(profile)).rejects.toThrow()
+
+    await call("PUT", "/mcp/real", { body: { type: "local", command: ["a"] } })
+    const before = await read(configPath())
+    expect((await call("DELETE", "/mcp/ghost"))?.body).toMatchObject({ removed: false })
+    expect(await read(configPath())).toBe(before)
   })
 
-  test("refuses to touch an opencode.json it cannot parse", async () => {
-    await fs.writeFile(configPath(), "{ not json")
+  test("an empty mcp.json is a profile with no servers", async () => {
+    await fs.mkdir(profile, { recursive: true })
+    await fs.writeFile(configPath(), "")
 
-    const response = await call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } })
-
-    expect(response?.status).toBe(400)
-    expect(await read(configPath())).toBe("{ not json")
-  })
-})
-
-describe("server control", () => {
-  test("reports the engine this host proxies", async () => {
-    const response = await call("GET", "/flow/api/server", { serve: supervisor({ managed: true, pid: 42 }) })
-    expect(response!.status).toBe(200)
-    expect(response!.body).toMatchObject({ managed: true, running: true, pid: 42 })
+    expect((await call("GET", "/mcp"))?.body).toEqual([])
+    const saved = await call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } })
+    expect(saved!.status).toBe(200)
+    expect(Object.keys((await config()).mcpServers)).toEqual(["one"])
   })
 
-  test("restarts it when this host owns the process", async () => {
-    let restarted = 0
-    const serve = supervisor({ managed: true }, async () => {
-      restarted += 1
-      return { managed: true, running: true, url: "http://127.0.0.1:4096", command: "x", pid: 7 }
-    })
-    const response = await call("POST", "/flow/api/server/restart", { serve })
-    expect(restarted).toBe(1)
-    expect(response!.status).toBe(200)
-    expect(response!.body).toMatchObject({ running: true, pid: 7 })
-  })
+  test("refuses to touch an mcp.json it cannot read as an object, and says why", async () => {
+    for (const source of ["{ not json", "[]", '{"mcpServers": []}']) {
+      await fs.mkdir(profile, { recursive: true })
+      await fs.writeFile(configPath(), source)
 
-  test("refuses with the command when the host does not own it", async () => {
-    const serve = supervisor({ managed: false, reason: "it was started outside OpenFlow" })
-    const response = await call("POST", "/flow/api/server/restart", { serve })
-    // 409, not 500: nothing is broken — this host simply cannot reach that
-    // process, and the body carries what to type instead.
-    expect(response!.status).toBe(409)
-    expect(response!.body).toMatchObject({ managed: false, command: "opencode serve --port 4096" })
-    expect((response!.body as any).error).toContain("outside OpenFlow")
-  })
+      const put = await call("PUT", "/mcp/one", { body: { type: "local", command: ["a"] } })
+      const del = await call("DELETE", "/mcp/one")
 
-  test("surfaces a failed restart rather than claiming success", async () => {
-    const serve = supervisor({ managed: true }, async () => {
-      throw new Error("port still held")
-    })
-    const response = await call("POST", "/flow/api/server/restart", { serve })
-    expect(response!.status).toBe(502)
-    expect((response!.body as any).error).toBe("port still held")
-  })
-
-  test("a host that tracks no engine says so", async () => {
-    const response = await call("GET", "/flow/api/server")
-    expect(response!.status).toBe(501)
-  })
-
-  test("is refused when the store is served remotely", async () => {
-    process.env.FLOW_ALLOW_REMOTE = "1"
-    try {
-      const response = await call("POST", "/flow/api/server/restart", { serve: supervisor({ managed: true }) })
-      expect(response!.status).toBe(403)
-    } finally {
-      delete process.env.FLOW_ALLOW_REMOTE
+      expect(put!.status).toBe(400)
+      expect((put!.body as any).error).toContain("mcp.json")
+      expect(del!.status).toBe(400)
+      expect(await read(configPath())).toBe(source)
+      expect((await call("GET", "/mcp"))?.body).toEqual([])
     }
+  })
+
+  test("two saves at once both survive", async () => {
+    await Promise.all([
+      call("PUT", "/mcp/alpha", { body: { type: "local", command: ["a"] } }),
+      call("PUT", "/mcp/beta", { body: { type: "remote", url: "https://b" } }),
+    ])
+    expect(Object.keys((await config()).mcpServers).sort()).toEqual(["alpha", "beta"])
+  })
+
+  test("an unnamed write is a 400, and other verbs fall through", async () => {
+    expect((await call("PUT", "/mcp", { body: local }))!.status).toBe(400)
+    expect(await call("PATCH", "/mcp/one")).toBeUndefined()
+    expect(await call("GET", "/mcp/one")).toBeUndefined()
+  })
+
+  describe("without a known profile directory", () => {
+    test("every route is 409 and nothing is written", async () => {
+      const responses = [
+        await call("GET", "/mcp", { profile: null }),
+        await call("PUT", "/mcp/one", { body: local, profile: null }),
+        await call("DELETE", "/mcp/one", { profile: null }),
+      ]
+      for (const response of responses) {
+        expect(response!.status).toBe(409)
+        expect(response!.body).toEqual({ error: "omp profile directory unknown: open Omp settings" })
+      }
+      expect(await fs.readdir(dir)).toEqual([])
+    })
+
+    test("a request that carries no profileDir is the same", async () => {
+      const response = await handleFlow(paths, {
+        method: "GET",
+        path: "/mcp",
+        search: new URLSearchParams(),
+        json: async () => ({}),
+      })
+      expect(response!.status).toBe(409)
+    })
   })
 })
 
@@ -1193,83 +1091,5 @@ describe("custom roles", () => {
     // Serialised, so the file is one whole write or the other — never a blend.
     const ids = (response!.body as any[]).map((entry) => entry.id)
     expect([["first"], ["first", "second"]]).toContainEqual(ids)
-  })
-})
-
-/**
- * The one route that writes *outside* the project: repackaging a provider edits
- * opencode's global config, because that is the only file a run reads (see
- * `lib/repackage.ts`). `XDG_CONFIG_HOME` points at the temp directory here, so
- * the suite cannot touch the developer's own config.
- */
-describe("routes: repackaging a provider", () => {
-  let target: string
-
-  beforeEach(() => {
-    process.env.XDG_CONFIG_HOME = path.join(dir, "xdg")
-    target = path.join(dir, "xdg", "opencode", "opencode.json")
-  })
-
-  afterEach(() => {
-    delete process.env.XDG_CONFIG_HOME
-  })
-
-  test("reports what is available before any config exists", async () => {
-    const response = await call("GET", "/flow/api/repackage")
-    expect(response!.status).toBe(200)
-    expect(response!.body).toMatchObject({ path: target, applied: [] })
-    expect((response!.body as any).available).toContain("openrouter")
-  })
-
-  test("writes the override and asks for a restart", async () => {
-    const response = await call("POST", "/flow/api/repackage", { body: { providers: ["openrouter"] } })
-    expect(response!.body).toMatchObject({ changed: ["openrouter"], applied: ["openrouter"], restart: true })
-    expect(JSON.parse(await read(target)).providers.openrouter.api).toEqual({
-      type: "aisdk",
-      package: "@ai-sdk/openai-compatible",
-      url: "https://openrouter.ai/api/v1",
-    })
-    expect((await call("GET", "/flow/api/repackage"))!.body).toMatchObject({ applied: ["openrouter"] })
-  })
-
-  test("follows the dialect of an existing v1 config, and backs it up", async () => {
-    await fs.mkdir(path.dirname(target), { recursive: true })
-    await fs.writeFile(target, JSON.stringify({ plugin: ["./p.js"] }))
-    const response = await call("POST", "/flow/api/repackage", { body: { providers: ["groq"] } })
-    expect(response!.body).toMatchObject({ backup: `${target}.bak` })
-    expect(JSON.parse(await read(target)).provider.groq).toEqual({
-      npm: "@ai-sdk/openai-compatible",
-      api: "https://api.groq.com/openai/v1",
-    })
-    expect(JSON.parse(await read(`${target}.bak`))).toEqual({ plugin: ["./p.js"] })
-  })
-
-  test("a second call changes nothing and does not ask for a restart", async () => {
-    await call("POST", "/flow/api/repackage", { body: { providers: ["groq"] } })
-    const again = await call("POST", "/flow/api/repackage", { body: { providers: ["groq"] } })
-    expect(again!.body).toMatchObject({ changed: [], restart: false })
-  })
-
-  test("refuses a provider the runner has no profile for, so no npm package can be injected", async () => {
-    const response = await call("POST", "/flow/api/repackage", { body: { providers: ["evil"] } })
-    expect(response!.status).toBe(400)
-    await expect(read(target)).rejects.toThrow()
-  })
-
-  test("refuses rather than stripping comments out of a hand-written config", async () => {
-    await fs.mkdir(path.dirname(target), { recursive: true })
-    await fs.writeFile(target, '{\n  // mine\n  "model": "opencode/x"\n}')
-    const response = await call("POST", "/flow/api/repackage", { body: { providers: ["groq"] } })
-    expect(response!.status).toBe(409)
-    expect((response!.body as any).error).toContain("comments")
-    expect(await read(target)).toContain("// mine")
-  })
-
-  test("reads .jsonc when that is the file opencode would load", async () => {
-    await fs.mkdir(path.dirname(target), { recursive: true })
-    await fs.writeFile(`${target}c`, JSON.stringify({ model: "opencode/x" }))
-    const response = await call("POST", "/flow/api/repackage", { body: { providers: ["groq"] } })
-    expect(response!.body).toMatchObject({ path: `${target}c`, changed: ["groq"] })
-    await expect(read(target)).rejects.toThrow()
   })
 })

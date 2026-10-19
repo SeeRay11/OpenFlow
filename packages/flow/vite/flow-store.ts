@@ -1,44 +1,20 @@
-import { existsSync } from "node:fs"
-import path from "node:path"
 import type { Connect, Plugin, ViteDevServer } from "vite"
 import { remoteBindRefusal } from "../lib/guard"
-import { serveCommand, supervisorFor, type Supervisor } from "../lib/opencode-process"
+import { createHost } from "../lib/host"
+import { nodeMiddleware } from "../lib/host/node-adapter"
 import { flowPaths, handleFlow } from "../lib/store"
+import { attachNodeUpgrade } from "../lib/terminal/ws-node"
 
 /**
- * Mounts OpenFlow's persistence on the vite dev server.
+ * Mounts OpenFlow's persistence and its host modules on the vite dev server.
  *
- * The routes themselves live in `lib/store.ts` and are shared with the
+ * The routes themselves live in `lib/store.ts` (the store) and `lib/host`
+ * (engine, uplift, memory, swarm, Omp settings, terminal), both shared with the
  * standalone server, so `bun dev` and a built deployment cannot drift into two
- * different stores.
+ * different hosts.
  */
-export function flowStore(options: { project: string; upstream?: string; repo?: string }): Plugin {
+export function flowStore(options: { project: string }): Plugin {
   const paths = flowPaths(options.project)
-  const upstream = options.upstream ?? process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096"
-  const repo = options.repo ?? path.resolve(process.cwd(), "../../")
-
-  /**
-   * The engine's process, when FLOW_MANAGE_SERVER=1 asks this host to own it.
-   * Resolved lazily and once: vite calls `configureServer` synchronously, and
-   * deciding ownership means asking the port whether an engine is already
-   * there. See `lib/opencode-process.ts`.
-   */
-  let engine: Promise<Supervisor> | undefined
-  const supervisor = () =>
-    (engine ??= supervisorFor(
-      serveCommand({
-        repo,
-        url: upstream,
-        hasSource: existsSync(path.join(repo, "packages", "opencode", "src", "index.ts")),
-      }),
-      process.env,
-      (line) => console.log(`[openflow] opencode ${line}`),
-    ).then(async (made) => {
-      // A managed engine is started with the dev server, the same way the
-      // standalone host does it, so `bun dev` alone is enough to run OpenFlow.
-      await made.ensure().catch((error) => console.error(`[openflow] ${error?.message ?? error}`))
-      return made
-    }))
 
   return {
     name: "openflow-store",
@@ -48,8 +24,23 @@ export function flowStore(options: { project: string; upstream?: string; repo?: 
       const refusal = remoteBindRefusal({ host: server.config.server.host, project: paths.project })
       if (refusal) throw new Error(refusal)
 
-      // Ctrl+C on vite must not orphan an engine this host spawned.
-      server.httpServer?.on("close", () => void engine?.then((made) => made.stop()))
+      // `paths.project` is the live object `lib/store.ts` mutates when the canvas switches folders.
+      const host = createHost({ project: () => paths.project, allowRemote: process.env.FLOW_ALLOW_REMOTE === "1" })
+
+      // Ctrl+C on vite must not orphan an omp process, planner or shell. A hard
+      // kill skips 'close'; the modules' own process hooks cover that.
+      // Vite hands out an HTTP/2 server when https is on and no proxy is set; it never emits 'upgrade'.
+      const http = server.httpServer
+      const detach = http && !("updateSettings" in http) ? attachNodeUpgrade(http, host.terminal) : undefined
+      http?.on("close", () => {
+        detach?.()
+        void host.dispose()
+      })
+      process.once("exit", () => void host.dispose())
+
+      // Before the store: the host owns `/flow/api/{engine,omp,uplift,memory,swarm,pty}`
+      // and answers `undefined` for everything else, which falls through.
+      server.middlewares.use("/flow", nodeMiddleware(host.handle))
 
       server.middlewares.use("/flow/api", async (req, res, next) => {
         try {
@@ -59,8 +50,7 @@ export function flowStore(options: { project: string; upstream?: string; repo?: 
             path: url.pathname,
             search: url.searchParams,
             json: () => read(req),
-            upstream,
-            serve: await supervisor(),
+            profileDir: host.profileDir,
           })
           if (!result) return next()
           json(res, result.status, result.body)

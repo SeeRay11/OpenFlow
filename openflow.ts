@@ -1,16 +1,15 @@
 #!/usr/bin/env bun
 /**
- * OpenFlow launcher — one command, both processes.
+ * OpenFlow launcher — one command.
  *
- * Starts `opencode serve` (the engine, :4096) and the canvas (:5174), waits
- * until the engine actually answers, then prints the URL — so a non-dev never
- * juggles two terminals. Ports already serving are reused, not double-started.
+ * Starts the canvas (:5174), whose host owns the Omp engine (one `omp --mode
+ * rpc-ui` child per card), then prints the URL. A canvas already serving its
+ * port is reused, not double-started. A missing `omp` is reported, not fatal:
+ * the app explains it and links to the fix in its Omp settings.
  *
  *   bun openflow.ts
  *   OPENFLOW_PROJECT=/path/to/app bun openflow.ts   # agents edit that repo
- *   OPENCODE_SERVER_URL=http://127.0.0.1:4097 bun openflow.ts
  *   OPENFLOW_BUILT=1 bun openflow.ts                # build, then serve dist/
- *   FLOW_MANAGE_SERVER=1 bun openflow.ts            # canvas owns the engine
  *   OPENFLOW_DRY_RUN=1 bun openflow.ts              # print the plan, start nothing
  *
  * `openflow.ps1` and `openflow.sh` are shims that set exactly these variables,
@@ -19,11 +18,10 @@
  * waits, and tears down.
  */
 import { launchPlan } from "./packages/flow/lib/launch"
-import { healthy } from "./packages/flow/lib/opencode-process"
+import { checkOmp } from "./packages/flow/lib/omp/binary"
+import { DEFAULT_OMP_SETTINGS } from "./packages/flow/shared/omp"
 
 const repo = import.meta.dir
-const ENGINE_TIMEOUT = 90_000
-const POLL = 500
 
 const children: Bun.Subprocess[] = []
 let quitting = false
@@ -51,7 +49,7 @@ async function pipe(stream: ReadableStream<Uint8Array> | number | undefined, pre
  * answers HTTP yet (or ever again), so `skip` comes back false and the child
  * we spawn next fails to bind. Only called right before spawning a child
  * whose probe already said "not up", so a genuinely live sibling session
- * (probe says healthy) is never touched.
+ * (probe says reachable) is never touched.
  */
 function freePort(port: string) {
   if (process.platform === "win32") {
@@ -105,7 +103,7 @@ function teardown(code: number) {
   process.exit(code)
 }
 
-/** If a child dies on its own, take the other down with the same code. */
+/** If a child dies on its own, stop the launcher with the same code. */
 function watch(child: Bun.Subprocess, name: string) {
   void child.exited.then((code) => {
     if (quitting) return
@@ -137,53 +135,39 @@ function openBrowser(url: string) {
   }
 }
 
+/**
+ * One line saying which omp the app will find, or what to do about it. Never
+ * fails the launch: without omp the app still opens and its Omp settings say
+ * what is wrong. Only the default settings are known here — a binary path or
+ * profile saved in the app is the host's to resolve.
+ */
+async function ompPreflight() {
+  const status = await checkOmp(DEFAULT_OMP_SETTINGS).catch(() => undefined)
+  if (status?.available) return `omp ${status.version}`
+  const problem = status?.problems[0]
+  const fix = problem?.fix ? ` — ${problem.fix}` : ""
+  return `warning: ${(problem?.message ?? "omp could not be checked").replace(/\.$/, "")}${fix}`
+}
+
 async function main() {
   process.on("SIGINT", () => teardown(0))
   process.on("SIGTERM", () => teardown(0))
 
-  const plan = await launchPlan({
-    env: process.env,
-    repo,
-    // engine readiness is a real health check; the canvas has no /api/health.
-    probe: (url) => (url.includes("5174") ? reachable(url) : healthy(url)),
-  })
+  const plan = await launchPlan({ env: process.env, repo, probe: reachable })
+  const omp = await ompPreflight()
 
   if (process.env.OPENFLOW_DRY_RUN) {
     console.log("OpenFlow — dry run, nothing started")
     console.log(`  project    : ${process.env.OPENFLOW_PROJECT ?? `${repo} (this repo)`}`)
-    console.log(`  engine     : ${plan.engineUrl}`)
     console.log(`  canvas     : ${plan.canvasUrl}`)
     console.log(`  mode       : ${plan.built ? "built bundle (no vite)" : "vite dev server"}`)
-    console.log(
-      `  engine cmd : ${plan.managed ? "started by the canvas (FLOW_MANAGE_SERVER)" : plan.engine.argv.join(" ")}`,
-    )
+    console.log(`  omp        : ${omp}`)
     if (plan.canvas.prebuild) console.log(`  build cmd  : ${plan.canvas.prebuild.join(" ")}`)
     console.log(`  canvas cmd : ${plan.canvas.argv.join(" ")}`)
     return
   }
 
-  if (plan.managed) console.log(`engine ${plan.engineUrl} will be started and owned by the canvas`)
-  if (!plan.managed && plan.engine.skip) console.log(`engine already running on ${plan.engineUrl} — reusing it`)
-  if (!plan.engine.skip) {
-    freePort(new URL(plan.engineUrl).port || "4096")
-    console.log(`starting engine: ${plan.engine.argv.join(" ")}`)
-    spawnChild(plan.engine.argv, "engine")
-  }
-
-  const deadline = Date.now() + ENGINE_TIMEOUT
-  let ready = plan.engine.skip
-  while (!ready && Date.now() < deadline) {
-    if (await healthy(plan.engineUrl)) {
-      ready = true
-      break
-    }
-    await Bun.sleep(POLL)
-  }
-  if (!ready) {
-    console.error(`engine did not answer ${plan.engineUrl} within ${ENGINE_TIMEOUT / 1000}s`)
-    return teardown(1)
-  }
-  if (!plan.managed) console.log(`engine ready on ${plan.engineUrl}`)
+  console.log(omp)
 
   if (plan.canvas.skip) console.log(`canvas already serving ${plan.canvasUrl} — reusing it`)
   if (!plan.canvas.skip) {

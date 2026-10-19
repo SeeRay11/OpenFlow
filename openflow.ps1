@@ -8,9 +8,7 @@
 # Usage:
 #   ./openflow.ps1                          # agents work in this repo
 #   ./openflow.ps1 -Project C:\code\my-app  # point the agents at another repo
-#   ./openflow.ps1 -ServerPort 4097         # use a non-default engine port
 #   ./openflow.ps1 -Built                   # serve the built bundle (no vite)
-#   ./openflow.ps1 -Manage                  # let the canvas own the engine
 
 [CmdletBinding()]
 param(
@@ -18,16 +16,8 @@ param(
     # at the project you actually want changed.
     [string]$Project,
 
-    # Port for `opencode serve`. The canvas proxy is pointed here automatically.
-    [int]$ServerPort = 4096,
-
     # Build the canvas and serve it with `server.ts` instead of running vite.
     [switch]$Built,
-
-    # Hand the engine to the canvas: it spawns it, waits for it, and can then
-    # restart it from the UI. The server has no shutdown route, so only the
-    # process that started it can do that.
-    [switch]$Manage,
 
     [switch]$Help
 )
@@ -37,17 +27,14 @@ $repo = $PSScriptRoot
 
 if ($Help) {
     Write-Host @"
-OpenFlow — starts the engine and the canvas, then opens the browser.
+OpenFlow — starts the canvas, then opens the browser.
 
-Usage: ./openflow.ps1 [-Project <dir>] [-ServerPort <n>] [-Built] [-Manage] [-Help]
+Usage: ./openflow.ps1 [-Project <dir>] [-Built] [-Help]
 
   -Project <dir>    Repo the agents read and write (default: this repo).
                     These agents edit real files — point this at the project
                     you actually want changed.
-  -ServerPort <n>   Port for ``opencode serve`` (default: 4096).
   -Built            Serve the built bundle instead of the vite dev server.
-  -Manage           Let the canvas own the engine, which enables the UI's
-                    "restart engine" button.
   -Help             Show this help. (PowerShell answers -? itself, with the
                     one-line parameter syntax.)
 
@@ -55,11 +42,10 @@ Environment:
   OPENFLOW_DRY_RUN=1   Print the resolved plan and exit without starting
                        anything — useful for checking how flags resolved.
 
-Connect a provider before the first run: click "api keys" in the canvas
-titlebar, pick a provider, paste its key — models appear immediately. Keys the
-opencode CLI already holds are offered for import there; the server does not
-read its ``auth.json`` for the model catalog, so importing is what makes them
-count. An empty model menu means no provider is connected.
+Cards run on omp, which must be on PATH: the launcher prints the version it
+finds, or what to fix, and starts either way. Connect a provider before the
+first run: open Omp settings in the canvas and log in. An empty model menu
+means no provider is connected.
 "@
     exit 0
 }
@@ -69,7 +55,6 @@ if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-$env:OPENCODE_SERVER_URL = "http://127.0.0.1:$ServerPort"
 if ($Project) {
     # Resolve-Path throws a raw provider exception on a bad path; say what is
     # actually wrong instead.
@@ -81,7 +66,6 @@ if ($Project) {
     $env:OPENFLOW_PROJECT = $resolved.Path
 }
 if ($Built) { $env:OPENFLOW_BUILT = "1" }
-if ($Manage) { $env:FLOW_MANAGE_SERVER = "1" }
 
 bun (Join-Path $repo "openflow.ts")
 exit $LASTEXITCODE

@@ -1,17 +1,13 @@
 import fs from "node:fs/promises"
 import path from "node:path"
-import { cliAuthPath, importCliKeys, readCliKeys } from "./cli-auth"
+import { isDeepStrictEqual } from "node:util"
 import { allowsRemote } from "./guard"
 import { recallPipeline, rememberPipeline, rememberProject } from "./last-session"
 import { hasNativePicker, pickFolderNative } from "./native-picker"
-import type { Supervisor } from "./opencode-process"
-import { COMPATIBLE_PROFILES, globalConfigCandidates, repackage, repackaged } from "./repackage"
-import { install, installed, uninstall } from "./dispatch-tool"
 import { checkpoint, dropCheckpoints } from "./checkpoint"
 import { dropScratch, openScratch } from "./scratch"
 import { treeStat } from "./diffstat"
 import { cleanupWorktrees, mergeWorktrees, openWorktrees } from "./worktree"
-import { zenModels } from "./zen"
 
 /**
  * OpenFlow's persistence, as plain functions over a project directory.
@@ -26,15 +22,13 @@ import { zenModels } from "./zen"
  *   GET    /flow/api/pipelines/:name       -> pipeline json
  *   PUT    /flow/api/pipelines/:name       -> save pipeline json
  *   DELETE /flow/api/pipelines/:name       -> delete pipeline
- *   POST   /flow/api/pipelines/:name/agents?merge=1
- *                                          -> write generated opencode agent defs
  *   GET    /flow/api/mcp                   -> [{ name, type, enabled, command?, url?, ... }]
- *   PUT    /flow/api/mcp/:name             -> upsert an mcp server in opencode.json
- *   DELETE /flow/api/mcp/:name             -> drop it from opencode.json
- *   GET    /flow/api/skills                -> [{ name, description, updated }]
- *   GET    /flow/api/skills/:name          -> { name, folder, description, content, path }
- *   PUT    /flow/api/skills/:name          -> write .openflow/skills/<name>/SKILL.md
- *   DELETE /flow/api/skills/:name          -> delete the skill folder
+ *   PUT    /flow/api/mcp/:name             -> upsert an mcp server in the Omp profile's mcp.json
+ *   DELETE /flow/api/mcp/:name             -> drop it from there
+ *   GET    /flow/api/skills                -> [{ name, description, updated, legacy? }]
+ *   GET    /flow/api/skills/:name          -> { name, folder, description, content, path, legacy? }
+ *   PUT    /flow/api/skills/:name          -> write <profile>/skills/<name>/SKILL.md
+ *   DELETE /flow/api/skills/:name          -> delete that skill folder
  *   GET    /flow/api/runs                  -> [{ id, pipeline, status, started, finished }]
  *   GET    /flow/api/runs/:id              -> run log json
  *   PUT    /flow/api/runs/:id              -> write run log json
@@ -44,28 +38,19 @@ import { zenModels } from "./zen"
  *   POST   /flow/api/worktrees/cleanup     -> { run, trees } -> remove the trees and branches
  *   DELETE /flow/api/runs/:id              -> delete one run log
  *   POST   /flow/api/runs/prune            -> { keep?, days? } -> { removed: [id], kept }
- *   GET    /flow/api/cli-keys              -> { path, providers } from the CLI's auth.json
- *   POST   /flow/api/cli-keys/import       -> connect those keys to `opencode serve`
  *   GET    /flow/api/env?names=A,B         -> { present: ["A"] } — names only, never values
- *   GET    /flow/api/zen-models            -> { ids: [...] | null } — what zen really serves
  *   GET    /flow/api/browse?path=          -> { path, parent, entries } — subdirectories of `path`
  *                                             (drive roots on Windows when `path` is omitted)
  *   POST   /flow/api/pick-folder           -> { path } — native OS folder dialog on the host,
  *                                             `null` when cancelled (loopback hosts only)
  *   POST   /flow/api/project               -> { path } — switch the live project directory,
  *                                             and remember it for the next launch
- *   GET    /flow/api/dispatch-tool       -> { path, present, current, root } — whether the global
- *                                             config starts OpenFlow's dispatch MCP server
- *   POST   /flow/api/dispatch-tool       -> installs (or repoints) it there; DELETE removes it.
- *                                             Both need an engine restart to take effect
- *   GET    /flow/api/repackage             -> { path, applied, available, error? } — which
- *                                             OpenAI-compatible providers the global config
- *                                             already repackages
- *   POST   /flow/api/repackage             -> { providers: [...] } repackages them there, so the
- *                                             runner can dispatch their models
- *   GET    /flow/api/server                -> { managed, running, url, command, pid, ... } — the
- *                                             `opencode serve` this host proxies
- *   POST   /flow/api/server/restart        -> restarts it, when this host owns it (loopback only)
+ *
+ * MCP servers and skills belong to the Omp profile the cards run under, not to
+ * the project: the composer hands over that profile's config directory as
+ * `profileDir`, and both routes answer 409 until it is known. Skills authored
+ * by older builds under `.openflow/skills` are still listed (`legacy: true`)
+ * but never written, moved or deleted here.
  *
  * Keeping it host-neutral is the point: the dev server and the built app must
  * not drift into two different stores. `browse`/`project` read the same host
@@ -161,13 +146,12 @@ export type FlowRequest = {
   path: string
   search: URLSearchParams
   json: () => Promise<any>
-  /** Base URL of the `opencode serve` this host proxies, for the key import. */
-  upstream?: string
   /**
-   * The engine's process, when this host spawned it. Absent or unmanaged means
-   * the restart route reports the command instead of running it.
+   * The config directory of the Omp profile the cards run under (what
+   * `omp --profile <name> config path` prints). Unknown until Omp settings
+   * have been resolved, which the mcp and skills routes report as a 409.
    */
-  serve?: Supervisor
+  profileDir?: () => Promise<string | undefined>
 }
 
 export type FlowResponse = { status: number; body: unknown }
@@ -202,10 +186,6 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     if (!name) return { status: 400, body: { error: "pipeline name required" } }
 
     const file = path.join(paths.pipelines, `${name}.json`)
-
-    if (segments[2] === "agents" && method === "POST") {
-      return ok(await writeAgents(paths, name, await request.json(), request.search.get("merge") === "1"))
-    }
 
     // Opening and saving are the two acts that mean "this is what I am working
     // on", so they are where the pipeline to reopen is recorded. Noting it on a
@@ -248,13 +228,16 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
   if (segments[0] === "mcp") {
     const name = segments[1] ? mcpName(decodeURIComponent(segments[1])) : undefined
 
-    if (!name && method === "GET") return ok(await listMcpServers(paths))
-    if (!name) return { status: 400, body: { error: "mcp server name required" } }
+    if (!name && method !== "GET") return { status: 400, body: { error: "mcp server name required" } }
 
-    if (method === "PUT" || method === "DELETE") {
+    if (!name || method === "PUT" || method === "DELETE") {
+      const profile = await request.profileDir?.()
+      if (!profile) return noProfile()
+      const file = path.join(profile, "mcp.json")
+      if (!name) return ok(await listMcpServers(file))
       try {
-        if (method === "DELETE") return ok(await deleteMcpServer(paths, name))
-        return ok(await writeMcpServer(paths, name, await request.json()))
+        if (method === "DELETE") return ok(await deleteMcpServer(file, name))
+        return ok(await writeMcpServer(file, name, await request.json()))
       } catch (error) {
         return { status: 400, body: { error: error instanceof Error ? error.message : String(error) } }
       }
@@ -264,44 +247,35 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
   if (segments[0] === "skills") {
     const name = segments[1] ? slug(decodeURIComponent(segments[1])) : undefined
 
-    if (!name && method === "GET") return ok(await listSkills(paths))
-    if (!name) return { status: 400, body: { error: "skill name required" } }
+    if (!name && method !== "GET") return { status: 400, body: { error: "skill name required" } }
+
+    // Reading works without a profile — the legacy skills live in the project —
+    // but anything that writes has nowhere to go.
+    if (!name) return ok(await listSkills(paths, await request.profileDir?.()))
 
     if (method === "GET") {
-      const found = await readSkill(paths, name)
+      const found = await readSkill(paths, await request.profileDir?.(), name)
       if (!found) return { status: 404, body: { error: `skill "${name}" not found` } }
       return ok(found)
     }
-    if (method === "PUT") return ok(await writeSkill(paths, name, await request.json()))
-    if (method === "DELETE") {
-      await fs.rm(path.join(paths.skills, name), { recursive: true, force: true })
-      return ok({ name })
-    }
-  }
-
-  if (segments[0] === "cli-keys") {
-    // Only the provider names cross to the browser. Importing runs here, so
-    // the secrets in auth.json are never served over HTTP.
-    if (!segments[1] && method === "GET") {
-      const keys = await readCliKeys()
-      return ok({ path: cliAuthPath(), providers: keys.map((entry) => entry.providerID) })
-    }
-    if (segments[1] === "import" && method === "POST") {
-      if (!request.upstream) return { status: 500, body: { error: "no opencode server configured" } }
-      const body = await request.json()
-      const only = Array.isArray(body?.providers) ? body.providers.map(String) : undefined
-      const keys = await readCliKeys()
-      if (!keys.length) return { status: 404, body: { error: `no API keys in ${cliAuthPath()}` } }
-      return ok({ results: await importCliKeys({ upstream: request.upstream, keys, only }) })
+    if (method === "PUT" || method === "DELETE") {
+      const profile = await request.profileDir?.()
+      if (!profile) return noProfile()
+      if (method === "PUT") return ok(await writeSkill(profile, name, await request.json()))
+      const dir = path.join(profile, "skills", name)
+      const existed = await fs.stat(dir).then(
+        () => true,
+        () => false,
+      )
+      await fs.rm(dir, { recursive: true, force: true })
+      return ok({ name, removed: existed })
     }
   }
 
   if (segments[0] === "env" && method === "GET") {
     // Which of the asked-for names are set, and nothing else: the answer is a
     // subset of the question, so no value and no unrelated variable can leak
-    // to the browser. `opencode serve` reads the same environment when it is
-    // started from the same shell — a server launched elsewhere may not, and
-    // then a provider reads as locked until its key is stored here instead.
+    // to the browser.
     const asked = (request.search.get("names") ?? "")
       .split(",")
       .map((name) => name.trim())
@@ -315,59 +289,6 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
       return ok(await browseDirectory(target))
     } catch (error) {
       return { status: 400, body: { error: error instanceof Error ? error.message : String(error) } }
-    }
-  }
-
-  if (segments[0] === "dispatch-tool") {
-    if (method === "GET") return ok(await dispatchToolStatus())
-    if (method === "POST" || method === "DELETE") {
-      const result = await applyDispatchTool(method === "POST")
-      if ("error" in result) return { status: 409, body: result }
-      return ok(result)
-    }
-  }
-
-  if (segments[0] === "repackage") {
-    if (method === "GET") return ok(await repackageStatus())
-    if (method === "POST") {
-      const body = await request.json().catch(() => ({}))
-      const asked = Array.isArray(body?.providers) ? body.providers.map(String) : []
-      // Only ids in the profile table are accepted, so no request can name an
-      // arbitrary npm package for the engine to load.
-      const ids = asked.filter((id: string) => COMPATIBLE_PROFILES[id])
-      if (!ids.length) return { status: 400, body: { error: "no repackageable provider named" } }
-      const result = await applyRepackage(ids)
-      if ("error" in result) return { status: 409, body: result }
-      return ok(result)
-    }
-  }
-
-  if (segments[0] === "server") {
-    if (!request.serve) return { status: 501, body: { error: "this host does not track `opencode serve`" } }
-    if (segments.length === 1 && method === "GET") return ok(await request.serve.status())
-    if (segments[1] === "restart" && method === "POST") {
-      // Restarting spawns a process on the host. Served remotely that is a
-      // remote process-control hole, so it is refused for the same reason the
-      // native folder picker is — see `lib/guard.ts`.
-      if (allowsRemote())
-        return { status: 403, body: { error: "restarting the engine is unavailable when serving remotely" } }
-      const before = await request.serve.status()
-      if (!before.managed) {
-        // The C fallback: say who owns it and what to type, rather than
-        // pretending a click can reach a process this host never spawned.
-        return {
-          status: 409,
-          body: { error: before.reason ?? "this host does not own `opencode serve`", ...before },
-        }
-      }
-      try {
-        return ok(await request.serve.restart())
-      } catch (error) {
-        return {
-          status: 502,
-          body: { error: error instanceof Error ? error.message : String(error), ...(await request.serve.status()) },
-        }
-      }
     }
   }
 
@@ -400,14 +321,6 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     // host, and this is the one place every project switch passes through.
     rememberProject(resolved)
     return ok(paths)
-  }
-
-  if (segments[0] === "zen-models" && method === "GET") {
-    // Fetched here rather than in the browser: opencode.ai serves no CORS
-    // headers for this, and the host is already the side that talks to the
-    // network on OpenFlow's behalf. `null` means "could not read" — the caller
-    // must then leave the catalog alone rather than empty it.
-    return ok({ ids: (await zenModels()) ?? null })
   }
 
   // A snapshot of what the project's tree currently has that HEAD does not.
@@ -688,117 +601,6 @@ async function updateRunsIndex(paths: FlowPaths, id: string, body: any) {
   })
 }
 
-/**
- * Writes the generated `agent` block. By default it lands in
- * `.openflow/generated/<name>.opencode.json` so nothing is touched behind the
- * user's back; `merge` folds the block into the config that a run actually
- * reads after copying it aside.
- *
- * That config is the **global** one, not the project's. A session's location is
- * the engine's cwd, never `OPENFLOW_PROJECT`, so agents merged into the target
- * project are not there at drain time: `AgentV2.select` returns
- * `{ id, info: undefined }` for the unknown name and the card runs with no
- * system prompt and the default tool set — or, once preflight checks the
- * server's agent list, the run refuses outright with "the server does not know
- * an agent named …". Measured on the first real gauntlet run, where all six
- * cards failed that way one second after Run.
- */
-async function writeAgents(paths: FlowPaths, name: string, body: any, merge: boolean) {
-  const block = { $schema: "https://opencode.ai/config.json", agent: body?.agent ?? {} }
-  await fs.mkdir(paths.generated, { recursive: true })
-  const file = path.join(paths.generated, `${name}.opencode.json`)
-  await writeAtomic(file, JSON.stringify(block, null, 2) + "\n")
-  if (!merge) return { path: file, merged: false }
-
-  const global = await readGlobalConfig()
-  const target = global.target
-  const pipeline = rawPipelineName(body, name)
-  return serialize(target, async () => {
-    const config = await readGlobalConfig()
-    if ("error" in config && config.error) return { path: file, merged: false, error: config.error }
-    // Fold the generated agents onto whatever is already there, dropping the ones
-    // this pipeline generated last time that it no longer generates — a renamed
-    // or deleted node would otherwise leave its agent behind forever, and a run
-    // merges on every start, so the leftovers accumulate. Only entries this
-    // pipeline is known to have written are dropped: they are recognised by the
-    // description writeAgents itself stamps on them, so a hand-written agent is
-    // never touched, whatever it is called.
-    const current: Record<string, unknown> = config.value.agent ?? {}
-    const kept = Object.fromEntries(
-      Object.entries(current).filter(([key, value]) => key in block.agent || !generatedFor(value, pipeline)),
-    )
-    const nextAgent = { ...kept, ...block.agent }
-
-    // Bail before touching disk when that leaves the block identical — an
-    // auto-merge on every run must not churn opencode.json or litter a `.bak`
-    // when nothing actually changed. Key order is ignored so a re-serialised but
-    // equivalent config still counts as unchanged. When there is no config at all
-    // and nothing to write into one, the generated file is the only path there is
-    // to report.
-    if (stableEqual(current, nextAgent))
-      return { path: config.raw === undefined ? file : target, merged: false, unchanged: true }
-    if (config.comments) return { path: file, merged: false, error: CONFIG_HAS_COMMENTS }
-    const backup = config.raw === undefined ? undefined : await backupConfig(target, config.raw)
-    // A machine that has never configured opencode has no `~/.config/opencode`
-    // to write into.
-    await fs.mkdir(path.dirname(target), { recursive: true })
-    config.value.agent = nextAgent
-    await writeAtomic(target, JSON.stringify(config.value, null, 2) + "\n")
-    return { path: target, merged: true, backup }
-  })
-}
-
-/**
- * The pipeline's name as the user typed it.
- *
- * `agentBlock` stamps that raw name into every generated description, so it is
- * what `generatedFor` has to match on — but the route only ever carries the
- * slug (`my-flow` for `My Flow`), and matching on the slug quietly recognises
- * nothing. The agents of renamed or deleted nodes then survive forever and
- * every rename adds another generation. A caller that sends `pipeline` in the
- * body answers it directly; otherwise it is read back off the descriptions in
- * the block itself, which carry it verbatim.
- */
-function rawPipelineName(body: any, slugged: string) {
-  if (typeof body?.pipeline === "string" && body.pipeline.trim()) return body.pipeline.trim()
-  for (const entry of Object.values<any>(body?.agent ?? {})) {
-    const description = entry?.description
-    const match = typeof description === "string" ? / of pipeline (.+)$/.exec(description) : undefined
-    if (match) return match[1]
-  }
-  return slugged
-}
-
-/**
- * Whether an existing agent entry is one OpenFlow generated for this pipeline.
- *
- * The marker is the description `agentBlock` writes — `OpenFlow node <id>
- * (<role>) of pipeline <name>` — rather than the agent's key, because keys are
- * derived from the pipeline and role and a hand-written agent is free to
- * collide with that shape. An entry that does not carry the marker is somebody
- * else's and is left alone.
- */
-function generatedFor(entry: unknown, pipeline: string): boolean {
-  if (!entry || typeof entry !== "object") return false
-  const description = (entry as { description?: unknown }).description
-  return typeof description === "string" && description.endsWith(` of pipeline ${pipeline}`)
-}
-
-/** Canonical JSON with object keys sorted, so two equal configs compare equal regardless of key order. */
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value)
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`
-  const record = value as Record<string, unknown>
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
-    .join(",")}}`
-}
-
-function stableEqual(a: unknown, b: unknown): boolean {
-  return stableStringify(a) === stableStringify(b)
-}
-
 export type McpServer = {
   name: string
   type: "local" | "remote"
@@ -813,55 +615,76 @@ export type McpServer = {
   timeout?: number
 }
 
+function noProfile(): FlowResponse {
+  return { status: 409, body: { error: "omp profile directory unknown: open Omp settings" } }
+}
+
 /**
- * MCP server names become part of a tool name (`<server>_<tool>`), so anything
- * the sanitiser would rewrite is rejected here instead of silently producing a
- * server nobody can address from a per-node allowlist.
+ * MCP server names become part of a tool name (`mcp__<server>_<tool>`), so
+ * anything the sanitiser would rewrite is rejected here instead of silently
+ * producing a server nobody can address from a per-node allowlist. This is
+ * stricter than omp itself, which also accepts `.`, `:` and inner spaces.
  */
 export function mcpName(value: string) {
   return value.trim().replace(/[^a-zA-Z0-9-_]/g, "-")
 }
 
+const MCP_SCHEMA =
+  "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json"
+
 /**
- * The `mcp` block of the project's opencode.json, as rows.
- *
- * This is the *configured* set, not the live one — connection state comes from
- * the server's own `GET /mcp`, and a server can be configured here while the
- * running `opencode serve` has never heard of it (it reads config once at
- * boot). The panel shows both, side by side, for exactly that reason.
+ * The keys of a server entry that the browser's `McpServer` form owns. Every
+ * other key of an existing entry (`auth`, `oauth`, `instructions`,
+ * `requestIdFormat`, ...) belongs to the user and survives an edit untouched.
  */
-async function listMcpServers(paths: FlowPaths): Promise<McpServer[]> {
-  const config = await readProjectConfig(paths)
-  if ("error" in config) return []
-  const block = config.value.mcp
-  if (!block || typeof block !== "object") return []
-  return Object.entries(block as Record<string, any>)
-    .map(([name, entry]) => normalizeMcp(name, entry))
+const MCP_MANAGED = ["type", "command", "args", "env", "cwd", "url", "headers", "timeout", "enabled"]
+
+/**
+ * The `mcpServers` block of the Omp profile's `mcp.json`, as rows.
+ *
+ * An unreadable file lists as empty rather than throwing: the panel must still
+ * open so the user can see there is nothing to show. Writes refuse the same
+ * file instead, so it is never overwritten.
+ */
+async function listMcpServers(file: string): Promise<McpServer[]> {
+  const config = await readMcpFile(file).catch(() => undefined)
+  if (!config) return []
+  const servers = (config.value.mcpServers ?? {}) as Record<string, unknown>
+  const disabled = stringList(config.value.disabledServers)
+  const forced = stringList(config.value.enabledServers)
+  return Object.entries(servers)
+    .map(([name, entry]) => normalizeMcp(name, entry, !disabled.includes(name), forced.includes(name)))
     .filter((entry): entry is McpServer => Boolean(entry))
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
-function normalizeMcp(name: string, entry: any): McpServer | undefined {
+/**
+ * `enabled` follows omp: `disabledServers` always wins, an `enabled: false`
+ * entry is switched back on only by `enabledServers`.
+ */
+function normalizeMcp(name: string, entry: any, listed: boolean, forced: boolean): McpServer | undefined {
   if (!entry || typeof entry !== "object") return undefined
-  const enabled = entry.enabled !== false
-  if (entry.type === "remote") {
+  const enabled = listed && (entry.enabled !== false || forced)
+  const timeout = typeof entry.timeout === "number" ? entry.timeout : undefined
+  // A URL-only entry is http, which is how omp's own discovery reads it.
+  if (entry.type === "http" || entry.type === "sse" || (entry.type === undefined && !entry.command && entry.url)) {
     return {
       name,
       type: "remote",
       enabled,
       url: typeof entry.url === "string" ? entry.url : "",
       headers: isStringRecord(entry.headers) ? entry.headers : undefined,
-      timeout: typeof entry.timeout === "number" ? entry.timeout : undefined,
+      timeout,
     }
   }
   return {
     name,
     type: "local",
     enabled,
-    command: Array.isArray(entry.command) ? entry.command.map(String) : [],
+    command: typeof entry.command === "string" ? [entry.command, ...stringList(entry.args)] : [],
     cwd: typeof entry.cwd === "string" ? entry.cwd : undefined,
-    environment: isStringRecord(entry.environment) ? entry.environment : undefined,
-    timeout: typeof entry.timeout === "number" ? entry.timeout : undefined,
+    environment: isStringRecord(entry.env) ? entry.env : undefined,
+    timeout,
   }
 }
 
@@ -871,43 +694,75 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   )
 }
 
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []
+}
+
 /**
- * Writes one server into the project config's `mcp` block, after a backup.
- *
- * Validation is not politeness: opencode hard-fails on a config it cannot
- * parse, and a config it refuses takes every card in the project down with it,
- * not just this server. A local server with no command and a remote one with
- * no url are the two ways to produce that, so both are refused here.
+ * Reads `mcp.json`. A missing file is a profile that has no MCP servers yet,
+ * not an error — but anything else that stops it being read as an object is,
+ * because writing over it would destroy hand-written config.
  */
-async function writeMcpServer(paths: FlowPaths, name: string, body: any) {
-  const entry = buildMcpEntry(body)
-  const target = path.join(paths.project, "opencode.json")
-  return serialize(target, async () => {
-    const config = await readProjectConfig(paths)
-    if ("error" in config) throw new Error(config.error)
-    // Saving a server the config already describes writes nothing, for the same
-    // reason an unchanged agent merge does: a pointless rewrite would push the
-    // pre-OpenFlow `.bak` one slot further out of reach.
-    if (stableEqual(config.value.mcp?.[name], entry)) return { name, path: target, unchanged: true }
-    if (config.comments) throw new Error(CONFIG_HAS_COMMENTS)
-    const backup = config.raw === undefined ? undefined : await backupConfig(target, config.raw)
-    const next = config.value
-    next.mcp = { ...(next.mcp ?? {}), [name]: entry }
-    if (!next.$schema) next.$schema = "https://opencode.ai/config.json"
-    await writeAtomic(target, JSON.stringify(next, null, 2) + "\n")
-    return { name, path: target, backup }
+async function readMcpFile(file: string): Promise<{ value: Record<string, any>; raw: string | undefined }> {
+  const raw = await fs.readFile(file, "utf8").catch((error) => {
+    if (error?.code === "ENOENT") return undefined
+    throw error
+  })
+  if (raw === undefined || !raw.trim()) return { value: {}, raw }
+  const value = jsonOrUndefined(raw)
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("existing mcp.json is not a valid JSON object")
+  const servers = value.mcpServers
+  if (servers !== undefined && (!servers || typeof servers !== "object" || Array.isArray(servers)))
+    throw new Error("existing mcp.json has an mcpServers that is not an object")
+  return { value, raw }
+}
+
+/**
+ * Writes one server into `mcpServers`, after a backup.
+ *
+ * Validation is not politeness: a local server with no command and a remote
+ * one with no url are entries omp rejects at load, and a config it refuses
+ * takes the server list of every card down, not just this server.
+ *
+ * Saving an enabled server also lifts it off `disabledServers`, which would
+ * otherwise keep it off whatever its own `enabled` says.
+ */
+async function writeMcpServer(file: string, name: string, body: any) {
+  return serialize(file, async () => {
+    const config = await readMcpFile(file)
+    const servers = (config.value.mcpServers ?? {}) as Record<string, any>
+    const entry = buildMcpEntry(body, servers[name])
+    const disabled = stringList(config.value.disabledServers)
+    const lift = entry.enabled && disabled.includes(name)
+    // Saving a server the config already describes writes nothing, so a
+    // pointless rewrite does not push the pre-OpenFlow `.bak` out of reach.
+    if (isDeepStrictEqual(servers[name], entry) && !lift) return { name, path: file, unchanged: true }
+    const next: Record<string, unknown> = {
+      ...(config.raw?.trim() ? {} : { $schema: MCP_SCHEMA }),
+      ...config.value,
+      mcpServers: { ...servers, [name]: entry },
+    }
+    if (lift) next.disabledServers = disabled.filter((item) => item !== name)
+    const backup = await backupOnce(file, config.raw)
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await writeAtomic(file, jsonText(next, config.raw))
+    return { name, path: file, backup }
   })
 }
 
-function buildMcpEntry(body: any) {
+function buildMcpEntry(body: any, existing: Record<string, unknown> | undefined) {
   const enabled = body?.enabled !== false
   const timeout = typeof body?.timeout === "number" && body.timeout > 0 ? body.timeout : undefined
+  const kept = Object.fromEntries(Object.entries(existing ?? {}).filter(([key]) => !MCP_MANAGED.includes(key)))
   if (body?.type === "remote") {
     const url = typeof body.url === "string" ? body.url.trim() : ""
     if (!url) throw new Error("a remote mcp server needs a url")
     const headers = pickStrings(body.headers)
     return {
-      type: "remote" as const,
+      ...kept,
+      // The form has no transport switch, so a server saved as sse stays sse.
+      type: existing?.type === "sse" ? "sse" : "http",
       url,
       ...(headers ? { headers } : {}),
       ...(timeout ? { timeout } : {}),
@@ -916,13 +771,15 @@ function buildMcpEntry(body: any) {
   }
   const command = Array.isArray(body?.command) ? body.command.map(String).filter((part: string) => part.length) : []
   if (!command.length) throw new Error("a local mcp server needs a command")
-  const environment = pickStrings(body?.environment)
+  const env = pickStrings(body?.environment)
   const cwd = typeof body?.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : undefined
   return {
-    type: "local" as const,
-    command,
+    ...kept,
+    type: "stdio",
+    command: command[0],
+    ...(command.length > 1 ? { args: command.slice(1) } : {}),
     ...(cwd ? { cwd } : {}),
-    ...(environment ? { environment } : {}),
+    ...(env ? { env } : {}),
     ...(timeout ? { timeout } : {}),
     enabled,
   }
@@ -939,242 +796,22 @@ function pickStrings(value: unknown) {
   return Object.keys(out).length ? out : undefined
 }
 
-async function deleteMcpServer(paths: FlowPaths, name: string) {
-  const target = path.join(paths.project, "opencode.json")
-  return serialize(target, async () => {
-    const config = await readProjectConfig(paths)
-    if ("error" in config) throw new Error(config.error)
-    if (config.raw === undefined || !config.value.mcp || !(name in config.value.mcp)) return { name, removed: false }
-    if (config.comments) throw new Error(CONFIG_HAS_COMMENTS)
-    const backup = await backupConfig(target, config.raw)
-    delete config.value.mcp[name]
-    await writeAtomic(target, JSON.stringify(config.value, null, 2) + "\n")
-    return { name, removed: true, path: target, backup }
+async function deleteMcpServer(file: string, name: string) {
+  return serialize(file, async () => {
+    const config = await readMcpFile(file)
+    const servers = config.value.mcpServers as Record<string, unknown> | undefined
+    if (config.raw === undefined || !servers || !(name in servers)) return { name, removed: false }
+    const { [name]: _removed, ...remaining } = servers
+    const backup = await backupOnce(file, config.raw)
+    await writeAtomic(file, jsonText({ ...config.value, mcpServers: remaining }, config.raw))
+    return { name, removed: true, path: file, backup }
   })
 }
 
-/**
- * Reads the project's opencode.json. A missing file is not an error — it is a
- * project that has never been configured — but an unparseable one is, because
- * writing over it would destroy hand-written config.
- *
- * `comments` says the source carried them. Reading is unaffected; writing is
- * not, because this module re-serialises the parsed value and would drop every
- * comment on the way back out.
- */
-async function readProjectConfig(
-  paths: FlowPaths,
-): Promise<{ value: any; raw: string | undefined; comments: boolean } | { error: string }> {
-  const raw = await fs.readFile(path.join(paths.project, "opencode.json"), "utf8").catch(() => undefined)
-  if (raw === undefined)
-    return { value: { $schema: "https://opencode.ai/config.json" }, raw: undefined, comments: false }
-  const stripped = stripJsonc(raw)
-  const value = jsonOrUndefined(stripped.text)
-  if (value === undefined) return { error: "existing opencode.json is not valid JSON" }
-  return { value, raw, comments: stripped.comments }
-}
-
-/**
- * Reads opencode's *global* config — the one file that reaches a run.
- *
- * `.jsonc` is preferred when it is the file that exists, because opencode reads
- * both and writing the override into the other one would leave it unread. A
- * missing file is a machine that has never configured opencode, not an error.
- */
-async function readGlobalConfig() {
-  const candidates = globalConfigCandidates()
-  for (const target of candidates) {
-    const raw = await fs.readFile(target, "utf8").catch(() => undefined)
-    if (raw === undefined) continue
-    const stripped = stripJsonc(raw)
-    const value = jsonOrUndefined(stripped.text)
-    if (value === undefined) return { target, error: `${target} is not valid JSON` }
-    return { target, value, raw, comments: stripped.comments }
-  }
-  return {
-    target: candidates[0],
-    value: { $schema: "https://opencode.ai/config.json" },
-    raw: undefined,
-    comments: false,
-  }
-}
-
-/**
- * Where this package lives on disk, so the MCP server can be started from it.
- *
- * Found by locating the server file rather than by `import.meta.dir`, which is
- * undefined once the vite plugin bundles this module — the two hosts (the vite
- * plugin and `server.ts`) would otherwise disagree about where they are. Both
- * run from `packages/flow`, and a repo-root launch is checked too, so the path
- * is discovered rather than configured: a checkout that moves repoints itself
- * on the next install instead of leaving a command aimed at nothing.
- */
-async function packageRoot() {
-  const cwd = process.cwd()
-  const candidates = [cwd, path.join(cwd, "packages", "flow"), path.resolve(cwd, ".."), path.resolve(cwd, "..", "..")]
-  for (const root of candidates) {
-    if (
-      await fs.stat(path.join(root, "mcp", "dispatch.ts")).then(
-        () => true,
-        () => false,
-      )
-    )
-      return root
-  }
-  return cwd
-}
-
-/**
- * An absolute path to the bun that can run `mcp/dispatch.ts`.
- *
- * `process.execPath` is only right when this host is itself running under bun —
- * the vite dev server runs under node, and node cannot execute a `.ts` entry.
- * So PATH is searched, with `.exe` on Windows because opencode spawns a local
- * MCP server without a shell and PATHEXT is not applied for it.
- *
- * Falls back to the bare name rather than failing the install: on a POSIX host
- * that is usually resolvable anyway, and a wrong command is visible in the
- * config the panel just told the user about.
- */
-async function bunPath() {
-  if (path.basename(process.execPath).toLowerCase().startsWith("bun")) return process.execPath
-  const names = process.platform === "win32" ? ["bun.exe", "bun.cmd", "bun"] : ["bun"]
-  for (const dir of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
-    for (const name of names) {
-      const candidate = path.join(dir, name)
-      if (
-        await fs.stat(candidate).then(
-          (entry) => entry.isFile(),
-          () => false,
-        )
-      )
-        return candidate
-    }
-  }
-  return "bun"
-}
-
-/** Whether the global config starts OpenFlow's dispatch MCP server. */
-async function dispatchToolStatus() {
-  const root = await packageRoot()
-  const runtime = await bunPath()
-  const config = await readGlobalConfig()
-  if ("error" in config) return { path: config.target, present: false, current: false, root, error: config.error }
-  return { path: config.target, ...installed(config.value, root, runtime), root }
-}
-
-/**
- * Adds or removes the server in the global config, backing the file up first.
- *
- * `restart: true` is not advice: opencode reads config once at boot, so the
- * tool does not exist for any card until `opencode serve` restarts.
- */
-async function applyDispatchTool(wanted: boolean) {
-  const root = await packageRoot()
-  const runtime = await bunPath()
-  const config = await readGlobalConfig()
-  if ("error" in config) return { error: config.error, path: config.target }
-  const result = wanted ? install(config.value, root, runtime) : uninstall(config.value)
-  if (!result.changed)
-    return { path: config.target, ...installed(config.value, root, runtime), root, changed: false, restart: false }
-  if (config.comments) return { error: CONFIG_HAS_COMMENTS, path: config.target }
-  return serialize(config.target, async () => {
-    const backup = config.raw === undefined ? undefined : await backupConfig(config.target, config.raw)
-    await fs.mkdir(path.dirname(config.target), { recursive: true })
-    await writeAtomic(config.target, JSON.stringify(result.value, null, 2) + "\n")
-    return {
-      path: config.target,
-      ...installed(result.value, root, runtime),
-      root,
-      changed: true,
-      backup,
-      restart: true,
-    }
-  })
-}
-
-/** Which OpenAI-compatible providers the global config already repackages. */
-async function repackageStatus() {
-  const config = await readGlobalConfig()
-  const available = Object.keys(COMPATIBLE_PROFILES)
-  if ("error" in config) return { path: config.target, applied: [], available, error: config.error }
-  return { path: config.target, applied: repackaged(config.value), available }
-}
-
-/**
- * Writes the override into the global config, backing the file up first.
- *
- * The engine reads config once at boot, so `restart: true` is not advice — the
- * models stay unroutable until `opencode serve` is restarted.
- */
-async function applyRepackage(ids: string[]) {
-  const config = await readGlobalConfig()
-  if ("error" in config) return { error: config.error, path: config.target }
-  const result = repackage(config.value, ids)
-  if (!result.changed.length)
-    return { path: config.target, changed: [], applied: repackaged(config.value), restart: false }
-  if (config.comments)
-    return {
-      error: `${config.target} has comments, and saving would strip them — remove the comments, or add the provider override there by hand`,
-      path: config.target,
-    }
-  return serialize(config.target, async () => {
-    const backup = config.raw === undefined ? undefined : await backupConfig(config.target, config.raw)
-    await fs.mkdir(path.dirname(config.target), { recursive: true })
-    await writeAtomic(config.target, JSON.stringify(result.value, null, 2) + "\n")
-    return { path: config.target, changed: result.changed, applied: repackaged(result.value), backup, restart: true }
-  })
-}
-
-const CONFIG_HAS_COMMENTS =
-  "existing opencode.json has comments, and saving would strip them — remove the comments, or make this change in opencode.json by hand"
-
-/**
- * Reads opencode's config dialect rather than strict JSON.
- *
- * `packages/core/src/config.ts` parses `opencode.json` with `jsonc-parser` and
- * `allowTrailingComma`, so comments and a trailing comma are a perfectly valid
- * config there. Rejecting them as "not valid JSON" fails every config write for
- * a user whose config opencode itself is happy with: the agent merge fails, the
- * MCP panel shows nothing, and a skill gets written but never registered.
- * `jsonc-parser` is not reachable from this package, so the two extensions are
- * stripped here instead, string-aware so a comma or a `//` inside a value is
- * left alone.
- */
-function stripJsonc(raw: string) {
-  let out = ""
-  let comments = false
-  let index = 0
-  while (index < raw.length) {
-    const char = raw[index]
-    if (char === '"') {
-      const start = index
-      index++
-      while (index < raw.length && raw[index] !== '"') index += raw[index] === "\\" ? 2 : 1
-      index++
-      out += raw.slice(start, index)
-      continue
-    }
-    if (char === "/" && raw[index + 1] === "/") {
-      comments = true
-      const end = raw.indexOf("\n", index)
-      index = end === -1 ? raw.length : end
-      continue
-    }
-    if (char === "/" && raw[index + 1] === "*") {
-      comments = true
-      const end = raw.indexOf("*/", index + 2)
-      index = end === -1 ? raw.length : end + 2
-      continue
-    }
-    // Strings are consumed whole above, so reaching a closer here means `out`
-    // ends at a structural position and a comma sitting there is the trailing
-    // one opencode allows and `JSON.parse` does not.
-    if (char === "}" || char === "]") out = out.replace(/,\s*$/, "")
-    out += char
-    index++
-  }
-  return { text: out, comments }
+/** Serialises with the indentation the file already used, so a rewrite does not reflow the whole file. */
+function jsonText(value: unknown, original: string | undefined) {
+  const indent = original ? /^([ \t]+)"/m.exec(original)?.[1] : undefined
+  return JSON.stringify(value, null, indent ?? 2) + "\n"
 }
 
 /** Parse guard: `undefined` rather than a throw, for the callers that treat unparseable as a state. */
@@ -1186,33 +823,49 @@ function jsonOrUndefined(text: string): any {
   }
 }
 
-/** Where OpenFlow-authored skills are registered from, relative to the project. */
-const SKILL_SOURCE = "./.openflow/skills"
+type SkillRow = { name: string; description?: string; updated: number; legacy?: true }
 
 /**
- * Lists the skills OpenFlow has authored under `.openflow/skills`, reading each
- * folder's `SKILL.md` frontmatter. A folder without a readable `SKILL.md` is
- * skipped rather than surfaced as a broken row.
+ * Lists the skills omp will load for the profile (`<profile>/skills/*\/SKILL.md`)
+ * followed by the ones older builds authored under `.openflow/skills`, which
+ * omp never sees any more and are marked `legacy`. A legacy skill that a
+ * profile skill of the same name has superseded is not listed twice.
  */
-async function listSkills(paths: FlowPaths) {
-  const entries = await fs.readdir(paths.skills, { withFileTypes: true }).catch(() => [])
-  const out = []
+async function listSkills(paths: FlowPaths, profile: string | undefined) {
+  const own = profile ? await skillsIn(path.join(profile, "skills"), false) : []
+  const taken = new Set(own.map((row) => row.name))
+  const legacy = (await skillsIn(paths.skills, true)).filter((row) => !taken.has(row.name))
+  return [...own, ...legacy].sort((a, b) => b.updated - a.updated)
+}
+
+/**
+ * Reads each folder's `SKILL.md` frontmatter. A folder without a readable
+ * `SKILL.md` is skipped rather than surfaced as a broken row; entries are not
+ * filtered to directories, because a skill folder may be a symlink.
+ */
+async function skillsIn(root: string, legacy: boolean): Promise<SkillRow[]> {
+  const entries = await fs.readdir(root).catch(() => [] as string[])
+  const out: SkillRow[] = []
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-    const file = path.join(paths.skills, entry.name, "SKILL.md")
+    const file = path.join(root, entry, "SKILL.md")
     const [raw, stat] = await Promise.all([
       fs.readFile(file, "utf8").catch(() => undefined),
       fs.stat(file).catch(() => undefined),
     ])
     if (raw === undefined || !stat) continue
-    const meta = parseSkillMarkdown(raw)
-    out.push({ name: entry.name, description: meta.description, updated: stat.mtimeMs })
+    out.push({
+      name: entry,
+      description: parseSkillMarkdown(raw).description,
+      updated: stat.mtimeMs,
+      ...(legacy ? { legacy: true as const } : {}),
+    })
   }
-  return out.sort((a, b) => b.updated - a.updated)
+  return out
 }
 
 /**
- * Reads one skill's frontmatter and body back for editing, or undefined if absent.
+ * Reads one skill's frontmatter and body back for editing, or undefined if
+ * absent. The profile's copy wins over a legacy one of the same name.
  *
  * `name` is the frontmatter name when the file carries one — that is the identity
  * the agent sees, and it can differ from the folder slug (`Summarize` in
@@ -1220,37 +873,33 @@ async function listSkills(paths: FlowPaths) {
  * the frontmatter to the slug and silently rename the skill. `folder` carries the
  * slug for callers that need to address the skill over the API.
  */
-async function readSkill(paths: FlowPaths, name: string) {
-  const file = path.join(paths.skills, name, "SKILL.md")
-  const raw = await fs.readFile(file, "utf8").catch(() => undefined)
-  if (raw === undefined) return undefined
-  const meta = parseSkillMarkdown(raw)
-  return {
-    name: meta.name ?? name,
-    folder: name,
-    description: meta.description,
-    content: meta.content,
-    path: file,
+async function readSkill(paths: FlowPaths, profile: string | undefined, name: string) {
+  const roots = [...(profile ? [{ root: path.join(profile, "skills"), legacy: false }] : []), { root: paths.skills, legacy: true }]
+  for (const { root, legacy } of roots) {
+    const file = path.join(root, name, "SKILL.md")
+    const raw = await fs.readFile(file, "utf8").catch(() => undefined)
+    if (raw === undefined) continue
+    const meta = parseSkillMarkdown(raw)
+    return {
+      name: meta.name ?? name,
+      folder: name,
+      description: meta.description,
+      content: meta.content,
+      path: file,
+      ...(legacy ? { legacy: true as const } : {}),
+    }
   }
+  return undefined
 }
 
 /**
- * Writes `.openflow/skills/<name>/SKILL.md` and registers the folder as a skill
- * source in the project `opencode.json` the first time — the server only scans
- * `.opencode/skill`(`s`) on its own, so a skill kept under `.openflow` is invisible
- * until this path is listed in the config's `skills.paths`. The frontmatter name
- * defaults to the folder slug so the two never drift.
- *
- * A skill created here does not load until `opencode serve` restarts: the server
- * reads its config and skill sources once at boot.
+ * Writes `<profile>/skills/<name>/SKILL.md`, which omp discovers on its own
+ * (`<agentDir>/skills/*\/SKILL.md`), so there is nothing to register. The
+ * frontmatter name defaults to the folder slug so the two never drift. omp
+ * loads a skill only at session start, so a new one reaches the next card.
  */
-async function writeSkill(paths: FlowPaths, name: string, body: any) {
-  // Registration first, on purpose: it is the step that can fail, and a
-  // `SKILL.md` written next to an unregistered source is a skill the agent can
-  // never see. Its failure rides back out on the response either way, rather
-  // than being skipped because an earlier line already reported success.
-  const source = await registerSkillSource(paths)
-  const dir = path.join(paths.skills, name)
+async function writeSkill(profile: string, name: string, body: any) {
+  const dir = path.join(profile, "skills", name)
   await fs.mkdir(dir, { recursive: true })
   const file = path.join(dir, "SKILL.md")
   await writeAtomic(
@@ -1261,47 +910,11 @@ async function writeSkill(paths: FlowPaths, name: string, body: any) {
       content: typeof body?.content === "string" ? body.content : "",
     }),
   )
-  return { name, path: file, ...source }
+  return { name, path: file }
 }
 
 /**
- * Adds `SKILL_SOURCE` to the project config's `skills.paths` once. The config
- * schema types `skills` as `{ paths?: string[]; urls?: string[] }` (see
- * `ConfigSkillsV1.Info`) and the loader reads `skills.paths` — writing a bare
- * array here would fail config validation and opencode hard-fails on invalid
- * config, which would break every card run in the project.
- *
- * Idempotent: a config that already lists it is left untouched
- * (`registered: false`, no backup), so re-saving a skill does not churn the
- * file or its `.bak`.
- */
-async function registerSkillSource(paths: FlowPaths) {
-  const target = path.join(paths.project, "opencode.json")
-  return serialize(target, async () => {
-    const config = await readProjectConfig(paths)
-    if ("error" in config) return { registered: false, error: config.error }
-    if (config.raw === undefined) {
-      config.value.skills = { paths: [SKILL_SOURCE] }
-      await writeAtomic(target, JSON.stringify(config.value, null, 2) + "\n")
-      return { registered: true, backup: undefined }
-    }
-    // A config written by an older build may hold a bare array here. Treat it as
-    // the paths list so this rewrites it into the shape the schema accepts,
-    // rather than spreading its indices into the object.
-    const legacy = Array.isArray(config.value.skills)
-    const block = legacy ? { paths: config.value.skills } : (config.value.skills ?? {})
-    const current: string[] = Array.isArray(block.paths) ? block.paths : []
-    if (!legacy && current.includes(SKILL_SOURCE)) return { registered: false }
-    if (config.comments) return { registered: false, error: CONFIG_HAS_COMMENTS }
-    const backup = await backupConfig(target, config.raw)
-    config.value.skills = { ...block, paths: current.includes(SKILL_SOURCE) ? current : [...current, SKILL_SOURCE] }
-    await writeAtomic(target, JSON.stringify(config.value, null, 2) + "\n")
-    return { registered: true, backup }
-  })
-}
-
-/**
- * Serialises a skill to the `SKILL.md` shape opencode discovers: a small YAML
+ * Serialises a skill to the `SKILL.md` shape omp discovers: a small YAML
  * frontmatter block (`name`, and `description` when set) followed by the
  * markdown body. Frontmatter values are single-lined by the caller, so no YAML
  * quoting or escaping is needed here.
@@ -1338,25 +951,19 @@ function oneLine(value: unknown): string | undefined {
 }
 
 /**
- * Copies the config aside before a merge rewrites it, without ever losing the
- * pre-OpenFlow original.
- *
- * `.bak` is written once and then left alone: it is the config as it was before
- * OpenFlow first touched it. Every later merge writes `.prev.bak` instead, so
- * undoing the last merge stays possible too. Overwriting `.bak` on every merge
- * — which is what this used to do — means the second merge replaces the
- * original with an already-merged copy and the real config is gone, and it is
- * gone quietly, since a project's `opencode.json` is usually gitignored.
+ * Copies a config aside before it is rewritten, once. `.bak` is the file as it
+ * was before OpenFlow first touched it and is never overwritten: every later
+ * rewrite would otherwise replace the original with an already-edited copy,
+ * quietly. Returns the backup's path, or undefined when there was nothing to
+ * back up.
  */
-export async function backupConfig(target: string, raw: string) {
-  const original = `${target}.bak`
-  const exists = await fs
-    .access(original)
-    .then(() => true)
-    .catch(() => false)
-  const file = exists ? `${target}.prev.bak` : original
-  await writeAtomic(file, raw)
-  return file
+async function backupOnce(target: string, raw: string | undefined) {
+  if (raw === undefined) return undefined
+  const backup = `${target}.bak`
+  await fs.writeFile(backup, raw, { flag: "wx" }).catch((error) => {
+    if (error?.code !== "EEXIST") throw error
+  })
+  return backup
 }
 
 /**
@@ -1407,10 +1014,10 @@ function pipelineConflict(name: string) {
  * A rename within one directory is atomic on NTFS and on POSIX, so a crash, a
  * power loss, or a full disk leaves either the whole old file or the whole new
  * one — never the truncated middle a plain `writeFile` can leave behind. That
- * matters most for `opencode.json`, which an agent merge rewrites on *every*
- * run and which opencode hard-fails on when it cannot be parsed: one bad write
- * bricks every card in the project. Beside the target rather than in the OS
- * temp directory, because a cross-volume rename is a copy and is not atomic.
+ * matters most for `mcp.json`, which a profile's every card session reads at
+ * start: one truncated write there breaks them all. Beside the target rather
+ * than in the OS temp directory, because a cross-volume rename is a copy and
+ * is not atomic.
  */
 async function writeAtomic(file: string, data: string) {
   const temp = `${file}.${process.pid.toString(36)}${Date.now().toString(36)}.tmp`
@@ -1434,10 +1041,9 @@ async function writeAtomic(file: string, data: string) {
 /**
  * Runs `work` only after every earlier call for the same `key` has finished.
  *
- * Four routes read-modify-write `opencode.json` — an agent merge (which runs on
- * every click of Run), an MCP upsert, an MCP delete, and a skill registration —
- * and running any two of them interleaved means both read the same pre-state
- * and the second write silently discards the first. Each of them re-reads the
+ * Read-modify-write routes (an MCP upsert, an MCP delete, the roles list, the
+ * runs index) run two at a time interleaved: both read the same pre-state and
+ * the second write silently discards the first. Each of them re-reads the
  * file *inside* its turn here rather than before it, which is what makes the
  * serialisation worth anything.
  *

@@ -16,12 +16,15 @@
     "evals": "bun evals/score.ts"
   },
   "dependencies": {
-    "@opencode-ai/sdk": "workspace:*",
-    "solid-js": "catalog:"
+    "@lydell/node-pty": "catalog:",
+    "ghostty-web": "github:anomalyco/ghostty-web#83c0a07b8628b748aed073b232cb4b52a6ca11c1",
+    "solid-js": "catalog:",
+    "ws": "8.21.0"
   },
   "devDependencies": {
     "@types/bun": "catalog:",
     "@types/node": "catalog:",
+    "@types/ws": "8.18.1",
     "@typescript/native-preview": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
