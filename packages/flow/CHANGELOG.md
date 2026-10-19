@@ -136,10 +136,13 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
 - Stamp every run-log write with `updatedAt` and keep it fresh with a heartbeat, so
   Resume is offered only for a run abandoned for more than five minutes (the run
   list is re-read every 30 seconds while idle). A resumed run writes its own log
-  before it closes the interrupted one, so a failed write leaves that run
-  resumable until a later write succeeds. A carried session the host reports lost
-  starts as a fresh card, and the Resume button is disabled until the run has
-  started. A failing log save raises its notice once, not every heartbeat.
+  before it closes the interrupted one, and closes it, and releases the sessions of
+  finished cards, only after the model check passes: an unknown model ends the new
+  run at once and leaves the old run resumable with its sessions untouched. A failed
+  first write leaves the old run resumable until a later write succeeds. A carried
+  session the host reports lost starts as a fresh card, and the Resume button is
+  disabled until the run has started. A failing log save raises its notice once, not
+  every heartbeat.
 - Give a session that is still live when its card is resumed in the same directory
   to the resuming run, so releasing the new run disposes it and releasing the old
   run no longer does.
@@ -152,6 +155,16 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
   project switch cannot land while its body is still being read.
 - Edit a skill by its folder name unless it is renamed, and claim a new skill's
   folder atomically so concurrent creates of one name yield one success.
+- Treat a card as briefed only once the host accepted the prompt that carried its
+  briefing, so a card whose first prompt was refused through every retry gets the
+  full briefing and the run attachments again when it is re-dispatched, and re-send
+  the scratch-directory note to a replacement session.
+- De-duplicate permission and question requests only while they are pending, so a
+  session resumed after a reap, whose request counter restarted, is asked and
+  answered again.
+- Keep a role deleted while the project's roles are still being read deleted, and
+  save a legacy skill under its own name as a plain migration (any other name that
+  is taken is refused with 409 `name-taken`).
 - Block a card with no model at preflight (the app blocks it; the host would launch
   omp without `--model`) and send
   attachments to no card whose model the catalog does not list.

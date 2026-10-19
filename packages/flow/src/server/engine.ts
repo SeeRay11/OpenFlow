@@ -545,6 +545,8 @@ export function start(
   let scratchDir = ""
   /** Cards already told about it — a briefing repeated every turn is a briefing nobody reads. */
   const toldScratch = new Set<string>()
+  /** Cards whose current session has accepted the prompt that carried their briefing. */
+  const briefed = new Set<string>()
   /** Said once per run — see the note where it is set. */
   let isolationWarned = false
   /** The commit every tree was branched from, and every merge is measured against. */
@@ -570,6 +572,8 @@ export function start(
     sessions.set(sessionID, id)
     held.add(sessionID)
     carried.add(id)
+    // Briefed in the interrupted run, in the very session it carries.
+    briefed.add(id)
   }
   /** The interrupted log this run still has to close. */
   let supersedes = options.supersedes
@@ -900,10 +904,20 @@ export function start(
    * edits things nobody expected.
    */
   async function answer(nodeID: string, sessionID: string, data: { id: string; action: string; resources?: string[] }) {
-    const requestID = data.id
-    const key = `${sessionID}:${requestID}`
+    const key = `${sessionID}:${data.id}`
     if (answered.has(key)) return
     answered.add(key)
+    // Held while the request is open, so a replay of a still-pending one is answered once; given back once the reply
+    // was handed over, because the host drops the request then and a resumed session numbers its requests afresh.
+    try {
+      await settlePermission(nodeID, sessionID, data)
+    } finally {
+      answered.delete(key)
+    }
+  }
+
+  async function settlePermission(nodeID: string, sessionID: string, data: { id: string; action: string; resources?: string[] }) {
+    const requestID = data.id
     const resources = data.resources ?? []
     const node = nodes.get(nodeID)
 
@@ -965,10 +979,20 @@ export function start(
    * finishes instead of hanging until the node times out.
    */
   async function inquire(nodeID: string, sessionID: string, data: { id: string; questions?: QuestionInfo[] }) {
-    const requestID = data.id
-    const key = `${sessionID}:${requestID}`
+    const key = `${sessionID}:${data.id}`
     if (asked.has(key)) return
     asked.add(key)
+    // Held while the question is open, so a replay of a still-pending ask is shown once; given back once the reply
+    // was handed over, because the host drops the request then and a resumed session numbers its requests afresh.
+    try {
+      await settleQuestion(nodeID, sessionID, data)
+    } finally {
+      asked.delete(key)
+    }
+  }
+
+  async function settleQuestion(nodeID: string, sessionID: string, data: { id: string; questions?: QuestionInfo[] }) {
+    const requestID = data.id
     const questions = data.questions ?? []
     const node = nodes.get(nodeID)
     const headers = questions.map((question) => question.header || question.question)
@@ -1031,12 +1055,12 @@ export function start(
   }
 
   /**
-   * Whether the card is still in the session it holds right now. Read at a card's entry: a card that has none
-   * is new (and stays new while its first prompt is retried), one that has one is returning until that very
-   * session is replaced.
+   * Whether the card is still in the session it was briefed in. Read at a card's entry: a card that was never
+   * briefed (new, or its first prompt was refused through every retry and left an empty session behind) is new,
+   * and stays new while its first prompt is retried; a briefed one is returning until that very session is replaced.
    */
   function holding(id: string) {
-    const entered = nodeSession.get(id)
+    const entered = briefed.has(id) ? nodeSession.get(id) : undefined
     return () => entered !== undefined && nodeSession.get(id) === entered
   }
 
@@ -1044,6 +1068,9 @@ export function start(
   function abandon(id: string) {
     const sessionID = nodeSession.get(id)
     nodeSession.delete(id)
+    // Whatever that session was told went with it.
+    toldScratch.delete(id)
+    briefed.delete(id)
     if (sessionID) release(sessionID)
   }
 
@@ -1319,7 +1346,7 @@ export function start(
     // Whether this card's files have already reached the session. A reused one
     // holds them; a retry after a refused prompt does not, so the attachments
     // ride the re-send rather than being lost with the turn that never landed.
-    let delivered = !!sessionID
+    let delivered = !!sessionID && briefed.has(node.id)
     // Counted apart: a card being rate limited and a card whose connection keeps
     // dropping are different problems, and one must not spend the other's budget.
     let refusals = 0
@@ -1424,7 +1451,8 @@ export function start(
 
         await api.prompt(sessionID, text, sendable)
         delivered = true
-        // Only now is the card told: a prompt the host refused carries the note again on its retry.
+        // Only now is the card briefed and told: a prompt the host refused carries both again on its retry.
+        briefed.add(node.id)
         if (needsScratch) toldScratch.add(node.id)
         if (controller.signal.aborted) throw new StopError()
         assertOpen(sessionID)
@@ -1556,8 +1584,9 @@ export function start(
           // A carried session the host could not resume is gone for good: retrying `reuse` would only be told so again.
           attach = undefined
           delivered = false
-          // What the lost session was told went with it: the replacement has not heard where output that is not the work goes.
+          // What the lost session was told went with it: the replacement has not been briefed, nor heard where output that is not the work goes.
           toldScratch.delete(node.id)
+          briefed.delete(node.id)
           // A new session has no history to be told about: it starts as a fresh card would.
           build = opening
         }
@@ -2510,22 +2539,19 @@ export function start(
   const cardName = (id: string) => nodes.get(id)?.role ?? id
   const done = (async () => {
     try {
-      // Sessions this run was handed and will never prompt into (a card since deleted, or one
-      // that already has its answer) would otherwise sit live and hold the project.
-      if (api.release) for (const sessionID of spare) track(api.release(sessionID).catch(() => undefined))
-      // A resumed run records itself before anything slow: the carried session ids, the
-      // finished cards' answers and the trees left over are in the log, so a page closed
-      // from here on still leaves something to resume. Only then is the interrupted log
-      // closed, and only if this write got through — a failed one leaves it resumable,
+      // A resumed run records itself before anything slow: the carried session ids and the
+      // finished cards' answers are in the log, so a page closed from here on still leaves
+      // something to resume. The interrupted log is closed only once the models are known to
+      // exist (below), and only if this write got through — a failed one leaves it resumable,
       // and the first later write that works closes it.
+      let replacementSaved = false
       if (options.supersedes) {
         for (const id of carried) entry(id).sessionID = nodeSession.get(id)
         for (const [id, text] of Object.entries(resume)) {
           const row = log.nodes.find((candidate) => candidate.id === id)
           if (row) Object.assign(row, { status: "done", output: text, reused: true })
         }
-        if (await save()) await closeInterrupted()
-        else closeLater = true
+        replacementSaved = await save()
       }
       // Isolated work the interrupted run left is reported, never touched: the page cannot tell a tree that
       // merged from one that did not, and the entries come from a file in the project. The log keeps listing
@@ -2556,8 +2582,21 @@ export function start(
         }
         hooks.onNotice?.("error", `unknown model on ${unresolved.map((node) => node.role).join(", ")}`)
         log.status = "error"
+        // This run never started a card: the sessions it was handed are still the interrupted run's to resume, and that log stays resumable.
+        for (const id of carried) {
+          const sessionID = nodeSession.get(id)
+          if (sessionID) held.delete(sessionID)
+        }
         return log
       }
+
+      // Past the point where this run could end before it began: now the interrupted log is closed, and the sessions
+      // nobody will prompt into are handed back.
+      if (options.supersedes) {
+        if (replacementSaved) await closeInterrupted()
+        else closeLater = true
+      }
+      if (api.release) for (const sessionID of spare) track(api.release(sessionID).catch(() => undefined))
 
       // Opened once, before anything is dispatched, so every card's first turn
       // can carry it. A host that cannot make one simply never mentions it.

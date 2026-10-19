@@ -194,21 +194,26 @@ file layout, and login/model behavior are documented there rather than re-derive
   (`saveFailing`), not every 30 s. The tick (and the tab becoming visible) re-reads the run list, only
   while idle with no folder picker open and the tab visible, and `offerable()` never offers Resume from
   a list older than the 5-minute window (`runsReadAt`). A resumed run writes its OWN log first
-  (carrying the session ids, before the model-catalog wait) and only then writes the old log `stopped`
-  with `resumedBy` (`superseded()`); if the first write fails the interrupted log stays resumable. If
-  the first write fails, `closeLater` makes the first later write that works
-  close it. The replacement already holds the finished cards' outputs (`done`, `reused`) and the carried
+  (carrying the session ids, before the model-catalog wait). It writes the old log `stopped` with
+  `resumedBy` (`superseded()`) and releases the sessions in `spare` ONLY after the model check passes
+  ("Past the point where this run could end before it began"); an unknown model (e.g. a partial
+  catalog after a host restart) ends the new run at once, hands the carried sessions back untouched
+  (`held.delete`) and leaves the old run resumable. If the first write fails the interrupted log stays
+  resumable and `closeLater` makes the first later write that works close it. The replacement
+  already holds the finished cards' outputs (`done`, `reused`) and the carried
   ids when first saved, orchestrated runs too. Carried ids for cards no longer in the pipeline, and
-  sessions of cards that already finished, go to `spare` and are released at the start (they would hold
+  sessions of cards that already finished, go to `spare` and are released after that check (they would hold
   the project lock); a carried session the host reports lost starts as a FRESH card (`build = opening`,
   no `interruptedNote` wrapper). The Resume button is disabled from the click until the run started
   (`resuming`). **The carried session id must be written to the
   run log** (`patch(node.id, { sessionID })`), because the create path that normally writes it
   is skipped — without it a resumed run reports cards with no session while they answer in one,
-  and the *next* interruption has nothing left to carry. A fresh card whose first prompt is refused before
-  the host accepts it retries with the full first briefing (`build` is not reassigned; orchestrator
-  roster and rules, critic bar); only a carried session replaced after the host reports it lost switches
-  to `build = opening`, a fresh briefing.
+  and the *next* interruption has nothing left to carry. A card is briefed only once the host accepted
+  the prompt that carried its briefing (`briefed` is set after `api.prompt`; `holding()`): a fresh card
+  whose first prompt is refused through every retry and is re-dispatched gets the full briefing (orchestrator
+  roster and rules, critic bar) and the run attachments again, and `toldScratch` follows the same rule; the
+  scratch note is re-sent to a replacement session (`abandon()` clears both, as does a lost session).
+  Only a carried session replaced after the host reports it lost switches to `build = opening`.
 - **Resume never merges, removes or releases the interrupted run's isolated worktrees.** Merging
   them is the user's call, because git state in a worktree cannot be assumed. `RunLog.isolation` (`{ trees:
   [{ card, directory, branch }] }`; informational, no `base`, absent on old logs; an old log's `base` is
@@ -217,7 +222,7 @@ file layout, and login/model behavior are documented there rather than re-derive
   any card runs in them; the end-of-run cleanup clears it unless the cleanup request itself was rejected
   (`cleanupWorktrees` swallows git failures, so a clean answer clears them). `resumeRun` passes the
   interrupted log's `isolation` as `RunOptions.abandoned = { trees }` (no run id). After the
-  replacement log is saved and the interrupted log closed, the new log's `isolation` is seeded with the
+  replacement log is saved, the new log's `isolation` is seeded with the
   abandoned trees and ONE error notice (`abandonedNote` in `src/graph/worktree.ts`) says they **may**
   hold work not merged into the project: at most 20 listed plus the true count of the rest, every path
   double-quoted in `git -C "<dir>" status` and `git -C "<dir>" diff`; the user checks, merges or
@@ -682,7 +687,9 @@ authority where this and it disagree.
   still-pending `permission.v2.asked` / `question.v2.asked` (`sessions.pending()`) to every new subscriber. One
   event larger than the whole queue is replaced by a `flow.notice`, and tool-call arguments and raw
   results are capped (`lib/omp/events.ts`). Dialogs are keyed `sessionID:requestID` (`requestKey` in
-  `src/state.ts`).
+  `src/state.ts`); the engine's `answered` / `asked` sets de-duplicate only while the request is pending
+  and drop the key once the reply is handed back, so a session resumed after a reap, whose request counter
+  restarted, is asked and answered again.
 - **A project switch is refused while any engine session is open.** `POST /project` answers 409
   `project-busy` while ANY session is live (idle between turns included) or starting, a create is in
   flight (counted from the first line of `create()`, i.e. from `POST /sessions` arriving, body still
@@ -708,7 +715,9 @@ authority where this and it disagree.
   (`openflow.customRolesPending.v1:<project path>`, never the migration source; other projects never
   read or push it; a project switch leaves it in place; an edit before the project is known is
   reported as not persisted), reported as unsynced and merged in when hydration succeeds; a hydration
-  that finishes after a switch cannot write into the next project. The old browser copy is migrated once per browser
+  that finishes after a switch cannot write into the next project. A role deleted while the read is
+  pending stays deleted: when the read returns the stored copy is removed too and the id is dropped from
+  the pending key. The old browser copy is migrated once per browser
   (`openflow.customRolesMigrated.v1`) and nothing is written to a project's file before it was read.
 - **Memory records are scoped and bounded.** Forget cutoffs in `<state>/memory-ignore.json` are keyed
   `<scope>|<prefix>` (for example `repo:acme/widgets|openflow/demo/`); a legacy key (starts with
@@ -731,7 +740,9 @@ authority where this and it disagree.
   slugs to the entry's own folder saves in place; for MCP, case is part of the key (`Docs` ≠ `docs`)
   while text the host reduces to the stored key (`my server` for `my-server`) is an edit. (Editing
   without renaming addresses a skill by its folder, so a folder `my-skill` with
-  frontmatter name `My Skill` is not 409); a skill create claims the folder with a non-recursive
+  frontmatter name `My Skill` is not 409; a legacy skill, from the old `.openflow/skills` folder, saves under
+  its own name without `create` as a plain migration, and under any other name sends `create` and is 409
+  `name-taken` when the profile holds it); a skill create claims the folder with a non-recursive
   `mkdir` (concurrent creates: one 200, the rest 409; a failed `SKILL.md` write removes the empty
   folder), and the panels keep the editor open on a 409. The PUT answer's
   `name` is the stored key.

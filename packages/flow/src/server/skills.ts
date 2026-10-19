@@ -35,7 +35,8 @@ export function serverKeyOf(name: string) {
 export function skillTarget(draft: SkillDraft) {
   const name = draft.name.trim()
   if (!draft.original) return { name, create: true, address: name }
-  if (draft.legacy) return { name, create: false, address: name }
+  // Under its own name it is the plain migration into the profile; under any other the profile may already hold that name.
+  if (draft.legacy) return { name, create: name !== draft.original && name !== draft.shown, address: name }
   const stays = name === draft.original || name === draft.shown || folderOf(name) === draft.original
   return stays ? { name, create: false, address: draft.original } : { name, create: true, address: name }
 }

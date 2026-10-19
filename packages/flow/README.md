@@ -271,7 +271,9 @@ later edits are applied on top of that full set; it is reported as unsynced and
 written to the project when the read succeeds. Other projects never
 read or push it, a project switch leaves it in place, and an edit made before the
 project is known is reported as not persisted. A read that finishes after a switch
-cannot write into the next project.
+cannot write into the next project. A role deleted while the project's read is
+still pending stays deleted: when the read returns, the stored copy is removed
+too and the id is dropped from the pending key.
 Roles saved in this
 browser before that are copied once per browser (`openflow.customRolesMigrated.v1`),
 and nothing is
@@ -983,9 +985,12 @@ quiet turn, so a run another tab is still writing is not offered. A run log that
 cannot be saved raises the "run log not saved" notice once, and again only after a
 save has got through. A resumed run writes its own log first, before the
 model-catalog wait, already holding the finished cards' outputs and the carried
-session ids, and only then marks the interrupted log `stopped` with `resumedBy`
-naming the new run. If that first write fails, the interrupted run stays resumable
-and is closed by the first later write that succeeds; the notice says so.
+session ids. It marks the interrupted log `stopped` with `resumedBy` naming the
+new run, and releases the carried sessions of finished cards, only after the model
+check passes. An unknown model (for example a partial catalog right after a host
+restart) ends the new run at once and leaves the old run resumable, its sessions
+untouched. If the replacement's first write fails, the interrupted run stays
+resumable and is closed by the first later write that succeeds; the notice says so.
 
 Resuming splits that run log in two. Cards that finished keep their answers and
 never run again — reopening a finished card's session only bills. Cards that were
@@ -997,12 +1002,16 @@ and that nothing it produced was discarded — a card given no account of the
 silence re-answers what it already answered. A carried session the host reports
 lost starts as a fresh card: the full prompt, with no "same session" or
 "interrupted" wrapper, and orchestrators and subagents get their briefing again.
-That is the only case that switches to a fresh briefing: when a fresh card's first
-prompt is refused before the host accepts it, the retry sends the full first
-briefing again (an orchestrator's roster and rules, a critic's bar).
+That is the only case that switches to a fresh briefing. A card counts as briefed
+only once the host has accepted the prompt that carried its briefing: when a fresh
+card's first prompt is refused through all its retries and the card is
+re-dispatched, it gets the full briefing (an orchestrator's roster and rules, a
+critic's bar) and the run's attachments again. The scratch-directory note is
+likewise re-sent to a replacement session (a lost session, or an abandoned
+critic's).
 A carried id for a card that is no longer in the pipeline is skipped, and the
-sessions of cards that already finished are released when the resume starts, so
-they do not hold the project lock. The Resume button is disabled from the click
+sessions of cards that already finished are released once the model check passes,
+so they do not hold the project lock. The Resume button is disabled from the click
 until the run has started, so a tab cannot resume twice.
 
 **Isolated work is never touched by Resume.** When a run uses isolated working
@@ -1013,8 +1022,8 @@ runs in them, and is cleared at the end of the run unless the cleanup request
 itself was rejected (the cleanup swallows git failures, so a clean answer clears
 them). Old logs have no such field, and an old log that carries a `base` is
 tolerated and the field ignored. Resuming does not merge, remove or release any of
-those worktrees. After the replacement log is saved and the interrupted log is
-closed, the new log's `isolation` is seeded with the same trees (so a further
+those worktrees. The replacement log is saved with the same trees already in its
+`isolation` (so a further
 Resume lists them again) and one error-level notice says the interrupted run left
 isolated copies that may hold work not merged into the project. It lists at most 20
 of them and says how many more the log named; each shows the card, directory and
@@ -1162,7 +1171,10 @@ resources, reply and policy — an approval that leaves no trace is how a run
 quietly changes something nobody expected. Stopping a run rejects anything still
 pending rather than leaving the node waiting on an answer that will never come.
 Permission and question dialogs are keyed by session and request id together, so two
-sessions that reuse the same request id cannot overwrite each other.
+sessions that reuse the same request id cannot overwrite each other. A request is
+de-duplicated only while it is pending: the key is dropped once the reply is handed
+back, so a session resumed after a reap, whose request counter restarted, is asked
+and answered again.
 
 ### Questions during a run (human in the loop)
 
@@ -1227,8 +1239,10 @@ disabled in `mcp.json`) and from the project's MCP files.
 
 The **skills** button authors skills: each is a `SKILL.md` under the profile's
 `skills/<name>/`, which omp loads when a card's session starts. Skills authored
-by earlier builds under `.openflow/skills` are still listed, flagged `legacy`, and
-move to the profile when you save them. A card with its **skill** toggle off
+by earlier builds under `.openflow/skills` are still listed, flagged `legacy`. A
+legacy skill saves under its own name as a plain migration into the profile; under
+any other name, a name the profile already holds is refused with 409
+`name-taken`. A card with its **skill** toggle off
 starts with `--no-skills`.
 
 Existing server and skill names are addressed exactly as they are written: a name

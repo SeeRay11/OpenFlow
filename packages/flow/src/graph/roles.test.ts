@@ -20,8 +20,11 @@ const sent: { method: string; body: string }[] = []
 let stored: unknown = []
 /** Holds the read until it resolves: a host that is slow to answer. */
 let readGate: Promise<void> | undefined
+/** Makes every write to the project's `roles.json` fail. */
+let putFails = false
 
 beforeEach(() => {
+  putFails = false
   sent.length = 0
   stored = []
   readGate = undefined
@@ -31,6 +34,7 @@ beforeEach(() => {
       await readGate
       return Response.json(stored ?? { error: "unreadable" }, { status: stored === undefined ? 500 : 200 })
     }
+    if (putFails) return Response.json({ error: "disk full" }, { status: 500 })
     sent.push({ method, body: String(init?.body) })
     return Response.json({ saved: true })
   }) as typeof fetch
@@ -231,6 +235,40 @@ describe("roles written before the project's own were read", () => {
     expect(customRoles().map((entry) => entry.id)).toEqual(["A", "B"])
     expect(JSON.parse(sent[0].body).map((entry: Role) => entry.id)).toEqual(["A", "B"])
     expect(browser.data.has("openflow.customRolesPending.v1:/p")).toBe(false)
+  })
+
+  test("a role deleted while the read is still waiting stays deleted: not merged back from the project, and removed there", async () => {
+    browser.data.set("openflow.customRolesPending.v1:/p", JSON.stringify([{ ...browserOnly, id: "A", label: "A" }]))
+    const gate = Promise.withResolvers<void>()
+    readGate = gate.promise
+    stored = [{ ...browserOnly, id: "A", label: "A" }, mine]
+    const loading = hydrateCustomRoles("/p")
+
+    expect(customRoles().map((entry) => entry.id)).toEqual(["A"])
+    removeCustomRole("A")
+    expect(JSON.parse(browser.data.get("openflow.customRolesPending.v1:/p")!)).toEqual([])
+
+    gate.resolve()
+    await loading
+    expect(customRoles().map((entry) => entry.id)).toEqual(["mine"])
+    expect(JSON.parse(sent.at(-1)!.body).map((entry: Role) => entry.id)).toEqual(["mine"])
+  })
+
+  test("a role deleted after a push that failed does not come back on the next load", async () => {
+    browser.data.set("openflow.customRolesPending.v1:/p", JSON.stringify([{ ...browserOnly, id: "A", label: "A" }]))
+    putFails = true
+    stored = []
+    await hydrateCustomRoles("/p")
+    expect(customRoles().map((entry) => entry.id)).toEqual(["A"])
+    expect(browser.data.has("openflow.customRolesPending.v1:/p")).toBe(true)
+
+    removeCustomRole("A")
+
+    // The next page load: nothing is left in memory, and the project still has no copy.
+    putFails = false
+    forgetCustomRoles()
+    await hydrateCustomRoles("/p")
+    expect(customRoles()).toEqual([])
   })
 
   test("pending roles belong to their own project: another project neither reads, pushes nor clears them", async () => {

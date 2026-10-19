@@ -1112,9 +1112,10 @@ describe("permissions", () => {
 describe("the event stream", () => {
   const retry = { base: 1, cap: 2 }
 
-  test("a stream that drops mid-run is re-attached, and a replayed ask is answered once", async () => {
-    const h = harness({ behavior: { a: { hold: true } } })
-    const run = h.run(pipeline("a"), "go", { streamRetry: retry })
+  test("a stream that drops mid-run is re-attached, and a replayed ask still waiting is answered once", async () => {
+    const person = Promise.withResolvers<"once">()
+    const h = harness({ behavior: { a: { hold: true } }, onPermission: () => person.promise })
+    const run = h.run(pipeline("a"), "go", { streamRetry: retry, permissions: "manual" })
     await flush()
     expect(h.subscriptions()).toBe(1)
     h.ask("a", { id: "req-1", action: "read" })
@@ -1123,23 +1124,25 @@ describe("the event stream", () => {
     h.dropStream()
     await flush()
     expect(h.subscriptions()).toBe(2)
-    // The host replays what is still pending to the new subscriber, answered ask included, and a new one.
+    // The host replays what is still pending to the new subscriber, and a new one.
     h.ask("a", { id: "req-1", action: "read" })
     h.ask("a", { id: "req-2", action: "read" })
+    person.resolve("once")
     await flush()
 
-    expect(h.replies.map((reply) => reply.requestID)).toEqual(["req-1", "req-2"])
+    expect(h.replies.map((reply) => reply.requestID).sort()).toEqual(["req-1", "req-2"])
     h.release("a")
     await run.done
   })
 
-  test("a question replayed to the new subscriber is shown once", async () => {
+  test("a question still pending when the stream is replayed is shown once", async () => {
     const asked: string[] = []
+    const person = Promise.withResolvers<string[][]>()
     const h = harness({
       behavior: { a: { hold: true } },
-      onQuestion: async (request) => {
+      onQuestion: (request) => {
         asked.push(request.requestID)
-        return [["yes"]]
+        return person.promise
       },
     })
     const run = h.run(pipeline("a"), "go", { streamRetry: retry })
@@ -1150,10 +1153,14 @@ describe("the event stream", () => {
 
     h.dropStream()
     await flush()
+    // The host shows the request still waiting to the new subscriber.
     h.question("a", question)
     await flush()
 
     expect(asked).toEqual(["q-1"])
+    person.resolve([["yes"]])
+    await flush()
+    expect(h.questionReplies).toHaveLength(1)
     h.release("a")
     await run.done
   })
@@ -1340,15 +1347,36 @@ describe("run log", () => {
 
       disk.resolve()
       await flush()
-      // The catalog has still not answered, yet the replacement is on disk, carrying its session, and only then the old one is closed.
-      expect(written.map((entry) => entry.id)).toEqual([run.log.id, "run-old"])
+      // The catalog has not answered: the replacement is on disk, carrying its session, and the old log is still untouched.
+      expect(written.map((entry) => entry.id)).toEqual([run.log.id])
       expect(written[0].nodes[0].sessionID).toBe("ses-old")
       expect(written[0].status).toBe("running")
-      expect(written[1]).toMatchObject({ status: "stopped", resumedBy: run.log.id })
 
+      // Only once the models are known to exist is the interrupted log closed.
       catalog.resolve()
+      await flush()
+      expect(written.map((entry) => entry.id)).toEqual([run.log.id, "run-old"])
+      expect(written[1]).toMatchObject({ status: "stopped", resumedBy: run.log.id })
       h.release("a")
       await run.done
+    })
+
+    test("a resume that ends at once on an unknown model leaves the interrupted run resumable, and releases nothing", async () => {
+      const graph = pipeline("a->b")
+      graph.nodes[1].agent.model = "test/ghost-model"
+      const h = harness({ models: ["test/real-model"], release: true })
+      const written: RunLog[] = []
+      h.deps.saveRun = async (log) => void written.push(structuredClone(log))
+      const log = await h.run(graph, "go", {
+        resume: { a: "paid" },
+        sessions: { a: "ses-a", b: "ses-b", gone: "ses-gone" },
+        supersedes: { ...interrupted(), nodes: ["a", "b"].map((id) => ({ id, role: id, status: "running" as const })) },
+        catalogRetry: 0,
+      }).done
+
+      expect(log.status).toBe("error")
+      expect(written.some((entry) => entry.id === "run-old")).toBe(false)
+      expect(h.released).toEqual([])
     })
 
     test("when the replacement cannot be saved the old log stays resumable, and the failure is reported", async () => {
@@ -1450,6 +1478,22 @@ describe("run log", () => {
 
     describe("a first prompt the host refused before accepting it is sent again as the same first briefing", () => {
       const final = (answer: string) => block(JSON.stringify({ final: answer }))
+
+      test("a card whose first prompt was refused through every retry is briefed in full, with the run's files, when it is dispatched again", async () => {
+        const file = { id: "f2", name: "notes.md", mime: "text/markdown", url: "data:text/markdown;base64,AA", size: 2 }
+        const h = harness({
+          promptRefusedOnce: ["a"],
+          behavior: { root: { outputs: [dispatch("a"), dispatch("a"), final("done")] } },
+        })
+        // No backoff: the one refusal ends the card's turn with an error, and its session stays behind.
+        await h.run({ ...pipeline("root->a"), mode: "orchestration" as const, dispatches: 3 }, "do the thing", { rateLimitBackoff: 0, attachments: [file] }).done
+
+        const sent = h.promptLog.filter((entry) => entry.node === "a")
+        expect(sent).toHaveLength(1)
+        expect(sent[0].text).not.toContain("# A new assignment")
+        expect(sent[0].text).toContain("do a")
+        expect(h.sent.get("a")?.map((entry) => entry.name)).toEqual(["notes.md"])
+      })
 
       test("a card whose session is lost on its second turn is told the scratch directory again in the new session", async () => {
         const scratch = "/tmp/openflow-scratch/run-1"
@@ -1822,6 +1866,62 @@ describe("questions", () => {
     h.question("a", { id: "que-1", questions: [ask] })
     await flush()
 
+    expect(h.questionReplies).toHaveLength(1)
+    h.release("a")
+    await run.done
+  })
+
+  test("a question with the id of one already answered is answered again: a resumed session numbers its requests afresh", async () => {
+    const h = harness({ behavior: { a: { hold: true } }, onQuestion: async () => [["postgres"]] })
+    const run = h.run(pipeline("a"))
+    await flush()
+
+    h.question("a", { id: "que-1", questions: [ask] })
+    await flush()
+    h.question("a", { id: "que-1", questions: [ask] })
+    await flush()
+
+    expect(h.questionReplies).toHaveLength(2)
+    h.release("a")
+    await run.done
+  })
+
+  test("a permission with the id of one already answered is answered again", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+
+    h.ask("a", { id: "req-1", action: "read" })
+    await flush()
+    h.ask("a", { id: "req-1", action: "read" })
+    await flush()
+
+    expect(h.replies).toHaveLength(2)
+    h.release("a")
+    await run.done
+  })
+
+  test("an ask still waiting for a person is shown once however often the stream replays it", async () => {
+    const waiting = Promise.withResolvers<string[][]>()
+    let shown = 0
+    const h = harness({
+      behavior: { a: { hold: true } },
+      onQuestion: () => {
+        shown++
+        return waiting.promise
+      },
+    })
+    const run = h.run(pipeline("a"))
+    await flush()
+
+    h.question("a", { id: "que-1", questions: [ask] })
+    h.question("a", { id: "que-1", questions: [ask] })
+    await flush()
+    h.question("a", { id: "que-1", questions: [ask] })
+    expect(shown).toBe(1)
+
+    waiting.resolve([["postgres"]])
+    await flush()
     expect(h.questionReplies).toHaveLength(1)
     h.release("a")
     await run.done
@@ -3158,6 +3258,26 @@ describe("gauntlet mode", () => {
     const builds = h.promptLog.filter((entry) => entry.node === "builder")
     expect(builds[0].text).toContain("You are one card in an OpenFlow run")
     expect(builds[1].text).toContain("A new assignment")
+  })
+
+  test("each fresh session of a critic is told where to put what is not the work", async () => {
+    const scratch = "/tmp/openflow-scratch/run-1"
+    const h = harness({
+      scratch,
+      behavior: {
+        root: { output: dispatch("builder", "reviewer") },
+        builder: { output: "built it" },
+        reviewer: { output: "the bar still wins" },
+      },
+      models: ["openai/gpt-x"],
+    })
+    await h.run(gauntlet(["root->builder", "root->reviewer"], { bar: "the reference build", stall: 1 })).done
+
+    const verdicts = h.promptLog.filter((entry) => entry.node === "reviewer")
+    expect(verdicts.length).toBeGreaterThan(1)
+    for (const verdict of verdicts) expect(verdict.text).toContain(scratch)
+    // The builder keeps its session, so it hears it once.
+    expect(h.promptLog.filter((entry) => entry.node === "builder" && entry.text.includes(scratch))).toHaveLength(1)
   })
 
   test("rounds that change nothing stop the run", async () => {

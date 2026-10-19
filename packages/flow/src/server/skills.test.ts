@@ -44,7 +44,7 @@ describe("a change of name that lands in the folder the skill already has is an 
 
   test("a new skill is a create, and the old project folder's skills keep their own name", () => {
     expect(skillTarget({ name: "My Skill" }).create).toBe(true)
-    expect(skillTarget({ original: "old", shown: "old", name: "old2", legacy: true })).toMatchObject({ create: false, address: "old2" })
+    expect(skillTarget({ original: "old", shown: "old", name: "old2", legacy: true })).toMatchObject({ create: true, address: "old2" })
   })
 })
 
@@ -93,5 +93,18 @@ describe("mcpTarget", () => {
     expect(mcpTarget("docs", "docs")).toEqual({ create: false, address: "docs" })
     expect(mcpTarget("my-server", "my server")).toEqual({ create: false, address: "my-server" })
     expect(mcpTarget("my-server", " my-server ")).toEqual({ create: false, address: "my-server" })
+  })
+})
+
+describe("a skill from the old project folder", () => {
+  const old = { original: "old", shown: "old", legacy: true }
+
+  test("saved under its own name it is the plain migration", () => {
+    expect(skillTarget({ ...old, name: "old" })).toEqual({ name: "old", create: false, address: "old" })
+  })
+
+  test("saved under any other name the host must refuse a name the profile already has, so it cannot overwrite that skill", () => {
+    expect(skillTarget({ ...old, name: "docs" })).toEqual({ name: "docs", create: true, address: "docs" })
+    expect(skillTarget({ ...old, name: "fresh" })).toEqual({ name: "fresh", create: true, address: "fresh" })
   })
 })

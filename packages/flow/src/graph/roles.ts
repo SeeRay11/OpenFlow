@@ -174,6 +174,7 @@ let synced = false
  */
 export function forgetCustomRoles() {
   hydrations.cancel()
+  removedWhileUnsynced.clear()
   synced = false
   scope = undefined
   // What was pending stays under its own project's key: it is that project's, and no other project may read it.
@@ -211,6 +212,15 @@ function clearPending(project: string) {
     // Nothing was stored, or nothing can be: either way there is nothing left to clear.
   }
 }
+
+/** Takes one role out of the project's pending key, when there is one. */
+function writePendingIfPresent(project: string, id: string) {
+  const kept = loadPending(project)
+  if (kept.some((entry) => entry.id === id)) writePending(project, kept.filter((entry) => entry.id !== id))
+}
+
+/** Ids deleted since the project's roles were last unread: the project's own copy must not bring them back. Scope-bound. */
+const removedWhileUnsynced = new Set<string>()
 
 /** Reads of the project's roles in flight; only the newest, and none since a project switch, may write. */
 const hydrations = latest()
@@ -278,15 +288,20 @@ export async function hydrateCustomRoles(project: string) {
   if (!current()) return
   // Edits made since `forgetCustomRoles()` are in the signal; the project's pending key adds what an earlier page load left unsynced.
   const local = synced ? [] : mergeRoles(loadPending(project), customRoles())
-  const plan = rolesOnOpen(Array.isArray(stored) ? (stored as Role[]) : undefined, loadCustomRoles(), readMigrated(), local)
+  // What was deleted while this waited is not brought back by the project's copy, and is removed from the project too.
+  const fromProject = Array.isArray(stored) ? (stored as Role[]).filter((entry) => !removedWhileUnsynced.has(entry.id)) : undefined
+  const removedFromProject = Array.isArray(stored) && fromProject !== undefined && fromProject.length !== stored.length
+  const plan = rolesOnOpen(fromProject, loadCustomRoles(), readMigrated(), local)
   if (!plan) {
     if (customRoles().length) syncError?.("this project's roles could not be read, so the roles you made are kept in this browser until they can be saved to it")
     return
   }
   setCustomRoles(plan.roles)
   synced = true
-  if (plan.push) {
-    // A role written before the store existed becomes a project file rather than staying one cleared cache away from gone.
+  removedWhileUnsynced.clear()
+  if (plan.push || removedFromProject) {
+    // A role written before the store existed becomes a project file rather than staying one cleared cache away from gone;
+    // a deletion made while the read waited is written through the same way.
     const pushed = await store.saveRoles(plan.roles).then(() => true, () => false)
     if (!current()) return
     if (!pushed) return syncError?.("custom roles were not saved to this project")
@@ -324,6 +339,10 @@ export function saveCustomRole(input: { id?: string; label: string; color: strin
 export function removeCustomRole(id: string) {
   const next = customRoles().filter((entry) => entry.id !== id)
   setCustomRoles(next)
+  // Before the project's roles are read its copy would be merged back when the read answers: remember the deletion.
+  if (!synced) removedWhileUnsynced.add(id)
+  // And the pending copy goes at once, so a push that failed earlier cannot bring it back on the next load.
+  if (scope !== undefined) writePendingIfPresent(scope, id)
   return persistCustomRoles(next)
 }
 
