@@ -3,8 +3,8 @@ phase: 07-integration-migration-removal
 verified: 2026-10-19T18:02:47Z
 status: passed
 score: 4/5 must-haves verified (5th is QA-03 pending-audit by the orchestrator)
-covered_files: [".github/workflows/openflow.yml", ".planning/REQUIREMENTS.md", ".planning/ROADMAP.md", ".planning/phases/07-integration-migration-removal/07-01-SUMMARY.md", ".planning/phases/07-integration-migration-removal/07-INTEGRATION.md", ".planning/phases/07-integration-migration-removal/07-PARITY.md", "FLOW.md", "openflow.ps1", "openflow.sh", "openflow.ts", "packages/flow/CHANGELOG.md", "packages/flow/README.md", "packages/flow/lib/host/gate.ts", "packages/flow/scripts/check-no-opencode.ts", "packages/flow/server-app.ts", "packages/flow/server.ts", "packages/flow/src/graph/migrate.test.ts", "packages/flow/src/graph/migrate.ts", "packages/flow/vite.config.ts", "packages/flow/vite/flow-store.ts"]
-covered_digest: "v3:sha256:bccfca1cddf8c5150da3a020dc0593ad58114a7c602c3c10bb924c7677028996"
+covered_files: [".github/workflows/openflow.yml", ".planning/phases/07-integration-migration-removal/07-01-SUMMARY.md", ".planning/phases/07-integration-migration-removal/07-INTEGRATION.md", ".planning/phases/07-integration-migration-removal/07-PARITY.md", "FLOW.md", "openflow.ps1", "openflow.sh", "openflow.ts", "packages/flow/CHANGELOG.md", "packages/flow/README.md", "packages/flow/lib/host/gate.ts", "packages/flow/scripts/check-no-opencode.ts", "packages/flow/server-app.ts", "packages/flow/server.ts", "packages/flow/src/graph/migrate.test.ts", "packages/flow/src/graph/migrate.ts", "packages/flow/vite.config.ts", "packages/flow/vite/flow-store.ts"]
+covered_digest: "v3:sha256:c234172a28135e9088be687a87adb866995a48e62f0057d071f1498fcf07d0a4"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:

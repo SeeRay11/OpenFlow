@@ -1,6 +1,6 @@
 ---
 phase: 06-omp-settings-terminal
-verified: 2026-10-19T18:01:40Z
+verified: 2026-10-19T18:17:10Z
 status: passed
 score: 5/5 must-haves verified
 covered_files:
@@ -22,7 +22,7 @@ covered_files:
   - packages/flow/src/ui/terminal-dock.tsx
   - packages/flow/src/ui/terminal-frames.ts
   - packages/flow/src/ui/terminal-session.ts
-covered_digest: "v1:sha256:7940870c2f452a9c935a719640b1bea5d47491820466ecb7424545542a85fb59"
+covered_digest: "v1:sha256:d9fb19d113418c2191454dac0a186d9d32a42fa5e297344af328c16f4091f527"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
@@ -30,7 +30,7 @@ re_verification:
   previous_score: 5/5
   previous_verified: 2026-10-19T00:00:00Z
   previous_head: 785370f5e
-  current_head: 9491ea496
+  current_head: 38ab37070
   gaps_closed: []
   gaps_remaining: []
   regressions: []
@@ -39,7 +39,7 @@ re_verification:
 # Phase 6: Omp Settings and Terminal Verification Report
 
 **Phase Goal:** Users can configure Omp from the app and run omp interactively in a bottom-docked PTY terminal.
-**Verified:** 2026-10-19T18:01:40Z (re-verification at HEAD `9491ea496`; initial report at `785370f5e`)
+**Verified:** 2026-10-19T18:17:10Z (re-verification at HEAD `38ab37070`; initial report at `785370f5e`)
 **Status:** passed
 **Re-verification:** Yes — after gate-hardening commits `b975f932b`, `c9d388905`, `9491ea496`; no regressions found.
 
@@ -95,7 +95,7 @@ All other phase-6 files are byte-identical to the initial verification. The nota
 | omp-settings.tsx options tab | `lib/omp-config/config.ts` via routes | fetch `omp config` set/reset per key | WIRED | `src/server/omp-config` client → host routes → `parts.config.set/reset` (spawns real omp); unchanged |
 | settings save | subsequent card runs | `launch.ts` reads `input.settings` | WIRED | binary/profile/approval/session-minutes/extensions flow into omp argv; `resetOmpCheck` invalidates status cache; unchanged |
 | terminal-dock.tsx | `lib/terminal` host via WS | one-shot ticket + `ptyHeaders` + `encodeResize`/frames | WIRED | `ticketInit` → `POST ticket` → `terminalUpgrade` → socket; dev transport now via `attachDevUpgrade`, same policy path |
-| app.tsx | TerminalDock | `terminalOpen` signal | WIRED | `app.tsx:245,423,1135-1140,1523-1524`; unchanged |
+| app.tsx | TerminalDock | `terminalOpen` signal | WIRED | `app.tsx` terminal signal + `<TerminalDock open={...}>`; unchanged |
 
 ### Data-Flow Trace (Level 4)
 
@@ -141,8 +141,8 @@ None — all truths verified by code + passing tests on the current tree + live 
 
 ### Gaps Summary
 
-No gaps. Re-verification at HEAD `9491ea496` confirms all five success criteria still hold: the six changed files contain only the retired-setting migration, the removed planner-questions field, and the dev-host transport rewire (same policy path, new tests) plus comment/test updates. Nothing regressed.
+No gaps. Re-verification at HEAD `38ab37070` confirms all five success criteria still hold: the six changed files contain only the retired-setting migration, the removed planner-questions field, and the dev-host transport rewire (same policy path, new tests) plus comment/test updates. Nothing regressed.
 
 ---
-_Verified: 2026-10-19T18:01:40Z_
+_Verified: 2026-10-19T18:17:10Z_
 _Verifier: Claude (gsd-verifier, Verify6)_
