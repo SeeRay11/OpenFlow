@@ -22,11 +22,13 @@
  *    `host_uri_result`, `cancel`) are appended as one JSON line each to the file named by STUB_OMP_LOG;
  *  - stdin EOF ends the process with exit 0 once stdout is flushed.
  *
- * Script (JSON file named by STUB_OMP_SCRIPT, read at each `prompt`): an ordered array whose items are
+ * Script (JSON file named by STUB_OMP_SCRIPT, read at each `prompt` before it is acked, so a test may
+ * replace the file as soon as `prompt` resolves): an ordered array whose items are
  *  - a frame object, written to stdout; every string value equal to "$promptId" becomes the prompt's id;
  *  - `{ "delayMs": n }`: wait n ms;
  *  - `{ "waitFor": "<frame type>" }`: pause until the host has sent a frame of that type (the
  *    approval and host-tool round trips);
+ *  - `{ "hang": true }`: pause until `abort` (a turn that only an interrupt ends);
  *  - `{ "exit": code }`: die mid-turn.
  * It should end with `prompt_result` and `session_settled` frames, as omp does. `abort` stops a
  * playing script and writes `prompt_result` (status "aborted") plus `session_settled` instead.
@@ -108,12 +110,22 @@ function substitute(value: unknown, promptId: unknown): unknown {
   return value
 }
 
-async function play(id: unknown) {
+function readScript(): Array<Record<string, unknown>> {
   const path = env.STUB_OMP_SCRIPT
-  const script: Array<Record<string, unknown>> = path ? JSON.parse(readFileSync(path, "utf8")) : []
+  return path ? JSON.parse(readFileSync(path, "utf8")) : []
+}
+
+async function play(id: unknown, script: Array<Record<string, unknown>>) {
   let aborted = false
   const key = String(id)
-  playing = { id: key, abort: () => (aborted = true) }
+  const stopped = Promise.withResolvers<void>()
+  playing = {
+    id: key,
+    abort: () => {
+      aborted = true
+      stopped.resolve()
+    },
+  }
   for (const item of script) {
     if (aborted) break
     if (typeof item.delayMs === "number") {
@@ -121,6 +133,10 @@ async function play(id: unknown) {
       continue
     }
     if (typeof item.exit === "number") process.exit(item.exit)
+    if (item.hang === true) {
+      await stopped.promise
+      continue
+    }
     if (typeof item.waitFor === "string") {
       const type = item.waitFor
       if (!received.some((frame) => frame.type === type)) {
@@ -198,8 +214,12 @@ function handle(frame: Frame) {
         refuse(id, type, "Agent is already processing a prompt", "busy")
         return
       }
-      respond(id, type)
-      void play(id)
+      {
+        // Read before the ack: the host answers `prompt` the moment it is acked, and a test may rewrite the file then.
+        const script = readScript()
+        respond(id, type)
+        void play(id, script)
+      }
       return
     case "stub_emit":
       for (const item of Array.isArray(frame.frames) ? frame.frames : []) out(item as Frame)
