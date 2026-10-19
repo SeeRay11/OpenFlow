@@ -121,6 +121,8 @@ export type CreateSession = {
    * absent keeps the fallback of the first prompt's opening words.
    */
   title?: string
+  /** A throwaway session (a model test): the host keeps no record of it on disk, so it never shows up as history. */
+  transient?: boolean
 }
 
 export type SessionRow = {

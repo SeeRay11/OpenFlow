@@ -245,10 +245,17 @@ delete the repo.
 **Switching project.** The folder picker (and the Runs menu) is disabled while a
 run is active, and the run keeps the project it started in: cards without a
 worktree, and the uplift planner's working directory, stay in that project even
-if the page is switched. `POST /flow/api/project` answers 409 `project-busy` while
-any omp process is live or starting, a session create is in flight, or an uplift
-planner is running; the picker shows the host's sentence. Idle sessions waiting
-to be resumed do not count. Terminals belong to a project too (see
+if the page is switched. Run and Resume are disabled while the picker is open, and
+the page checks again that no run is active before it asks the host to switch (if
+the host moved first, the page switches it back). `POST /flow/api/project` answers
+409 `project-busy` only while engine work is live: a session starting, a create in
+flight, a turn running, a dialog waiting, or an uplift planner running. It checks
+again right before applying the switch. An idle session (turn finished, waiting
+for its next prompt or the 30-minute reap) does not hold the project. The 409
+body carries `sessions`, the ids of the cards holding it (empty when only a planner
+or a create does). With ids, the page asks "N running card(s) in the current
+project. Stop them and switch?" and, on yes, deletes each session and retries once;
+with none it shows only the host's sentence. Terminals belong to a project too (see
 [Terminal](#terminal)), and so do custom roles: opening a project replaces the
 roles with that project's own `.openflow/roles.json`. Roles saved in this
 browser before that are copied once per browser (`openflow.customRolesMigrated.v1`),
@@ -361,7 +368,9 @@ disposed on purpose answers 404.
 across every run directory of the state root (the newest 2,000 run directories,
 then the newest 4,000 card directories) and re-attached from the directory it was
 first launched in; the new run id is kept for new work. The new request applies:
-model, permissions, swarm and tool toggles are the ones the run is asking for now.
+model, permissions, swarm mode, tool toggles and run follow the run that is asking
+now. A process that is already live keeps the settings it was launched with until
+it is next resumed.
 Using a session touches its run directory (at most once a second), so recently
 used runs rank newest. If the host cannot find the session (pruned, or deleted),
 the card starts fresh, once.
@@ -380,9 +389,11 @@ browser waits on a turn in slices of
 55 seconds, re-polling until the card settles or its timeout passes.
 
 **Event stream.** While a run is active the browser reconnects to
-`/flow/api/engine/events` by itself, waiting 250 ms and doubling up to 8 s. After a
-drop the host first sends `{"type":"flow.stream.reset"}`, then replays every
-permission and question that is still waiting, to the new subscriber only, so an
+`/flow/api/engine/events` by itself, waiting 250 ms and doubling up to 8 s. When
+events went out while nobody was attached, or a client was dropped for falling
+behind, the next subscriber gets `{"type":"flow.stream.reset"}` once; a subscriber
+that attaches with no gap gets none. Every new subscriber is then sent each
+permission and question that is still waiting, so an
 open dialog survives a reconnect. A single event larger than the whole queue is
 replaced by a notice, and tool-call arguments and raw results are capped. Start-up
 notices (a tool toggle omp cannot enforce, a swarm that degraded to off) are sent
@@ -434,15 +445,17 @@ without a login contributes no models.
   environment (`*_API_KEY`) also reaches every card; the terminal never gets one.
 - **Whether a login works** is only known when something is sent. The **test**
   button beside a card's model runs one throwaway session (under its own run id,
-  released afterwards) and reports the
+  created with `transient: true` and released afterwards, so it is never listed
+  and leaves no files) and reports the
   provider's own answer — a real `403 Authorization failed` beats guessing.
 - **Prices** come from the catalog's per-million-token costs. A model the catalog
   quotes no price for is *unpriced*, never free: its tokens are shown and its
   money is not.
-- **A card with no model cannot run.** Preflight blocks it (*pick a model for this
-  node*) and the canvas shows `no model` on the card; there is no fallback to a
-  default. A retired or unknown model id fails preflight before a session is
-  created.
+- **A card with no model cannot run.** The app's preflight blocks it (*pick a model
+  for this node*) and the canvas shows `no model` on the card; there is no fallback
+  to a default model. The host does not refuse it: given a session with no model it
+  launches omp without `--model`, which uses omp's own default. A retired or unknown
+  model id fails preflight before a session is created.
 
 ## Omp settings
 
@@ -601,9 +614,10 @@ writes a retraction marker for each entry and records them in
 entries stay in Substrate until their ttl lapses, and the dialog says so. The
 records are scoped to the repository (`<scope>|<prefix>`, for example
 `repo:acme/widgets|openflow/demo/`), so forgetting in one repository hides nothing
-in another. A file from before that, with unscoped keys, still loads but hides
-nothing; an offline Forget recorded then stops hiding, while a Forget that reached
-Substrate keeps its retraction markers. If
+in another. A key from a build before that (it starts with `openflow/` and has no
+`|`) matches every repository, because hiding too much is the safe failure; new
+Forgets always write scoped keys. A Forget that reached Substrate keeps its
+retraction markers. If
 Substrate is unreachable, the host still ignores the entries locally but no marker is
 written, and it says that too. Forget covers the `-d<n>` subjects as well. A
 failed write does not break later Forgets, and an unreadable file other than a
@@ -922,9 +936,13 @@ with nothing alive to write `done`, `error` or `stopped` — while the sessions
 themselves are still held by the host and still addressable. A live run is guarded by
 `beforeunload`, and whatever gets past that is recoverable: the newest run log for
 this pipeline still marked `running`, whose `updatedAt` is more than five minutes
-old, is one the page abandoned, and **Resume** appears beside Run. Every write of a
+old, is one the page abandoned, and **Resume** appears beside Run. The offer is
+re-evaluated every 30 seconds, so a run abandoned a few minutes ago shows Resume
+without another refresh. Every write of a
 run log stamps `updatedAt`, and a 30-second heartbeat keeps it fresh through a long
-quiet turn, so a run another tab is still writing is not offered. Starting the
+quiet turn, so a run another tab is still writing is not offered. A run log that
+cannot be saved raises the "run log not saved" notice once, and again only after a
+save has got through. Starting the
 resumed run marks the old log `stopped` with `resumedBy`.
 
 Resuming splits that run log in two. Cards that finished keep their answers and
@@ -1131,9 +1149,12 @@ names the app makes up itself are slugged. A name must be one safe path segment 
 separator, no `..`, no NUL, not hidden); an MCP server name must also be a usable
 JSON key (not empty, not `__proto__`, no control characters, at most 128
 characters). Saving a server as disabled removes it from `enabledServers`, and
-deleting one removes it from both `enabledServers` and `disabledServers`. Deleting
-a name that does not exist answers 404 `{ "removed": false }`, and the panel shows
-that as an error.
+deleting one removes it from both `enabledServers` and `disabledServers`. Creating
+a new server or skill whose slugged name already belongs to a different entry
+answers 409 `{ "code": "name-taken" }` and changes nothing; the answer to a save
+carries the name actually stored, and the app shows that name. Deleting a name that
+does not exist answers 404 `{ "removed": false }`, which the app treats as a
+result rather than a failure, so renaming an entry still works.
 
 Values in `mcp.json` are plain text. For a secret, prefer an environment variable
 the host already holds.
@@ -1153,7 +1174,11 @@ reported the profile's directory — open Omp settings if you see that.
 
 The history icon in the titlebar opens a column on the left listing the card
 sessions the host holds for the current project, newest first, with a search box
-over them. Click one to read its turns; `←` goes back to the list.
+over them. Click one to read its turns; `←` goes back to the list. Sessions are per
+project: those of another project are not listed and answer 404 by id until that
+project is current again. A session created with `transient: true` (the model test)
+is never listed, writes no session or turns file, cannot be resumed, and has its
+state directory removed when it ends.
 
 These are not a history OpenFlow keeps separately. Every node is one omp session,
 its files are under `omp/<project>/<run>/<card>/` in the state directory, and

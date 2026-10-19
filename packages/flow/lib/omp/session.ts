@@ -101,8 +101,10 @@ export interface SessionHost {
   active(): string[]
   list(limit: number): Promise<SessionRow[]>
   live(): number
-  /** True while a process is live or starting, or a create is in flight: work that must not be moved to another project. Idle and lost records do not count. */
+  /** True while work is bound to the project it started in: a create in flight, or a session starting, with a turn in flight or with a dialog waiting. An idle live session (no turn, no dialog) does not count: it can be left or reaped. */
   working(): boolean
+  /** Ids of the sessions behind `working()` (starting, turn in flight, dialog waiting); empty when only a create in flight holds it. */
+  holders(): string[]
   /** The `permission.v2.asked` and `question.v2.asked` events of every dialog still waiting for an answer, as first raised: replayed to an event stream that attaches later. */
   pending(): BusEvent[]
   /** One tick: poll swarm trackers, reap idle sessions. Runs on a timer; exposed so tests need no clock. */
@@ -157,6 +159,8 @@ type CreateRequest = {
   permissions: "auto" | "manual"
   swarm?: SwarmMode
   reuse?: string
+  /** A throwaway session (the model test): nothing of it is kept; no metadata or turns file, never listed, not resumable, its state directory removed when it ends. */
+  transient?: boolean
   /** Cleaned and clipped; absent keeps the first-prompt fallback. */
   title?: string
 }
@@ -220,6 +224,8 @@ type Session = {
   held: BusEvent[]
   /** The latest metadata write: writes of one session are chained so an older snapshot never lands after a newer one. */
   saving?: Promise<void>
+  /** This host created the state directory for a transient session: it is removed when the session ends. */
+  scratch?: boolean
 }
 
 function bad(message: string): HttpError {
@@ -282,6 +288,9 @@ async function parseCreate(body: unknown, project: string): Promise<CreateReques
   if (input.title !== undefined && typeof input.title !== "string") throw bad("title must be a string")
   const title = cleanTitle(input.title ?? "", GIVEN_TITLE_LIMIT)
 
+  if (input.transient !== undefined && typeof input.transient !== "boolean") throw bad("transient must be a boolean")
+  if (input.transient === true && input.reuse !== undefined) throw bad("a transient session cannot be reused")
+
   const directory = input.directory === undefined ? project : input.directory
   if (typeof directory !== "string" || !path.isAbsolute(directory)) throw bad("directory must be an absolute path")
   const stat = await fs.stat(directory).catch(() => undefined)
@@ -296,6 +305,7 @@ async function parseCreate(body: unknown, project: string): Promise<CreateReques
     permissions,
     swarm: swarm as SwarmMode | undefined,
     reuse: input.reuse as string | undefined,
+    ...(input.transient === true ? { transient: true } : {}),
     ...(title ? { title } : {}),
   }
 }
@@ -429,6 +439,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   }
 
   async function writeMeta(session: Session) {
+    if (session.request.transient) return
     await fs.mkdir(session.stateDir, { recursive: true, mode: 0o700 })
     // The turns first: a listed session always has the history it is opened with.
     await writeAtomic(path.join(session.stateDir, TURNS_FILE), JSON.stringify(savedTurns(session)))
@@ -578,6 +589,11 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     const how = exit.signal ? `signal ${exit.signal}` : `code ${exit.code}`
     const tail = lastLine(exit.stderrTail)
     options.emit({ type: "flow.session.lost", data: { sessionID: session.id, reason: `omp exited (${how})${tail ? `: ${tail}` : ""}` } })
+    // Nothing of a transient session is kept: a lost one has nothing to resume.
+    if (session.request.transient) {
+      sessions.delete(session.id)
+      void stop(session, "disposed")
+    }
     trimRecords()
   }
 
@@ -723,7 +739,10 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   }
 
   /** Detaches and gracefully stops the process; resolves once it is gone. Called once per process: the handle is cleared first. */
-  async function stop(session: Session, state: Session["state"]) {
+  async function stop(session: Session, requested: Session["state"]) {
+    // Nothing of a transient session is kept, so there is nothing to resume: reaping or evicting it ends it.
+    const state = session.request.transient && requested === "idle" ? "disposed" : requested
+    if (state !== requested) sessions.delete(session.id)
     // A session that is still starting has no `proc` yet: its spawning process is the one to close.
     const proc = session.proc ?? session.spawning
     // What a person can still read of this conversation once the process is gone; a start that never became live has none.
@@ -746,6 +765,14 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     await proc?.close().catch(() => undefined)
     await session.starting?.catch(() => undefined)
     await Promise.all(writes)
+    if (state === "disposed") await scrub(session)
+  }
+
+  /** Removes the state directory of a transient session this host created (best effort, never anything else). */
+  async function scrub(session: Session) {
+    if (!session.scratch) return
+    session.scratch = false
+    await fs.rm(session.stateDir, { recursive: true, force: true }).catch(() => undefined)
   }
 
   /** Spawns the process of an idle, lost or new session; every caller during one start shares its flight. */
@@ -757,9 +784,16 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     return session.starting
   }
 
+  /** A session belongs to the current project iff its state directory is under the current state root: after a project switch the others are neither listed nor readable until their project is current again. */
+  function inProject(session: Session): boolean {
+    const root = path.resolve(deps.stateRoot())
+    const dir = path.resolve(session.stateDir)
+    return dir === root || dir.startsWith(root + path.sep)
+  }
+
   function find(id: string): Session {
     const session = sessions.get(id)
-    if (!session || session.state === "disposed") throw notFound(id)
+    if (!session || session.state === "disposed" || !inProject(session)) throw notFound(id)
     return session
   }
 
@@ -852,7 +886,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     if (closing) throw hostClosed()
     const id = request.reuse as string
     retired.delete(id)
-    const known = sessions.get(id)
+    const held = sessions.get(id)
+    const known = held && inProject(held) ? held : undefined
     const session = known ?? (await adopt(request, stateDir))
     void touchRun(session.stateDir)
     // Resumed for this request, not the one it was first created with: its model, permissions, swarm mode, tools and run follow the new body (and `releaseRun` and `holds` match the new run).
@@ -948,24 +983,34 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
 
   async function launch(request: CreateRequest, stateDir: string, signal?: AbortSignal): Promise<{ id: string }> {
     if (request.reuse) return reuse(request, stateDir, signal)
+    const existed = request.transient ? await fs.stat(stateDir).then(() => true, () => false) : true
     await fs.mkdir(stateDir, { recursive: true, mode: 0o700 })
     if (closing) throw hostClosed()
     // One card, one session at a time: a replaced critic session must not still hold the session directory.
+    let inherited = false
     for (const other of [...sessions.values()]) {
       if (other.request.runId !== request.runId || other.request.nodeId !== request.nodeId) continue
+      inherited ||= other.scratch === true
       sessions.delete(other.id)
       await stop(other, "disposed")
     }
     if (closing) throw hostClosed()
     // Registered before it starts, with no await in between, so releaseRun, dispose and close see it and the limit counts it.
     const session = makeSession(`s_${randomBytes(6).toString("hex")}`, request, stateDir)
+    session.scratch = request.transient === true && (!existed || inherited)
     sessions.set(session.id, session)
-    await beginFor(session, false, signal).catch((error: unknown) => {
+    await beginFor(session, false, signal).catch(async (error: unknown) => {
       if (sessions.get(session.id) === session) sessions.delete(session.id)
+      await scrub(session)
       throw error
     })
     if (session.state === "live") await writeMeta(session).catch(() => undefined)
     return { id: session.id }
+  }
+
+  /** Sessions that pin the project: starting, or live with a turn in flight or a dialog waiting for an answer. */
+  function holders(): string[] {
+    return [...sessions.values()].filter((session) => session.starting !== undefined || (session.state === "live" && (busy(session) || session.ui.pending() > 0))).map((session) => session.id)
   }
 
   function holds(runDir: string): boolean {
@@ -1051,7 +1096,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
 
     wait(id, request, signal) {
       const session = sessions.get(id)
-      if (!session || session.state === "disposed" || session.state === "lost") return Promise.resolve({ status: "missing" })
+      if (!session || session.state === "disposed" || session.state === "lost" || !inProject(session)) return Promise.resolve({ status: "missing" })
       session.lastActivity = Date.now()
       const ready = outcome(session)
       if (ready) return Promise.resolve(ready)
@@ -1112,6 +1157,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
 
     async turns(id, limit) {
       const session = sessions.get(id)
+      if (session && session.state !== "disposed" && !inProject(session)) throw notFound(id)
       if (!session || session.state === "disposed") {
         // A session this host no longer holds (finished, released, or from before a restart): its saved conversation, read from its directory. No process is started for it.
         const found = await locate(id)
@@ -1148,7 +1194,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     },
 
     async list(limit) {
-      const rows = [...sessions.values()].filter((session) => session.state !== "disposed").map(ofRow)
+      const rows = [...sessions.values()].filter((session) => session.state !== "disposed" && !session.request.transient && inProject(session)).map(ofRow)
       const known = new Set(rows.map((row) => row.id))
       const found: Found[] = []
       await scan((candidate) => {
@@ -1172,8 +1218,10 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     },
 
     working() {
-      return claims.size > 0 || [...sessions.values()].some((session) => session.state === "live" || session.starting !== undefined)
+      return claims.size > 0 || holders().length > 0
     },
+
+    holders,
 
     pending() {
       return [...sessions.values()].flatMap((session) => (session.state === "disposed" ? [] : session.ui.asked()))

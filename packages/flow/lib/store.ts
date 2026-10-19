@@ -158,6 +158,8 @@ export type FlowRequest = {
    * out from under it. Absent means nothing is ever locked.
    */
   projectLocked?: () => boolean
+  /** Ids of the sessions that hold the project lock, named in the `project-busy` refusal. */
+  projectHolders?: () => string[]
 }
 
 export type FlowResponse = { status: number; body: unknown }
@@ -251,7 +253,9 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
           if (result.removed) return ok(result)
           return { status: 404, body: { ...result, error: `mcp server "${name}" not found: nothing was removed` } }
         }
-        return ok(await writeMcpServer(file, name, await request.json()))
+        const saved = await writeMcpServer(file, name, await request.json())
+        if ("taken" in saved) return nameTaken(`mcp server "${saved.taken}" already exists and "${name}" would overwrite it: pick another name, or edit "${saved.taken}"`)
+        return ok(saved)
       } catch (error) {
         return { status: 400, body: { error: error instanceof Error ? error.message : String(error) } }
       }
@@ -272,8 +276,9 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     if (method === "PUT") {
       const profile = await request.profileDir?.()
       if (!profile) return noProfile()
-      const name = await skillFolder(path.join(profile, "skills"), raw)
-      return ok(await writeSkill(profile, name, await request.json()))
+      const folder = await skillFolder(path.join(profile, "skills"), raw)
+      if ("taken" in folder) return nameTaken(`skill "${folder.taken}" already exists and "${raw}" would overwrite it: pick another name, or edit "${folder.taken}"`)
+      return ok(await writeSkill(profile, folder.name, await request.json()))
     }
     if (method === "GET" || method === "DELETE") {
       if (!isSafeSegment(raw)) return { status: 400, body: { error: `invalid skill name "${raw}": use a single folder name` } }
@@ -339,20 +344,15 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
   }
 
   if (segments[0] === "project" && method === "POST") {
-    if (request.projectLocked?.())
-      return {
-        status: 409,
-        body: {
-          error: "a run is still active in this project: stop it, or wait for it to finish, before switching projects",
-          code: "project-busy",
-        },
-      }
+    if (request.projectLocked?.()) return projectBusy(request)
     const body = await request.json()
     const target = typeof body?.path === "string" ? body.path : undefined
     if (!target) return { status: 400, body: { error: "path required" } }
     const resolved = path.resolve(target)
     const stat = await fs.stat(resolved).catch(() => undefined)
     if (!stat || !stat.isDirectory()) return { status: 400, body: { error: `not a directory: ${resolved}` } }
+    // The lock was read before two awaits: a run may have started meanwhile.
+    if (request.projectLocked?.()) return projectBusy(request)
     setProjectPath(paths, resolved)
     // Remembered here rather than in the UI: the browser cannot write to the
     // host, and this is the one place every project switch passes through.
@@ -692,13 +692,32 @@ function isSafeSegment(value: string) {
  * The folder a skill save lands in: the exact name when that folder already
  * exists (so `MySkill` is edited in place), otherwise the slug of a new name.
  */
-async function skillFolder(root: string, raw: string) {
-  if (!isSafeSegment(raw)) return slug(raw)
-  const exists = await fs.lstat(path.join(root, raw)).then(
-    () => true,
-    () => false,
-  )
-  return exists ? raw : slug(raw)
+async function skillFolder(root: string, raw: string): Promise<{ name: string } | { taken: string }> {
+  const exists = async (name: string) =>
+    fs.lstat(path.join(root, name)).then(
+      () => true,
+      () => false,
+    )
+  if (isSafeSegment(raw) && (await exists(raw))) return { name: raw }
+  const name = slug(raw)
+  // A new name that slugs onto a different existing folder would overwrite somebody else's skill.
+  if (name !== raw && (await exists(name))) return { taken: name }
+  return { name }
+}
+
+function nameTaken(error: string): FlowResponse {
+  return { status: 409, body: { error, code: "name-taken" } }
+}
+
+function projectBusy(request: FlowRequest): FlowResponse {
+  return {
+    status: 409,
+    body: {
+      error: "a run is still active in this project: stop it, or wait for it to finish, before switching projects",
+      code: "project-busy",
+      sessions: request.projectHolders?.() ?? [],
+    },
+  }
 }
 
 const MCP_SCHEMA =
@@ -812,6 +831,8 @@ async function writeMcpServer(file: string, requested: string, body: unknown) {
     const servers = (config.value.mcpServers ?? {}) as Record<string, Record<string, unknown> | undefined>
     // An existing key is edited in place; only a new name is slugged.
     const name = Object.hasOwn(servers, requested) ? requested : mcpName(requested)
+    // A new name that slugs onto a different existing server would silently overwrite that one.
+    if (!Object.hasOwn(servers, requested) && Object.hasOwn(servers, name) && name !== requested.trim()) return { taken: name }
     const current = Object.hasOwn(servers, name) ? servers[name] : undefined
     const entry = buildMcpEntry(body, current)
     const disabled = stringList(config.value.disabledServers)

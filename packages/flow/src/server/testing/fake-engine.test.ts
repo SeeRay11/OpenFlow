@@ -110,6 +110,34 @@ describe("fake engine driver", () => {
     await engine.close()
     await expect(kept).resolves.toBeUndefined()
   })
+
+  test("a reset is sent once per gap, and not to a subscriber that attaches with none", async () => {
+    const engine = createFakeEngine()
+    /** Attaches a listener; a dropped stream rejects, which is not what this test is about. */
+    const attach = () => {
+      const seen: string[] = []
+      void engine.subscribe((event) => void seen.push(event.type), new AbortController().signal).catch(() => undefined)
+      return seen
+    }
+
+    expect(attach()).toEqual([])
+    // A healthy second subscriber with nothing missed hears no reset.
+    expect(attach()).toEqual([])
+
+    // A dropped client is a gap; the next subscriber is told once, the one after it is not.
+    engine.driver.dropStreams(new Error("gone"))
+    expect(attach()).toEqual(["flow.stream.reset"])
+    expect(attach()).toEqual([])
+
+    // Events published while nobody is attached are a gap too, with no drop involved.
+    const quiet = createFakeEngine()
+    const id = (await quiet.createSession(input("a"))).id
+    await quiet.prompt(id, "go")
+    await quiet.waitForIdle(id)
+    const late: string[] = []
+    void quiet.subscribe((event) => void late.push(event.type), new AbortController().signal)
+    expect(late).toEqual(["flow.stream.reset"])
+  })
 })
 
 test("two engines share nothing", async () => {

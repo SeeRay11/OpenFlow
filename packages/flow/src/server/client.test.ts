@@ -505,6 +505,7 @@ describe("testModel", () => {
     expect(create?.body).toMatchObject({
       card: { key: "openflow-model-test" },
       model: "anthropic/claude-opus-5",
+      transient: true,
     })
     expect(seen.find((entry) => entry.path.endsWith("/prompt"))?.body).toEqual({ text: "Reply with the single word ok." })
     expect(seen.find((entry) => entry.method === "DELETE")).toMatchObject({ path: `${ENGINE_BASE}/sessions/ses_1` })

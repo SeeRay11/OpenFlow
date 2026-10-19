@@ -1228,6 +1228,33 @@ describe("run log", () => {
     expect(h.notices.some((notice) => notice.text.includes("disk full"))).toBe(true)
   })
 
+  test("a store that keeps failing is reported once, and again only after a write got through", async () => {
+    const h = harness({ behavior: { a: { hold: true } } })
+    let failing = true
+    let writes = 0
+    h.deps.saveRun = async () => {
+      writes += 1
+      if (failing) throw new Error("disk full")
+    }
+    const run = h.run(pipeline("a"), "go", { checkpointEvery: 10_000_000, heartbeatEvery: 1 })
+    for (let tries = 0; tries < 50 && writes < 4; tries++) await flush()
+    const failures = () => h.notices.filter((notice) => notice.text.includes("disk full"))
+    expect(writes).toBeGreaterThanOrEqual(4)
+    expect(failures()).toHaveLength(1)
+
+    failing = false
+    const recovered = writes
+    for (let tries = 0; tries < 50 && writes < recovered + 2; tries++) await flush()
+    failing = true
+    const failedAgain = writes
+    for (let tries = 0; tries < 50 && writes < failedAgain + 2; tries++) await flush()
+
+    expect(failures()).toHaveLength(2)
+    failing = false
+    h.release("a")
+    await run.done
+  })
+
   test("checkpoints what has finished while the run is still going", async () => {
     // The failure this covers: a long run, the tab closed at minute 25, and
     // nothing on disk because the only write happened after the last node.

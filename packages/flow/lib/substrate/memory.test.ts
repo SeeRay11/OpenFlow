@@ -758,12 +758,18 @@ describe("forget is scoped to the repository", () => {
     expect(Object.keys(saved.cutoffs).sort()).toEqual(["repo:acme/gadgets|openflow/demo/", "repo:acme/widgets|openflow/demo/"])
   })
 
-  test("a cutoff file written before keys were scoped still loads and hides nothing in any repository", async () => {
-    await substrate.write(write("run-a", "x", "kept outcome"))
+  test("a cutoff written before keys were scoped hides the entries it names in every repository, and survives a rewrite", async () => {
+    await substrate.write(write("run-a", "x", "legacy-forgotten outcome"))
     await mkdir(join(dir, "state"), { recursive: true })
     await writeFile(join(dir, "state", "memory-ignore.json"), JSON.stringify({ version: 1, cutoffs: { "openflow/demo/": 9_999_999_999_999 } }))
-    const result = await substrate.read(read("run-b", "y"))
-    expect(result.items.map((item) => item.subject)).toEqual(["openflow/demo/run-a/x"])
+    expect((await substrate.read(read("run-b", "y"))).items).toEqual([])
+    const listing = await substrate.handle(new Request(`http://host${MEMORY_ROUTES.entries}?pipeline=demo`))
+    const entries = (await listing?.json()) as { items: Array<{ retracted: boolean }> }
+    expect(entries.items.map((item) => item.retracted)).toEqual([true])
+
+    // Another pipeline is untouched by the legacy prefix.
+    await substrate.write(write("run-a", "z", "other pipeline cache outcome", { pipeline: "other" }))
+    expect((await substrate.read(read("run-b", "y", { pipeline: "other" }))).items).toHaveLength(1)
 
     await substrate.forget({ pipeline: "demo", runId: "run-a" })
     const saved = JSON.parse(await readFile(join(dir, "state", "memory-ignore.json"), "utf8")) as { cutoffs: Record<string, number> }

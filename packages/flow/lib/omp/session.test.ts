@@ -1889,16 +1889,37 @@ hosted("session files and project capture", () => {
     expect(h.launches[0]?.stateDir).toBe(path.join(rootOf(h.project), "run1", "n1"))
   })
 
-  test("working is true while a process is live, and false for a reaped or disposed session", async () => {
+  test("an idle live session does not hold the project, a turn in flight does and is named, and a reaped session never does", async () => {
     expect(host.working()).toBe(false)
-    const { id } = await open()
+    const { id, proc } = await open()
+    expect(host.live()).toBe(1)
+    expect(host.working()).toBe(false)
+    expect(host.holders()).toEqual([])
+
+    await host.prompt(id, { text: "go" })
     expect(host.working()).toBe(true)
+    expect(host.holders()).toEqual([id])
+    finish(proc)
+    expect(host.working()).toBe(false)
+
     await host.maintain(Date.now() + 24 * 60 * 60_000)
     expect(host.live()).toBe(0)
     expect(host.working()).toBe(false)
     await host.prompt(id, { text: "wake up" })
     expect(host.working()).toBe(true)
     await host.dispose(id)
+    expect(host.working()).toBe(false)
+    expect(host.holders()).toEqual([])
+  })
+
+  test("a session waiting on a dialog holds the project even with no turn in flight", async () => {
+    const { id, proc } = await open({ ...BODY, permissions: "manual" })
+    await host.prompt(id, { text: "go" })
+    proc.emit(frames.approval("r1", "Allow tool: bash\ncommand: ls"))
+    finish(proc)
+    expect(host.working()).toBe(true)
+    expect(host.holders()).toEqual([id])
+    host.replyPermission(id, "r1", "once")
     expect(host.working()).toBe(false)
   })
 
@@ -1992,5 +2013,95 @@ hosted("finding persisted sessions under a bounded scan", () => {
     } finally {
       spy.mockRestore()
     }
+  })
+})
+
+hosted("sessions of another project", () => {
+  /** A host whose project (and so state root) can be switched, as the canvas does when nothing is working. */
+  function switchable() {
+    const current = { project: h.project, root: path.join(h.stateRoot, "a") }
+    const other = { project: path.join(h.dir, "project-b"), root: path.join(h.stateRoot, "b") }
+    const hosted = createSessionHost({ ...h.deps, project: () => current.project, stateRoot: () => current.root }, { emit: (event) => events.push(event), tickMs: 3_600_000 })
+    return {
+      host: hosted,
+      async switchToB() {
+        await fs.mkdir(other.project, { recursive: true })
+        current.project = other.project
+        current.root = other.root
+      },
+      switchToA() {
+        current.project = h.project
+        current.root = path.join(h.stateRoot, "a")
+      },
+    }
+  }
+
+  test("after a project switch the old project's sessions are neither listed nor readable, and are again once it is current", async () => {
+    const scoped = switchable()
+    try {
+      const { id } = await scoped.host.create(BODY)
+      const proc = h.fake.procs.at(-1) as FakeProcess
+      await scoped.host.prompt(id, { text: "secret of project A" })
+      proc.emit(frames.messageEnd("m1", assistantMessage({ texts: ["answer in A"] })))
+      finish(proc)
+      expect((await scoped.host.list(10)).map((row) => row.id)).toEqual([id])
+
+      await scoped.switchToB()
+      expect(await scoped.host.list(10)).toEqual([])
+      expect((await failure(scoped.host.turns(id, 10))).status).toBe(404)
+      expect((await failure(scoped.host.final(id))).status).toBe(404)
+      expect((await failure(scoped.host.steps(id))).status).toBe(404)
+      expect((await failure(scoped.host.calls(id, 10))).status).toBe(404)
+      expect((await failure(scoped.host.prompt(id, { text: "x" }))).status).toBe(404)
+      expect(await scoped.host.wait(id, {})).toEqual({ status: "missing" })
+      expect((await failure(scoped.host.create({ ...BODY, runId: "other", directory: h.project, reuse: id }))).status).toBe(404)
+
+      scoped.switchToA()
+      expect((await scoped.host.list(10)).map((row) => row.id)).toEqual([id])
+      expect((await scoped.host.turns(id, 10)).map((turn) => turn.text)).toContain("answer in A")
+    } finally {
+      await scoped.host.close()
+    }
+  })
+})
+
+hosted("transient sessions", () => {
+  test("a transient session writes no metadata or turns, is never listed or resumable, and its state directory is gone once it is disposed", async () => {
+    const { id } = await open({ ...BODY, transient: true })
+    await host.prompt(id, { text: "is this model alive?" })
+    expect((await host.list(10)).map((row) => row.id)).not.toContain(id)
+    expect(await fs.readdir(nodeDir("run1"))).not.toContain(".openflow-session.json")
+    expect(await fs.readdir(nodeDir("run1"))).not.toContain(".openflow-turns.json")
+
+    await host.dispose(id)
+    expect(await fs.stat(nodeDir("run1")).then(() => true, () => false)).toBe(false)
+    expect(await host.list(10)).toEqual([])
+    expect((await failure(host.prompt(id, { text: "again" }))).status).toBe(404)
+    expect((await failure(host.create({ ...BODY, runId: "run2", reuse: id }))).status).toBe(404)
+  })
+
+  test("releasing the run removes a transient session's directory too, and a reaped one is ended rather than left unresumable", async () => {
+    const reaped = await open({ ...BODY, runId: "r1", transient: true })
+    await host.maintain(Date.now() + 24 * 60 * 60_000)
+    expect(await host.wait(reaped.id, {})).toEqual({ status: "missing" })
+    expect(await fs.stat(nodeDir("r1")).then(() => true, () => false)).toBe(false)
+
+    await open({ ...BODY, runId: "r2", transient: true })
+    expect(await host.releaseRun("r2")).toBe(1)
+    expect(await fs.stat(nodeDir("r2")).then(() => true, () => false)).toBe(false)
+  })
+
+  test("a directory that already held a session is never removed by a transient one that shared it", async () => {
+    const kept = await open({ ...BODY, runId: "shared" })
+    await host.dispose(kept.id)
+    const { id } = await open({ ...BODY, runId: "shared", transient: true })
+    await host.dispose(id)
+    expect(await fs.readdir(nodeDir("shared"))).toContain(".openflow-session.json")
+  })
+
+  test.each([["yes"], [1], [null]])("transient %p is a 400, and so is transient with reuse", async (value) => {
+    expect((await failure(host.create({ ...BODY, transient: value }))).status).toBe(400)
+    expect((await failure(host.create({ ...BODY, transient: true, reuse: "s_000000000000" }))).status).toBe(400)
+    expect(h.fake.procs).toHaveLength(0)
   })
 })

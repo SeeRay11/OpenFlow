@@ -245,7 +245,7 @@ describe.skipIf(process.platform === "win32")("the host's children under the vit
     }
   })
 
-  test("a project switch is refused while a card's omp process is live and allowed once the session is gone", async () => {
+  test("a project switch is refused while a card's turn is running, naming the session, and allowed once it is stopped", async () => {
     const bin = path.join(stateDir, "bin")
     await fs.mkdir(bin)
     await fs.writeFile(path.join(stateDir, "script.json"), "[]")
@@ -272,9 +272,17 @@ describe.skipIf(process.platform === "win32")("the host's children under the vit
         expect(created.status).toBe(200)
         const { id } = (await created.json()) as { id: string }
 
+        // An idle live session does not pin the project.
+        const idle = await send("/flow/api/project", "POST", { path: scratch })
+        expect(idle.status).toBe(200)
+
+        // The stub holds a turn open until it is aborted.
+        await fs.writeFile(path.join(stateDir, "script.json"), JSON.stringify([{ hang: true }]))
+        expect((await send(`/flow/api/engine/sessions/${id}/prompt`, "POST", { text: "go" })).status).toBeLessThan(300)
+
         const refused = await send("/flow/api/project", "POST", { path: elsewhere })
         expect(refused.status).toBe(409)
-        expect(await refused.json()).toMatchObject({ code: "project-busy" })
+        expect(await refused.json()).toMatchObject({ code: "project-busy", sessions: [id] })
 
         expect((await send(`/flow/api/engine/sessions/${id}`, "DELETE")).status).toBe(200)
         expect((await send("/flow/api/project", "POST", { path: elsewhere })).status).toBe(200)

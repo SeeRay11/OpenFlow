@@ -16,10 +16,12 @@ export type EngineHost = {
   /** Sessions with a process attached right now. */
   live(): number
   /**
-   * True while an omp process is live or starting, a create is in flight or a turn is running: work bound to the project it was started in.
-   * Idle sessions waiting to be resumed hold no process and do not count.
+   * True while work is bound to the project it was started in: a create in flight, or a session that is starting, running a turn or waiting on a dialog.
+   * Idle live sessions (no turn, no dialog) and reaped ones hold nothing and do not count.
    */
   working(): boolean
+  /** Ids of the sessions behind `working()`: starting, turn in flight, dialog waiting. */
+  holders(): string[]
   /** Forgets the cached model catalog: the profile's logins changed. */
   resetModels(): void
   /** Settles once the startup prune of old run state has finished (or the host was disposed first); it never rejects. */
@@ -50,6 +52,7 @@ export function createEngineHost(deps: EngineHostDeps): EngineHost {
     handle: guarded(routes),
     live: () => sessions.live(),
     working: () => sessions.working(),
+    holders: () => sessions.holders(),
     resetModels: models.reset,
     pruned: pruned.promise,
     async dispose() {

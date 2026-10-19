@@ -126,15 +126,23 @@ posix("the host's reach into the project", () => {
       new Request(`http://127.0.0.1${route}`, { method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }),
     ) as Promise<Response>
 
-  test("the project is locked while an omp process is live and free again once the session is gone", async () => {
+  test("an idle live session does not lock the project; a running turn does, names its session, and is freed by deleting it", async () => {
     expect(host.projectLocked()).toBe(false)
     const created = await call(engineRoutes.sessions, "POST", { runId: "run-1", nodeId: "n1", card: { key: "card-1", role: "Builder" }, directory: project, permissions: "auto" })
     expect(created.status).toBe(200)
     const { id } = (await created.json()) as { id: string }
+    expect(host.projectLocked()).toBe(false)
+    expect(host.projectHolders()).toEqual([])
+
+    // The stub holds a turn open until it is aborted.
+    writeFileSync(path.join(dir, "script.json"), JSON.stringify([{ hang: true }]))
+    expect((await call(sessionRoute(id, "/prompt"), "POST", { text: "go" })).status).toBeLessThan(300)
     expect(host.projectLocked()).toBe(true)
+    expect(host.projectHolders()).toEqual([id])
 
     expect((await call(sessionRoute(id, ""), "DELETE")).status).toBe(200)
     expect(host.projectLocked()).toBe(false)
+    expect(host.projectHolders()).toEqual([])
   })
 
   test("after dispose the host refuses probes with a 503 and answers a late event stream with an empty closed one", async () => {

@@ -1,6 +1,8 @@
 import { For, Show, createResource, createSignal, onCleanup } from "solid-js"
 import * as api from "../server/client"
+import { PROJECT_BUSY, switchFreeing } from "../server/project"
 import { store, type BrowseResult } from "../server/store"
+import { state } from "../state"
 import { IconBack, IconClose, IconFolder } from "./icons"
 
 /**
@@ -38,10 +40,16 @@ export function ProjectPicker(props: { current: string; onClose: () => void; onS
   }
 
   async function use(path: string) {
+    // The list can stay open while a run starts elsewhere on the page: look again before moving the host.
+    if (state.running) return setError(PROJECT_BUSY)
     setBusy(true)
     setError(undefined)
     try {
-      const paths = await store.setProject(path)
+      const paths = await switchFreeing(() => store.setProject(path), {
+        confirm: (question) => window.confirm(question),
+        release: api.release,
+      })
+      if (!paths) return
       api.disconnect()
       props.onSwitched(paths.project)
     } catch (failure) {

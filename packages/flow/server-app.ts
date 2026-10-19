@@ -49,6 +49,7 @@ export function createApp(options: AppOptions): (request: Request, serving: BunU
             json: () => body(request),
             profileDir: options.host.profileDir,
             projectLocked: options.host.projectLocked,
+            projectHolders: options.host.projectHolders,
           })
           if (result) return Response.json(result.body, { status: result.status })
           return Response.json({ error: "not found" }, { status: 404 })

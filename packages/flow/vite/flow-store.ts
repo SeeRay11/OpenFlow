@@ -78,6 +78,7 @@ export function flowStore(options: { project: string }): Plugin {
             json: () => read(req),
             profileDir: created.profileDir,
             projectLocked: created.projectLocked,
+            projectHolders: created.projectHolders,
           })
           if (!result) return next()
           json(res, result.status, result.body)

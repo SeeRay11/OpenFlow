@@ -204,8 +204,8 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
     sequence: number
     fallback: TurnScript
     closed: boolean
-    /** A stream was dropped since a subscriber last attached. */
-    dropped: boolean
+    /** Events were published while nobody was attached, or a stream was dropped, since a subscriber last attached. */
+    gap: boolean
     /** The startup `driver.holdStartup` is holding: creates wait on `open` and announce themselves on `reached`. */
     hold?: { reached: PromiseWithResolvers<void>; open: PromiseWithResolvers<void> }
   } = {
@@ -213,7 +213,7 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
     sequence: 0,
     fallback: { steps: [{ text: options.answer ?? "done" }] },
     closed: false,
-    dropped: false,
+    gap: false,
   }
 
   /** Logical time: every reading is later than the last, so ordering never depends on how fast a test runs. */
@@ -228,6 +228,7 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
     const session = typeof sessionID === "string" ? sessions.get(sessionID) : undefined
     if (session) session.updated = now()
     const event: BusEvent = { type, data }
+    if (!subscribers.size) state.gap = true
     for (const subscriber of [...subscribers]) {
       try {
         subscriber.onEvent(event)
@@ -505,7 +506,7 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
       return [...sessions.keys()]
     },
     dropStreams(error = new Error("the event stream was dropped")) {
-      state.dropped = true
+      state.gap = true
       for (const subscriber of [...subscribers]) {
         subscribers.delete(subscriber)
         subscriber.end.reject(error)
@@ -535,9 +536,9 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
       if (signal.aborted || state.closed) return
       const subscriber = { onEvent, end: Promise.withResolvers<void>() }
       subscribers.add(subscriber)
-      // What the host does for a subscriber that attaches after a drop: says events were lost, then replays the requests still waiting.
-      if (state.dropped) {
-        state.dropped = false
+      // What the host does: a subscriber that attaches after a gap (events published while nobody was attached, or a client dropped) is told once that events were lost; one with no gap gets none. Requests still waiting are replayed to every new subscriber.
+      if (state.gap) {
+        state.gap = false
         onEvent({ type: "flow.stream.reset" })
       }
       for (const session of sessions.values()) for (const entry of session.open.values()) onEvent(entry.asked)

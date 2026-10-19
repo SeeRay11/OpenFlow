@@ -33,6 +33,7 @@ import { forgetCustomRoles, hydrateCustomRoles, onRolesSyncError } from "./graph
 import { latest } from "./server/latest"
 import { abandoned, findRun, interrupted, PRUNE_DAYS, RUN_DELETE, RUN_PRUNE, runMenuOptions, superseded } from "./server/runs"
 import { store, type PipelineEntry, type RunEntry } from "./server/store"
+import { PROJECT_BUSY, switchFreeing } from "./server/project"
 import { actions, requestKey, state } from "./state"
 import {
   IconAlert,
@@ -140,8 +141,10 @@ const HEALTH_INTERVAL = 15_000
 /** How often a running gauntlet's elapsed-minutes readout advances. */
 const CLOCK_INTERVAL = 10_000
 
+/** How often the Resume offer is re-judged. Half the heartbeat that keeps a live run's log fresh. */
+const RESUME_CLOCK_INTERVAL = 30_000
+
 const HOST_DOWN = "cannot reach the OpenFlow host — start it with `bun openflow.ts`, then reload this page"
-const PROJECT_BUSY = "a run is in progress — stop it or wait for it to end before switching project"
 const OMP_MISSING = "omp is not available — install it, or set its path in the Omp settings"
 
 /** What a probe found: all well, the host does not answer, or the host answers and omp cannot run. */
@@ -271,6 +274,10 @@ export function App() {
   const probes = latest()
   const listings = latest()
   const openings = latest()
+  /** The clock the Resume offer is judged against: an abandoned run turns resumable by itself as it ticks. */
+  const [resumeNow, setResumeNow] = createSignal(Date.now())
+  /** A folder is being chosen: the host may move to another project at any moment, so no run may start. */
+  const folderOpen = () => pickingProject() || showProjectPicker()
 
   const ompReady = () => ompInfo()?.available !== false
   const ompMessage = () => ompProblem() ?? OMP_MISSING
@@ -418,6 +425,8 @@ export function App() {
     // The clock behind the gauntlet readout. It only has to be right to the
     // minute, and it stops mattering the moment a run finishes.
     const clock = setInterval(() => state.running && setTick(Date.now()), CLOCK_INTERVAL)
+    // A run abandoned minutes ago becomes resumable on its own: the staleness rule needs a clock that moves.
+    const resumeClock = setInterval(() => setResumeNow(Date.now()), RESUME_CLOCK_INTERVAL)
     // Coming back to a tab that sat hidden for an hour should not wait out the
     // interval before admitting the host died meanwhile.
     const onVisibility = () => {
@@ -457,6 +466,7 @@ export function App() {
     onCleanup(() => {
       clearInterval(timer)
       clearInterval(clock)
+      clearInterval(resumeClock)
       document.removeEventListener("visibilitychange", onVisibility)
       window.removeEventListener("keydown", onKeyDown)
       window.removeEventListener("beforeunload", onBeforeUnload)
@@ -537,11 +547,18 @@ export function App() {
       )
       if (!picked) return setShowProjectPicker(true)
       if (!picked.path) return
-      const paths = await store.setProject(picked.path)
+      const target = picked.path
+      // The dialog stays open for as long as the user likes: look again before moving the host.
+      if (state.running) return actions.notice("info", PROJECT_BUSY)
+      const paths = await switchFreeing(() => store.setProject(target), {
+        confirm: (question) => window.confirm(question),
+        release: api.release,
+      })
+      if (!paths) return
       api.disconnect()
       await switchProject(paths.project)
     } catch (error) {
-      // The host refuses while a run holds the project, and says so in a sentence: show it as it is.
+      // The host refuses while cards hold the project, and says so in a sentence: show it as it is.
       notice("error", api.describe(error))
     } finally {
       setPickingProject(false)
@@ -549,7 +566,17 @@ export function App() {
   }
 
   async function switchProject(next: string) {
-    if (state.running) return actions.notice("info", PROJECT_BUSY)
+    if (state.running) {
+      // The host moved before the page could refuse: put it back under the project this page's run is in.
+      const back = await store.setProject(project()).then(
+        () => true,
+        () => false,
+      )
+      api.disconnect()
+      return back
+        ? actions.notice("info", PROJECT_BUSY)
+        : notice("error", `${PROJECT_BUSY} — the host is now on ${next} while this page is on ${project()}: switch back with the folder button`)
+    }
     setShowProjectPicker(false)
     await bootstrap()
     actions.notice("info", `switched project to ${next}`)
@@ -786,6 +813,8 @@ export function App() {
   }
 
   async function run(resume?: Record<string, string>, sessions?: Record<string, string>, supersedes?: RunLog) {
+    // A run started while a folder is being chosen would be bound to the project the host is about to leave.
+    if (state.running || folderOpen()) return
     // One place tells the user everything that is wrong before a session is
     // ever created. Blocking problems abort; warnings are shown but let the run
     // proceed. The list survives on screen so each problem can select its node.
@@ -1379,11 +1408,11 @@ export function App() {
           </Show>
         </div>
         <div class="runbar-actions">
-          <button class="btn btn-primary" type="button" disabled={state.running} onClick={() => void run()}>
+          <button class="btn btn-primary" type="button" disabled={state.running || folderOpen()} onClick={() => void run()}>
             <IconPlay />
             Run
           </button>
-          <Show when={state.running ? undefined : interrupted(runs(), state.pipeline.name)}>
+          <Show when={state.running || folderOpen() ? undefined : interrupted(runs(), state.pipeline.name, resumeNow())}>
             {(entry) => (
               <button
                 class="btn"

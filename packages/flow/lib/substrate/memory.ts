@@ -179,7 +179,7 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     return {}
   }
 
-  /** Records a forget for one scope. Keys without a scope (written before cutoffs were scoped) are kept in the file but match nothing. */
+  /** Records a forget for one scope. Keys without a scope (written before cutoffs were scoped) are kept in the file, and `ignored` applies each of them to every scope. */
   function addCutoff(scope: string, prefix: string, at: number): Promise<void> {
     const next = ignoreChain.then(async () => {
       const path = ignorePath()
@@ -206,11 +206,19 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     }
   }
 
-  /** Whether a forget on this host hides the entry: only cutoffs recorded for this very scope count (keys are `<scope>|<prefix>`). */
+  /**
+   * Whether a forget on this host hides the entry. Keys are `<scope>|<prefix>`. A key written before cutoffs were
+   * scoped is a bare `openflow/...` prefix with no `|`: its scope is unknown, so it matches every scope. Hiding too
+   * much is the safe failure; letting a forgotten entry back into a prompt is not.
+   */
   function ignored(entry: SubstrateEntry, scope: string, cutoffs: Record<string, number>): boolean {
     const created = Date.parse(entry.created)
     const head = `${scope}|`
-    return Object.entries(cutoffs).some(([key, at]) => key.startsWith(head) && entry.subject.startsWith(key.slice(head.length)) && !(created > at))
+    return Object.entries(cutoffs).some(([key, at]) => {
+      if (created > at) return false
+      if (key.startsWith(head)) return entry.subject.startsWith(key.slice(head.length))
+      return key.startsWith("openflow/") && !key.includes("|") && entry.subject.startsWith(key)
+    })
   }
 
   async function derivedRepo(project: string): Promise<string | undefined> {

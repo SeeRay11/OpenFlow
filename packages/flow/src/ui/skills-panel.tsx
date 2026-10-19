@@ -85,8 +85,10 @@ export function SkillsPanel(props: {
       // agent sees two skills with the same body.
       let renamed = ""
       if (draft.original && !draft.legacy && draft.original !== result.name) {
-        await store.deleteSkill(draft.original)
-        renamed = ` (renamed from ${draft.original})`
+        const old = await store.deleteSkill(draft.original)
+        renamed = old.removed
+          ? ` (renamed from ${draft.original})`
+          : ` (the old skill ${draft.original} was not found, so it was not removed)`
       }
       await refresh()
       setEditing(undefined)
@@ -108,8 +110,9 @@ export function SkillsPanel(props: {
     if (!window.confirm(`Delete the skill "${draft.original}"? Its folder and SKILL.md are removed for good.`)) return
     setBusy(true)
     try {
-      await store.deleteSkill(draft.original)
+      const result = await store.deleteSkill(draft.original)
       await refresh()
+      if (!result.removed) return setError(`${draft.original} was not deleted: the OpenFlow Omp profile has no skill folder by that name`)
       setEditing(undefined)
       props.onNotice("info", `deleted ${draft.original}. It is gone from the next card session.`)
     } catch (failure) {

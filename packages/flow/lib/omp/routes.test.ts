@@ -320,6 +320,34 @@ describe("event bus", () => {
     bus.close()
   })
 
+  test("a healthy subscriber that missed nothing gets no reset, and a drop is announced once, not to every later subscriber", async () => {
+    const bus = createEventBus({ maxQueueBytes: 1024, pingMs: 60_000 })
+    const healthy = bus.subscribe().body?.getReader() as ReadableStreamDefaultReader<Uint8Array>
+    expect(await readUntil(healthy, ": connected\n\n")).not.toContain("flow.stream.reset")
+    bus.subscribe()
+    for (let index = 0; index < 4; index++) bus.publish({ type: "big", data: { text: "x".repeat(600) } })
+    // The first subscriber after the overflow drop is told; the one after it, having missed nothing, is not.
+    const told = bus.subscribe().body?.getReader() as ReadableStreamDefaultReader<Uint8Array>
+    const unrelated = bus.subscribe().body?.getReader() as ReadableStreamDefaultReader<Uint8Array>
+    bus.publish({ type: "marker" })
+    expect(await readUntil(told, `"marker"`)).toContain("flow.stream.reset")
+    expect(await readUntil(unrelated, `"marker"`)).not.toContain("flow.stream.reset")
+    bus.close()
+  })
+
+  test("events published while nobody was attached are a gap: the next subscriber gets the reset before the replayed asks, then the gap is closed", async () => {
+    const asked: BusEvent = { type: "permission.v2.asked", data: { id: "r1", sessionID: "s_1", action: "bash", resources: [] } }
+    const bus = createEventBus({ pingMs: 60_000, replay: () => [asked] })
+    bus.publish({ type: "lost" })
+    const next = bus.subscribe().body?.getReader() as ReadableStreamDefaultReader<Uint8Array>
+    const text = await readUntil(next, JSON.stringify(asked))
+    expect(text.indexOf(": connected")).toBeLessThan(text.indexOf("flow.stream.reset"))
+    expect(text.indexOf("flow.stream.reset")).toBeLessThan(text.indexOf(JSON.stringify(asked)))
+    const later = bus.subscribe().body?.getReader() as ReadableStreamDefaultReader<Uint8Array>
+    expect(await readUntil(later, JSON.stringify(asked))).not.toContain("flow.stream.reset")
+    bus.close()
+  })
+
   test("a stream asked for after close is already closed and registers nothing", async () => {
     const bus = createEventBus({ pingMs: 60_000 })
     bus.close()

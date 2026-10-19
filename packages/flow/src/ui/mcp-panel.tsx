@@ -102,7 +102,7 @@ export function McpPanel(props: {
       // A rename leaves the old key behind, exactly as a renamed skill leaves
       // its folder: the write is an upsert under the new name, nothing else.
       let renamed = ""
-      if (draft.original && draft.original !== name) {
+      if (draft.original && draft.original !== result.name) {
         const old = await store.deleteMcpServer(draft.original)
         renamed = old.removed
           ? ` (renamed from ${draft.original})`
@@ -114,8 +114,8 @@ export function McpPanel(props: {
       props.onNotice(
         "info",
         result.unchanged && !renamed
-          ? `mcp server ${name} is already saved in ${result.path} as it stands`
-          : `saved mcp server ${name}${renamed} to ${result.path}${backup}. It applies to the next card session.`,
+          ? `mcp server ${result.name} is already saved in ${result.path} as it stands`
+          : `saved mcp server ${result.name}${renamed} to ${result.path}${backup}. It applies to the next card session.`,
       )
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure))

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { store } from "./store"
+import { ProjectBusyError, store } from "./store"
 
 /**
  * The store is the browser's client of `/flow/api`, so it fetches relative
@@ -92,6 +92,42 @@ describe("store routes of the Omp profile", () => {
       ])
     const { result } = await last(store.skills())
     expect(result.map((entry) => entry.legacy)).toEqual([undefined, true])
+  })
+
+  test("deleting something already gone is a result, for mcp servers and skills alike", async () => {
+    respond = (path) => Response.json({ name: path.split("/").pop(), removed: false, error: "not found: nothing was removed" }, { status: 404 })
+    expect(await store.deleteMcpServer("ghost")).toMatchObject({ name: "ghost", removed: false })
+    expect(await store.deleteSkill("ghost")).toMatchObject({ name: "ghost", removed: false })
+  })
+
+  test("any other failed delete still throws the host's sentence", async () => {
+    respond = () => Response.json({ error: "invalid skill name" }, { status: 400 })
+    await expect(store.deleteSkill("../x")).rejects.toThrow("invalid skill name")
+    // A 404 that says nothing about `removed` is a wrong route, not a missing server.
+    respond = () => Response.json({ error: "no such route" }, { status: 404 })
+    await expect(store.deleteMcpServer("x")).rejects.toThrow("no such route")
+  })
+
+  test("a save refused for a name collision carries the host's sentence", async () => {
+    respond = () => Response.json({ error: 'mcp server "a-b" already exists', code: "name-taken" }, { status: 409 })
+    await expect(store.saveMcpServer({ name: "a.b", type: "remote", enabled: true, url: "https://x" })).rejects.toThrow("already exists")
+  })
+})
+
+describe("store project switch", () => {
+  test("a busy refusal carries the cards that hold the project", async () => {
+    respond = () => Response.json({ error: "a run is still active", code: "project-busy", sessions: ["s1", 7, "s2"] }, { status: 409 })
+    const failure = await store.setProject("/b").catch((error: unknown) => error)
+    if (!(failure instanceof ProjectBusyError)) throw new Error("expected a ProjectBusyError")
+    expect(failure.sessions).toEqual(["s1", "s2"])
+    expect(failure.message).toBe("a run is still active")
+  })
+
+  test("any other refusal is a plain error", async () => {
+    respond = () => Response.json({ error: "not a directory" }, { status: 400 })
+    const failure = await store.setProject("/b").catch((error: unknown) => error)
+    expect(failure).not.toBeInstanceOf(ProjectBusyError)
+    expect(failure).toMatchObject({ message: "not a directory" })
   })
 })
 

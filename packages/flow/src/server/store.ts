@@ -1,13 +1,40 @@
 import type { Pipeline, RunLog, Spend } from "../graph/types"
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function send(path: string, init?: RequestInit) {
   const response = await fetch(`/flow/api${path}`, {
     ...init,
     headers: init?.body ? { "content-type": "application/json", ...(init?.headers ?? {}) } : init?.headers,
   })
   const body = await response.json().catch(() => undefined)
+  return { response, body }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const { response, body } = await send(path, init)
   if (!response.ok) throw new Error(body?.error ?? `${init?.method ?? "GET"} ${path} failed (${response.status})`)
   return body as T
+}
+
+/**
+ * A DELETE whose target was already gone. The host answers that 404 with
+ * `{ removed: false }` (plus an `error` sentence), which is a result the caller
+ * reports, not a failure: it is returned as a value so the rest of the flow (a
+ * rename, the list refresh) still runs. Every other failure still throws.
+ */
+async function removal<T extends { removed: boolean }>(path: string): Promise<T> {
+  const { response, body } = await send(path, { method: "DELETE" })
+  if (response.ok) return body as T
+  if (response.status === 404 && body?.removed === false) return body as T
+  throw new Error(body?.error ?? `DELETE ${path} failed (${response.status})`)
+}
+
+/** The host refused to switch project because cards still hold it; `sessions` names them (it can be empty). */
+export class ProjectBusyError extends Error {
+  readonly sessions: string[]
+  constructor(message: string, sessions: string[]) {
+    super(message)
+    this.sessions = sessions
+  }
 }
 
 export type PipelineEntry = { name: string; id?: string; nodes: number; updated: number }
@@ -90,8 +117,7 @@ export const store = {
         body: JSON.stringify(server),
       },
     ),
-  deleteMcpServer: (name: string) =>
-    request<{ name: string; removed: boolean }>(`/mcp/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  deleteMcpServer: (name: string) => removal<{ name: string; removed: boolean }>(`/mcp/${encodeURIComponent(name)}`),
   /**
    * Skills of the OpenFlow Omp profile. Entries flagged `legacy` live in the old
    * `.openflow/skills` folder: listed read-only until saved, which migrates them.
@@ -100,7 +126,7 @@ export const store = {
   skill: (name: string) => request<SkillDoc>(`/skills/${encodeURIComponent(name)}`),
   saveSkill: (skill: { name: string; description?: string; content: string }) =>
     request<SkillSave>(`/skills/${encodeURIComponent(skill.name)}`, { method: "PUT", body: JSON.stringify(skill) }),
-  deleteSkill: (name: string) => request<{ name: string }>(`/skills/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  deleteSkill: (name: string) => removal<{ name: string; removed: boolean }>(`/skills/${encodeURIComponent(name)}`),
   /**
    * A git worktree per card, so a batch of cards cannot overwrite each other.
    * `enabled: false` is the ordinary answer for a project that is not a git
@@ -161,5 +187,17 @@ export const store = {
   pickFolder: (start?: string) =>
     request<{ path: string | null }>("/pick-folder", { method: "POST", body: JSON.stringify({ path: start }) }),
   /** Switches the live project directory. Takes effect immediately, no restart. */
-  setProject: (path: string) => request<FlowPaths>("/project", { method: "POST", body: JSON.stringify({ path }) }),
+  setProject: async (path: string) => {
+    const { response, body } = await send("/project", { method: "POST", body: JSON.stringify({ path }) })
+    if (response.ok) return body as FlowPaths
+    const message = body?.error ?? `POST /project failed (${response.status})`
+    if (response.status === 409 && body?.code === "project-busy") {
+      const sessions: unknown[] = Array.isArray(body.sessions) ? body.sessions : []
+      throw new ProjectBusyError(
+        message,
+        sessions.filter((id): id is string => typeof id === "string"),
+      )
+    }
+    throw new Error(message)
+  },
 }

@@ -92,22 +92,32 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
   `session-closed`, a terminal create 409 `disposed`, and the catalog, provider and
   `omp config`/`omp auth` runs 503 `host-closed`. Every probe and CLI run is killed
   with its process group on dispose.
-- Refuse to switch project while work is bound to it (409 `project-busy`), keep a
-  run in the project it started in, scope terminals and custom roles to the project
-  (409 `project-mismatch` for a terminal from another project), and sweep a
-  terminal's whole process group on close.
+- Refuse to switch project only while engine work is live (409 `project-busy`; an
+  idle session no longer holds it) and name the cards holding it, so the page can
+  offer to stop them and retry once. Keep a run in the project it started in, and
+  scope terminals, custom roles and the Sessions list to the project (409
+  `project-mismatch` for a terminal from another project; another project's sessions
+  answer 404), and sweep a terminal's whole process group on close.
+- Let a session be created `transient`: the model test leaves no session files, is
+  never listed and cannot be resumed.
 - Prune skips runs whose log is still `running` and removes the uplift planner's
   results and session records older than 30 days.
-- Scope Forget to the repository, bound each part of a memory subject and end a long
-  or cleaned name in a stable hash so differently spelled names never share a
-  namespace, and keep a corrupt `memory-ignore.json` aside instead of failing.
+- Scope Forget to the repository (a key from before scoping matches every
+  repository), bound each part of a memory subject and end a long or cleaned name in
+  a stable hash so differently spelled names never share a namespace, and keep a
+  corrupt `memory-ignore.json` aside instead of failing.
 - Address existing MCP server and skill names exactly as written, drop a disabled or
-  deleted server from `enabledServers`/`disabledServers`, and answer 404 when
-  deleting a name that does not exist.
+  deleted server from `enabledServers`/`disabledServers`, answer 404 when deleting
+  a name that does not exist, and refuse a new name that would overwrite a different
+  entry (409 `name-taken`).
 - Stamp every run-log write with `updatedAt` and keep it fresh with a heartbeat, so
-  Resume is offered only for a run abandoned for more than five minutes; the resumed
-  run closes the old log as `stopped`.
-- Block a card with no model at preflight (there is no default fallback) and send
+  Resume is offered only for a run abandoned for more than five minutes (re-checked
+  every 30 seconds); the resumed run closes the old log as `stopped`. A failing log
+  save raises its notice once, not every heartbeat.
+- Send `flow.stream.reset` to a new event-stream subscriber once per gap in the
+  stream rather than after every drop.
+- Block a card with no model at preflight (the app blocks it; the host would launch
+  omp without `--model`) and send
   attachments to no card whose model the catalog does not list.
 - Open pipelines and run logs saved by the earlier build: model ids stay as written
   and are flagged when omp cannot run them, agent names are dropped with a note, and

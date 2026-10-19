@@ -184,6 +184,8 @@ export async function testModel(model: string, options: { timeout?: number } = {
       card: { key: "openflow-model-test", role: "model test" },
       model,
       permissions: "auto",
+      // Nothing about a probe belongs in the Sessions history.
+      transient: true,
     })
     sessionID = session.id
     await prompt(session.id, "Reply with the single word ok.")

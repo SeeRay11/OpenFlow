@@ -710,6 +710,8 @@ export function start(
 
   let checkpointTimer: ReturnType<typeof setTimeout> | undefined
   let writes: Promise<unknown> = Promise.resolve()
+  /** The last write failed, and the user has been told. */
+  let saveFailing = false
 
   /**
    * Writes the run log as it stands.
@@ -732,7 +734,17 @@ export function start(
       if (stream?.length) node.events = persistable(stream)
     }
     writes = writes.then(() =>
-      deps.saveRun(log).catch((error) => hooks.onNotice?.("error", `run log not saved: ${api.describe(error)}`)),
+      deps.saveRun(log).then(
+        () => {
+          saveFailing = false
+        },
+        (error) => {
+          // The heartbeat writes every 30 s: a disk that stays full is said once, and again only after a write got through.
+          if (saveFailing) return
+          saveFailing = true
+          hooks.onNotice?.("error", `run log not saved: ${api.describe(error)}`)
+        },
+      ),
     )
     return writes
   }

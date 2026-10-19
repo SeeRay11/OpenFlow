@@ -460,6 +460,13 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
       expect(third.events.filter((event) => event.data?.id === request)).toEqual([])
     })
 
+    scenario("a healthy stream that attaches while another is attached is not told events were lost", async (ctx) => {
+      // The reset marks a gap (events published while nobody was attached, or a client dropped); a subscriber with no gap gets none.
+      await ctx.listen()
+      const second = await ctx.listen()
+      expect(second.events.filter((event) => event.type === "flow.stream.reset")).toEqual([])
+    })
+
     scenario("a free-text answer to a question is carried back as typed", async (ctx) => {
       const events = await ctx.listen()
       const request = `${ctx.run}-ask`

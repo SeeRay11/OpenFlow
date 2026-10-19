@@ -524,6 +524,19 @@ describe("skills", () => {
     expect(await fs.readdir(profile)).toContain("keep")
   })
 
+  test("a new name that slugs onto a different existing folder is refused, not overwritten", async () => {
+    await call("PUT", "/flow/api/skills/a-b", { body: { ...skill, content: "first" } })
+    const before = await read(path.join(skillsDir(), "a-b", "SKILL.md"))
+
+    const clash = await call("PUT", `/flow/api/skills/${encodeURIComponent("A B")}`, { body: { ...skill, content: "second" } })
+
+    expect(clash!.status).toBe(409)
+    expect(clash!.body).toMatchObject({ code: "name-taken", error: expect.stringContaining("a-b") })
+    expect(await read(path.join(skillsDir(), "a-b", "SKILL.md"))).toBe(before)
+    // Saving the existing folder under its own name is still an edit.
+    expect((await call("PUT", "/flow/api/skills/a-b", { body: skill }))!.status).toBe(200)
+  })
+
   test("keeps a traversing name inside the skills directory", async () => {
     const result = await call("PUT", `/flow/api/skills/${encodeURIComponent("../../evil")}`, { body: skill })
     expect((result!.body as any).path).toBe(path.join(skillsDir(), "evil", "SKILL.md"))
@@ -738,6 +751,42 @@ describe("routes: browse and project", () => {
     }
   })
 
+  test("POST /project re-checks the lock after its awaits, so a run that started meanwhile still wins", async () => {
+    const next = await fs.mkdtemp(path.join(os.tmpdir(), "openflow-store-next-"))
+    try {
+      const state = { locked: false }
+      const result = await handleFlow(paths, {
+        method: "POST",
+        path: "/flow/api/project",
+        search: new URLSearchParams(),
+        // The lock flips while the body is being read, after the first check.
+        json: async () => {
+          state.locked = true
+          return { path: next }
+        },
+        projectLocked: () => state.locked,
+        projectHolders: () => ["s1"],
+      })
+      expect(result!.status).toBe(409)
+      expect(result!.body).toMatchObject({ code: "project-busy", sessions: ["s1"] })
+      expect(paths.project).toBe(dir)
+      expect(recallProject()).toBeUndefined()
+    } finally {
+      await fs.rm(next, { recursive: true, force: true })
+    }
+  })
+
+  test("the project-busy refusal lists no sessions when the host names none", async () => {
+    const result = await handleFlow(paths, {
+      method: "POST",
+      path: "/flow/api/project",
+      search: new URLSearchParams(),
+      json: async () => ({ path: dir }),
+      projectLocked: () => true,
+    })
+    expect(result!.body).toMatchObject({ code: "project-busy", sessions: [] })
+  })
+
   test("POST /project remembers nothing when it refused the switch", async () => {
     await call("POST", "/flow/api/project", { body: { path: path.join(dir, "ghost") } })
     expect(await fs.access(statePath()).then(() => true, () => false)).toBe(false)
@@ -921,6 +970,20 @@ describe("mcp servers", () => {
     // `constructor` is on every object's prototype but is no server.
     expect((await call("DELETE", "/mcp/constructor"))!.status).toBe(404)
     expect(Object.keys((await config()).mcpServers)).toEqual(["real"])
+  })
+
+  test("a new name that slugs onto a different existing server is refused and changes nothing", async () => {
+    await call("PUT", "/mcp/a-b", { body: { type: "local", command: ["one"] } })
+    const before = await read(configPath())
+
+    const clash = await call("PUT", `/mcp/${encodeURIComponent("a.b")}`, { body: { type: "local", command: ["two"] } })
+
+    expect(clash!.status).toBe(409)
+    expect(clash!.body).toMatchObject({ code: "name-taken", error: expect.stringContaining("a-b") })
+    expect(await read(configPath())).toBe(before)
+    // A genuinely new name that slugs to a free key still works, and reports the key it stored.
+    const fresh = await call("PUT", `/mcp/${encodeURIComponent("c.d")}`, { body: { type: "local", command: ["three"] } })
+    expect(fresh!.body).toMatchObject({ name: "c-d" })
   })
 
   test("names that cannot be a config key are refused", async () => {
