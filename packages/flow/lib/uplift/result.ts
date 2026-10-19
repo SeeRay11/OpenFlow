@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
-import type { ClarificationInfo } from "../../shared/clarification"
 import { UPLIFTED_ROOT_TAGS, type UpliftDecision, type UpliftResult } from "../../shared/uplift"
 import { type PlannerExit, writeAtomic } from "./planner"
 
@@ -131,29 +130,6 @@ function decisionsOf(record: Json | undefined): UpliftDecision[] | undefined {
   return decisions.length ? decisions : undefined
 }
 
-function clarificationsOf(record: Json | undefined): ClarificationInfo[] | undefined {
-  if (!Array.isArray(record?.clarifications)) return undefined
-  const clarifications: ClarificationInfo[] = []
-  for (const item of record.clarifications) {
-    if (!isRecord(item) || typeof item.id !== "string" || typeof item.question !== "string") continue
-    const options: ClarificationInfo["options"] = []
-    for (const option of Array.isArray(item.options) ? item.options : []) {
-      if (!isRecord(option) || typeof option.label !== "string") continue
-      options.push(typeof option.description === "string" ? { label: option.label, description: option.description } : { label: option.label })
-    }
-    clarifications.push({
-      id: item.id,
-      header: text(item.header) ?? "",
-      question: item.question,
-      ...(text(item.why) ? { why: text(item.why) } : {}),
-      blocking: item.blocking === true,
-      options,
-      ...(text(item.default) ? { default: text(item.default) } : {}),
-    })
-  }
-  return clarifications.length ? clarifications : undefined
-}
-
 /** True when text already opens with one of the uplifted root tags: it must not be planned again. */
 export function isUplifted(original: string) {
   const head = /^\s*<([A-Z_]+)[\s>]/.exec(original)?.[1]
@@ -218,7 +194,6 @@ export async function interpret(outcome: Outcome): Promise<UpliftResult> {
 
   const degraded = Array.isArray(session?.degraded) ? session.degraded.filter((item): item is string => typeof item === "string") : []
   const decisions = decisionsOf(session)
-  const clarifications = clarificationsOf(session)
   const graphId = text(response.graphId) ?? text(view?.graphId)
   return {
     status: "ok",
@@ -231,7 +206,6 @@ export async function interpret(outcome: Outcome): Promise<UpliftResult> {
     ...(Array.isArray(view?.waves) ? { waves: view.waves.length } : {}),
     ...(degraded.length ? { degraded } : {}),
     ...(decisions ? { decisions } : {}),
-    ...(clarifications ? { clarifications } : {}),
     ...(engine ? { engine } : {}),
     elapsedMs,
   }

@@ -50,18 +50,6 @@ function writeSession(sid: string, prompt: string, options: { source: "llm" | "f
             { point: "plan", outcome: "ok", model: "stub", p: 0.97, probabilities: { plan_worthy: 0.97 }, threshold: 0.2, action: "plan", latencyMs: 5, attempts: 1, at: 1 },
             { point: "blocking", outcome: "error", model: "stub", probabilities: {}, threshold: 0.5, action: "keep", latencyMs: 5, attempts: 1, error: "timeout", at: 2 },
           ],
-          clarifications: [
-            {
-              id: "q1",
-              question: "Which database?",
-              header: "Storage",
-              why: "Changes the schema.",
-              options: [{ label: "sqlite", description: "local" }, { label: "postgres" }],
-              default: "sqlite",
-              blocking: true,
-              answer: "ignored",
-            },
-          ],
         }
       : {}),
   }
@@ -79,7 +67,6 @@ function view(source: "llm" | "fallback") {
     elapsedMs: 1,
     nodes: ["n1", "n2", "n3"].map((id, index) => ({ id, title: id, kind: "task", wave: index < 2 ? 0 : 1, dependsOn: [], steps: [] })),
     waves: [["n1", "n2"], ["n3"]],
-    clarifications: [],
   }
 }
 

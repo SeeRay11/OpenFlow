@@ -47,6 +47,14 @@ function defaults(): OmpSettings {
   return structuredClone(DEFAULT_OMP_SETTINGS)
 }
 
+/** `uplift.hitl` was a setting of earlier builds; a file that still has it loads as if it did not. */
+function withoutRetired(saved: Record<string, unknown>): Record<string, unknown> {
+  if (!isRecord(saved.uplift) || !Object.hasOwn(saved.uplift, "hitl")) return saved
+  const uplift = { ...saved.uplift }
+  delete uplift.hitl
+  return { ...saved, uplift }
+}
+
 /**
  * Merges `patch` over `base`, leaf by leaf. A key the settings do not have, or a
  * leaf of the wrong JS type, is reported (or, with `lenient`, skipped) instead of
@@ -216,12 +224,13 @@ export function createSettingsStore(options: SettingsStoreOptions): SettingsStor
       warnings = [`${SETTINGS_FILE} was unreadable and was moved to ${SETTINGS_FILE}.bad; the defaults are in use.`]
       return defaults()
     }
-    const merged = merge(defaults(), parsed, false)
+    const saved = withoutRetired(parsed)
+    const merged = merge(defaults(), saved, false)
     if (merged.errors.length) {
       // Keep the readable part: an older or newer build may have written keys this one does not know.
       warnings = [`${SETTINGS_FILE} had ${merged.errors.length} entr${merged.errors.length === 1 ? "y" : "ies"} this build ignored (${merged.errors.map((entry) => entry.path).join(", ")}).`]
     }
-    return merge(defaults(), parsed, true).settings
+    return merge(defaults(), saved, true).settings
   }
 
   async function write(settings: OmpSettings) {

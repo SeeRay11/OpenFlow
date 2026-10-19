@@ -146,9 +146,9 @@ export async function writeAtomic(file: string, text: string) {
   }
 }
 
-/** The per-run control the planner reads from `<stateDir>/control.json` before it plans. */
-export async function writeControl(stateDir: string, settings: OmpSettings) {
-  const control = { enabled: true, thinkEnabled: true, hitlEnabled: settings.uplift.hitl, trackEnabled: false }
+/** The per-run control the planner reads from `<stateDir>/control.json` before it plans. Cards run unattended, so it never asks clarifying questions. */
+export async function writeControl(stateDir: string) {
+  const control = { enabled: true, thinkEnabled: true, hitlEnabled: false, trackEnabled: false }
   await writeAtomic(path.join(stateDir, "control.json"), `${JSON.stringify(control, null, 2)}\n`)
 }
 

@@ -9,7 +9,6 @@ import type {
   NodeStatus,
   Pipeline,
   RunLog,
-  RunNodeLog,
   Spend,
 } from "./graph/types"
 import { applyEvent } from "./server/activity"
@@ -635,10 +634,6 @@ export const actions = {
 
 export function runtimeOf(id: string): NodeRuntime {
   return state.runtime[id] ?? { status: "idle" }
-}
-
-export function runNodeLogs(): RunNodeLog[] {
-  return state.run?.nodes ?? []
 }
 
 /**

@@ -83,6 +83,10 @@ type HarnessOptions = {
   onUpliftFailure?: (request: UpliftFailureRequest) => Promise<"original" | "retry" | "cancel">
   /** Whether the host lets the engine hand sessions back (`EngineApi.release`). */
   release?: boolean
+  /** Whether the host also hands back a whole run (`EngineApi.releaseRun`). */
+  releaseRun?: boolean
+  /** Makes the worktree cleanup at the end of the run throw outright, as a broken teardown would. */
+  cleanupThrows?: boolean
   /** Holds every `createSession` until it resolves: a session that is still opening. */
   createGate?: Promise<void>
   /** Makes `createSession` reject with the abort reason as soon as the signal the engine passed aborts, as the client does. */
@@ -170,6 +174,8 @@ function harness(options: HarnessOptions = {}) {
   const createSignals: (AbortSignal | undefined)[] = []
   /** Sessions handed back to the host, in order. */
   const released: string[] = []
+  /** Runs handed back whole to the host, in order. */
+  const releasedRuns: string[] = []
   const upliftRequests: UpliftRequest[] = []
   const memoryReads: MemoryReadRequest[] = []
   const memoryWrites: MemoryWriteRequest[] = []
@@ -272,6 +278,13 @@ function harness(options: HarnessOptions = {}) {
       ? {
           async release(sessionID: string) {
             released.push(sessionID)
+          },
+        }
+      : {}),
+    ...(options.releaseRun
+      ? {
+          async releaseRun(runId: string) {
+            releasedRuns.push(runId)
           },
         }
       : {}),
@@ -415,9 +428,10 @@ function harness(options: HarnessOptions = {}) {
               worktreeCalls.merged++
               return options.mergeReport ?? { merged: [], empty: [], conflicts: [], stats: [] }
             },
-            async cleanup() {
+            cleanup() {
+              if (options.cleanupThrows) throw new Error("cleanup blew up")
               worktreeCalls.cleaned++
-              return { removed: true as const }
+              return Promise.resolve({ removed: true as const })
             },
           },
         }
@@ -431,6 +445,7 @@ function harness(options: HarnessOptions = {}) {
     creations,
     createSignals,
     released,
+    releasedRuns,
     upliftRequests,
     rejected,
     memoryReads,
@@ -817,6 +832,34 @@ describe("stop", () => {
     expect(h.released).toEqual([])
     expect(log.nodes[0].status).toBe("stopped")
     expect(log.status).toBe("stopped")
+  })
+
+  test("the run hands back every session it still has on the host, whole, once it ends", async () => {
+    const h = harness({ release: true, releaseRun: true })
+    const log = await h.run(pipeline("a->b")).done
+
+    expect(h.released).toEqual(["s1", "s2"])
+    expect(h.releasedRuns).toEqual([log.id])
+  })
+
+  test("a stopped run hands its sessions back as well", async () => {
+    const h = harness({ release: true, releaseRun: true, behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"))
+    await flush()
+    await run.stop()
+    const log = await run.done
+
+    expect(log.status).toBe("stopped")
+    expect(h.released).toEqual(["s1"])
+    expect(h.releasedRuns).toEqual([log.id])
+  })
+
+  test("a failed whole-run release is not an error", async () => {
+    const h = harness({ release: true, releaseRun: true })
+    h.deps.api.releaseRun = () => Promise.reject(new Error("host gone"))
+    const log = await h.run(pipeline("a")).done
+
+    expect(log.status).toBe("done")
   })
 })
 
@@ -2075,6 +2118,19 @@ describe("a working copy per card", () => {
 
     expect(log.nodes.find((node) => node.id === "a")!.diff).toEqual({ added: 40, removed: 2, files: 3 })
     expect(log.nodes.find((node) => node.id === "b")!.diff).toEqual({ added: 5, removed: 0, files: 1 })
+  })
+
+  test("a worktree teardown that throws still hands every session back to the host", async () => {
+    const h = harness({ behavior: batch, worktrees: "available", release: true, releaseRun: true, cleanupThrows: true })
+    const run = h.run(tree(["root->a", "root->b"], { dispatches: 1 }))
+    const failure = await run.done.then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+
+    expect(failure).toBeInstanceOf(Error)
+    expect([...h.released].sort()).toEqual(["s1", "s2", "s3"])
+    expect(h.releasedRuns).toEqual([run.log.id])
   })
 
   test("each dispatched card's session is created in its own tree", async () => {
@@ -3837,6 +3893,7 @@ describe("prompt uplift", () => {
     graphId: "ut-1",
     specPath: "/tmp/spec.xml",
     nodes: 3,
+    engine: "claude:claude-sonnet-5-5",
     elapsedMs: 7,
   })
   const failed = (reason = "the claude CLI is logged out"): UpliftResult => ({
@@ -3871,6 +3928,7 @@ describe("prompt uplift", () => {
       graphId: "ut-1",
       specPath: "/tmp/spec.xml",
       nodes: 3,
+      engine: "claude:claude-sonnet-5-5",
       elapsedMs: 7,
     })
   })

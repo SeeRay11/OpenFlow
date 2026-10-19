@@ -36,7 +36,6 @@ export type EngineSurface = Omit<Required<EngineApi>, "waitForIdle"> & {
   waitForIdle(sessionID: string, options?: { signal?: AbortSignal; interval?: number; timeout?: number; slice?: number }): Promise<void>
   sessions(limit?: number): Promise<SessionRow[]>
   sessionTranscript(sessionID: string, limit?: number): Promise<Turn[]>
-  releaseRun(runId: string): Promise<void>
   health(): Promise<HealthInfo>
   /** Ids whose agent loop is executing right now. */
   active(): Promise<string[]>

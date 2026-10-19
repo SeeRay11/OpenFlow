@@ -149,15 +149,10 @@ describe("plannerEnv", () => {
 
 // Process groups, signals and `#!/bin/sh` scripts: POSIX only.
 describe.skipIf(process.platform === "win32")("the planner process", () => {
-  test("gets control.json before it plans, with hitl from settings and tracking off", async () => {
+  test("gets control.json before it plans, with questions and tracking off", async () => {
     const harness = await setup()
-    const uplift = harness.create()
-    await uplift.run(request("@ok one"))
+    await harness.create().run(request("@ok one"))
     expect((await harness.dump("openflow-run1-n1-1")).control).toEqual({ enabled: true, thinkEnabled: true, hitlEnabled: false, trackEnabled: false })
-
-    harness.settings.uplift.hitl = true
-    await uplift.run(request("@ok two", "n2"))
-    expect((await harness.dump("openflow-run1-n2-1")).control).toEqual({ enabled: true, thinkEnabled: true, hitlEnabled: true, trackEnabled: false })
   })
 
   test("sees the filtered environment, with memory on", async () => {

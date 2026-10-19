@@ -76,12 +76,6 @@ export const SECTIONS: Section[] = [
       { path: "uplift.enabled", label: "Uplift each card's task before it runs", kind: "toggle" },
       { path: "uplift.timeoutMs", label: "Planner time limit (ms)", kind: "number", hint: "10000 to 1800000." },
       {
-        path: "uplift.hitl",
-        label: "Let the planner ask clarifying questions",
-        kind: "toggle",
-        hint: "One more model call; cards run unattended.",
-      },
-      {
         path: "uplift.root",
         label: "claude-ultrathink location",
         kind: "text",

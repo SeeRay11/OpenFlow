@@ -20,7 +20,8 @@ import { HttpError } from "../host/respond"
 import { capText, stripControl } from "../substrate/guard"
 import { createEventMapper, type EventMapper } from "./events"
 import { createHostTools, hostToolsCommand, type HostTools } from "./host-tools"
-import { asNumber, asRecord, asString, createMessageStore, providerError, type MessageStore } from "./messages"
+import { describeLaunch } from "./launch"
+import { asNumber, asRecord, asString, createMessageStore, NOTICE_LIMIT, providerError, type MessageStore } from "./messages"
 import { requireBinary } from "./models"
 import { READY_TIMEOUT_MS, withDeadline } from "./ready"
 import type { BuildLaunch, OmpExit, OmpProcess, SpawnOmp } from "./rpc-types"
@@ -492,14 +493,15 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     const request = session.request
     const mode = request.swarm ?? settings.swarm.mode
     const swarm = await step(Promise.resolve(deps.swarm?.launch({ settings, mode, runId: request.runId, nodeId: request.nodeId, stateDir: session.stateDir, env: env() })))
-    const spec = deps.launch({
+    const input = {
       settings,
       binary,
       session: { runId: request.runId, nodeId: request.nodeId, card: request.card, model: request.model, directory: request.directory, permissions: request.permissions },
       stateDir: session.stateDir,
       ...(swarm ? { swarm } : {}),
       env: env(),
-    })
+    }
+    const spec = deps.launch(input)
     const sessionDir = path.join(session.stateDir, SESSION_SUBDIR)
     await step(fs.mkdir(sessionDir, { recursive: true, mode: 0o700 }))
 
@@ -542,6 +544,10 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     session.settled = true
     session.lastActivity = Date.now()
     void proc.exited.then((exit) => onExit(session, generation, exit))
+    // A resumed start has said this already: the notes are about the card, not the process.
+    if (!resume)
+      for (const note of describeLaunch(input).notes)
+        options.emit({ type: "flow.notice", data: { sessionID: session.id, level: "info", message: capText(stripControl(note), NOTICE_LIMIT).text } })
     if (swarm && mode !== "off" && swarm.effective === "off" && swarm.preflight.problems.length)
       options.emit({
         type: "flow.notice",

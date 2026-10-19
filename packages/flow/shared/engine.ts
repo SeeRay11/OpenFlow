@@ -234,6 +234,8 @@ export interface EngineApi {
   interrupt(sessionID: string): Promise<void>
   /** Dispose a session the engine abandons (a replaced critic session, a finished card). Best effort. */
   release?(sessionID: string): Promise<void>
+  /** Dispose every session the host still holds for a run: what the engine could not hand back one by one. Best effort. */
+  releaseRun?(runId: string): Promise<void>
   replyPermission(sessionID: string, requestID: string, reply: PermissionReply): Promise<unknown>
   replyQuestion(sessionID: string, requestID: string, answers: string[][]): Promise<unknown>
   rejectQuestion(sessionID: string, requestID: string): Promise<unknown>

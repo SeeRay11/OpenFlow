@@ -136,6 +136,7 @@ export function upliftFacts(uplift: UpliftInfo): Array<{ key: string; value: str
   const reason = upliftReasonText(uplift.reason)
   if (reason) facts.push({ key: "reason", value: reason })
   if (uplift.source) facts.push({ key: "planner", value: uplift.source === "fallback" ? "fallback spec (engine unreachable)" : "llm" })
+  if (uplift.engine) facts.push({ key: "engine", value: uplift.engine })
   if (uplift.graphId) facts.push({ key: "graph id", value: uplift.graphId })
   if (uplift.nodes !== undefined) facts.push({ key: "nodes", value: String(uplift.nodes) })
   if (uplift.degraded?.length) facts.push({ key: "degraded", value: uplift.degraded.join(", ") })

@@ -136,15 +136,6 @@ export function IconLayers() {
   )
 }
 
-export function IconKey() {
-  return (
-    <Svg>
-      <circle cx="5.75" cy="10.25" r="2.75" />
-      <path d="m7.75 8.25 5-5M11 5l1.5 1.5M9.5 6.5 11 8" />
-    </Svg>
-  )
-}
-
 export function IconPlay() {
   return (
     <Svg>

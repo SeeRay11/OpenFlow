@@ -46,10 +46,10 @@ describe("omp client", () => {
 
   test("saveSettings PUTs the patch as the body and resetSettings POSTs", async () => {
     reply = () => Response.json({ settings: DEFAULT_OMP_SETTINGS, effective: {}, warnings: [] })
-    await client.saveSettings({ profile: "work", uplift: { hitl: true } })
+    await client.saveSettings({ profile: "work", uplift: { enabled: false } })
     await client.resetSettings()
     expect(seen).toEqual([
-      { method: "PUT", path: OMP_ROUTES.settings, body: { profile: "work", uplift: { hitl: true } } },
+      { method: "PUT", path: OMP_ROUTES.settings, body: { profile: "work", uplift: { enabled: false } } },
       { method: "POST", path: OMP_ROUTES.settingsReset, body: undefined },
     ])
   })

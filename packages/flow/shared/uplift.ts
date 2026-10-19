@@ -18,7 +18,6 @@
  *   3. original and uplifted text are both kept on the card and in the run log.
  */
 
-import type { ClarificationInfo } from "./clarification"
 
 export type UpliftStatus = "ok" | "skipped" | "failed"
 
@@ -65,7 +64,6 @@ export type UpliftResult = {
   /** Parts of the plan that fell back (`fill:n3`, ...). Non-empty with `ok` means a partial plan. */
   degraded?: string[]
   decisions?: UpliftDecision[]
-  clarifications?: ClarificationInfo[]
   engine?: string
   elapsedMs: number
 }

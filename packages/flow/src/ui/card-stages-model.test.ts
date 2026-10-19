@@ -125,6 +125,12 @@ describe("uplift section data", () => {
     expect(upliftFacts(uplift({ status: "failed", reason: "boom" })).map((fact) => fact.key)).toEqual(["status", "reason"])
   })
 
+  test("the planner engine is one row, before the graph id", () => {
+    const facts = upliftFacts(uplift({ source: "llm", engine: "claude:claude-sonnet-5-5", graphId: "ut-abc" }))
+    expect(facts.map((fact) => fact.key)).toEqual(["status", "planner", "engine", "graph id"])
+    expect(facts.find((fact) => fact.key === "engine")?.value).toBe("claude:claude-sonnet-5-5")
+  })
+
   test("a fallback spec is named as such", () => {
     expect(upliftFacts(uplift({ source: "fallback" })).find((fact) => fact.key === "planner")?.value).toContain("fallback")
   })

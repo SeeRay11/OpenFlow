@@ -36,8 +36,6 @@ export type OmpSettings = {
     enabled: boolean
     /** Wall clock for the planner process group. */
     timeoutMs: number
-    /** Let the planner draft clarifying questions (one more model call; cards run unattended). */
-    hitl: boolean
     /** Absolute path of the claude-ultrathink checkout or plugin; empty uses ULTRATHINK_ROOT, then omp's plugin directory. */
     root: string
   }
@@ -66,7 +64,7 @@ export const DEFAULT_OMP_SETTINGS: OmpSettings = {
   loadUserExtensions: false,
   manualApproval: "write",
   maxSessionMinutes: 480,
-  uplift: { enabled: true, timeoutMs: 240_000, hitl: false, root: "" },
+  uplift: { enabled: true, timeoutMs: 240_000, root: "" },
   memory: { enabled: true, ttl: "30d", readLimit: 8, repo: "" },
   swarm: { mode: "auto", root: "" },
   substrate: { url: "" },

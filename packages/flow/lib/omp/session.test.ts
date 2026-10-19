@@ -903,6 +903,32 @@ hosted("pruned state", () => {
   })
 })
 
+hosted("launch notes", () => {
+  const WEBFETCH_OFF = { ...BODY, card: { ...BODY.card, tools: { webfetch: false } } }
+  const notices = () => events.filter((event) => event.type === "flow.notice")
+
+  test("a toggle omp cannot enforce is announced once, as an info notice, when the session starts", async () => {
+    const { id } = await open(WEBFETCH_OFF)
+    expect(notices()).toHaveLength(1)
+    expect(notices()[0]?.data).toMatchObject({ sessionID: id, level: "info" })
+    expect(String(notices()[0]?.data?.message)).toContain("webfetch")
+  })
+
+  test("a card whose toggles are all enforced says nothing", async () => {
+    await open({ ...BODY, card: { ...BODY.card, tools: { bash: false, skill: false, webfetch: true } } })
+    expect(notices()).toEqual([])
+  })
+
+  test("a session resumed after the idle reaper does not repeat the note", async () => {
+    await boot({ idleReapMs: 1000 })
+    const { id } = await open(WEBFETCH_OFF)
+    await host.maintain(Date.now() + 5000)
+    await host.prompt(id, { text: "wake up" })
+    expect(h.fake.procs).toHaveLength(2)
+    expect(notices()).toHaveLength(1)
+  })
+})
+
 hosted("idle reaper", () => {
   beforeEach(async () => {
     await boot({ idleReapMs: 1000 })

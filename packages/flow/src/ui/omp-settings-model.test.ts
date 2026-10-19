@@ -80,8 +80,8 @@ describe("toDraft / dirtyPaths", () => {
   })
 
   test("reports exactly the changed paths", () => {
-    const draft = { ...toDraft(saved), profile: "work", "memory.readLimit": "3", "uplift.hitl": true }
-    expect(dirtyPaths(saved, draft).sort()).toEqual(["memory.readLimit", "profile", "uplift.hitl"])
+    const draft = { ...toDraft(saved), profile: "work", "memory.readLimit": "3", "uplift.enabled": false }
+    expect(dirtyPaths(saved, draft).sort()).toEqual(["memory.readLimit", "profile", "uplift.enabled"])
   })
 
   test("surrounding whitespace is not a change", () => {
@@ -97,9 +97,9 @@ describe("toDraft / dirtyPaths", () => {
 
 describe("buildPatch", () => {
   test("sends only changed leaves, nested, with numbers as numbers and text trimmed", () => {
-    const draft = { ...toDraft(saved), profile: " work ", "uplift.timeoutMs": "60000", "uplift.hitl": true, "swarm.mode": "off" }
+    const draft = { ...toDraft(saved), profile: " work ", "uplift.timeoutMs": "60000", "uplift.enabled": false, "swarm.mode": "off" }
     expect(buildPatch(saved, draft)).toEqual({
-      patch: { profile: "work", uplift: { timeoutMs: 60_000, hitl: true }, swarm: { mode: "off" } },
+      patch: { profile: "work", uplift: { timeoutMs: 60_000, enabled: false }, swarm: { mode: "off" } },
       errors: [],
     })
   })

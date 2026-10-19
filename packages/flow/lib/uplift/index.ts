@@ -84,7 +84,7 @@ export function createUplift(deps: UpliftDeps): UpliftModule {
     const command = (deps.command ?? defaultCommand)(located.root)
     const timeoutMs = request.timeoutMs ?? settings.uplift.timeoutMs
 
-    await writeControl(dir, settings)
+    await writeControl(dir)
     const exit = await pool.run(
       {
         argv: command.argv,

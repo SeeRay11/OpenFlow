@@ -1,8 +1,5 @@
 import type { FlowNode, Pipeline } from "./types"
 
-/** The role a card must carry to be the one that assigns the work. */
-export const ORCHESTRATOR_ROLE = "orchestrator"
-
 /**
  * The role a card must carry to judge a gauntlet's work.
  *

@@ -68,6 +68,18 @@ describe("load", () => {
     expect(warnings).toEqual([])
   })
 
+  test("a file from a build that still had uplift.hitl loads without a warning and drops the key on the next save", async () => {
+    await mkdir(stateDir, { recursive: true })
+    await writeFile(settingsFile(), JSON.stringify({ profile: "work", uplift: { timeoutMs: 60_000, hitl: true } }))
+    const instance = store()
+    const { settings, warnings } = await instance.load()
+    expect(warnings).toEqual([])
+    expect(settings.profile).toBe("work")
+    expect(settings.uplift).toEqual({ ...DEFAULT_OMP_SETTINGS.uplift, timeoutMs: 60_000 })
+    await instance.update({ maxSessionMinutes: 60 })
+    expect(JSON.parse(await readFile(settingsFile(), "utf8")).uplift).not.toHaveProperty("hitl")
+  })
+
   test("keeps the readable part of a file with unknown keys or wrong types, and says so", async () => {
     await mkdir(stateDir, { recursive: true })
     await writeFile(settingsFile(), JSON.stringify({ profile: "work", maxSessionMinutes: "soon", future: true }))
@@ -136,10 +148,10 @@ describe("update", () => {
 
   test("rejects unknown keys, wrong types and a non-object body by path", async () => {
     const instance = store()
-    const unknown = await instance.update({ nope: 1, uplift: { nope: true, hitl: "yes" }, memory: 5 })
+    const unknown = await instance.update({ nope: 1, uplift: { nope: true, enabled: "yes" }, memory: 5 })
     expect(unknown.ok).toBe(false)
     if (unknown.ok) return
-    expect(unknown.errors.map((error) => error.path).sort()).toEqual(["memory", "nope", "uplift.hitl", "uplift.nope"])
+    expect(unknown.errors.map((error) => error.path).sort()).toEqual(["memory", "nope", "uplift.enabled", "uplift.nope"])
     const array = await instance.update([1])
     expect(array.ok).toBe(false)
   })
@@ -150,13 +162,13 @@ describe("update", () => {
       instance.update({ profile: "one" }),
       instance.update({ maxSessionMinutes: 10 }),
       instance.update({ memory: { readLimit: 1 } }),
-      instance.update({ uplift: { hitl: true } }),
+      instance.update({ uplift: { enabled: false } }),
     ])
     const { settings } = await instance.load()
     expect(settings.profile).toBe("one")
     expect(settings.maxSessionMinutes).toBe(10)
     expect(settings.memory.readLimit).toBe(1)
-    expect(settings.uplift.hitl).toBe(true)
+    expect(settings.uplift.enabled).toBe(false)
   })
 
   test("notifies listeners after a save, not after a refusal, and stops after unsubscribe", async () => {

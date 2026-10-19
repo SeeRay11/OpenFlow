@@ -68,7 +68,7 @@ describe("a plan", () => {
     expect(result.status).toBe("ok")
   })
 
-  test("with parts that fell back is still ok, and carries what the planner decided and asked", async () => {
+  test("with parts that fell back is still ok, and carries what the planner decided", async () => {
     const harness = await setup()
     const result = await harness.create().run(request("@partial plan it"))
 
@@ -76,17 +76,6 @@ describe("a plan", () => {
     expect(result.degraded).toEqual(["fill:n3"])
     // The errored decision has no probability, so it is left out rather than shown as 0.
     expect(result.decisions).toEqual([{ point: "plan", p: 0.97, action: "plan" }])
-    expect(result.clarifications).toEqual([
-      {
-        id: "q1",
-        header: "Storage",
-        question: "Which database?",
-        why: "Changes the schema.",
-        blocking: true,
-        options: [{ label: "sqlite", description: "local" }, { label: "postgres" }],
-        default: "sqlite",
-      },
-    ])
   })
 
   test("falls back to the XML held in the session record when the .xml file is missing", async () => {

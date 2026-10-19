@@ -1033,6 +1033,7 @@ export function start(
         degraded: result.degraded,
         decisions: result.decisions,
         elapsedMs: result.elapsedMs,
+        engine: result.engine,
       }
       // A conservative fallback spec is what the planner writes when it could
       // not reach its engine: not an uplift, whatever status carries it.
@@ -2466,20 +2467,27 @@ export function start(
       log.status = "error"
       hooks.onNotice?.("error", api.describe(error))
     } finally {
-      for (const node of log.nodes) if (node.status === "queued" || node.status === "running") node.status = "stopped"
-      log.finished = Date.now()
-      log.usage = mergeSpend(log.nodes.map((node) => node.usage))
-      // Every card's work was folded back in after its own batch, so what is
-      // left here is empty checkouts and `openflow/*` branches nobody reads.
-      // Done in `finally` because an aborted or failed run leaves the most of
-      // them, and a stack of stale worktrees in the user's repository is the
-      // thing that would make this feature not worth having.
-      if (opened.size && deps.worktrees) await deps.worktrees.cleanup(log.id, [...opened.values()]).catch(() => {})
-      // Every session the run still holds goes back to the host: the processes
-      // are the host's to dispose, and a run that ended leaves nothing for them
-      // to wait on. Memory writes are given a moment to land so the log shows
-      // what became of them, but never longer than that.
-      for (const sessionID of [...held]) release(sessionID)
+      try {
+        for (const node of log.nodes) if (node.status === "queued" || node.status === "running") node.status = "stopped"
+        log.finished = Date.now()
+        log.usage = mergeSpend(log.nodes.map((node) => node.usage))
+        // Every card's work was folded back in after its own batch, so what is
+        // left here is empty checkouts and `openflow/*` branches nobody reads.
+        // Done in `finally` because an aborted or failed run leaves the most of
+        // them, and a stack of stale worktrees in the user's repository is the
+        // thing that would make this feature not worth having.
+        if (opened.size && deps.worktrees) await deps.worktrees.cleanup(log.id, [...opened.values()]).catch(() => {})
+      } finally {
+        // Every session the run still holds goes back to the host: the processes
+        // are the host's to dispose, and a run that ended leaves nothing for them
+        // to wait on. This runs even when the teardown above threw. The whole-run
+        // release after it takes what the engine never learned of or could not
+        // hand back one by one (a create whose answer was lost, a release that failed).
+        for (const sessionID of [...held]) release(sessionID)
+        if (api.releaseRun) track(api.releaseRun(log.id).catch(() => undefined))
+      }
+      // Memory writes are given a moment to land so the log shows what became
+      // of them, but never longer than that.
       if (background.size) {
         const grace = Promise.withResolvers<void>()
         const timer = setTimeout(grace.resolve, backgroundGrace)
