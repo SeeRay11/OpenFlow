@@ -85,6 +85,11 @@ export type MemoryWriteResult = {
   scope?: string
   subject?: string
   truncated?: boolean
+  /**
+   * What Substrate stored the entry as. Absent means a fact. `todo` means the text was hedged
+   * ("guessing", "might"), which Substrate refuses as a fact, so it was stored as a todo instead.
+   */
+  kind?: "fact" | "todo"
   /** One actionable sentence for every status except `stored`. */
   error?: string
 }
@@ -100,6 +105,7 @@ export type MemoryInfo = {
   write?: {
     status: MemoryWriteResult["status"] | "running"
     subject?: string
+    kind?: MemoryWriteResult["kind"]
     error?: string
   }
   /** The run's Graph ID, shared by every card of the run. */

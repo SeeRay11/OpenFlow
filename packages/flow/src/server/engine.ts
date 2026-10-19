@@ -1163,7 +1163,7 @@ export function start(
           ...(dispatch ? { dispatch } : {}),
         })
         .then(
-          (result) => patchMemory(node.id, { write: { status: result.status, subject: result.subject, error: result.error } }),
+          (result) => patchMemory(node.id, { write: { status: result.status, subject: result.subject, kind: result.kind, error: result.error } }),
           (error) => patchMemory(node.id, { write: { status: "unavailable", error: api.describe(error) } }),
         ),
     )

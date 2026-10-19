@@ -38,6 +38,8 @@ const SLUG = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/
 const RETRACTED = "/retracted"
 const WRITE_TEXT_LIMIT = 3900
 const FORGET_BATCH = 8
+/** The reason Substrate gives when it quarantines hedged text written as a fact. */
+const SPECULATIVE = "quarantine.speculative"
 const DAY_MS = 86_400_000
 
 export type SubstrateDeps = {
@@ -428,7 +430,16 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
         let reply = await client.memoryWrite(payload)
         // 202 means accepted but not read back; the same key makes the retry exactly-once.
         if (reply.ok && reply.outcome === "accepted" && !reply.verified) reply = await client.memoryWrite(payload)
-        const result = writeResult(reply, { ...base, truncated: body.truncated })
+        let result = writeResult(reply, { ...base, truncated: body.truncated })
+        // Hedged text ("guessing", "might") is quarantined as a fact but accepted as a todo; every other quarantine
+        // (secrets, personal data) stays quarantined. A refused todo reports the original quarantine, not its own.
+        if (reply.ok && reply.outcome === "quarantined" && reply.reason === SPECULATIVE) {
+          const todo = { ...payload, kind: "todo", idempotency_key: `${payload.idempotency_key}:todo` }
+          let retry = await client.memoryWrite(todo)
+          if (retry.ok && retry.outcome === "accepted" && !retry.verified) retry = await client.memoryWrite(todo)
+          const stored = writeResult(retry, { ...base, truncated: body.truncated })
+          if (stored.status === "stored" || stored.status === "unverified") result = { ...stored, kind: "todo" }
+        }
         await deps.runGraphs.end(context, request)
         return result
       })(),

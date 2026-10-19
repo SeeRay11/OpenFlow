@@ -414,6 +414,68 @@ describe("write", () => {
     })
   }
 
+  describe("hedged output", () => {
+    const hedged = "I changed nothing. I was only guessing that the repo has no notifications code; it might be elsewhere."
+    const kinds = () => memoryCalls().map((call) => bodyOf(call).kind)
+
+    test("is stored as a todo when Substrate refuses it as a fact, same text, subject and scope", async () => {
+      const result = await substrate.write(write("run-a", "x", hedged))
+      expect(result).toMatchObject({ status: "stored", kind: "todo", subject: "openflow/demo/run-a/x", scope: "repo:acme/widgets" })
+      expect(kinds()).toEqual(["fact", "todo"])
+      const [first, retry] = memoryCalls().map(bodyOf)
+      expect(retry).toEqual({ ...first, kind: "todo", idempotency_key: "openflow:run-a:x:todo" })
+      expect(fake.entries.map((entry) => entry.kind)).toEqual(["todo"])
+    })
+
+    test("a later dispatch keeps its ordinal and gets the todo suffix after it", async () => {
+      await substrate.write(write("run-a", "sub", hedged, { dispatch: 2 }))
+      expect(memoryCalls().map((call) => bodyOf(call).idempotency_key)).toEqual(["openflow:run-a:sub:2", "openflow:run-a:sub:2:todo"])
+      expect(memoryCalls().map((call) => bodyOf(call).subject)).toEqual(["openflow/demo/run-a/sub-d2", "openflow/demo/run-a/sub-d2"])
+    })
+
+    test("a refused todo reports the original quarantine", async () => {
+      fake.script.write.push("pass", "denied")
+      const result = await substrate.write(write("run-a", "x", hedged))
+      expect(result.status).toBe("quarantined")
+      expect(result.error).toContain("quarantine.speculative")
+      expect(result.kind).toBeUndefined()
+      expect(kinds()).toEqual(["fact", "todo"])
+      expect(fake.entries).toHaveLength(0)
+    })
+
+    test("a successful write is a plain fact with no kind and one call", async () => {
+      const result = await substrate.write(write("run-a", "x", "The answer is 42."))
+      expect(result.kind).toBeUndefined()
+      expect(kinds()).toEqual(["fact"])
+    })
+
+    test("other quarantine reasons are never retried", async () => {
+      fake.script.write.push("quarantine")
+      const result = await substrate.write(write("run-a", "x", hedged))
+      expect(result.status).toBe("quarantined")
+      expect(memoryCalls()).toHaveLength(1)
+      expect(fake.entries).toHaveLength(0)
+    })
+
+    test("forget retracts a todo entry and the listing marks it retracted", async () => {
+      await substrate.write(write("run-a", "x", hedged))
+      expect(await substrate.forget({ pipeline: "demo", runId: "run-a" })).toEqual({ status: "retracted", retracted: 1 })
+      expect(fake.entries.some((entry) => entry.subject === "openflow/demo/run-a/x/retracted")).toBe(true)
+      const listing = await substrate.handle(new Request(`http://host${MEMORY_ROUTES.entries}?pipeline=demo&run=run-a`))
+      const body: { items: Array<{ subject: string; kind: string; retracted: boolean }> } = await listing?.json()
+      expect(body.items.find((row) => row.subject === "openflow/demo/run-a/x")).toMatchObject({ kind: "todo", retracted: true })
+      expect((await substrate.read(read("run-b", "y"))).status).toBe("empty")
+    })
+
+    test("a later run reads the todo entry", async () => {
+      await substrate.write(write("run-a", "x", hedged))
+      const next = await substrate.read(read("run-b", "y"))
+      expect(next.items).toHaveLength(1)
+      expect(next.items[0]).toMatchObject({ kind: "todo", subject: "openflow/demo/run-a/x" })
+      expect(next.block).toContain("notifications code")
+    })
+  })
+
   test("a wrong token is `denied` and the sentence names the problem, not the token", async () => {
     const wrong = createSubstrate({
       project: () => dir,

@@ -26,8 +26,12 @@ export type FakeEntry = {
 
 export type FakeCall = { method: string; path: string; authorized: boolean; body?: unknown; tool?: string; accept?: string | null }
 
-/** What the next `/memory` request does instead of the default accept-and-verify. */
-export type WriteScript = "unverified" | "conflict" | "quarantine" | "denied" | "down"
+/**
+ * What the next `/memory` request does instead of the default accept-and-verify. Like the real Substrate, a
+ * `fact` whose text hedges ("guessing", "might") is quarantined as `quarantine.speculative` without a script;
+ * the same text as a `todo` is accepted. `pass` takes a slot in the queue and does nothing else.
+ */
+export type WriteScript = "pass" | "unverified" | "conflict" | "quarantine" | "denied" | "down"
 
 export type FakeSubstrate = {
   url: string
@@ -55,6 +59,8 @@ export type FakeSubstrate = {
 }
 
 type Json = Record<string, unknown>
+
+const HEDGED = /\b(guessing|might)\b/i
 
 export function startFakeSubstrate(options: { token?: string } = {}): FakeSubstrate {
   const token = options.token ?? "dummy-omp-token-0123456789abcdef"
@@ -175,6 +181,9 @@ export function startFakeSubstrate(options: { token?: string } = {}): FakeSubstr
     if (mode === "conflict") return reply(409, { outcome: "conflict", reason: "version.required", remedy: "pass expected_version", verified_persisted: false })
     if (mode === "quarantine") return reply(422, { outcome: "quarantined", reason: "secret", remedy: "remove the secret", verified_persisted: false })
     if (mode === "denied") return reply(403, { outcome: "denied", reason: "grant.missing", remedy: "ask an operator for a grant", verified_persisted: false })
+    if (body.kind === "fact" && HEDGED.test(String(body.text ?? ""))) {
+      return reply(422, { outcome: "quarantined", reason: "quarantine.speculative", remedy: "Record it as kind=todo or kind=handoff", verified_persisted: false })
+    }
     const key = typeof body.idempotency_key === "string" ? body.idempotency_key : undefined
     const fingerprint = JSON.stringify([body.scope, body.kind, body.subject, body.text])
     const known = key ? byKey.get(key) : undefined

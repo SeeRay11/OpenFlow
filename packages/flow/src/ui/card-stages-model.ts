@@ -254,7 +254,8 @@ export function memoryReadText(read: MemoryRead | undefined) {
 export function memoryWriteText(write: MemoryInfo["write"]) {
   if (!write) return undefined
   const base = WRITE_TEXT[write.status] ?? write.status
-  const detail = write.status === "stored" ? write.subject : write.error
+  const hedged = write.status === "stored" && write.kind === "todo" ? " (stored as a todo because the output was hedged)" : ""
+  const detail = write.status === "stored" ? `${write.subject ?? ""}${hedged}` : write.error
   return detail ? `${base}: ${detail}` : base
 }
 

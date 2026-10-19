@@ -175,6 +175,15 @@ describe("memoryChip", () => {
     expect(chip?.title).toContain("↑ stored: openflow/p/r2/c")
   })
 
+  test("a write stored as a todo says why, and still counts as stored", () => {
+    const write = { status: "stored", subject: "openflow/p/r2/c", kind: "todo" } as const
+    expect(memoryWriteText(write)).toContain("todo")
+    expect(memoryWriteText(write)).toContain("hedged")
+    expect(memoryWriteText(write)).toContain("openflow/p/r2/c")
+    expect(memoryWriteText({ status: "stored", subject: "openflow/p/r2/c" })).not.toContain("todo")
+    expect(memoryChip({ read: read(), write })).toMatchObject({ label: "mem ↓0 ↑1", tone: "neutral" })
+  })
+
   test("the tooltip caps the subjects it lists", () => {
     const items = Array.from({ length: 8 }, (_, at) => item(`s${at}`))
     const chip = memoryChip({ read: read({ items }) })
