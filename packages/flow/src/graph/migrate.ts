@@ -61,6 +61,7 @@ const RUN_KEYS = [
   "best",
   "updatedAt",
   "resumedBy",
+  "isolation",
   MIGRATED,
 ]
 const RUN_NODE_KEYS = [

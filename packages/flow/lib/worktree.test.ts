@@ -202,6 +202,22 @@ describe("mergeWorktrees", () => {
     expect(await read("b.txt")).toBe("USER EDIT\n")
     await cleanupWorktrees(dir, runID, opened.trees)
   })
+
+  test("a tree directory recreated empty is skipped as empty, and git never runs in a parent repository", async () => {
+    const opened = await open(["bare", "coder"])
+    const [bare, coder] = opened.trees
+    await fs.writeFile(path.join(coder!.directory, "a.txt"), "one\nCODER\nthree\n")
+    await fs.rm(bare!.directory, { recursive: true, force: true })
+    await fs.mkdir(bare!.directory, { recursive: true })
+
+    const report = await mergeWorktrees(dir, opened.trees, opened.base)
+
+    expect(report).toMatchObject({ merged: ["coder"], empty: ["bare"] })
+    expect(await read("a.txt")).toBe("one\nCODER\nthree\n")
+    // Nothing was committed to the project's repository by running git in the wrong place.
+    expect((await git(["log", "--oneline"])).stdout.trim().split("\n")).toHaveLength(1)
+    await cleanupWorktrees(dir, runID, opened.trees)
+  })
 })
 
 describe("cleanupWorktrees", () => {
@@ -219,6 +235,28 @@ describe("cleanupWorktrees", () => {
     expect(branches).toBe("")
     const worktrees = (await git(["worktree", "list"])).stdout.trim().split("\n")
     expect(worktrees).toHaveLength(1)
+  })
+
+  test("cleaning up twice, or after the directory and branch are already gone, is fine", async () => {
+    const opened = await open(["coder", "tester"])
+    await fs.rm(opened.trees[0]!.directory, { recursive: true, force: true })
+    await git(["worktree", "remove", "--force", opened.trees[1]!.directory])
+    await git(["branch", "-D", opened.trees[1]!.branch])
+
+    await cleanupWorktrees(dir, runID, opened.trees)
+    await cleanupWorktrees(dir, runID, opened.trees)
+
+    expect((await git(["branch", "--list", "openflow/*"])).stdout.trim()).toBe("")
+    expect((await git(["worktree", "list"])).stdout.trim().split("\n")).toHaveLength(1)
+    // The pruned registration of the directory that vanished is dropped as well.
+    expect((await git(["worktree", "list", "--porcelain"])).stdout).not.toContain("prunable")
+  })
+
+  test("a failing tree does not stop the others being cleaned", async () => {
+    const opened = await open(["a", "b"])
+    const hostile = [{ card: "x", directory: path.join(os.tmpdir(), "openflow-never-existed"), branch: "openflow/no/such" }, ...opened.trees]
+    await cleanupWorktrees(dir, runID, hostile)
+    expect((await git(["branch", "--list", "openflow/*"])).stdout.trim()).toBe("")
   })
 
   test("merged work survives the cleanup — it is in the project, not in the branch", async () => {

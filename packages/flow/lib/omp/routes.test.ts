@@ -243,6 +243,75 @@ hosted("writes", () => {
   })
 })
 
+hosted("a create is counted from the route", () => {
+  test("while its body is still being read the engine is already working, and not once the create has failed", async () => {
+    const chunks = new TransformStream<Uint8Array>()
+    const request = new Request(`http://flow.test${engineRoutes.sessions}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: chunks.readable,
+      // A streamed request body must say so.
+      duplex: "half",
+    } as RequestInit)
+    expect(engine.working()).toBe(false)
+    const handling = engine.handle(request)
+    expect(engine.working()).toBe(true)
+    const writer = chunks.writable.getWriter()
+    await writer.write(new TextEncoder().encode("{not json"))
+    await writer.close()
+    expect((await handling)?.status).toBe(400)
+    expect(engine.working()).toBe(false)
+  })
+})
+
+hosted("a create body that fails while the host is shutting down", () => {
+  test.each([
+    ["not JSON", "{nope", 400],
+    ["oversized", JSON.stringify({ pad: "x".repeat(2_000_000) }), 413],
+  ])("%s is answered with its own status and leaves no unhandled rejection", async (_name, raw, status) => {
+    const unhandled: unknown[] = []
+    const record = (reason: unknown) => unhandled.push(reason)
+    process.on("unhandledRejection", record)
+    try {
+      await engine.dispose()
+      const response = await engine.handle(
+        new Request(`http://flow.test${engineRoutes.sessions}`, { method: "POST", headers: { "content-type": "application/json" }, body: raw }),
+      )
+      // The shutdown is reported first; the body's own failure is settled, not orphaned. Either way, a clean JSON error and nothing unhandled.
+      expect([status, 409]).toContain(response?.status as number)
+      // Unhandled rejections surface on a later turn of the event loop.
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    } finally {
+      process.off("unhandledRejection", record)
+    }
+    expect(unhandled).toEqual([])
+  })
+})
+
+hosted("a create whose body never arrives", () => {
+  test("is answered 408 after the deadline and no longer holds the project", async () => {
+    const short = createEngineHost({ ...h.deps, bodyDeadlineMs: 30 })
+    try {
+      const chunks = new TransformStream<Uint8Array>()
+      const request = new Request(`http://flow.test${engineRoutes.sessions}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chunks.readable,
+        duplex: "half",
+      } as RequestInit)
+      const handling = short.handle(request)
+      expect(short.working()).toBe(true)
+      const response = await handling
+      expect(response?.status).toBe(408)
+      expect(await response?.json()).toMatchObject({ code: "request-timeout" })
+      expect(short.working()).toBe(false)
+    } finally {
+      await short.dispose()
+    }
+  })
+})
+
 describe("event bus", () => {
   async function readUntil(reader: ReadableStreamDefaultReader<Uint8Array>, text: string, seen = { value: "" }) {
     const decoder = new TextDecoder()

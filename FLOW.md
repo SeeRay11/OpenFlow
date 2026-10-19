@@ -195,11 +195,51 @@ file layout, and login/model behavior are documented there rather than re-derive
   while idle with no folder picker open and the tab visible, and `offerable()` never offers Resume from
   a list older than the 5-minute window (`runsReadAt`). A resumed run writes its OWN log first
   (carrying the session ids, before the model-catalog wait) and only then writes the old log `stopped`
-  with `resumedBy` (`superseded()`); if the first write fails the interrupted log stays resumable and
-  the notice appears. **The carried session id must be written to the
+  with `resumedBy` (`superseded()`); if the first write fails the interrupted log stays resumable. If
+  the first write fails, `closeLater` makes the first later write that works
+  close it. The replacement already holds the finished cards' outputs (`done`, `reused`) and the carried
+  ids when first saved, orchestrated runs too. Carried ids for cards no longer in the pipeline, and
+  sessions of cards that already finished, go to `spare` and are released at the start (they would hold
+  the project lock); a carried session the host reports lost starts as a FRESH card (`build = opening`,
+  no `interruptedNote` wrapper). The Resume button is disabled from the click until the run started
+  (`resuming`). **The carried session id must be written to the
   run log** (`patch(node.id, { sessionID })`), because the create path that normally writes it
   is skipped — without it a resumed run reports cards with no session while they answer in one,
   and the *next* interruption has nothing left to carry.
+- **Resume never merges, removes or releases the interrupted run's isolated worktrees.** Merging
+  them is the user's call, because git state in a worktree cannot be assumed. `RunLog.isolation` (`{ trees:
+  [{ card, directory, branch }] }`; informational, no `base`, absent on old logs; an old log's `base` is
+  tolerated and ignored) lists the worktrees the run opened that are not cleaned up yet. `save()` writes it
+  from `[...abandoned, ...opened.values()]`; it is saved with `await` right after the trees open, before
+  any card runs in them; the end-of-run cleanup clears it unless the cleanup request itself was rejected
+  (`cleanupWorktrees` swallows git failures, so a clean answer clears them). `resumeRun` passes the
+  interrupted log's `isolation` as `RunOptions.abandoned = { trees }` (no run id). After the
+  replacement log is saved and the interrupted log closed, the new log's `isolation` is seeded with the
+  abandoned trees and ONE error notice (`abandonedNote` in `src/graph/worktree.ts`) says they **may**
+  hold work not merged into the project: at most 20 listed plus the true count of the rest, every path
+  double-quoted in `git -C "<dir>" status` and `git -C "<dir>" diff`; the user checks, merges or
+  discards. (Trees of batches already merged stay listed until the run ends, hence "may".) A carried
+  card that had a tree gets `movedNote` in its resumed first prompt: the working directory is now the
+  project folder, edits it made before the interruption **may** still be only in the old copy (path
+  named only when it has no space, else "the old isolated copy named in the notice"), it checks the
+  project files before relying on them, redoes any that are missing there, and does not edit the old
+  copy. **Run logs are untrusted input** — read back from a file in the project, with the same trust
+  model as the pipelines in it (no provenance check; a repository you open can already define
+  prompts). `loggedTrees` ignores `isolation` entries whose `directory` is not a plain absolute path
+  (`SAFE_DIRECTORY`: posix `/…` or `X:\…`, only `[A-Za-z0-9 _.@+:~\\/-]`, at most 200 characters) or
+  whose `branch` is not `SAFE_BRANCH` (`openflow/[A-Za-z0-9_./-]+`), keeps at most 50 entries, and
+  flattens control and invisible/format characters (U+200B–200F, U+202A–202E, U+2060–206F, U+FEFF)
+  via `plainText`; the app refuses a log whose own `id` differs from the id it was opened under
+  (case-insensitive, list ids are lower-cased file names), uses a saved `output` only if it is a string
+  of at most `MAX_RESUMED_OUTPUT` (1,000,000) characters, carries a `sessionID` only if it is a
+  non-empty string of at most 200 characters without control characters, and refuses a log without a
+  `nodes` array. `abandoned()` / `interrupted()` in `src/server/runs.ts`: a log whose `updatedAt` or
+  `started` is more than `CLOCK_SKEW_MS` (5 min) in the future is `implausible()`, counts as
+  abandoned, and sorts below every plausible log (still offered when it is the only one).
+  `lib/worktree.ts`: a tree directory that no longer holds a worktree (including one recreated
+  empty) is skipped and reported as `empty` (the `.git`-entry guard keeps `git add -A` from running in a
+  parent repository), one failing tree never stops the others, and `cleanupWorktrees` is safe for a
+  tree that is already gone; the engine does not call merge or cleanup at resume.
 - **The orchestrator's decision is a tool call first and a fenced block second.** The host
   registers `openflow_dispatch` and `openflow_finish` as omp RPC host tools for a card that
   orchestrates (`lib/omp/host-tools.ts`, `CardSpec.dispatch`). They execute nothing: the engine
@@ -589,10 +629,20 @@ authority where this and it disagree.
   newest 2,000 run directories by mtime and, of those, the newest 4,000 card directories, and adopts
   the session; only its FILES stay in their original state directory, the new run id is kept for new
   work. The NEW request applies (model, permissions, swarm, tools, run and working directory: the
-  engine decides where a resumed card works). If the previously recorded directory still exists and
-  differs, one notice at the first accepted prompt says the work done there was not merged, with the
-  path (`session.carried`). A live process keeps its launch settings and directory until it is next
-  resumed; a restart/trimmed-record revive resumes in the saved directory and gets no notice.
+  engine decides where a resumed card works). `reuse` of a session still LIVE in a different, still
+  existing directory stops it (files kept) and relaunches it in the new run's directory; released while
+  it is being stopped, the reuse is 404 and spawns nothing, and if the old directory vanishes while
+  stopping it relaunches without a notice. The same directory is untouched, and a gone old directory is
+  untouched with no notice. Overlapping `reuse` calls of one session are served one at a time (a
+  per-session queue); a prompt that arrives during a resume waits for it, and `begin` refuses to start
+  a live session again, so a session never has two processes. This is the safety
+  net for logs that recorded no trees: the held info notice (`carriedNotice`) reads "Work it did there
+  before then may not have been merged into this run. Inspect it with: git -C "<dir>" status" only when
+  the directory is absolute, at most 200 characters and made only of `[A-Za-z0-9 _.@+:~\\/-]`;
+  otherwise "…It worked in its previous working directory." with no command and no path. It is
+  delivered at the first accepted prompt and persisted in `.openflow-session.json` as `carried` until
+  then (`session.carried`).
+  A restart/trimmed-record revive resumes in the saved directory and gets no notice.
   `.openflow-session.json` stores the saved
   create request (`request`) so a disk-only session resumes as launched. Using a session touches its
   run directory's mtime (at most once a second per run) so recent use ranks newest. A carried session
@@ -611,7 +661,9 @@ authority where this and it disagree.
   dropping the least recently active, never one with a turn in flight or a dialog waiting; `prompt`
   on a session with no record resumes it from its files; a session disposed on purpose is 404.
 - **Shutdown is a closed gate, and every child is tracked.** After `close()` a create or reuse is
-  409 `session-closed` and spawns nothing; a terminal create is 409 `disposed`; a late SSE
+  409 `session-closed` and spawns nothing (a create whose body fails, bad JSON or oversized, is
+  answered with that failure or the 409; the body promise is settled so nothing is left unhandled);
+  a terminal create is 409 `disposed`; a late SSE
   subscriber gets a closed stream; the model catalog, provider probe and `omp config`/`omp auth`
   runs are 503 `host-closed` (`lib/host/lifecycle.ts`). The catalog, provider probe, `omp config` and
   `omp auth` runs, swarm preflight probes and every `omp --version` probe are tracked flights:
@@ -628,7 +680,9 @@ authority where this and it disagree.
   `src/state.ts`).
 - **A project switch is refused while any engine session is open.** `POST /project` answers 409
   `project-busy` while ANY session is live (idle between turns included) or starting, a create is in
-  flight (counted from the first line of `create()`), or an uplift planner runs (`projectLocked` =
+  flight (counted from the first line of `create()`, i.e. from `POST /sessions` arriving, body still
+  being read; a body that has not arrived within 10 s, `bodyDeadlineMs` in the engine host deps, is 408
+  `request-timeout` and releases the in-flight count), or an uplift planner runs (`projectLocked` =
   `engine.working() || uplift.active()`); reaped, lost and disposed sessions do not count, and the lock
   is re-checked right before the switch is applied. The body carries `sessions` (`engine.holders()`:
   every live or starting id; empty when only a planner or a create holds it). The UI
@@ -644,8 +698,12 @@ authority where this and it disagree.
   process group, SIGHUP then SIGKILL after the grace, even when the leader already exited. Custom
   roles are per project (`.openflow/roles.json`); a role created while they load is merged in when the
   read finishes (project roles first, local win on the same id, `mergeRoles`) and then saved, and if the
-  read fails nothing is written to the project and a notice says the change stays in the tab; an edit
-  made before the read does not overwrite the browser copy that is the migration source. The old browser copy is migrated once per browser
+  read fails nothing is written to the project and a notice says the change stays in the tab; edits
+  made before the read are kept under a SEPARATE browser key per project
+  (`openflow.customRolesPending.v1:<project path>`, never the migration source; other projects never
+  read or push it; a project switch leaves it in place; an edit before the project is known is
+  reported as not persisted), reported as unsynced and merged in when hydration succeeds; a hydration
+  that finishes after a switch cannot write into the next project. The old browser copy is migrated once per browser
   (`openflow.customRolesMigrated.v1`) and nothing is written to a project's file before it was read.
 - **Memory records are scoped and bounded.** Forget cutoffs in `<state>/memory-ignore.json` are keyed
   `<scope>|<prefix>` (for example `repo:acme/widgets|openflow/demo/`); a legacy key (starts with
@@ -663,8 +721,11 @@ authority where this and it disagree.
   `{ removed: false }`, which the UI's `removal()` treats as a result. `PUT` accepts an add-only
   boolean `create` (non-boolean is 400, never written to `mcp.json` or `SKILL.md`): with `create: true`
   an exact key/folder that exists, or a colliding slug, is 409 `{ code: "name-taken" }` and nothing
-  is written; without it the save edits in place. The panels send `create: true` for New and when the
-  typed name differs from the entry being edited, and keep the editor open on a 409. The PUT answer's
+  is written; without it the save edits in place. The panels send `create: true` only for New and a real
+  rename (editing without renaming addresses a skill by its folder, so a folder `my-skill` with
+  frontmatter name `My Skill` is not 409); a skill create claims the folder with a non-recursive
+  `mkdir` (concurrent creates: one 200, the rest 409; a failed `SKILL.md` write removes the empty
+  folder), and the panels keep the editor open on a 409. The PUT answer's
   `name` is the stored key.
 - **A blank model cannot run, and the app is what says so.** `preflight` blocks `no-model` ("pick a
   model for this node"); the default model only applies to cards added afterwards, and the canvas

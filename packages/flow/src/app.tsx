@@ -30,9 +30,9 @@ import {
 import { availableModels, providerRows, type ProviderRow } from "./server/providers"
 import { setAvailableModels } from "./graph/default-model"
 import { forgetCustomRoles, hydrateCustomRoles, onRolesSyncError } from "./graph/roles"
-import { latest } from "./server/latest"
-import { abandoned, findRun, offerable, PRUNE_DAYS, RUN_DELETE, RUN_PRUNE, runMenuOptions } from "./server/runs"
-import { store, type PipelineEntry, type RunEntry } from "./server/store"
+import { exclusive, latest } from "./server/latest"
+import { abandoned, findRun, offerable, PRUNE_DAYS, resumePlan, RUN_DELETE, RUN_PRUNE, runMenuOptions } from "./server/runs"
+import { store, type PipelineEntry, type RunEntry, type WorktreeRef } from "./server/store"
 import { PROJECT_BUSY, switchFreeing } from "./server/project"
 import { actions, requestKey, state } from "./state"
 import {
@@ -279,6 +279,9 @@ export function App() {
   const [runsReadAt, setRunsReadAt] = createSignal(0)
   /** The clock the Resume offer is judged against: an abandoned run turns resumable by itself as it ticks. */
   const [resumeNow, setResumeNow] = createSignal(Date.now())
+  const resumeClaim = exclusive()
+  /** A resume is under way (from the click until its run has ended): the button is disabled. */
+  const [resuming, setResuming] = createSignal(false)
   /** A folder is being chosen: the host may move to another project at any moment, so no run may start. */
   const folderOpen = () => pickingProject() || showProjectPicker()
 
@@ -350,9 +353,9 @@ export function App() {
    * that is scoped to the project directory: the model catalog, saved
    * pipelines, recorded runs.
    */
-  async function bootstrap() {
+  async function bootstrap(switching = false) {
     // Roles belong to one project: nothing of the previous project's may be on screen if this one's cannot be read.
-    forgetCustomRoles()
+    if (switching) forgetCustomRoles()
     setStatus("connecting…")
     let reachable = true
     try {
@@ -361,7 +364,7 @@ export function App() {
       // Before the palette settles, so a project's own saved roles are what it
       // renders rather than the built-ins alone. Roles follow the project, so
       // this re-runs on a switch too.
-      await hydrateCustomRoles()
+      await hydrateCustomRoles(context.project)
     } catch (error) {
       const detail = api.describe(error)
       reachable = false
@@ -587,7 +590,7 @@ export function App() {
         : notice("error", `${PROJECT_BUSY} — the host is now on ${next} while this page is on ${project()}: switch back with the folder button`)
     }
     setShowProjectPicker(false)
-    await bootstrap()
+    await bootstrap(true)
     actions.notice("info", `switched project to ${next}`)
   }
 
@@ -802,20 +805,19 @@ export function App() {
    * ones that were still working are continued in the sessions they already hold.
    */
   async function resumeRun(id: string) {
+    // Claimed in the click itself: `run()` only sets `state.running` after a health probe, and a second click in
+    // that gap would start a second engine carrying the same sessions.
+    if (!resumeClaim.enter()) return
+    setResuming(true)
     try {
       const { log, summary } = await loadRun(id)
       // The list this was offered from can be minutes old: the log itself says whether another tab is still writing it.
       if (!abandoned(log))
         return notice("error", `run ${id} was written a moment ago — it is probably still running in another tab`)
-      const outputs: Record<string, string> = {}
-      const sessions: Record<string, string> = {}
-      const fresh: string[] = []
-      for (const node of log.nodes) {
-        if (node.status === "done" && node.output !== undefined) outputs[node.id] = node.output
-        // A session the earlier build opened lives in a process this one cannot attach to.
-        else if (node.sessionID && isLegacySession(node.sessionID)) fresh.push(node.role)
-        else if (node.sessionID) sessions[node.id] = node.sessionID
-      }
+      // Read from a file in the project: refused when it is not the run it was opened as, and every value checked as it is taken.
+      const plan = resumePlan(id, log, isLegacySession)
+      if (!plan.ok) return notice("error", plan.reason)
+      const { outputs, sessions, fresh } = plan
       actions.setRun(log)
       const carried = Object.keys(sessions).length
       say(
@@ -826,13 +828,23 @@ export function App() {
             : ""),
         { title: summary?.title },
       )
-      await run(outputs, sessions, log)
+      // Isolated work the interrupted run left is only reported by the new run, never merged or removed on the way.
+      const trees = log.isolation?.trees ?? []
+      await run(outputs, sessions, log, trees.length ? { trees } : undefined)
     } catch (error) {
       actions.notice("error", api.describe(error))
+    } finally {
+      resumeClaim.leave()
+      setResuming(false)
     }
   }
 
-  async function run(resume?: Record<string, string>, sessions?: Record<string, string>, supersedes?: RunLog) {
+  async function run(
+    resume?: Record<string, string>,
+    sessions?: Record<string, string>,
+    supersedes?: RunLog,
+    abandoned?: { trees: WorktreeRef[] },
+  ) {
     // A run started while a folder is being chosen would be bound to the project the host is about to leave.
     if (state.running || folderOpen()) return
     // One place tells the user everything that is wrong before a session is
@@ -919,6 +931,7 @@ export function App() {
           resume,
           sessions,
           supersedes,
+          abandoned,
         },
       )
       const log = await current.done
@@ -1433,7 +1446,8 @@ export function App() {
               <button
                 class="btn"
                 type="button"
-                title="continue the run that was cut off — finished cards keep their answers, the rest carry on in the sessions they still hold"
+                disabled={resuming()}
+                title="continue the run that was cut off — finished cards keep their answers, the rest carry on in the sessions they still hold; isolated work it left in git worktrees is listed, not merged"
                 onClick={() => void resumeRun(entry().id)}
               >
                 <IconPlay />

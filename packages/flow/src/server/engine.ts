@@ -2,7 +2,7 @@ import { collisionNote, collisionsIn, exceptUnder, writesOf, type Write } from "
 import { DEFAULT_STREAM_RETRY, keepSubscribed, type StreamRetry } from "./stream"
 import { addDiff, attribute, deltaOf } from "../graph/diff"
 import { bestRound, ledgerNote, stalledRounds, verdictSummary, type LedgerRound } from "../graph/ledger"
-import { isolates, mergeNote } from "../graph/worktree"
+import { abandonedNote, isolates, loggedTrees, mergeNote, movedNote } from "../graph/worktree"
 import type { EngineApi, ModelInfo, PermissionReply, QuestionInfo } from "../../shared/engine"
 import type { MemoryInfo, MemoryReadRequest, MemoryReadResult, MemoryWriteRequest, MemoryWriteResult } from "../../shared/memory"
 import type { SwarmStatus } from "../../shared/swarm"
@@ -167,6 +167,11 @@ export type RunOptions = {
    * `resumedBy` this run) only after this run's own log reached disk.
    */
   supersedes?: RunLog
+  /**
+   * Isolated work the interrupted run this one continues left standing, taken from its log. Reported in a
+   * notice and listed in this run's own log; never merged, removed or released.
+   */
+  abandoned?: { trees: WorktreeRef[] }
   /**
    * How often the run log is rewritten while nothing else changes it, in
    * milliseconds. The write stamps `updatedAt`, which is what tells a second tab
@@ -553,13 +558,32 @@ export function start(
    * buy a bill; those are dropped here.
    */
   const carried = new Set<string>()
+  /** Sessions handed to this run that it will not prompt into: no such card any more, or the card already has its answer. */
+  const spare: string[] = []
   for (const [id, sessionID] of Object.entries(options.sessions ?? {})) {
-    if (resume[id] !== undefined || !sessionID) continue
+    if (!sessionID) continue
+    if (resume[id] !== undefined || !pipeline.nodes.some((candidate) => candidate.id === id)) {
+      spare.push(sessionID)
+      continue
+    }
     nodeSession.set(id, sessionID)
     sessions.set(sessionID, id)
     held.add(sessionID)
     carried.add(id)
   }
+  /** The interrupted log this run still has to close. */
+  let supersedes = options.supersedes
+  /** The replacement's first write failed: the first later one that works closes the interrupted log. */
+  let closeLater = false
+  /**
+   * Isolated work the interrupted run left standing, as its log names it. Only ever listed — in a notice
+   * and in this run's own log — never merged, cleaned up or released: it is untrusted file content.
+   */
+  const logged = loggedTrees({ trees: options.abandoned?.trees })
+  const abandoned = logged.trees
+  const abandonedTotal = logged.total
+  /** What a carried card is told about the folder it works in now, when it had an isolated copy. */
+  const moved = new Map(abandoned.filter((tree) => carried.has(tree.card)).map((tree) => [tree.card, movedNote(tree)] as const))
   /** Tool-call ids already read, so an old call cannot decide a new turn. */
   const consumed = new Map<string, Set<string>>()
   /**
@@ -732,6 +756,10 @@ export function start(
     if (checkpointTimer) clearTimeout(checkpointTimer)
     checkpointTimer = undefined
     log.updatedAt = Date.now()
+    const standing = [...abandoned, ...opened.values()]
+    log.isolation = standing.length
+      ? { trees: standing.map((tree) => ({ card: tree.card, directory: tree.directory, branch: tree.branch })) }
+      : undefined
     // The full stream stays in memory for the open page; the log keeps the
     // tail, with bodies clipped, so reopening a run replays what happened
     // without turning the run file into a transcript store.
@@ -743,11 +771,20 @@ export function start(
       deps.saveRun(log).then(
         () => {
           saveFailing = false
+          // The replacement's first write failed and this one worked: now the interrupted log can be closed.
+          if (closeLater) {
+            closeLater = false
+            track(closeInterrupted())
+          }
           return true
         },
         (error) => {
           // The heartbeat writes every 30 s: a disk that stays full is said once, and again only after a write got through.
-          if (!saveFailing) hooks.onNotice?.("error", `run log not saved: ${api.describe(error)}`)
+          if (!saveFailing)
+            hooks.onNotice?.(
+              "error",
+              `run log not saved: ${api.describe(error)}${supersedes ? " — the interrupted run stays resumable until this one is saved" : ""}`,
+            )
           saveFailing = true
           return false
         },
@@ -1251,11 +1288,11 @@ export function start(
     // first turn: from the second one on it is an ordinary reused session, and
     // the card should not be told it was interrupted twice.
     const carrying = carried.delete(node.id)
+    const opening = build
     if (carrying) {
-      const opening = build
       // Not a task turn, so never uplifted: the session already holds the task
       // it was given, and the note alone is what resumes it.
-      build = (skipped) => `${interruptedNote()}\n\n${textOf(opening(skipped))}`
+      build = (skipped) => `${interruptedNote(moved.get(node.id))}\n\n${textOf(opening(skipped))}`
     }
     let sessionID = reuse || carrying ? nodeSession.get(node.id) : undefined
     // The session an earlier run left open, to be re-attached by the host on
@@ -1508,6 +1545,8 @@ export function start(
           // A carried session the host could not resume is gone for good: retrying `reuse` would only be told so again.
           attach = undefined
           delivered = false
+          // A new session has no history to be told about: it starts as a fresh card would.
+          build = opening
         }
         // "Not now" is not "this card is finished". The provider refused the
         // turn, or the connection to it dropped, before it produced anything —
@@ -1728,9 +1767,11 @@ export function start(
     // A card dispatched a second time is prompted into the session it already
     // holds, so it still has its briefing and its earlier task — only the job
     // is new.
-    const returning = nodeSession.has(node.id)
+    // Read when the prompt is built, not once: a session lost on the way (a carried one the
+    // host no longer has) is replaced by a new one, and that one needs the full briefing.
+    const returning = () => nodeSession.has(node.id)
     let build: (skipped: Attachment[]) => TurnText = (skipped) =>
-      returning
+      returning()
         ? reassignPrompt(task)
         : first
           ? orchestratorSections(pipeline, node, input, skipped)
@@ -1946,6 +1987,8 @@ export function start(
               nodeDir.set(tree.card, tree.directory)
               opened.set(tree.card, tree)
             }
+            // Waited for, before any card starts in them: a run interrupted from here on still says where its trees are.
+            await save()
           } else if (result && !isolationWarned) {
             // Said once per run: an orchestration in a folder that is not a
             // repository is a normal way to work, and repeating it every batch
@@ -2327,13 +2370,12 @@ export function start(
   /** A leaf card: one turn, one assignment, no protocol to speak. */
   async function runSubagent(node: FlowNode, parent: FlowNode, task: string) {
     dispatches.set(node.id, (dispatches.get(node.id) ?? 0) + 1)
-    const returning = nodeSession.has(node.id)
     const critic = gauntlet && isCritic(node)
     await runTurn(
       node,
       task,
       (skipped) =>
-        returning
+        nodeSession.has(node.id)
           ? reassignPrompt(task)
           : critic
             ? // A critic judges; it is never uplifted, and never given memory
@@ -2437,20 +2479,43 @@ export function start(
     }
   }
 
+  /**
+   * Closes the interrupted log this run took over, once. Called after the replacement's
+   * own log reached disk, so there is never a moment with neither resumable.
+   */
+  async function closeInterrupted() {
+    const old = supersedes
+    if (!old) return
+    supersedes = undefined
+    await deps
+      .saveRun(superseded(old, log.id))
+      .catch((error) => hooks.onNotice?.("error", `the interrupted run's log was not closed: ${api.describe(error)}`))
+  }
+
+  const cardName = (id: string) => nodes.get(id)?.role ?? id
   const done = (async () => {
     try {
-      // A resumed run records itself before anything slow: the carried session ids
-      // are in the log, so a page closed from here on still leaves something to resume.
-      // Only then is the interrupted log closed, and only if this write got through —
-      // a failed one leaves the old log resumable.
+      // Sessions this run was handed and will never prompt into (a card since deleted, or one
+      // that already has its answer) would otherwise sit live and hold the project.
+      if (api.release) for (const sessionID of spare) track(api.release(sessionID).catch(() => undefined))
+      // A resumed run records itself before anything slow: the carried session ids, the
+      // finished cards' answers and the trees left over are in the log, so a page closed
+      // from here on still leaves something to resume. Only then is the interrupted log
+      // closed, and only if this write got through — a failed one leaves it resumable,
+      // and the first later write that works closes it.
       if (options.supersedes) {
         for (const id of carried) entry(id).sessionID = nodeSession.get(id)
-        if (await save()) {
-          await deps
-            .saveRun(superseded(options.supersedes, log.id))
-            .catch((error) => hooks.onNotice?.("error", `the interrupted run's log was not closed: ${api.describe(error)}`))
+        for (const [id, text] of Object.entries(resume)) {
+          const row = log.nodes.find((candidate) => candidate.id === id)
+          if (row) Object.assign(row, { status: "done", output: text, reused: true })
         }
+        if (await save()) await closeInterrupted()
+        else closeLater = true
       }
+      // Isolated work the interrupted run left is reported, never touched: the page cannot tell a tree that
+      // merged from one that did not, and the entries come from a file in the project. The log keeps listing
+      // them, so a further resume says it again.
+      if (abandoned.length) hooks.onNotice?.("error", abandonedNote(abandoned, abandonedTotal, cardName))
       // One catalog read serves both jobs: rejecting a model the server does
       // not offer, and knowing which attachments each model can actually read.
       const models = await api.models().catch(() => undefined)
@@ -2548,7 +2613,15 @@ export function start(
         // Done in `finally` because an aborted or failed run leaves the most of
         // them, and a stack of stale worktrees in the user's repository is the
         // thing that would make this feature not worth having.
-        if (opened.size && deps.worktrees) await deps.worktrees.cleanup(log.id, [...opened.values()]).catch(() => {})
+        if (opened.size && deps.worktrees) {
+          const cleaned = await deps.worktrees.cleanup(log.id, [...opened.values()]).then(
+            () => true,
+            () => false,
+          )
+          // `cleanupWorktrees` reports its own failures by not throwing, so only a call that was rejected outright
+          // (the host unreachable) leaves the trees listed; any other answer takes them off the log.
+          if (cleaned) opened.clear()
+        }
       } finally {
         // Every session the run still holds goes back to the host: the processes
         // are the host's to dispose, and a run that ended leaves nothing for them

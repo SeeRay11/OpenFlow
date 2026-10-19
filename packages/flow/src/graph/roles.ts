@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js"
+import { latest } from "../server/latest"
 import { store } from "../server/store"
 import type { FlowAgent } from "./types"
 
@@ -140,10 +141,14 @@ function persistCustomRoles(roles: Role[]) {
   // rather than the return value. Returning the localStorage result keeps the
   // immediate answer honest: "this survives a reload on this machine".
   //
-  // Until the project's own roles have been read, an edit stays in memory only: the
-  // read merges it in and writes it to the project, and the browser's own copy is the
-  // migration source that must not be overwritten by a partial list.
-  if (!synced) return true
+  // Until the project's own roles have been read, an edit goes to a pending key of its own,
+  // never to the mirror (the migration source, which a partial list must not overwrite). The
+  // read merges it into the project's roles and clears the key.
+  if (!synced) {
+    syncError?.("this project's roles have not been read yet, so this change is kept in this browser until they can be saved to it")
+    // Before the project is known there is no key it could be kept under without risking another project's file.
+    return scope === undefined ? false : writePending(scope, roles)
+  }
   void store
     .saveRoles(roles)
     .catch((error) => syncError?.(error instanceof Error ? error.message : String(error)))
@@ -161,14 +166,54 @@ export function onRolesSyncError(handler: (reason: string) => void) {
 let synced = false
 
 /**
- * Drops whatever roles are on screen. Roles belong to one project, so this runs
- * whenever the project is about to change: if the next project's file cannot be
- * read, the previous project's roles must not stay behind to be saved into it.
+ * Drops whatever roles are on screen, and what was waiting for their project. Roles
+ * belong to one project, so this runs when the project changes: if the next project's
+ * file cannot be read, the previous project's roles must not stay behind to be saved
+ * into it. Not for the first load of a page, where the pending key is a previous page
+ * load's unsaved work and is wanted back.
  */
 export function forgetCustomRoles() {
+  hydrations.cancel()
   synced = false
+  scope = undefined
+  // What was pending stays under its own project's key: it is that project's, and no other project may read it.
   setCustomRoles([])
 }
+
+/** The project whose roles are being read or shown; unknown between a switch and the next read starting. */
+let scope: string | undefined
+
+/** Roles written while a project's own were not read yet: one key per project, apart from the mirror (the migration source). */
+const PENDING_PREFIX = "openflow.customRolesPending.v1:"
+
+function loadPending(project: string): Role[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PENDING_PREFIX + project) ?? "[]")
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function writePending(project: string, roles: Role[]) {
+  try {
+    localStorage.setItem(PENDING_PREFIX + project, JSON.stringify(roles))
+    return true
+  } catch {
+    return false
+  }
+}
+
+function clearPending(project: string) {
+  try {
+    localStorage.removeItem(PENDING_PREFIX + project)
+  } catch {
+    // Nothing was stored, or nothing can be: either way there is nothing left to clear.
+  }
+}
+
+/** Reads of the project's roles in flight; only the newest, and none since a project switch, may write. */
+const hydrations = latest()
 
 /** Set after the browser's own copy was offered to a project once; it is never offered again. */
 const MIGRATED_KEY = "openflow.customRolesMigrated.v1"
@@ -220,12 +265,19 @@ export function mergeRoles(project: Role[], local: Role[]) {
  * leaves the roles unsynced: nothing is written to a project whose roles were
  * never seen, and what the user made meanwhile is kept for the next read.
  */
-export async function hydrateCustomRoles() {
+export async function hydrateCustomRoles(project: string) {
+  // A project switch (`forgetCustomRoles`) makes every hydrate still in flight stale: it must neither
+  // show its project's roles under the next one nor write anything into it.
+  const current = hydrations.begin()
+  // From here until the next switch, edits that cannot be saved yet are kept for this project, and only this one.
+  scope = project
   const stored = await store.roles().catch(() => undefined)
-  // Only edits made since `forgetCustomRoles()` are in the signal, so while unsynced it is exactly the local edits.
-  const plan = rolesOnOpen(Array.isArray(stored) ? (stored as Role[]) : undefined, loadCustomRoles(), readMigrated(), synced ? [] : customRoles())
+  if (!current()) return
+  // Edits made since `forgetCustomRoles()` are in the signal; the project's pending key adds what an earlier page load left unsynced.
+  const local = synced ? [] : mergeRoles(loadPending(project), customRoles())
+  const plan = rolesOnOpen(Array.isArray(stored) ? (stored as Role[]) : undefined, loadCustomRoles(), readMigrated(), local)
   if (!plan) {
-    if (customRoles().length) syncError?.("this project's roles could not be read, so the roles you made are kept in this tab until they can")
+    if (customRoles().length) syncError?.("this project's roles could not be read, so the roles you made are kept in this browser until they can be saved to it")
     return
   }
   setCustomRoles(plan.roles)
@@ -233,9 +285,11 @@ export async function hydrateCustomRoles() {
   if (plan.push) {
     // A role written before the store existed becomes a project file rather than staying one cleared cache away from gone.
     const pushed = await store.saveRoles(plan.roles).then(() => true, () => false)
+    if (!current()) return
     if (!pushed) return syncError?.("custom roles were not saved to this project")
     persistMirror(plan.roles)
   }
+  clearPending(project)
   writeMigrated()
 }
 

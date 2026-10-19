@@ -25,6 +25,7 @@ const PING_MS = 15_000
 const MAX_QUEUE_BYTES = 4 * 1024 * 1024
 /** Prompts carry attachments as data URLs. */
 const PROMPT_BODY_LIMIT = 64 * 1024 * 1024
+const BODY_DEADLINE_MS = 10_000
 const DEFAULT_LIST_LIMIT = 100
 const MAX_LIMIT = 1000
 
@@ -155,6 +156,16 @@ export type RoutesDeps = {
   bus: EventBus
   /** The lifecycle the health probe's `omp --version` runs in. */
   life?: Lifecycle
+  /** How long the body of a create may take to arrive before the request is answered 408 and its count released. Default 10 s. */
+  bodyDeadlineMs?: number
+}
+
+/** The body of a create is a few kilobytes: one that has not arrived after this long is a stalled connection, and must not hold the project. */
+function withDeadline<T>(read: Promise<T>, ms: number): Promise<T> {
+  const expired = Promise.withResolvers<never>()
+  const timer = setTimeout(() => expired.reject(new HttpError(408, "the request body did not arrive in time", "request-timeout")), ms)
+  expired.promise.catch(() => undefined)
+  return Promise.race([read, expired.promise]).finally(() => clearTimeout(timer))
 }
 
 function limitOf(url: URL, fallback: number): number {
@@ -276,7 +287,8 @@ export function createRoutes(deps: RoutesDeps): HostHandler {
         return json(200, { released: await deps.sessions.releaseRun(runId) })
       }
       case engineRoutes.sessions: {
-        if (method === "POST") return json(200, await deps.sessions.create(await readJson(request), request.signal))
+        // The body is handed over still pending: the create is counted from the route, so a project switch cannot land while it is being read. A body that stalls is given up on after the deadline.
+        if (method === "POST") return json(200, await deps.sessions.create(withDeadline(readJson(request), deps.bodyDeadlineMs ?? BODY_DEADLINE_MS), request.signal))
         if (method === "GET") return json(200, await deps.sessions.list(limitOf(url, DEFAULT_LIST_LIMIT)))
         return methodNotAllowed()
       }

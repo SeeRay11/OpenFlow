@@ -22,3 +22,26 @@ export function latest() {
     },
   }
 }
+
+/**
+ * One at a time, claimed synchronously.
+ *
+ * A button that starts something slow can be clicked again before the page has
+ * had time to show that anything started; the claim is taken in the click
+ * handler itself, so the second click finds it held and does nothing.
+ */
+export function exclusive() {
+  let held = false
+  return {
+    /** Takes the claim. False when somebody already holds it. */
+    enter() {
+      if (held) return false
+      held = true
+      return true
+    },
+    /** Gives the claim back. */
+    leave() {
+      held = false
+    },
+  }
+}

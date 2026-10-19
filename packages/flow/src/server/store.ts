@@ -125,8 +125,9 @@ export const store = {
    */
   skills: () => request<SkillEntry[]>("/skills"),
   skill: (name: string) => request<SkillDoc>(`/skills/${encodeURIComponent(name)}`),
-  saveSkill: (skill: { name: string; description?: string; content: string }, create = false) =>
-    request<SkillSave>(`/skills/${encodeURIComponent(skill.name)}`, {
+  /** `create` refuses (409 `name-taken`) a name that is taken; `address` is the folder to write when it differs from the name. */
+  saveSkill: (skill: { name: string; description?: string; content: string }, create = false, address = skill.name) =>
+    request<SkillSave>(`/skills/${encodeURIComponent(address)}`, {
       method: "PUT",
       body: JSON.stringify(create ? { ...skill, create: true } : skill),
     }),

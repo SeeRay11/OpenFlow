@@ -249,7 +249,9 @@ if the page is switched. Run and Resume are disabled while the picker is open, a
 the page checks again that no run is active before it asks the host to switch (if
 the host moved first, the page switches it back). `POST /flow/api/project` answers
 409 `project-busy` while any engine session is live (an idle one between turns
-included) or starting, a session create is in flight, or an uplift planner is
+included) or starting, a session create is in flight (from the moment the request
+arrives, while its body is still being read; a body that has not arrived within 10
+seconds is answered 408 `request-timeout` and stops counting), or an uplift planner is
 running. Reaped, lost and disposed sessions do not count. It checks again right
 before applying the switch. The 409 body carries `sessions`, the ids of every live
 or starting session (empty when only a planner or a create holds it). With ids,
@@ -261,9 +263,16 @@ roles with that project's own `.openflow/roles.json`. A role created while the
 project's roles are still loading is merged into them when the read finishes
 (project roles first, yours after; yours win on the same id) and then saved to the
 project. If the project's roles cannot be read, nothing is written to the project
-and a notice says the change stays in the tab. Roles saved in this
+and a notice says the change stays in the tab. Edits made before the project's
+roles are read are kept under a separate browser key for that project
+(`openflow.customRolesPending.v1:<project path>`; never the migration source),
+reported as unsynced and merged in when the read succeeds. Other projects never
+read or push it, a project switch leaves it in place, and an edit made before the
+project is known is reported as not persisted. A read that finishes after a switch
+cannot write into the next project.
+Roles saved in this
 browser before that are copied once per browser (`openflow.customRolesMigrated.v1`),
-an edit made before the read does not overwrite that browser copy, and nothing is
+and nothing is
 written to a project's `roles.json` before it has been read successfully.
 
 ## Omp engine and requirements
@@ -374,11 +383,25 @@ then the newest 4,000 card directories) and re-attached; only its session files
 stay in their original state directory. The new run id is kept for new work. The
 new request applies: model, permissions, swarm mode, tool toggles, run and working
 directory follow the run that is asking now, and the engine decides where a
-resumed card works. If the directory it was using before still exists and is
-different, one notice at the first accepted prompt says the work done there before
-the interruption was not merged, with the path. A process that is already live
-keeps the settings and directory it was launched with until it is next resumed; a
-session revived after a restart resumes in its saved directory and gets no notice.
+resumed card works. A process that is already live keeps the settings and directory
+it was launched with until it is next resumed; if it is live in a different working
+directory that still exists, the host stops it (its files stay) and relaunches it
+in the new run's directory. If the session is released while it is being stopped,
+the resume answers 404 and spawns nothing; if the old directory disappears
+meanwhile, it relaunches without a notice. If the old directory is gone to begin
+with, the host leaves the session alone. For a log that recorded no isolated
+worktrees (see [Resuming an interrupted run](#resuming-an-interrupted-run)) the
+host holds one info notice until the first accepted prompt: "Work it did there
+before then may not have been merged into this run. Inspect it with: git -C
+"<dir>" status". The command and path appear only when the directory is absolute,
+at most 200 characters, and made only of letters, digits, space and `_ . @ + : ~ \
+/ -`; otherwise the notice says "It worked in its previous working directory."
+with no command and no path. The
+notice is kept in `.openflow-session.json` as `carried` until it is delivered, so
+an interruption before the first prompt does not lose it. Overlapping resumes of
+one session are served one at a time, and a prompt that arrives during a resume
+waits for it, so a session never has two processes. A session revived after
+a restart resumes in its saved directory and gets no notice.
 Using a session touches its run directory (at most once a second), so recently
 used runs rank newest. If the host cannot find the session (pruned, or deleted),
 the card starts fresh, once.
@@ -410,7 +433,9 @@ notices (a tool toggle omp cannot enforce, a swarm that degraded to off) are sen
 once, when the card's first prompt is accepted, and not again on a resume.
 
 **Shutdown.** After `dispose` the host is a closed gate: creating or resuming a
-session answers 409 `session-closed` and spawns nothing, a terminal create answers
+session answers 409 `session-closed` and spawns nothing (a create whose body is bad
+JSON or oversized during shutdown is answered with that failure or the 409, never
+left unhandled), a terminal create answers
 409 `disposed`, a late event-stream subscriber gets a stream that is already
 closed, and the model catalog, provider probe and `omp config`/`omp auth` runs
 answer 503 `host-closed`. Every probe and CLI run the host started, including the
@@ -954,10 +979,11 @@ a list older than the five-minute window. Every write of a
 run log stamps `updatedAt`, and a 30-second heartbeat keeps it fresh through a long
 quiet turn, so a run another tab is still writing is not offered. A run log that
 cannot be saved raises the "run log not saved" notice once, and again only after a
-save has got through. A resumed run writes its own log first, carrying the session
-ids and before the model-catalog wait, and only then marks the interrupted log
-`stopped` with `resumedBy` naming the new run. If that write fails, the interrupted
-run stays resumable and the notice appears.
+save has got through. A resumed run writes its own log first, before the
+model-catalog wait, already holding the finished cards' outputs and the carried
+session ids, and only then marks the interrupted log `stopped` with `resumedBy`
+naming the new run. If that first write fails, the interrupted run stays resumable
+and is closed by the first later write that succeeds; the notice says so.
 
 Resuming splits that run log in two. Cards that finished keep their answers and
 never run again — reopening a finished card's session only bills. Cards that were
@@ -966,9 +992,52 @@ difference between resuming and starting over wearing the old run's name: an
 orchestrator seven rounds into a gauntlet remembers every verdict it has read. A
 carried card is told once, on its first turn only, that the run around it stopped
 and that nothing it produced was discarded — a card given no account of the
-silence re-answers what it already answered. A carried session the host cannot
-find any more starts fresh, as described under
-[How the host drives Omp](#how-the-host-drives-omp).
+silence re-answers what it already answered. A carried session the host reports
+lost starts as a fresh card: the full prompt, with no "same session" or
+"interrupted" wrapper, and orchestrators and subagents get their briefing again.
+A carried id for a card that is no longer in the pipeline is skipped, and the
+sessions of cards that already finished are released when the resume starts, so
+they do not hold the project lock. The Resume button is disabled from the click
+until the run has started, so a tab cannot resume twice.
+
+**Isolated work is never touched by Resume.** When a run uses isolated working
+copies, its log has an optional `isolation: { trees: [{ card, directory, branch }]
+}`. It is informational: it lists the worktrees the run opened that are not
+cleaned up yet, is saved (awaited) right after they are opened, before any card
+runs in them, and is cleared at the end of the run unless the cleanup request
+itself was rejected (the cleanup swallows git failures, so a clean answer clears
+them). Old logs have no such field, and an old log that carries a `base` is
+tolerated and the field ignored. Resuming does not merge, remove or release any of
+those worktrees. After the replacement log is saved and the interrupted log is
+closed, the new log's `isolation` is seeded with the same trees (so a further
+Resume lists them again) and one error-level notice says the interrupted run left
+isolated copies that may hold work not merged into the project. It lists at most 20
+of them and says how many more the log named; each shows the card, directory and
+branch, and every path is double-quoted in `git -C "<dir>" status` and
+`git -C "<dir>" diff`. Check each one before relying on it; you merge or discard
+it. A carried card that had an isolated copy is told in its first resumed prompt
+that its working directory is now the project folder, that edits it made before
+the interruption may still be only in the old isolated copy (the path is named only
+when it has no space, otherwise "the old isolated copy named in the notice"), that
+it should check the project files before relying on them, redo any that are missing
+there, and not edit the old copy. Cards without a tree behave as before.
+
+**Run logs are untrusted input.** A run log is a file inside the project, and
+Resume reads it back, so it shares the trust model of the pipelines in the
+project: a repository you open can already define prompts, and there is no
+provenance check. Resume therefore ignores `isolation` entries whose `directory` is
+not a plain absolute path (posix `/…` or `X:\…`, only letters, digits, space and
+`_ . @ + : ~ \ / -`, at most 200 characters) or whose `branch` is not
+`openflow/` followed by letters, digits and `_ . / -`; keeps at most 50 entries
+(the notice shows 20 and the true total); flattens control and invisible or format
+characters, including U+200B–200F, U+202A–202E, U+2060–206F and U+FEFF; refuses a
+log whose own `id` differs from the id it was opened under (compared
+case-insensitively); uses a card's saved `output` only if it is a string of at most
+1,000,000 characters; carries a `sessionID` only if it is a non-empty string of at
+most 200 characters without control characters; and refuses a log with no `nodes`
+array. A log whose `updatedAt` or `started` is more than five minutes in the
+future is treated as abandoned and ranks below every plausible log when the run to
+offer is chosen (it is still offered if it is the only one).
 
 **Re-run failed** is the neighbouring, narrower tool: it reuses the outputs of
 everything that finished and re-runs only what did not, in fresh sessions.
@@ -1168,8 +1237,13 @@ deleting one removes it from both `enabledServers` and `disabledServers`.
 (a non-boolean is 400, and it is never written to `mcp.json` or `SKILL.md`). With
 `create: true`, an exact name that already exists, or a slug that collides with
 one, answers 409 `{ "code": "name-taken" }` and writes nothing; without it the
-save edits in place. The panels send `create: true` for New and when the typed
-name differs from the entry being edited, and keep the editor open with the
+save edits in place. The panels send `create: true` only for New and for a real
+rename; editing a skill without renaming addresses it by its folder name, so a
+folder `my-skill` whose frontmatter name is `My Skill` is not refused. A skill
+create claims the folder with a non-recursive `mkdir`, so of several concurrent
+creates of one name exactly one succeeds and the rest get 409 `name-taken`, and a
+failed `SKILL.md` write after claiming removes the empty folder. The panels keep
+the editor open with the
 host's sentence on a 409. The answer to a save
 carries the name actually stored, and the app shows that name. Deleting a name that
 does not exist answers 404 `{ "removed": false }`, which the app treats as a
@@ -1267,6 +1341,7 @@ for the same reason.
 | 409 `project-busy` when picking a folder | a run, a session start or an uplift planner is still working in the current project | stop the run or wait for it to end, then switch |
 | 409 `project-mismatch` on a terminal | that terminal was started in another project | open that project again, or start a new terminal |
 | 409 `session-closed` or `disposed`, 503 `host-closed` | the host is shutting down | restart it with `bun openflow.ts` |
+| 408 `request-timeout` creating a session | the request body did not arrive within 10 seconds | retry; check what sits between the page and the host |
 
 ## Canvas
 

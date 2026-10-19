@@ -840,7 +840,7 @@ export function forceFinalPrompt(reason: string) {
  * given no account of the gap re-answers what it already answered, which is the
  * cost this exists to avoid.
  */
-export function interruptedNote() {
+export function interruptedNote(moved?: string) {
   return [
     "# The run was interrupted, and is being continued",
     "",
@@ -848,6 +848,7 @@ export function interruptedNote() {
     "stopped and has been restarted, so the gap since your last message is not a judgement on it.",
     "You are in the same session, so everything you have already read, run and concluded still",
     "stands and does not need doing again.",
+    ...(moved ? ["", moved] : []),
     "",
     "Pick up from where you were. If your last turn finished a piece of work, say what it left in",
     "place rather than doing it twice; if it was cut off part-way, carry on from that point.",

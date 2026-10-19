@@ -1,4 +1,5 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
+import { skillTarget } from "../server/skills"
 import { store, type SkillEntry } from "../server/store"
 import { IconBack, IconClose, IconPlus, IconTrash } from "./icons"
 
@@ -76,16 +77,17 @@ export function SkillsPanel(props: {
     setBusy(true)
     setError(undefined)
     try {
-      // New, or renamed: the host refuses (409) a name that already belongs to another skill, and the editor stays open.
-      // The name the skill was opened with is not a rename, even when its folder is named differently.
-      const renaming = !draft.original || (name !== draft.original && name !== draft.shown)
+      // New, or really renamed: the host refuses (409) a name that already belongs to another skill, and the editor
+      // stays open. An edit that keeps the name is addressed by the folder the skill was opened from.
+      const target = skillTarget(draft)
       const result = await store.saveSkill(
         {
           name,
           description: draft.description,
           content: draft.content,
         },
-        renaming,
+        target.create,
+        target.address,
       )
       // The server slugs the name into a folder, so a renamed skill lands in a new
       // one. Drop the folder it came from, or the old copy stays on disk and the

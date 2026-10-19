@@ -1,4 +1,5 @@
 import type { RunLog } from "../graph/types"
+import { plainText } from "../graph/worktree"
 import type { SelectOption } from "../ui/select"
 import type { RunEntry } from "./store"
 import { costLabel } from "./usage"
@@ -164,9 +165,21 @@ export function runTime(started: number | undefined, now = Date.now()) {
  */
 export const RESUME_STALE_MS = 5 * 60_000
 
+/** How far ahead of the clock a log's timestamp may be before it is not a clock difference between two machines any more. */
+const CLOCK_SKEW_MS = RESUME_STALE_MS
+
+type Stamped = { status?: string; updatedAt?: number; finished?: number; started?: number }
+
+/** A timestamp from the future cannot belong to a page that is writing the log now: it is a copied, edited or hostile file. */
+function implausible(run: Stamped, now: number) {
+  return (run.updatedAt ?? 0) > now + CLOCK_SKEW_MS || (run.started ?? 0) > now + CLOCK_SKEW_MS
+}
+
 /** Whether a log still marked `running` has gone quiet: its page is gone, so it can be resumed. */
-export function abandoned(run: { status?: string; updatedAt?: number; finished?: number; started?: number }, now = Date.now()) {
+export function abandoned(run: Stamped, now = Date.now()) {
   if (run.status !== "running") return false
+  // Never "still being written": that is what would let such a log hide the run that really was interrupted.
+  if (implausible(run, now)) return true
   // A log from before `updatedAt` existed is judged by the last time it said anything at all.
   const last = run.updatedAt ?? run.finished ?? run.started ?? 0
   return now - last >= RESUME_STALE_MS
@@ -175,13 +188,50 @@ export function abandoned(run: { status?: string; updatedAt?: number; finished?:
 /**
  * The newest run of this canvas that never reached an end state, when it is
  * abandoned. A newer run that is still being written (another tab is running it)
- * hides every older one: resuming under it would run the same cards twice.
+ * hides every older one: resuming under it would run the same cards twice. A log
+ * with a timestamp from the future ranks below every plausible one, so it cannot
+ * take the place of the run that was really interrupted.
  */
 export function interrupted(entries: RunEntry[], pipeline: string, now = Date.now()) {
   const newest = entries
     .filter((entry) => entry.status === "running" && entry.pipeline === pipeline)
-    .sort((a, b) => (b.started ?? 0) - (a.started ?? 0))[0]
+    .sort((a, b) => Number(implausible(a, now)) - Number(implausible(b, now)) || (b.started ?? 0) - (a.started ?? 0))[0]
   return newest && abandoned(newest, now) ? newest : undefined
+}
+
+/** The longest output a resumed card may bring back from a log: the biggest answer a card is expected to give, with room to spare. */
+export const MAX_RESUMED_OUTPUT = 1_000_000
+/** The longest session id taken from a log. The host's own ids are a dozen characters. */
+const MAX_SESSION_ID = 200
+
+/**
+ * What a log offered for resuming gives back: the answers of the cards that finished, and the sessions of the
+ * ones that did not. It is read from a file in the project, so each value is checked as it is taken:
+ * an output must be a string of a sane length (else that card counts as not finished), a session id a
+ * non-empty string without control characters (else it is not carried). A log whose own `id` is not the
+ * id it was opened under is refused: closing it afterwards would overwrite whichever run that id names.
+ * The list id is the lower-cased file name and the log's own id is mixed-case, so they are compared ignoring case.
+ */
+export function resumePlan(id: string, log: RunLog, isLegacy: (sessionID: string) => boolean) {
+  if (typeof log.id !== "string" || log.id.toLowerCase() !== id.toLowerCase())
+    return { ok: false as const, reason: `run ${id} cannot be resumed: the log inside it is named ${plainText(log.id)}, not ${plainText(id)}` }
+  if (!Array.isArray(log.nodes)) return { ok: false as const, reason: `run ${id} cannot be resumed: its log has no cards` }
+  const outputs: Record<string, string> = {}
+  const sessions: Record<string, string> = {}
+  const fresh: string[] = []
+  for (const node of log.nodes) {
+    if (typeof node !== "object" || node === null || typeof node.id !== "string") continue
+    if (node.status === "done" && typeof node.output === "string" && node.output.length <= MAX_RESUMED_OUTPUT) {
+      outputs[node.id] = node.output
+      continue
+    }
+    const session = node.sessionID
+    if (typeof session !== "string" || !session || session.length > MAX_SESSION_ID || /[\u0000-\u001f\u007f-\u009f]/.test(session)) continue
+    // A session the earlier build opened lives in a process this one cannot attach to.
+    if (isLegacy(session)) fresh.push(plainText(node.role))
+    else sessions[node.id] = session
+  }
+  return { ok: true as const, outputs, sessions, fresh }
 }
 
 /**

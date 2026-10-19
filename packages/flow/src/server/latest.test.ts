@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { latest } from "./latest"
+import { exclusive, latest } from "./latest"
 
 describe("latest", () => {
   test("only the newest call is current", () => {
@@ -34,5 +34,15 @@ describe("latest", () => {
     calls.cancel()
     expect(call()).toBe(false)
     expect(calls.begin()()).toBe(true)
+  })
+})
+
+describe("exclusive", () => {
+  test("a second claim made before the first is given back is refused, and works again after", () => {
+    const claim = exclusive()
+    expect(claim.enter()).toBe(true)
+    expect(claim.enter()).toBe(false)
+    claim.leave()
+    expect(claim.enter()).toBe(true)
   })
 })

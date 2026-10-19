@@ -89,7 +89,8 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
   turns) and list only sessions whose history can be opened. Session records are
   written atomically with mode 0600.
 - Treat host shutdown as a closed gate: a create or resume answers 409
-  `session-closed`, a terminal create 409 `disposed`, and the catalog, provider and
+  `session-closed` (a create with a bad or oversized body during shutdown gets that
+  failure or the 409), a terminal create 409 `disposed`, and the catalog, provider and
   `omp config`/`omp auth` runs 503 `host-closed`. Every probe and CLI run is killed
   with its process group on dispose.
 - Refuse to switch project while any engine session is live (idle ones included)
@@ -101,9 +102,25 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
   answer 404), and sweep a terminal's whole process group on close.
 - Let a session be created `transient`: the model test leaves no session files, is
   never listed or resumed, and its directories are removed when it ends.
-- Resume a card in the directory the new run assigns, with a notice when work was
-  done in a different earlier directory and was not merged; only the session files
-  stay where they were.
+- Record the isolated worktrees a run opens in its log (`isolation`, informational),
+  saved with `await` right after they are opened. Resume never merges, removes or
+  releases them: it raises one error notice listing (at most 20 of) the isolated
+  copies that may hold work not merged into the project, with `git -C "<dir>"
+  status` and `git diff` commands to check them, and tells a carried card that
+  edits it made before the interruption may still be only in the old copy, to check
+  the project files before relying on them. Run logs are treated as untrusted
+  input, with the same trust model as the pipelines in the project: unsafe
+  `isolation` paths and branches are ignored, strings are flattened and capped, a
+  log with a mismatched id, an oversized output or session id, or no `nodes` is
+  refused or ignored, and a log timestamped more than five minutes in the future
+  ranks below every plausible one when the run to offer is chosen.
+- Resume a card in the directory the new run assigns. A live session working
+  elsewhere is relaunched there, and for a log that recorded no trees a notice says
+  the earlier directory's work may not have been merged, with a command to inspect
+  it only when the path is safe to paste into a shell. Overlapping resumes of one
+  session are served one at a time. Only the session files stay where they were.
+- Answer a session create whose body has not arrived within 10 seconds with 408
+  `request-timeout`, and stop counting it against project switching.
 - Prune skips runs whose log is still `running` and removes the uplift planner's
   results and session records older than 30 days.
 - Scope Forget to the repository (a key from before scoping matches every
@@ -118,11 +135,18 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
   Resume is offered only for a run abandoned for more than five minutes (the run
   list is re-read every 30 seconds while idle). A resumed run writes its own log
   before it closes the interrupted one, so a failed write leaves that run
-  resumable. A failing log save raises its notice once, not every heartbeat.
+  resumable until a later write succeeds. A carried session the host reports lost
+  starts as a fresh card, and the Resume button is disabled until the run has
+  started. A failing log save raises its notice once, not every heartbeat.
 - Send `flow.stream.reset` to every event-stream subscriber that attaches within
   60 seconds of a gap in the stream.
-- Merge a role created while a project's roles are still loading into them, and
-  write nothing to the project when its roles cannot be read.
+- Merge a role created while a project's roles are still loading into them, keep
+  edits made before the read under a separate key, and write nothing to the
+  project when its roles cannot be read.
+- Count a session create as engine work from the moment its request arrives, so a
+  project switch cannot land while its body is still being read.
+- Edit a skill by its folder name unless it is renamed, and claim a new skill's
+  folder atomically so concurrent creates of one name yield one success.
 - Block a card with no model at preflight (the app blocks it; the host would launch
   omp without `--model`) and send
   attachments to no card whose model the catalog does not list.

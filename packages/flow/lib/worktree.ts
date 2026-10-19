@@ -187,49 +187,72 @@ export type MergeReport = {
 export async function mergeWorktrees(project: string, trees: OpenedTree[], base: string): Promise<MergeReport> {
   const report: MergeReport = { merged: [], empty: [], conflicts: [], stats: [] }
   for (const tree of trees) {
-    const changed = await commitTree(tree.directory)
-    if (!changed) {
+    if (!(await treeExists(tree.directory))) {
       report.empty.push(tree.card)
       continue
     }
-    const patch = await git(tree.directory, ["diff", "--binary", base, "HEAD"])
-      .then(({ stdout }) => stdout)
-      .catch(() => "")
-    if (!patch.trim()) {
-      report.empty.push(tree.card)
-      continue
-    }
-    // Before the apply, because what the card wrote is true whether or not the
-    // patch lands: a card whose every path conflicts still did the work, and a
-    // report saying it changed nothing would be the wrong half of the story.
-    const stat = await treeDiff(tree.directory, base)
-    if (stat?.length)
-      report.stats.push({
-        card: tree.card,
-        added: stat.reduce((total, file) => total + file.added, 0),
-        removed: stat.reduce((total, file) => total + file.removed, 0),
-        files: stat.length,
-      })
-    if (await apply(project, patch)) {
-      report.merged.push(tree.card)
-      continue
-    }
-    const paths = await changedPaths(tree.directory, base)
-    const failed: string[] = []
-    for (const file of paths) {
-      const single = await git(tree.directory, ["diff", "--binary", base, "HEAD", "--", file])
-        .then(({ stdout }) => stdout)
-        .catch(() => "")
-      if (!single.trim()) continue
-      if (!(await apply(project, single))) failed.push(file)
-    }
-    if (failed.length === paths.length) report.conflicts.push({ card: tree.card, paths: failed })
-    else {
-      report.merged.push(tree.card)
-      if (failed.length) report.conflicts.push({ card: tree.card, paths: failed })
-    }
+    // One tree that fails unexpectedly must not stop the cards after it.
+    await mergeTree(project, tree, base, report).catch(() => {
+      if (!report.merged.includes(tree.card) && !report.conflicts.some((entry) => entry.card === tree.card)) report.empty.push(tree.card)
+    })
   }
   return report
+}
+
+/**
+ * Whether `directory` is a worktree: a registered one has a `.git` entry at its root. A directory without
+ * one (recreated empty after its tree vanished, say) is skipped, because `git add -A` there would act on
+ * whatever repository contains it.
+ */
+async function treeExists(directory: string) {
+  return fs.lstat(path.join(directory, ".git")).then(
+    () => true,
+    () => false,
+  )
+}
+
+async function mergeTree(project: string, tree: OpenedTree, base: string, report: MergeReport) {
+  const changed = await commitTree(tree.directory)
+  if (!changed) {
+    report.empty.push(tree.card)
+    return
+  }
+  const patch = await git(tree.directory, ["diff", "--binary", base, "HEAD"])
+    .then(({ stdout }) => stdout)
+    .catch(() => "")
+  if (!patch.trim()) {
+    report.empty.push(tree.card)
+    return
+  }
+  // Before the apply, because what the card wrote is true whether or not the
+  // patch lands: a card whose every path conflicts still did the work, and a
+  // report saying it changed nothing would be the wrong half of the story.
+  const stat = await treeDiff(tree.directory, base)
+  if (stat?.length)
+    report.stats.push({
+      card: tree.card,
+      added: stat.reduce((total, file) => total + file.added, 0),
+      removed: stat.reduce((total, file) => total + file.removed, 0),
+      files: stat.length,
+    })
+  if (await apply(project, patch)) {
+    report.merged.push(tree.card)
+    return
+  }
+  const paths = await changedPaths(tree.directory, base)
+  const failed: string[] = []
+  for (const file of paths) {
+    const single = await git(tree.directory, ["diff", "--binary", base, "HEAD", "--", file])
+      .then(({ stdout }) => stdout)
+      .catch(() => "")
+    if (!single.trim()) continue
+    if (!(await apply(project, single))) failed.push(file)
+  }
+  if (failed.length === paths.length) report.conflicts.push({ card: tree.card, paths: failed })
+  else {
+    report.merged.push(tree.card)
+    if (failed.length) report.conflicts.push({ card: tree.card, paths: failed })
+  }
 }
 
 /** Commits everything the card left behind, so its work is one reviewable diff. Returns false for a card that changed nothing. */
@@ -284,6 +307,11 @@ async function apply(project: string, patch: string) {
  * Deliberately keeps nothing: the work is already in the project's working tree
  * (or named in a conflict report the orchestrator was given), and a stack of
  * `openflow/*` branches nobody reads is just litter in the user's repository.
+ *
+ * Safe to run for a tree that is already gone: a missing directory or an
+ * already-deleted branch is fine, one failing removal never stops the others,
+ * and `worktree prune` drops the registration of any directory that vanished
+ * on its own.
  */
 export async function cleanupWorktrees(project: string, runID: string, trees: OpenedTree[]) {
   for (const tree of trees) {

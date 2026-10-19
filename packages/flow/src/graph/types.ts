@@ -382,6 +382,13 @@ export type RunLog = {
   updatedAt?: number
   /** Set on an interrupted run once a resumed run took it over: the id of that run. */
   resumedBy?: string
+  /**
+   * Information, never an instruction: the isolated git worktrees this run opened that have not
+   * been cleaned up, plus any a resumed run was told its predecessor left. A resumed run lists them
+   * in a notice and leaves them alone. Absent on logs from before this existed and while nothing is
+   * isolated; it is read back from a file in the project, so every string in it is untrusted.
+   */
+  isolation?: { trees: Array<{ card: string; directory: string; branch: string }> }
   nodes: RunNodeLog[]
   /** Every node's usage, summed. */
   usage?: Spend

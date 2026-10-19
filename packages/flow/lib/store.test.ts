@@ -563,6 +563,20 @@ describe("skills", () => {
     expect(await read(path.join(skillsDir(), "c", "SKILL.md"))).toContain("edited again")
   })
 
+  test("two concurrent creates of one new name: exactly one wins, and its content is intact", async () => {
+    const responses = await Promise.all(
+      ["one", "two", "three"].map((content) => call("PUT", "/flow/api/skills/race", { body: { ...skill, content: `body ${content}`, create: true } })),
+    )
+    const statuses = responses.map((response) => response!.status).sort()
+    expect(statuses).toEqual([200, 409, 409])
+    const winner = ["one", "two", "three"][responses.findIndex((response) => response!.status === 200)]
+    expect(await read(path.join(skillsDir(), "race", "SKILL.md"))).toContain(`body ${winner}`)
+    expect((await fs.readdir(path.join(skillsDir(), "race"))).sort()).toEqual(["SKILL.md"])
+    for (const response of responses.filter((entry) => entry!.status === 409)) {
+      expect(response!.body).toMatchObject({ code: "name-taken", error: expect.stringContaining('"race"') })
+    }
+  })
+
   test("a create that is not a boolean is a 400 and writes nothing", async () => {
     const response = await call("PUT", "/flow/api/skills/x", { body: { ...skill, create: "yes" } })
     expect(response!.status).toBe(400)

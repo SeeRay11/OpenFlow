@@ -284,7 +284,9 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
       if (flag !== undefined && typeof flag !== "boolean") return { status: 400, body: { error: "create must be true or false" } }
       const folder = await skillFolder(path.join(profile, "skills"), raw, flag === true)
       if ("taken" in folder) return nameTaken(`skill "${folder.taken}" already exists: pick another name, or edit "${folder.taken}" instead`)
-      return ok(await writeSkill(profile, folder.name, form))
+      const saved = await writeSkill(profile, folder.name, form, flag === true)
+      if ("taken" in saved) return nameTaken(`skill "${saved.taken}" already exists: pick another name, or edit "${saved.taken}" instead`)
+      return ok(saved)
     }
     if (method === "GET" || method === "DELETE") {
       if (!isSafeSegment(raw)) return { status: 400, body: { error: `invalid skill name "${raw}": use a single folder name` } }
@@ -1018,11 +1020,26 @@ async function readSkill(paths: FlowPaths, profile: string | undefined, name: st
  * (`<agentDir>/skills/*\/SKILL.md`), so there is nothing to register. The
  * frontmatter name defaults to the folder slug so the two never drift. omp
  * loads a skill only at session start, so a new one reaches the next card.
+ *
+ * `create` claims the folder with a non-recursive `mkdir`, which is atomic: of
+ * two clients creating the same name, exactly one gets the folder and the
+ * other is told it is taken (`skillFolder`'s earlier check alone cannot say that).
  */
-async function writeSkill(profile: string, name: string, body: unknown) {
+async function writeSkill(profile: string, name: string, body: unknown, create: boolean): Promise<{ name: string; path: string } | { taken: string }> {
   const form = asRecord(body) ?? {}
   const dir = path.join(profile, "skills", name)
-  await fs.mkdir(dir, { recursive: true })
+  if (create) {
+    await fs.mkdir(path.dirname(dir), { recursive: true })
+    const claimed = await fs.mkdir(dir).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "EEXIST") return false
+        throw error
+      },
+    )
+    if (!claimed) return { taken: name }
+  }
+  if (!create) await fs.mkdir(dir, { recursive: true })
   const file = path.join(dir, "SKILL.md")
   await writeAtomic(
     file,
@@ -1031,7 +1048,11 @@ async function writeSkill(profile: string, name: string, body: unknown) {
       description: oneLine(form.description),
       content: typeof form.content === "string" ? form.content : "",
     }),
-  )
+  ).catch(async (error) => {
+    // A claimed folder with no SKILL.md would block every retry of the same name.
+    if (create) await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
+    throw error
+  })
   return { name, path: file }
 }
 

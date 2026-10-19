@@ -5,7 +5,7 @@ import type { BusEvent, Turn, WaitResult } from "../../shared/engine"
 import { EMPTY_SWARM_COUNTS, type SwarmHost, type SwarmLaunch, type SwarmMode, type SwarmStatus, type SwarmTracker } from "../../shared/swarm"
 import { HttpError } from "../host/respond"
 import { DISPATCH_TOOL, FINISH_TOOL } from "../../src/graph/dispatch"
-import { buildPrompt, createSessionHost, type EngineHostDeps, safeSegment, SESSION_SUBDIR, type SessionHost } from "./session"
+import { buildPrompt, carriedNotice, createSessionHost, type EngineHostDeps, safeSegment, SESSION_SUBDIR, type SessionHost } from "./session"
 import { pruneState } from "./prune"
 import { assistantMessage, createHarness, frames, rpcError, type FakeProcess, type Harness } from "./testing/fake-process"
 
@@ -1790,7 +1790,7 @@ hosted("a resumed session follows the request that resumes it", () => {
     await host.prompt(id, { text: "carry on" })
     const carried = events.filter((event) => event.type === "flow.notice" && String(event.data?.message).includes(elsewhere))
     expect(carried).toHaveLength(1)
-    expect(String(carried[0]?.data?.message)).toContain("not merged")
+    expect(String(carried[0]?.data?.message)).toContain("may not have been merged")
 
     // A second resume of the same session does not repeat it (its start has said it once).
     await host.dispose(id)
@@ -1812,7 +1812,209 @@ hosted("a resumed session follows the request that resumes it", () => {
     await host.maintain(Date.now() + FAR)
     await host.create({ ...BODY, nodeId: "n2", runId: "run3", directory: other, reuse: same.id })
     await host.prompt(same.id, { text: "x" })
-    expect(events.filter((event) => event.type === "flow.notice" && String(event.data?.message).includes("not merged"))).toEqual([])
+    expect(events.filter((event) => event.type === "flow.notice" && String(event.data?.message).includes("git -C"))).toEqual([])
+  })
+
+  const said = (where: string) => events.filter((event) => event.type === "flow.notice" && String(event.data?.message).includes(where))
+
+  test("a session still live when the new run reuses it relaunches in the new directory, and says so once", async () => {
+    const { elsewhere, other } = await directories()
+    const { id, proc } = await open({ ...BODY, directory: elsewhere })
+    expect(host.live()).toBe(1)
+
+    await host.create({ ...BODY, runId: "run2", directory: other, reuse: id })
+    expect(proc.closeCalls).toBe(1)
+    expect(h.fake.procs).toHaveLength(2)
+    expect(h.launches.at(-1)?.session.directory).toBe(other)
+    expect(host.live()).toBe(1)
+    await host.prompt(id, { text: "carry on" })
+    const notices = said(elsewhere)
+    expect(notices).toHaveLength(1)
+    expect(String(notices[0]?.data?.message)).toBe(`Work it did there before then may not have been merged into this run. Inspect it with: git -C "${elsewhere}" status`)
+    // The files stayed where they were, and the session still answers to its id.
+    expect(h.launches.at(-1)?.stateDir).toBe(nodeDir("run1"))
+  })
+
+  test("a live session reused with the same directory is left running, and one whose old directory is gone is not relaunched or announced", async () => {
+    const { elsewhere, other } = await directories()
+    const same = await open({ ...BODY, directory: elsewhere })
+    await host.create({ ...BODY, runId: "run2", directory: elsewhere, reuse: same.id })
+    expect(same.proc.closeCalls).toBe(0)
+    expect(h.fake.procs).toHaveLength(1)
+
+    const lost = await open({ ...BODY, nodeId: "n2", directory: other })
+    await fs.rm(other, { recursive: true })
+    const kept = path.join(h.dir, "kept")
+    await fs.mkdir(kept)
+    await host.create({ ...BODY, nodeId: "n2", runId: "run3", directory: kept, reuse: lost.id })
+    await host.prompt(lost.id, { text: "x" })
+    expect(said("git -C")).toEqual([])
+  })
+
+  test("the notice survives an interruption before the first prompt: the next resume still says it, once, and then it is spent", async () => {
+    const { elsewhere, other } = await directories()
+    const { id } = await open({ ...BODY, directory: elsewhere })
+    await host.dispose(id)
+    const first = createSessionHost(h.deps, { emit: (event) => events.push(event), tickMs: 3_600_000 })
+    await first.create({ ...BODY, runId: "run2", directory: other, reuse: id })
+    // The resumed run is interrupted before it sent a prompt: the host goes away with the notice unsaid.
+    await first.close()
+    expect(said(elsewhere)).toEqual([])
+
+    const second = createSessionHost(h.deps, { emit: (event) => events.push(event), tickMs: 3_600_000 })
+    try {
+      await second.create({ ...BODY, runId: "run3", directory: other, reuse: id })
+      await second.prompt(id, { text: "go" })
+      expect(said(elsewhere)).toHaveLength(1)
+      await second.maintain(Date.now() + FAR)
+      await second.create({ ...BODY, runId: "run4", directory: other, reuse: id })
+      await second.prompt(id, { text: "again" })
+      expect(said(elsewhere)).toHaveLength(1)
+    } finally {
+      await second.close()
+    }
+    const meta = JSON.parse(await fs.readFile(path.join(nodeDir("run1"), ".openflow-session.json"), "utf8"))
+    expect(meta.carried).toBeUndefined()
+  })
+
+  test("a persisted directory is repeated in the notice only when it is safe to paste into a command, and then in double quotes", async () => {
+    const hostile = [
+      "relative/dir",
+      "/tmp/it's",
+      '/tmp/say "hi"',
+      "/tmp/$(id)",
+      "/tmp/`id`",
+      "/tmp/a;b",
+      "/tmp/a|b",
+      "/tmp/a&b",
+      "/tmp/a<b>c",
+      "/tmp/(a){b}",
+      "/tmp/bad\nname",
+      "/tmp/zero\u200bwidth",
+      "/tmp/bidi\u202eflip",
+      "/tmp/bom\ufeff",
+      `/tmp/${"y".repeat(240)}`,
+    ]
+    for (const directory of hostile) {
+      const message = carriedNotice(directory)
+      expect(message).not.toContain("git -C")
+      expect(message).not.toContain(directory)
+      expect(message).toContain("previous working directory")
+    }
+    expect(carriedNotice("/work/my project/tree-1.x@2+3:4~5")).toBe('Work it did there before then may not have been merged into this run. Inspect it with: git -C "/work/my project/tree-1.x@2+3:4~5" status')
+  })
+
+  test("a hostile directory that really was persisted gives the command-free notice end to end", async () => {
+    const { other } = await directories()
+    const odd = path.join(h.dir, "it's here")
+    await fs.mkdir(odd)
+    const { id } = await open({ ...BODY, directory: odd })
+    await host.dispose(id)
+    await host.create({ ...BODY, runId: "run2", directory: other, reuse: id })
+    await host.prompt(id, { text: "go" })
+    const message = String(events.find((event) => event.type === "flow.notice" && String(event.data?.message).includes("may not have been merged"))?.data?.message)
+    expect(message).not.toContain("git -C")
+  })
+
+  test("the pending notice is written by the reuse itself, before the resumed process says anything", async () => {
+    const { elsewhere, other } = await directories()
+    const { id } = await open({ ...BODY, directory: elsewhere })
+    await host.dispose(id)
+    await host.create({ ...BODY, runId: "run2", directory: other, reuse: id })
+    // Nothing else writes the metadata between the resume and the first prompt: the file must already owe the notice. (Reads are bounded retries: the write is queued, not awaited.)
+    const file = path.join(nodeDir("run1"), ".openflow-session.json")
+    let owed: string | undefined
+    // No event to await for a queued file write: poll against a generous deadline, not a fixed number of turns.
+    const deadline = Date.now() + 10_000
+    while (owed === undefined && Date.now() < deadline) {
+      owed = JSON.parse(await fs.readFile(file, "utf8")).carried
+      if (owed === undefined) await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    expect(owed).toBe(elsewhere)
+  })
+
+  /** Makes the next `close()` of a process wait until released: the window in which a live session is being stopped for a relaunch. */
+  function slowClose(proc: FakeProcess) {
+    const closing = gate()
+    const real = proc.close.bind(proc)
+    proc.close = async (options) => {
+      await closing.hold()
+      return real(options)
+    }
+    return closing
+  }
+
+  /** Every process spawned so far that is not gone, counted from the fake: a leaked one never had `close()` or `kill()` called. */
+  const running = () => h.fake.procs.filter((proc) => proc.closeCalls === 0 && proc.killCalls === 0)
+
+  test("two overlapping reuses of one session leave exactly one live process, and none leaked", async () => {
+    const { elsewhere, other } = await directories()
+    const { id } = await open({ ...BODY, directory: elsewhere })
+    await host.maintain(Date.now() + FAR)
+    const both = await Promise.all([host.create({ ...BODY, runId: "run2", directory: other, reuse: id }), host.create({ ...BODY, runId: "run3", directory: other, reuse: id })])
+    expect(both).toEqual([{ id }, { id }])
+    expect(host.live()).toBe(1)
+    expect(running()).toHaveLength(1)
+  })
+
+  test("overlapping reuses of a live session, with a new directory each, never run two processes at once", async () => {
+    const { elsewhere, other } = await directories()
+    const third = path.join(h.dir, "third")
+    await fs.mkdir(third)
+    const { id, proc } = await open({ ...BODY, directory: elsewhere })
+    const closing = slowClose(proc)
+    const first = host.create({ ...BODY, runId: "run2", directory: other, reuse: id })
+    // The first reuse is inside its stop (so it is the one being served) before the second is issued: the queue order is the test's, not the scheduler's.
+    await closing.reached
+    const second = host.create({ ...BODY, runId: "run3", directory: third, reuse: id })
+    closing.release()
+    await Promise.all([first, second])
+    expect(host.live()).toBe(1)
+    expect(running()).toHaveLength(1)
+    expect(h.launches.at(-1)?.session.directory).toBe(third)
+  })
+
+  test("a prompt arriving while the live session is being stopped for a relaunch waits for it: one process, and it is the new one", async () => {
+    const { elsewhere, other } = await directories()
+    const { id, proc } = await open({ ...BODY, directory: elsewhere })
+    const closing = slowClose(proc)
+    const reusing = host.create({ ...BODY, runId: "run2", directory: other, reuse: id })
+    await closing.reached
+    const prompting = host.prompt(id, { text: "stray" })
+    closing.release()
+    await Promise.all([reusing, prompting])
+    expect(host.live()).toBe(1)
+    expect(running()).toHaveLength(1)
+    expect(h.fake.procs).toHaveLength(2)
+    expect(h.launches.at(-1)?.session.directory).toBe(other)
+    expect(JSON.stringify((h.fake.procs[1] as FakeProcess).of("prompt")[0]?.message)).toContain("stray")
+  })
+
+  test("a session released while it is being stopped for a relaunch is not relaunched: the usual 404, nothing spawned", async () => {
+    const { elsewhere, other } = await directories()
+    const { id, proc } = await open({ ...BODY, directory: elsewhere })
+    const closing = slowClose(proc)
+    const reusing = failure(host.create({ ...BODY, runId: "run2", directory: other, reuse: id }))
+    await closing.reached
+    expect(await host.releaseRun("run1")).toBe(1)
+    closing.release()
+    expect((await reusing).status).toBe(404)
+    expect(h.fake.procs).toHaveLength(1)
+    expect(host.live()).toBe(0)
+  })
+
+  test("an old directory removed while the session is being stopped is neither announced nor an obstacle: the session relaunches in the new one", async () => {
+    const { elsewhere, other } = await directories()
+    const { id, proc } = await open({ ...BODY, directory: elsewhere })
+    const closing = slowClose(proc)
+    const reusing = host.create({ ...BODY, runId: "run2", directory: other, reuse: id })
+    await closing.reached
+    await fs.rm(elsewhere, { recursive: true })
+    closing.release()
+    expect(await reusing).toEqual({ id })
+    await host.prompt(id, { text: "go" })
+    expect(h.launches.at(-1)?.session.directory).toBe(other)
+    expect(said("git -C")).toEqual([])
   })
 })
 

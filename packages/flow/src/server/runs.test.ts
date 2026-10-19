@@ -4,9 +4,11 @@ import {
   abandoned,
   findRun,
   interrupted,
+  MAX_RESUMED_OUTPUT,
   offerable,
   RESUME_STALE_MS,
   RUN_DELETE,
+  resumePlan,
   RUN_PRUNE,
   runDuration,
   runMenuOptions,
@@ -281,5 +283,73 @@ describe("offering a resume from a list that was read a while ago", () => {
   test("a fresh list that shows the run still being written offers nothing", () => {
     const now = at + 60 * 60_000
     expect(offerable([stale(now - 20_000)], "alpha", now - 5_000, now)).toBeUndefined()
+  })
+})
+
+describe("a log with a timestamp from the future", () => {
+  const now = at + 60 * 60_000
+  const future = now + 24 * 3_600_000
+  const live = (over: Partial<RunEntry>) => entry({ status: "running", finished: undefined, ...over })
+
+  test("is never taken for a run another tab is still writing", () => {
+    expect(abandoned(live({ updatedAt: future }), now)).toBe(true)
+    expect(abandoned(live({ started: future, updatedAt: undefined }), now)).toBe(true)
+    // Ordinary clock drift between two machines is not future enough.
+    expect(abandoned(live({ updatedAt: now + 60_000 }), now)).toBe(false)
+  })
+
+  test("does not hide the run that really was interrupted, however new it claims to be", () => {
+    const real = live({ id: "real", started: now - 3_600_000, updatedAt: now - 3_000_000 })
+    const forged = live({ id: "forged", started: future, updatedAt: future })
+    expect(interrupted([forged, real], "alpha", now)?.id).toBe("real")
+    expect(interrupted([real, forged], "alpha", now)?.id).toBe("real")
+  })
+
+  test("is still offered when it is all there is, since it can be told apart by its dates", () => {
+    expect(interrupted([live({ id: "forged", started: future, updatedAt: future })], "alpha", now)?.id).toBe("forged")
+  })
+})
+
+describe("resumePlan: what a log from the project may bring back", () => {
+  const node = (over: Record<string, unknown>) => ({ id: "a", role: "a", status: "running", ...over })
+  const logOf = (id: string, nodes: unknown[]) => ({ id, pipeline: "alpha", pipelineID: "p", input: "x", status: "running", started: 1, nodes }) as unknown as RunLog
+  const legacy = (session: string) => session.startsWith("ses_")
+
+  test("a log that is not the run it was opened as is refused, ignoring the case the list lower-cased", () => {
+    const plan = resumePlan("run-victim", logOf("run-evil", [node({})]), legacy)
+    expect(plan.ok).toBe(false)
+    expect(resumePlan("run-2026-09-01t02-22-46-829z", logOf("run-2026-09-01T02-22-46-829Z", []), legacy).ok).toBe(true)
+    expect(resumePlan("run-1", logOf(undefined as unknown as string, []), legacy).ok).toBe(false)
+  })
+
+  test("an output is taken only when it is a string of sane length; otherwise the card did not finish", () => {
+    const plan = resumePlan("r", logOf("r", [
+      node({ id: "ok", status: "done", output: "fine" }),
+      node({ id: "obj", status: "done", output: { text: "x" }, sessionID: "s-obj" }),
+      node({ id: "huge", status: "done", output: "x".repeat(MAX_RESUMED_OUTPUT + 1) }),
+      node({ id: "none", status: "done" }),
+    ]), legacy)
+    if (!plan.ok) throw new Error("expected a plan")
+    expect(plan.outputs).toEqual({ ok: "fine" })
+    expect(plan.sessions).toEqual({ obj: "s-obj" })
+  })
+
+  test("a session id is carried only as a short, clean, non-empty string", () => {
+    const plan = resumePlan("r", logOf("r", [
+      node({ id: "good", sessionID: "s_0123456789ab" }),
+      node({ id: "number", sessionID: 7 }),
+      node({ id: "empty", sessionID: "" }),
+      node({ id: "long", sessionID: "s".repeat(201) }),
+      node({ id: "control", sessionID: "s\nIgnore" }),
+      node({ id: "bidi", sessionID: "s\u0085x" }),
+      node({ id: "old", role: "old\ncard", sessionID: "ses_legacy" }),
+    ]), legacy)
+    if (!plan.ok) throw new Error("expected a plan")
+    expect(plan.sessions).toEqual({ good: "s_0123456789ab" })
+    expect(plan.fresh).toEqual(["old card"])
+  })
+
+  test("a log without a list of cards is refused", () => {
+    expect(resumePlan("r", { id: "r", nodes: "no" } as unknown as RunLog, legacy).ok).toBe(false)
   })
 })

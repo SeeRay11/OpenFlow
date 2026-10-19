@@ -35,7 +35,7 @@ export function createEngineHost(deps: EngineHostDeps): EngineHost {
   const bus = createEventBus({ replay: () => sessions.pending() })
   const sessions = createSessionHost(deps, { emit: bus.publish, life })
   const models = createModelCatalog(deps, { readyTimeoutMs: deps.readyTimeoutMs, life })
-  const routes = createRoutes({ settings: deps.settings, env: deps.env, sessions, models, bus, life })
+  const routes = createRoutes({ settings: deps.settings, env: deps.env, sessions, models, bus, life, bodyDeadlineMs: deps.bodyDeadlineMs })
   const pruned = Promise.withResolvers<PruneResult>()
   const pruneTimer = setTimeout(() => {
     // `pruneState` never throws; a failure is only counted in the result.

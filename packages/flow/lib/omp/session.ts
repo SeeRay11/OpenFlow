@@ -56,6 +56,8 @@ export type EngineHostDeps = {
   maxLive?: number
   /** How long a new omp may take to become ready (and to open a saved session) before it is killed. Default 60 s. */
   readyTimeoutMs?: number
+  /** How long the body of a create may take to arrive before the request is answered 408 (and the project is no longer held for it). Default 10 s. */
+  bodyDeadlineMs?: number
   /** The startup prune of old run state; `delayMs` after the host is created. */
   prune?: {
     /** Default 15 s. */
@@ -79,7 +81,10 @@ export type SessionHostOptions = {
 }
 
 export interface SessionHost {
-  /** `signal` is the request's: aborted before the session is live, the start is torn down (process closed, record dropped) and the call rejects. */
+  /**
+   * `signal` is the request's: aborted before the session is live, the start is torn down (process closed, record dropped) and the call rejects.
+   * `body` may be a promise for the request body still being read: the create is counted from this call, not from the parse.
+   */
   create(body: unknown, signal?: AbortSignal): Promise<{ id: string }>
   prompt(id: string, request: PromptRequest): Promise<void>
   wait(id: string, request: WaitRequest, signal?: AbortSignal): Promise<WaitResult>
@@ -132,6 +137,10 @@ const SCAN_STAT_BATCH = 64
 const DEFAULT_IDLE_REAP_MS = 30 * 60_000
 const DEFAULT_TICK_MS = 5_000
 const DEFAULT_WAIT_MS = 30 * 60_000
+/** The longest working-directory path a held notice repeats: it comes from persisted metadata. */
+const CARRIED_PATH_LIMIT = 200
+/** Only these characters may appear in a directory a notice puts in a command: no quotes, `$`, backticks, shell operators, control or Unicode format characters. */
+const SAFE_COMMAND_PATH = /^[A-Za-z0-9 _.@+:~\\/-]+$/
 const ADMISSION_TIMEOUT_MS = 120_000
 const DEFAULT_MAX_LIVE = 32
 const ABORT_TIMEOUT_MS = 15_000
@@ -180,6 +189,8 @@ type Meta = {
   updated: number
   /** The create request the session was last started with, so a session that is only on disk resumes as it was launched. Absent in files written before this existed. */
   request?: Record<string, unknown>
+  /** A working directory whose earlier work the resumed card was not told about yet: the "not merged" notice is owed until it has been said. */
+  carried?: string
 }
 
 type Session = {
@@ -232,6 +243,13 @@ type Session = {
   scratch?: boolean
   /** This host also created the run directory above a transient session's state directory. */
   scratchRun?: boolean
+}
+
+/** The held notice for a resumed card whose earlier working directory differs: the command is offered only for a directory that is safe to paste into a shell. */
+export function carriedNotice(directory: string): string {
+  const lead = "Work it did there before then may not have been merged into this run."
+  const safe = path.isAbsolute(directory) && directory.length <= CARRIED_PATH_LIMIT && SAFE_COMMAND_PATH.test(directory)
+  return safe ? `${lead} Inspect it with: git -C "${directory}" status` : `${lead} It worked in its previous working directory.`
 }
 
 function bad(message: string): HttpError {
@@ -379,6 +397,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   const writes = new Set<Promise<void>>()
   /** The tail of the writes to each file: writes to one file run one after another. */
   const fileWrites = new Map<string, Promise<void>>()
+  /** The tail of the resumes in progress for each session id. */
+  const reuseChains = new Map<string, Promise<void>>()
   /** When each run directory was last touched, so a streaming session does not touch it on every save. */
   const touched = new Map<string, number>()
   /** Ids disposed on purpose (DELETE, release, replaced): a prompt for one is a 404, not a resume from the files left behind. */
@@ -461,6 +481,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
       created: session.created,
       updated: Date.now(),
       request: { ...session.request, reuse: undefined },
+      ...(session.carried ? { carried: session.carried } : {}),
     }
     await writeAtomic(path.join(session.stateDir, META_FILE), JSON.stringify(meta))
     await touchRun(session.stateDir)
@@ -534,6 +555,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
         created: asNumber(meta.created) ?? 0,
         updated: asNumber(meta.updated) ?? 0,
         request: asRecord(meta.request),
+        carried: asString(meta.carried),
       }
     } catch {
       return undefined
@@ -713,8 +735,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     // notices wait for the first accepted prompt. A resumed start has said the card's notes already; they are about the card, not the process.
     const notices = resume ? [] : describeLaunch(input).notes.map((note) => capText(stripControl(note), NOTICE_LIMIT).text)
     if (resume && session.carried) {
-      notices.push(`This card resumed after an interruption. Work it did before then, in ${session.carried}, was not merged into this run.`)
-      session.carried = undefined
+      // Held (and persisted) until the first accepted prompt has said it; a repeated start does not queue it twice.
+      notices.push(carriedNotice(session.carried))
     }
     if (swarm && mode !== "off" && swarm.effective === "off" && swarm.preflight.problems.length)
       notices.push(`swarm is off for this card: ${swarm.preflight.problems.map((problem) => (problem.fix ? `${problem.message} ${problem.fix}` : problem.message)).join(" ")}`)
@@ -793,6 +815,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
 
   /** Spawns the process of an idle, lost or new session; every caller during one start shares its flight. */
   function begin(session: Session, resume: boolean): Promise<void> {
+    // A live session already has its process: it is never started again over it.
+    if (session.state === "live" && session.proc) return Promise.resolve()
     if (closing) return Promise.reject(hostClosed())
     session.starting ??= start(session, resume).finally(() => {
       session.starting = undefined
@@ -815,6 +839,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
 
   /** The process, resuming a reaped session on the way. */
   async function attach(id: string): Promise<{ session: Session; proc: OmpProcess }> {
+    // A resume of this session in progress finishes first: a prompt never starts a process of its own in the middle of one.
+    await reuseChains.get(id)
     if (!sessions.has(id)) await revive(id)
     const session = find(id)
     if (session.state === "idle") await begin(session, true).catch((error: unknown) => {
@@ -857,6 +883,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     const base = (await readTurns(found.dir)) ?? []
     // The directory the session's earlier work was done in, from its saved request: only a notice about it is kept, the process starts where the new request says.
     const original = asString(found.meta.request?.directory)
+    const owed = found.meta.carried
+    const pending = owed && (await fs.stat(owed).then((stat) => stat.isDirectory(), () => false)) ? owed : undefined
     // Read again right before registering: the run may have been pruned while the history was read.
     const meta = await readMeta(found.dir)
     if (!meta || meta.id !== id) throw notFound(id)
@@ -868,6 +896,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     if (prunes.has(path.basename(path.dirname(found.dir)))) throw notFound(id)
     const session = makeSession(id, request, found.dir)
     session.previousDirectory = original
+    // A notice the earlier resume owed and never said (it was interrupted before its first prompt).
+    if (pending) session.carried = pending
     session.home = { runId: meta.runId || request.runId, nodeId: meta.nodeId || request.nodeId }
     session.created = meta.created || session.created
     session.title = meta.title
@@ -898,7 +928,22 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     }
   }
 
-  async function reuse(request: CreateRequest, stateDir: string, signal?: AbortSignal): Promise<{ id: string }> {
+  /** One reuse at a time per session id: overlapping resumes queue, so each sees the state the one before it left, and no two start a process for the same session. */
+  function reuse(request: CreateRequest, stateDir: string, signal?: AbortSignal): Promise<{ id: string }> {
+    const id = request.reuse as string
+    const run = (reuseChains.get(id) ?? Promise.resolve()).then(() => reuseNow(request, stateDir, signal))
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    reuseChains.set(id, tail)
+    void tail.then(() => {
+      if (reuseChains.get(id) === tail) reuseChains.delete(id)
+    })
+    return run
+  }
+
+  async function reuseNow(request: CreateRequest, stateDir: string, signal?: AbortSignal): Promise<{ id: string }> {
     if (closing) throw hostClosed()
     const id = request.reuse as string
     retired.delete(id)
@@ -908,13 +953,31 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     void touchRun(session.stateDir)
     // The directory the session's earlier work was done in: the one it was last launched with, or the one its saved request names.
     const previous = known ? known.request.directory : session.previousDirectory
-    // A live process keeps the settings (and the working directory) it was launched with until it is next resumed.
-    if (session.state === "live") return { id }
+    let moved = previous !== undefined && previous !== request.directory && (await fs.stat(previous).then((stat) => stat.isDirectory(), () => false))
+    if (session.state === "live") {
+      // A live process keeps the settings it was launched with, unless the card now works somewhere else: then it is stopped (its files stay, as for an idle reap) and resumed below
+      // in the new directory, so its edits cannot land in a tree the new run does not know.
+      if (!moved) return { id }
+      await stop(session, "idle")
+      // Something started it again while it was being stopped (nothing should: prompts wait for this reuse): let that start finish and stop it once more, so exactly one process is started below.
+      if (session.starting) {
+        await session.starting.catch(() => undefined)
+        await stop(session, "idle")
+      }
+      if (closing) throw hostClosed()
+      // Disposed or released while it was being stopped, or its old directory removed by a concurrent cleanup: nothing to relaunch, or nothing to announce.
+      if ((session.state as Session["state"]) === "disposed" || sessions.get(id) !== session) throw notFound(id)
+      moved = await fs.stat(previous as string).then((stat) => stat.isDirectory(), () => false)
+    }
     // Resumed for this request, not the one it was first created with: its model, permissions, swarm mode, tools, run and working directory follow the new body (and `releaseRun` and `holds`
     // match the new run). The engine decides where a resumed card works; only the session's own files stay where they were (its id and state directory).
     session.request = request
     session.previousDirectory = undefined
-    if (previous && previous !== request.directory && (await fs.stat(previous).then((stat) => stat.isDirectory(), () => false))) session.carried = previous
+    if (moved) {
+      session.carried = previous
+      // Persisted until it has been said: an interruption before the first prompt must not lose it.
+      saveMeta(session)
+    }
     await beginFor(session, true, signal).catch((error: unknown) => {
       // A record this call created, or one omp cannot resume, is not kept.
       if ((known === undefined || (error instanceof HttpError && error.status === 404)) && sessions.get(id) === session) sessions.delete(id)
@@ -1050,12 +1113,16 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     async create(body, signal) {
       // Counted from the very first line, before any await: parsing and the wait for a prune are part of the create, and a project switch must not slip in between.
       creating++
+      // Settled here whatever happens next: a bad or oversized body that rejects while the host is shutting down (an early throw below) is the caller's error to read, never an unhandled rejection.
+      const read = Promise.resolve(body)
+      read.catch(() => undefined)
       try {
         if (closing) throw hostClosed()
         // One project and one state root for the whole create: the canvas can switch folders while it awaits, and a card's directory and its state belong to the same one.
         const project = deps.project()
         const root = deps.stateRoot()
-        const request = await parseCreate(body, project)
+        // The body may still be on its way (the route hands over its pending read): the create is counted from the route, not from the parse.
+        const request = await parseCreate(await read, project)
         if (closing) throw hostClosed()
         const runDir = safeSegment(request.runId)
         // A prune removing this run's directory finishes first: this create starts fresh, never into files being deleted.
@@ -1109,6 +1176,11 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
         )
         // The browser knows the session id by now: what the start had to say goes out, once.
         for (const event of session.held.splice(0)) options.emit(event)
+        // Said: the pending "work was not merged" notice is no longer owed to the next start.
+        if (session.carried) {
+          session.carried = undefined
+          saveMeta(session)
+        }
         // A local slash command: no agent turn, no `prompt_result` will follow.
         if (data?.agentInvoked === false && session.last?.id === commandId) {
           session.last.result ??= { status: "completed" }

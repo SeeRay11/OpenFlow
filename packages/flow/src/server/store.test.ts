@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { skillTarget } from "./skills"
 import { ProjectBusyError, store } from "./store"
 
 /**
@@ -96,6 +97,16 @@ describe("store routes of the Omp profile", () => {
     const skill = { name: "notes", description: "d", content: "c" }
     expect("create" in JSON.parse((await last(store.saveSkill(skill))).request.body)).toBe(false)
     expect(JSON.parse((await last(store.saveSkill(skill, true))).request.body)).toMatchObject({ create: true, name: "notes" })
+  })
+
+  test("an edit of a skill whose folder differs from its shown name is written under the folder, without create", async () => {
+    respond = () => Response.json({ name: "my-skill", path: "SKILL.md" })
+    const skill = { name: "My Skill", description: "d", content: "c" }
+    const target = skillTarget({ original: "my-skill", shown: "My Skill", name: "My Skill" })
+    const { request } = await last(store.saveSkill(skill, target.create, target.address))
+
+    expect(request).toMatchObject({ method: "PUT", path: "/flow/api/skills/my-skill" })
+    expect(JSON.parse(request.body)).toEqual(skill)
   })
 
   test("a skill listing keeps the legacy flag the host puts on old entries", async () => {
