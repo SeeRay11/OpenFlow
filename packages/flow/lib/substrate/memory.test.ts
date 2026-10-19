@@ -8,8 +8,8 @@ import type { MemoryReadRequest, MemoryWriteRequest } from "../../shared/memory"
 import { createSubstrate, type SubstrateModule } from "./index"
 import { MEMORY_ROUTES } from "../../shared/memory"
 import { parseRemoteSlug } from "./memory"
-import type { FakeCall, FakeSubstrate } from "./testing/fake-substrate"
-import { startFakeSubstrate } from "./testing/fake-substrate"
+import type { FakeCall, FakeSubstrate } from "./fake-substrate.test-support"
+import { startFakeSubstrate } from "./fake-substrate.test-support"
 
 const GRAPH_ID = /^ut-[a-z0-9]+-[0-9a-f]{8}$/
 

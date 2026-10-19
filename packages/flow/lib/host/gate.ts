@@ -1,7 +1,7 @@
 import { fail, isJsonContentType, type HostHandler } from "./respond"
 
 /**
- * The one gate in front of every `/flow/api/**` HTTP request: engine, settings,
+ * The one gate in front of every `/flow/**` HTTP request: engine, settings,
  * uplift, memory, swarm, the store routes and the SSE stream. Without it any web
  * page the user visits can POST `text/plain` JSON at a loopback port (a "simple"
  * request, no preflight), and a DNS-rebound name can read the answers.
@@ -18,7 +18,10 @@ const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$/i
 
 /** A Host header that names this machine. Anything else is DNS rebinding or a LAN client. */
 export function loopbackHost(host: string | null): host is string {
-  return host !== null && LOOPBACK_HOST.test(host)
+  if (host === null) return false
+  const match = LOOPBACK_HOST.exec(host)
+  if (!match) return false
+  return match[2] === undefined || Number(match[2].slice(1)) <= 65535
 }
 
 /** `Origin` must be exactly the page that served us: `http(s)://<the Host it was sent to>`. */
@@ -29,9 +32,24 @@ export function sameOrigin(origin: string | null, host: string) {
   return given === `http://${lower}` || given === `https://${lower}`
 }
 
-/** The Host the client addressed; a request without one falls back to the URL's. */
+/** The URL's pathname, or `undefined` when the URL does not parse (a malformed Host makes the server build such a URL). */
+function pathnameOf(url: string) {
+  try {
+    return new URL(url).pathname
+  } catch {
+    return undefined
+  }
+}
+
+/** The Host the client addressed; a request without one falls back to the URL's, and an unparseable URL has no host (never loopback). */
 export function hostOf(request: Request) {
-  return request.headers.get("host") ?? new URL(request.url).host
+  const header = request.headers.get("host")
+  if (header !== null) return header
+  try {
+    return new URL(request.url).host
+  } catch {
+    return ""
+  }
 }
 
 /** Whether the request declares a body: a non-zero length or a chunked transfer. */
@@ -41,7 +59,13 @@ function carriesBody(headers: Headers) {
   return length !== null && Number(length) !== 0
 }
 
-const API = "/flow/api"
+/**
+ * What the gate covers: everything under `/flow`. Deliberately broader than any router: connect (vite)
+ * matches a mount prefix case-insensitively and lets a `.` follow it, so `/FLOW/api/x` and `/flow/api./x`
+ * reach handlers that a strict `/flow/api/` test would never have gated. Every host, store and terminal
+ * route lives under `/flow`, so over-matching only ever adds a check.
+ */
+const GATED = /^\/flow(?:[/.]|$)/i
 
 /** The refusal for one request, or `undefined` when it may proceed. Pure: no I/O, no state. */
 export function apiRefusal(request: Request, allowRemote: boolean): Refusal | undefined {
@@ -80,14 +104,15 @@ export function apiRefusal(request: Request, allowRemote: boolean): Refusal | un
 }
 
 /**
- * The gate as a `HostHandler`: a 403 JSON answer for a refused `/flow/api`
+ * The gate as a `HostHandler`: a 403 JSON answer for a refused `/flow`
  * request, `undefined` (let it through) for everything else, so it composes in
  * front of any handler chain on either host.
  */
 export function createGate(allowRemote: boolean): HostHandler {
   return async (request) => {
-    const pathname = new URL(request.url).pathname
-    if (pathname !== API && !pathname.startsWith(`${API}/`)) return undefined
+    const pathname = pathnameOf(request.url)
+    if (pathname === undefined) return fail(403, "The Host header of this request is malformed.", "forbidden-host")
+    if (!GATED.test(pathname)) return undefined
     const refusal = apiRefusal(request, allowRemote)
     if (!refusal) return undefined
     return fail(refusal.status, refusal.error, refusal.code)

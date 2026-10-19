@@ -26,6 +26,30 @@ describe("preflight", () => {
     expect(result).toEqual({ ok: true, effective: "off", requested: "off", problems: [] })
   })
 
+  test("root comes from settings, then SWARM_ROOT, then ULTRATHINK_SWARM_ROOT", () => {
+    const env = hostEnv({ SWARM_ROOT: "/from/swarm-root", ULTRATHINK_SWARM_ROOT: "/from/ultrathink" })
+    expect(configuredRoot(settings("/from/settings"), env)).toBe("/from/settings")
+    expect(configuredRoot(settings(), env)).toBe("/from/swarm-root")
+    expect(configuredRoot(settings("  "), hostEnv({ ULTRATHINK_SWARM_ROOT: "/from/ultrathink" }))).toBe("/from/ultrathink")
+    expect(configuredRoot(settings(), hostEnv())).toBeUndefined()
+  })
+
+  test("python that does not exist at all: no-python", async () => {
+    const result = await createPreflight({ python: path.join(dir, "nope") })({ requested: "always", settings: settings(root), env: good() })
+    expect(result.problems.map((problem) => problem.code)).toEqual(["no-python"])
+  })
+
+  test("every problem is actionable and several are reported together", async () => {
+    const result = await createPreflight({ python: path.join(dir, "nope") })({ requested: "auto", settings: settings(), env: hostEnv() })
+    expect(result.problems.map((problem) => problem.code)).toEqual(["no-root", "no-python", "no-signing-key"])
+    for (const problem of result.problems) expect(problem.fix?.length).toBeGreaterThan(10)
+  })
+})
+
+// The python stand-in (`fakePython`) is a `#!/bin/sh` script: it cannot be spawned on Windows.
+const posix = describe.skipIf(process.platform === "win32")
+
+posix("preflight with a python stand-in", () => {
   test.each(["auto", "always"] as const)("%s with everything in place keeps the requested mode", async (mode) => {
     const result = await createPreflight({ python })({ requested: mode, settings: settings(root), env: good() })
     expect(result).toEqual({ ok: true, effective: mode, requested: mode, problems: [], root })
@@ -53,14 +77,6 @@ describe("preflight", () => {
     expect(result.problems.map((problem) => problem.code)).toEqual(["bad-root"])
   })
 
-  test("root comes from settings, then SWARM_ROOT, then ULTRATHINK_SWARM_ROOT", () => {
-    const env = hostEnv({ SWARM_ROOT: "/from/swarm-root", ULTRATHINK_SWARM_ROOT: "/from/ultrathink" })
-    expect(configuredRoot(settings("/from/settings"), env)).toBe("/from/settings")
-    expect(configuredRoot(settings(), env)).toBe("/from/swarm-root")
-    expect(configuredRoot(settings("  "), hostEnv({ ULTRATHINK_SWARM_ROOT: "/from/ultrathink" }))).toBe("/from/ultrathink")
-    expect(configuredRoot(settings(), hostEnv())).toBeUndefined()
-  })
-
   test("the checkout can come from SWARM_ROOT alone", async () => {
     const result = await createPreflight({ python })({ requested: "auto", settings: settings(), env: { ...good(), SWARM_ROOT: root } })
     expect(result.ok).toBe(true)
@@ -72,11 +88,6 @@ describe("preflight", () => {
     const result = await createPreflight({ python: broken })({ requested: "auto", settings: settings(root), env: good() })
     expect(result.problems.map((problem) => problem.code)).toEqual(["no-python"])
     expect(result.effective).toBe("off")
-  })
-
-  test("python that does not exist at all: no-python", async () => {
-    const result = await createPreflight({ python: path.join(dir, "nope") })({ requested: "always", settings: settings(root), env: good() })
-    expect(result.problems.map((problem) => problem.code)).toEqual(["no-python"])
   })
 
   test("python without cryptography: no-crypto", async () => {
@@ -121,12 +132,6 @@ describe("preflight", () => {
     const result = await createPreflight({ python })({ requested: "auto", settings: settings(root), env })
     expect(result.problems.map((problem) => problem.code)).toEqual(["no-signing-key"])
     expect(JSON.stringify(result)).not.toContain("INSECURE")
-  })
-
-  test("every problem is actionable and several are reported together", async () => {
-    const result = await createPreflight({ python: path.join(dir, "nope") })({ requested: "auto", settings: settings(), env: hostEnv() })
-    expect(result.problems.map((problem) => problem.code)).toEqual(["no-root", "no-python", "no-signing-key"])
-    for (const problem of result.problems) expect(problem.fix?.length).toBeGreaterThan(10)
   })
 
   test("key values never appear in a result", async () => {

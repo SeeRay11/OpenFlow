@@ -117,10 +117,19 @@ function briefLines(text: string): Array<{ kind: "decision" | "warning"; text: s
   let kind: "decision" | "warning" | undefined
   for (const raw of text.split("\n")) {
     const line = raw.trim()
-    if (line === "Decisions in force") kind = "decision"
-    else if (line === "Warnings") kind = "warning"
-    else if (kind && line.startsWith("- ")) found.push({ kind, text: line.slice(2) })
-    else kind = undefined
+    if (line === "Decisions in force") {
+      kind = "decision"
+      continue
+    }
+    if (line === "Warnings") {
+      kind = "warning"
+      continue
+    }
+    if (kind && line.startsWith("- ")) {
+      found.push({ kind, text: line.slice(2) })
+      continue
+    }
+    kind = undefined
   }
   return found
 }
@@ -189,7 +198,7 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     const raw = settings.substrate.url.trim() || env.SUBSTRATE_URL?.trim() || ""
     const url = raw ? parseBaseUrl(raw) : undefined
     if (!raw) problems.push("No Substrate URL: set substrate.url in the Omp settings or SUBSTRATE_URL.")
-    else if (!url) problems.push("The Substrate URL is not an http(s) URL: fix substrate.url in the Omp settings or SUBSTRATE_URL.")
+    if (raw && !url) problems.push("The Substrate URL is not an http(s) URL: fix substrate.url in the Omp settings or SUBSTRATE_URL.")
     // The token is not even read for a URL it may not be sent to.
     const blocked = url !== undefined && !tokenAllowed(url, env)
     if (url && blocked) problems.push(untrustedMessage(url))
@@ -526,15 +535,12 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     }
     if (!settings.memory.enabled) return { ...base, problems: [] }
     const problems = [...resolved.problems]
-    let reachable = false
-    if (resolved.url && !resolved.blocked) {
-      const health = await createClient({ url: resolved.url, token: resolved.token ?? "", fetch: deps.fetch ?? fetch, env }).healthz()
-      if (health.ok) {
-        reachable = true
-        problems.push(...health.value.problems)
-      } else problems.push(health.message)
-    }
-    return { ...base, reachable, problems }
+    const health =
+      resolved.url && !resolved.blocked
+        ? await createClient({ url: resolved.url, token: resolved.token ?? "", fetch: deps.fetch ?? fetch, env }).healthz()
+        : undefined
+    if (health) problems.push(...(health.ok ? health.value.problems : [health.message]))
+    return { ...base, reachable: health?.ok === true, problems }
   }
 
   return {

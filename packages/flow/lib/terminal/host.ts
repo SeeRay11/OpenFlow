@@ -1,4 +1,4 @@
-import { constants as osConstants } from "node:os"
+import { constants } from "node:os"
 import { PTY_CLOSE, PTY_LIMITS, clampSize } from "../../shared/terminal"
 import type { PtyInfo, PtyKind, PtyServerControl } from "../../shared/terminal"
 import { HttpError } from "../host/respond"
@@ -79,7 +79,7 @@ type Session = {
 function signalName(signal: number | string | null | undefined): string | null {
   if (typeof signal === "string") return signal
   if (!signal) return null
-  for (const [name, value] of Object.entries(osConstants.signals)) if (value === signal) return name
+  for (const [name, value] of Object.entries(constants.signals)) if (value === signal) return name
   return String(signal)
 }
 

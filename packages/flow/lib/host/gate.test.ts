@@ -28,6 +28,10 @@ describe("loopbackHost", () => {
     ["0.0.0.0:5173", false],
     ["localhost:notaport", false],
     ["localhost:123456", false],
+    ["localhost:99999", false],
+    ["localhost:65535", true],
+    ["localhost%00.evil.example", false],
+    ["evil.example#localhost", false],
     ["::1", false],
     ["", false],
   ])("%s", (host, expected) => expect(loopbackHost(host)).toBe(expected))
@@ -192,8 +196,53 @@ describe("createGate", () => {
     expect(await gate(request("localhost:5173", { headers: { origin: "http://localhost:5173" } }))).toBeUndefined()
     const elsewhere = new Request("http://evil.example/index.html", { headers: { origin: "https://evil.example" } })
     expect(await gate(elsewhere)).toBeUndefined()
-    const lookalike = new Request("http://evil.example/flow/apix/y")
-    expect(await gate(lookalike)).toBeUndefined()
     expect(await gate(new Request("http://evil.example/flow/api"))).toMatchObject({ status: 403 })
   })
+
+  const rebound = { origin: "https://evil.example", "sec-fetch-site": "cross-site" }
+
+  // Connect (vite) mounts a prefix case-insensitively and lets a dot follow it, so every one of these reaches
+  // the store handlers on the dev host; the gate must be at least as broad as the router.
+  test.each(["/FLOW/API/x", "/Flow/Api/x", "/flow/api./x", "/flow/API", "/flow", "/flow/", "/flow.", "/FLOW/pty/1/ws", "/flow/apix/y"])(
+    "%s is gated",
+    async (path) => {
+      const response = await gate(new Request(`http://localhost:5173${path}`, { headers: rebound }))
+      expect(response?.status).toBe(403)
+      expect(await response?.json()).toMatchObject({ code: "forbidden-origin" })
+    },
+  )
+
+  test.each(["/", "/index.html", "/assets/x.js", "/@vite/client", "/src/main.tsx", "/flowers", "/api/flow/x", "/x/flow/api"])(
+    "%s is not gated",
+    async (path) => {
+      expect(await gate(new Request(`http://localhost:5173${path}`, { headers: rebound }))).toBeUndefined()
+    },
+  )
+
+  test("a same-origin request on a case variant passes", async () => {
+    const headers = { origin: "http://localhost:5173", "sec-fetch-site": "same-origin" }
+    expect(await gate(new Request("http://localhost:5173/FLOW/API/x", { headers }))).toBeUndefined()
+  })
+})
+
+describe("a malformed Host", () => {
+  const gate = createGate(false)
+
+  // The request URL is what a server builds from the Host header: an unparseable one must not throw out of the gate.
+  test("a Host the URL parser rejects is a JSON 403 forbidden-host, not an exception", async () => {
+    const request = { url: "http://localhost:99999/flow/api/x", headers: new Headers({ host: "localhost:99999" }) } as unknown as Request
+    const response = await gate(request)
+    expect(response?.status).toBe(403)
+    expect(response?.headers.get("content-type")).toContain("application/json")
+    expect(await response?.json()).toMatchObject({ code: "forbidden-host" })
+  })
+
+  test.each(["localhost@evil.example", "evil.example#localhost", "localhost:99999", "localhost%00.evil.example"])(
+    "%s is refused as forbidden-host when the URL does parse",
+    async (host) => {
+      const response = await gate(new Request("http://127.0.0.1:9/flow/api/x", { headers: { host } }))
+      expect(response?.status).toBe(403)
+      expect(await response?.json()).toMatchObject({ code: "forbidden-host" })
+    },
+  )
 })

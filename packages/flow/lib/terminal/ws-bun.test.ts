@@ -116,7 +116,7 @@ suite("Bun.serve transport", () => {
     const first = connect(base, granted)
     await first.received.until(() => first.received.output.includes("alpha"), "alpha")
     first.socket.send("1\n")
-    await first.received.until(() => first.received.output.includes("beta"), "beta")
+    await first.received.until(() => first.received.output.includes("beta\r\n"), "beta")
     const cursor = first.received.resume()
     first.socket.close(1000)
     await first.received.until(() => first.received.closed !== undefined, "first closed")

@@ -112,6 +112,8 @@ async function startHost(): Promise<ContractInstance> {
   const scriptFile = path.join(dir, "script.json")
   const logFile = path.join(dir, "stub.log")
   const pidFile = path.join(dir, "pids")
+  const holdFile = path.join(dir, "hold")
+  const reachedFile = path.join(dir, "reached")
   mkdirSync(project)
   writeFileSync(scriptFile, "[]")
   writeFileSync(logFile, "")
@@ -126,6 +128,8 @@ async function startHost(): Promise<ContractInstance> {
       'case " $* " in *" --version "*) echo "omp/18.12.2"; exit 0;; esac',
       `case " $* " in *" config path "*) echo "${configDir}"; exit 0;; esac`,
       `echo $$ >> "${pidFile}"`,
+      // A held start: say so, then wait before `ready` while the hold file exists (`driver.holdStartup`).
+      `if [ -e "${holdFile}" ]; then touch "${reachedFile}"; while [ -e "${holdFile}" ]; do sleep 0.05; done; fi`,
       `export STUB_OMP_SCRIPT="${scriptFile}" STUB_OMP_LOG="${logFile}"`,
       `exec "${process.execPath}" "${STUB_OMP}" "$@"`,
       "",
@@ -194,6 +198,14 @@ async function startHost(): Promise<ContractInstance> {
 
   const messages = { count: 0 }
   const driver: ContractDriver = {
+    holdStartup() {
+      rmSync(reachedFile, { force: true })
+      writeFileSync(holdFile, "")
+      return {
+        reached: () => until(() => existsSync(reachedFile), 10_000),
+        release: () => rmSync(holdFile, { force: true }),
+      }
+    },
     script(turn) {
       writeFileSync(scriptFile, JSON.stringify(framesOf(turn, { next: () => `m${++messages.count}` })))
       writeFileSync(logFile, "")
@@ -243,4 +255,4 @@ async function startHost(): Promise<ContractInstance> {
 }
 
 // Skipped as a whole where the wrapper cannot run, never silently per scenario.
-defineEngineContract("browser client over HTTP to the Omp host (stub omp)", startHost, { skip: !posix })
+defineEngineContract("browser client over HTTP to the Omp host (stub omp)", startHost, { skip: !posix, holdsStartup: true })

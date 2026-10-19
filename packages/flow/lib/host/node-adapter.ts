@@ -28,6 +28,21 @@ function sendJson(res: ServerResponse, status: number, body: string) {
   res.end(body)
 }
 
+/**
+ * The absolute URL of the request as first received. A Host that does not form a URL (`localhost:99999`, a NUL
+ * byte) must not throw: the base falls back to `localhost`, the raw header still travels in `headers`, and the
+ * gate answers 403 for it.
+ */
+function requestUrl(req: ConnectRequest) {
+  // `//x` would parse as a protocol-relative URL naming host `x`, hiding the real path from the gate.
+  const target = (req.originalUrl ?? req.url ?? "/").replace(/^\/{2,}/, "/")
+  try {
+    return new URL(target, `http://${req.headers.host ?? "localhost"}`)
+  } catch {
+    return new URL(target, "http://localhost")
+  }
+}
+
 export function nodeMiddleware(handler: HostHandler): (req: ConnectRequest, res: ServerResponse, next: () => void) => void {
   return (req, res, next) => {
     void serve(handler, req, res, next).catch(() => sendJson(res, 500, INTERNAL))
@@ -55,24 +70,30 @@ async function serve(handler: HostHandler, req: ConnectRequest, res: ServerRespo
   let exceeded = false
   let iterator: AsyncIterator<Buffer | string> | undefined
   const body = hasBody
-    ? new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          iterator ??= req[Symbol.asyncIterator]()
-          const chunk = await iterator.next()
-          if (chunk.done) return controller.close()
-          const bytes = typeof chunk.value === "string" ? Buffer.from(chunk.value) : chunk.value
-          size += bytes.length
-          if (size > MAX_BODY) {
-            exceeded = true
-            return controller.error(new Error("request body too large"))
-          }
-          controller.enqueue(bytes)
+    ? new ReadableStream<Uint8Array>(
+        {
+          async pull(controller) {
+            iterator ??= req[Symbol.asyncIterator]()
+            const chunk = await iterator.next()
+            if (chunk.done) return controller.close()
+            const bytes = typeof chunk.value === "string" ? Buffer.from(chunk.value) : chunk.value
+            size += bytes.length
+            if (size > MAX_BODY) {
+              exceeded = true
+              return controller.error(new Error("request body too large"))
+            }
+            controller.enqueue(bytes)
+          },
+          cancel: () => void iterator?.return?.(),
         },
-        cancel: () => void iterator?.return?.(),
-      })
+        // The default high-water mark of 1 makes the constructor pull the first chunk before any handler
+        // asks for it. A handler that answers `undefined` and calls `next()` would then leave the next
+        // middleware a body without its first chunk. 0 keeps the node stream untouched until a read.
+        { highWaterMark: 0 },
+      )
     : undefined
 
-  const url = new URL(req.originalUrl ?? req.url ?? "/", `http://${req.headers.host ?? "localhost"}`)
+  const url = requestUrl(req)
   const request = new Request(url, { method, headers, signal: abort.signal, ...(body ? { body, duplex: "half" } : {}) })
 
   const response = await handler(request)

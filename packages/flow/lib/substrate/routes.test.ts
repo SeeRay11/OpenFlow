@@ -6,8 +6,8 @@ import type { MemoryReadResult, MemoryStatus, MemoryWriteResult } from "../../sh
 import { MEMORY_ROUTES } from "../../shared/memory"
 import { DEFAULT_OMP_SETTINGS } from "../../shared/omp"
 import { createSubstrate, type SubstrateModule } from "./index"
-import type { FakeSubstrate } from "./testing/fake-substrate"
-import { startFakeSubstrate } from "./testing/fake-substrate"
+import type { FakeSubstrate } from "./fake-substrate.test-support"
+import { startFakeSubstrate } from "./fake-substrate.test-support"
 
 let dir: string
 let fake: FakeSubstrate

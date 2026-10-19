@@ -21,7 +21,7 @@ export type HostOptions = {
 
 export type Host = {
   /**
-   * The Host / Origin / Sec-Fetch-Site / Content-Type gate for every `/flow/api` request, the store routes
+   * The Host / Origin / Sec-Fetch-Site / Content-Type gate for every `/flow` request (case and dot variants included), the store routes
    * and the SSE stream included. Mount it first on each server: a `Response` is a refusal, `undefined` lets the request on.
    */
   gate: HostHandler

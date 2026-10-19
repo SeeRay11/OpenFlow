@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
+import { createServer } from "node:http"
+import type { AddressInfo } from "node:net"
 import { join } from "node:path"
 import { createClient, parseBaseUrl, resolveToken, tokenAllowed } from "./client"
-import type { FakeSubstrate } from "./testing/fake-substrate"
-import { startFakeSubstrate } from "./testing/fake-substrate"
+import type { FakeSubstrate } from "./fake-substrate.test-support"
+import { startFakeSubstrate } from "./fake-substrate.test-support"
 
 let dir: string
 let fake: FakeSubstrate
@@ -175,6 +177,31 @@ describe("client", () => {
     expect(await client().memoryWrite(body)).toMatchObject({ ok: false, kind: "unavailable", status: 503 })
     expect(await client().memoryWrite(body)).toMatchObject({ ok: true, outcome: "accepted", verified: false })
     expect(await client().memoryWrite({ ...body, idempotency_key: "k2" })).toMatchObject({ ok: true, outcome: "accepted", verified: true })
+  })
+
+  test("a redirect is a failure, never followed, and the token goes nowhere else", async () => {
+    const requests: Array<{ path: string; authorization: string | undefined }> = []
+    const server = createServer((req, res) => {
+      requests.push({ path: req.url ?? "", authorization: req.headers.authorization })
+      if (req.url === "/brief") {
+        res.statusCode = 307
+        res.setHeader("location", "/elsewhere")
+      }
+      res.end("{}")
+    })
+    const listening = Promise.withResolvers<void>()
+    server.listen(0, "127.0.0.1", () => listening.resolve())
+    await listening.promise
+    try {
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+      const brief = await client(fake.token, url).brief({ repo: "acme/widgets" })
+      expect(brief).toMatchObject({ ok: false, kind: "rejected", status: 307 })
+      expect(JSON.stringify(brief)).not.toContain(fake.token)
+      expect(requests.map((request) => request.path)).toEqual(["/brief"])
+    } finally {
+      server.closeAllConnections()
+      server.close()
+    }
   })
 
   test("graph_register goes over MCP", async () => {

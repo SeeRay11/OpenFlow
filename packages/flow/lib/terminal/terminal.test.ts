@@ -95,7 +95,7 @@ suite("the whole route", () => {
     if (!up1.ok) throw new Error("upgrade refused")
     const a = collector()
     const connection = up1.attach(a)
-    await a.until(() => a.output.includes("one"), "first part")
+    await a.until(() => a.output.includes("one\r\n"), "first part")
     const cursor = a.resume()
     connection.detach()
 
@@ -113,13 +113,14 @@ suite("the whole route", () => {
   })
 
   test("the child's environment holds no secret and has TERM", async () => {
-    const { terminal } = await setup("env; read x")
+    const { terminal } = await setup("env; echo ENV-LISTING-DONE; read x")
     const ticket = await create(terminal)
     const up = terminal.upgrade(wsRequest(ticket.id, `?ticket=${ticket.ticket}`), ticket.id)
     if (!up.ok) throw new Error("upgrade refused")
     const sink = collector()
     up.attach(sink)
-    await sink.until(() => sink.output.includes("COLORTERM=truecolor"), "env listing")
+    await sink.until(() => sink.output.includes("ENV-LISTING-DONE\r\n"), "env listing")
+    expect(sink.output).toContain("COLORTERM=truecolor")
     expect(sink.output).toContain("TERM=xterm-256color")
     expect(sink.output).toContain("HOME=")
     for (const secret of ["dummy-token", "dummy-key", "SUBSTRATE", "SWARM", "OPENROUTER"]) expect(sink.output).not.toContain(secret)

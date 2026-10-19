@@ -30,7 +30,10 @@ function host(env: NodeJS.ProcessEnv, root_ = root, mode: "off" | "auto" | "alwa
   return createSwarmHost({ settings: async () => ({ ...settings(root_), swarm: { mode, root: root_ } }), env, python })
 }
 
-describe("createSwarmHost.launch", () => {
+// The python stand-in (`fakePython`) is a `#!/bin/sh` script: it cannot be spawned on Windows.
+const posix = describe.skipIf(process.platform === "win32")
+
+posix("createSwarmHost.launch", () => {
   test("auto with everything in place loads the extension", async () => {
     const state = path.join(dir, "session")
     const launch = await host(signed()).launch({ settings: settings(root), mode: "auto", runId: "r", nodeId: "n", stateDir: state, env: signed() })
@@ -57,15 +60,9 @@ describe("createSwarmHost.launch", () => {
     expect(tracker.observe(frames.taskStart("c1", { agent: "a05-backend", task: "x" }))).toBeUndefined()
     tracker.dispose()
   })
-
-  test("off launches nothing and needs nothing", async () => {
-    const launch = await host(hostEnv()).launch({ settings: settings(), mode: "off", runId: "r", nodeId: "n", stateDir: path.join(dir, "s"), env: hostEnv() })
-    expect(launch).toMatchObject({ effective: "off", args: [], env: {}, overlay: {}, systemPrompt: "" })
-    expect(launch.preflight.ok).toBe(true)
-  })
 })
 
-describe("createSwarmHost.tracker", () => {
+posix("createSwarmHost.tracker", () => {
   test("uses the checkout's roster and folds live.json from the session's store", async () => {
     const swarm = host(signed())
     const state = path.join(dir, "session")
@@ -84,21 +81,9 @@ describe("createSwarmHost.tracker", () => {
     ])
     tracker.dispose()
   })
-
-  test("without a prior launch the slug shape decides", () => {
-    const tracker = host(signed()).tracker({ mode: "auto", stateDir: path.join(dir, "unknown") })
-    expect(tracker.observe(frames.taskStart("c1", { agent: "a13-observability", task: "x" }))?.active).toBe(true)
-    expect(tracker.dispose()).toMatchObject({ active: false, counts: { running: 0, cancelled: 1 } })
-  })
 })
 
-describe("preflight route", () => {
-  async function serve(handle: HostHandler) {
-    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await handle(request)) ?? new Response("not mine", { status: 404 }) })
-    servers.push(server)
-    return `http://127.0.0.1:${server.port}${SWARM_ROUTES.preflight}`
-  }
-
+posix("preflight route", () => {
   test("answers the requested mode", async () => {
     const url = await serve(host(signed()).handle)
     const response = await fetch(`${url}?mode=always`)
@@ -117,16 +102,38 @@ describe("preflight route", () => {
     expect(body.problems[0]?.fix).toBeTruthy()
   })
 
-  test("off is ok with no checkout at all", async () => {
-    const url = await serve(host(hostEnv(), "").handle)
-    const body: SwarmPreflight = await (await fetch(`${url}?mode=off`)).json()
-    expect(body).toEqual({ ok: true, effective: "off", requested: "off", problems: [] })
-  })
-
   test("a key in the environment never shows up in the answer", async () => {
     const url = await serve(host({ ...signed(), SWARM_SIGNING_KEY: DUMMY_KEYS.SWARM_SIGNING_KEY }).handle)
     const text = await (await fetch(`${url}?mode=auto`)).text()
     for (const value of Object.values(DUMMY_KEYS)) expect(text).not.toContain(value)
+  })
+})
+
+async function serve(handle: HostHandler) {
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await handle(request)) ?? new Response("not mine", { status: 404 }) })
+  servers.push(server)
+  return `http://127.0.0.1:${server.port}${SWARM_ROUTES.preflight}`
+}
+
+describe("createSwarmHost without an interpreter run", () => {
+  test("off launches nothing and needs nothing", async () => {
+    const launch = await host(hostEnv()).launch({ settings: settings(), mode: "off", runId: "r", nodeId: "n", stateDir: path.join(dir, "s"), env: hostEnv() })
+    expect(launch).toMatchObject({ effective: "off", args: [], env: {}, overlay: {}, systemPrompt: "" })
+    expect(launch.preflight.ok).toBe(true)
+  })
+
+  test("without a prior launch the slug shape decides", () => {
+    const tracker = host(signed()).tracker({ mode: "auto", stateDir: path.join(dir, "unknown") })
+    expect(tracker.observe(frames.taskStart("c1", { agent: "a13-observability", task: "x" }))?.active).toBe(true)
+    expect(tracker.dispose()).toMatchObject({ active: false, counts: { running: 0, cancelled: 1 } })
+  })
+})
+
+describe("preflight route without an interpreter run", () => {
+  test("off is ok with no checkout at all", async () => {
+    const url = await serve(host(hostEnv(), "").handle)
+    const body: SwarmPreflight = await (await fetch(`${url}?mode=off`)).json()
+    expect(body).toEqual({ ok: true, effective: "off", requested: "off", problems: [] })
   })
 
   test("rejects an unknown mode and non-GET methods, and ignores other paths", async () => {

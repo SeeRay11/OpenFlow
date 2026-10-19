@@ -142,7 +142,7 @@ suite.each(["attach", "plugin"] as const)("node transport (%s)", (via) => {
     const { base } = await boot("echo alpha; read x; echo beta; read y", via)
     const granted = await ticket(base, { create: { kind: "omp", cols: 80, rows: 24 } })
     const first = connect(base, granted)
-    await first.received.until(() => first.received.output.includes("alpha"), "alpha")
+    await first.received.until(() => first.received.output.includes("alpha\r\n"), "alpha")
     const cursor = first.received.resume()
     first.socket.close(1000)
     await first.received.until(() => first.received.closed !== undefined, "closed")

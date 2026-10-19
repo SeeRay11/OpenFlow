@@ -202,7 +202,17 @@ export function createClient(options: { url: URL; token: string; fetch: typeof f
         headers,
         body: init.body === undefined ? undefined : JSON.stringify(init.body),
         signal: AbortSignal.timeout(timeoutMs),
+        // A redirect would send the request (and, same-origin, the Authorization header) wherever the server points.
+        redirect: "manual",
       })
+      if (response.status >= 300 && response.status < 400) {
+        return {
+          ok: false,
+          kind: "rejected",
+          status: response.status,
+          message: `Substrate at ${hostPort} answered with a redirect (${response.status}), which is not followed; set the Substrate URL to its final address.`,
+        }
+      }
       return { ok: true, response }
     } catch (error) {
       if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {

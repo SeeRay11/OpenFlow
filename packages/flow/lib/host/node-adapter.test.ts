@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { createServer, type Server } from "node:http"
-import type { AddressInfo } from "node:net"
+import { createServer, request as httpRequest, type Server } from "node:http"
+import { connect, type AddressInfo } from "node:net"
 import { createGate } from "./gate"
 import { nodeMiddleware } from "./node-adapter"
 import { json, type HostHandler } from "./respond"
@@ -82,6 +82,73 @@ describe("fall through", () => {
     expect(await response.text()).toBe("next")
     expect(fell).toEqual([{ url: "/flow/api/pipelines/x", body: '{"name":"kept"}' }])
   })
+})
+
+describe("fall through keeps the whole body", () => {
+  /** Several writes of one body, so the node stream carries more than one chunk. */
+  function send(base: string, chunks: Buffer[]) {
+    const done = Promise.withResolvers<number>()
+    const url = new URL(`${base}/flow/api/pipelines/x`)
+    const outgoing = httpRequest(url, { method: "PUT", headers: { "content-type": "application/json", "transfer-encoding": "chunked" } }, (response) => {
+      response.resume()
+      response.once("end", () => done.resolve(response.statusCode ?? 0))
+    })
+    outgoing.on("error", done.reject)
+    void (async () => {
+      for (const chunk of chunks) {
+        const flushed = Promise.withResolvers<void>()
+        outgoing.write(chunk, () => flushed.resolve())
+        await flushed.promise
+      }
+      outgoing.end()
+    })()
+    return done.promise
+  }
+
+  test("a handler that answers undefined after looking at headers leaves the next middleware the complete multi-chunk body", async () => {
+    const seen: string[] = []
+    const { base, fell } = await start(async (request) => {
+      seen.push(request.headers.get("content-type") ?? "")
+      return undefined
+    })
+    const payload = JSON.stringify({ nodes: Array.from({ length: 4000 }, (_, index) => ({ id: `n${index}`, prompt: "x".repeat(40) })) })
+    expect(payload.length).toBeGreaterThan(200_000)
+    const bytes = Buffer.from(payload)
+    const chunks: Buffer[] = []
+    for (let at = 0; at < bytes.length; at += 40_000) chunks.push(bytes.subarray(at, at + 40_000))
+    expect(await send(base, chunks)).toBe(418)
+    expect(seen).toEqual(["application/json"])
+    expect(fell).toHaveLength(1)
+    expect(fell[0].body.length).toBe(payload.length)
+    expect(fell[0].body).toBe(payload)
+  })
+})
+
+describe("a Host that is not a valid URL authority", () => {
+  /** A raw HTTP/1.1 exchange: fetch and node's own client refuse to send these Host values. */
+  async function raw(base: string, host: string) {
+    const port = Number(new URL(base).port)
+    const socket = connect(port, "127.0.0.1")
+    const closed = Promise.withResolvers<string>()
+    let text = ""
+    socket.on("data", (data) => (text += data.toString("utf8")))
+    socket.on("close", () => closed.resolve(text))
+    socket.on("error", () => closed.resolve(text))
+    socket.write(`GET /flow/api/omp/settings HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`)
+    return closed.promise
+  }
+
+  test.each(["localhost@evil.example", "evil.example#localhost", "localhost:99999", "localhost%00.evil.example"])(
+    "%s answers a JSON 403 forbidden-host through the gate",
+    async (host) => {
+      const { base, fell } = await start(createGate(false))
+      const text = await raw(base, host)
+      expect(text).toStartWith("HTTP/1.1 403")
+      expect(text).toContain("application/json")
+      expect(text).toContain('"code":"forbidden-host"')
+      expect(fell).toEqual([])
+    },
+  )
 })
 
 describe("streaming", () => {

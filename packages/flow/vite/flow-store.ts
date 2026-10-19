@@ -38,9 +38,11 @@ export function flowStore(options: { project: string }): Plugin {
       })
       process.once("exit", () => void host.dispose())
 
-      // First: every `/flow/api` request, the store's routes and the SSE stream included, passes the
+      // First: every `/flow` request, the store's routes and the SSE stream included, passes the
       // Host/Origin gate before any handler. Vite's own CORS default lets any localhost origin through.
-      server.middlewares.use("/flow/api", nodeMiddleware(host.gate))
+      // No route prefix on purpose: connect matches a prefix case-insensitively and tolerates a `.` after it,
+      // so the gate must see the original URL and decide by its own, broader pattern (`lib/host/gate.ts`).
+      server.middlewares.use(nodeMiddleware(host.gate))
 
       // Before the store: the host owns `/flow/api/{engine,omp,uplift,memory,swarm,pty}`
       // and answers `undefined` for everything else, which falls through.
