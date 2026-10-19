@@ -170,13 +170,24 @@ letter case, and with a trailing dot such as `/flow/api./x`) also passes one gat
 - `Sec-Fetch-Site`, when sent, must be `same-origin` or `none`;
 - a request with a body must be `application/json`.
 
-A refusal is a 403 with the code `forbidden-host`, `forbidden-origin` or
+Before any of that, a request target under `/flow` that contains a `.` or `..`
+segment (also as `%2e`), a backslash (`%5c`), a NUL (`%00`) or a `;` is refused
+with 400 `forbidden-path`, on both hosts. After it, a refusal is a 403 with the
+code `forbidden-host`, `forbidden-origin` or
 `forbidden-content-type`. This stops another web page, or a DNS-rebound name,
 from starting agents through your browser. A request with no `Origin` or
 `Sec-Fetch-*` headers (curl, a script) passes, since only a browser sends those.
 With `FLOW_ALLOW_REMOTE=1` the [terminal](#terminal) is switched off, but the rest
 of the API is reachable by anyone who can reach the port, so set it only on a
 network you trust.
+
+The dev server sets `server.cors: false`, so it sends no CORS headers and answers
+no preflight. The standalone server (`server.ts`, logic in `server-app.ts`) runs
+with `development: false`, answers a malformed path with 400, and never returns a
+stack page: a failure is a 500 with `{ "error": "internal error" }` and the cause
+goes to stderr. A missing or credentialed `Host` is refused on both servers.
+Ctrl+C and SIGTERM on either server close every omp session and terminal before
+it exits.
 
 Environment overrides. Setting one differs per shell — `VAR=1 bun openflow.ts` on
 bash/zsh/Git Bash/WSL, `$env:VAR=1; bun openflow.ts` on PowerShell,
@@ -427,7 +438,6 @@ starts, not to one already running.
 | Longest card session | 480 minutes | 1 to 1440 |
 | Uplift each card's task before it runs | on | see [Prompt Uplift](#prompt-uplift) |
 | Planner time limit | 240000 ms | 10000 to 1800000 |
-| Let the planner ask clarifying questions | off | one more model call; cards run unattended |
 | claude-ultrathink location | omp's plugin directory | a directory containing `bin/run-bun` |
 | Share memory across the cards of a run | on | see [shared memory](#shared-memory-with-agent-substrate) |
 | Keep memories | 30 days | for this graph, 30 days, or permanently |
@@ -451,7 +461,8 @@ Only the card's own task text is uplifted. The output of upstream cards,
 attachments, and protocol turns (a verdict, a dispatch result, a forced final
 answer) never are. A task that already starts with a spec tag is sent as it is.
 The original and the uplifted text are both kept on the card and in the run log,
-and the inspector shows both.
+and the inspector shows both, with the planner's engine (for example
+`claude:claude-sonnet-5-5`) on its own row.
 
 **Requirements.** The `claude` CLI logged in (run `claude` once), Bun, and a
 claude-ultrathink checkout: the *claude-ultrathink location* setting, else
@@ -927,7 +938,7 @@ omp tools, and a deny wins in every approval mode:
 | `todowrite` | `todo` |
 | `question` | `ask` |
 | `skill` | omp starts with `--no-skills` |
-| `webfetch` | none: omp reads URLs with its `read` tool, which cannot be separated from file reads, so it stays on |
+| `webfetch` | none: omp reads URLs with its `read` tool, which cannot be separated from file reads, so it stays on. A card with this toggle off gets a one-time info notice at session start saying so |
 
 A card whose node says nothing about tools runs with every tool omp has,
 `edit` and `bash` included, and preflight warns about it. An orchestrator also

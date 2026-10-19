@@ -47,18 +47,27 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
 - Add a shared 40-scenario contract suite for the engine port, run against an
   in-memory fake and against the real client and host.
 - Gate every request under `/flow` on both hosts, in any letter case and with a
-  trailing dot (`/FLOW/API/x`, `/flow/api./x`): a loopback `Host` (a malformed one is
-  refused), a same-origin
-  `Origin` and `Sec-Fetch-Site`, and `application/json` bodies. A refusal is a 403
-  (`forbidden-host`, `forbidden-origin`, `forbidden-content-type`). This stops
-  another web page, or a DNS-rebound name, from starting agents through your
-  browser; curl and scripts are unaffected.
+  trailing dot (`/FLOW/API/x`, `/flow/api./x`): a loopback `Host` (a malformed,
+  missing or credentialed one is refused), a same-origin `Origin` and
+  `Sec-Fetch-Site`, and `application/json` bodies. A refusal is a 403
+  (`forbidden-host`, `forbidden-origin`, `forbidden-content-type`). A request path
+  with `.`/`..`/`%2e` segments, a backslash, NUL or `;` is refused with 400
+  `forbidden-path`. This stops another web page, or a DNS-rebound name, from
+  starting agents through your browser; curl and scripts are unaffected. The dev
+  server sends no CORS headers, and the standalone server never returns a stack
+  page (a failure is a 500 `internal error`).
 - Limit omp sessions: at most 32 at once. At the cap the least recently used idle
   session is closed to make room; only when all 32 are busy does the create fail
   (409 `too-many-sessions`). A 60 second
   startup deadline (502 `omp-not-ready`), and a Stop or dispose while a session is
   starting leaves no process behind and never sends the prompt; Stop during a hanging
   omp start ends at once.
+- Close every omp session and terminal on Ctrl+C or SIGTERM of the Vite dev server,
+  and release a run's sessions as a whole when it ends, so a lost create response
+  cannot strand one.
+- Tell a card with `webfetch` off that omp cannot enforce it, show the planner
+  engine in the inspector's uplift section, and remove the planner clarifying
+  questions setting (an old settings file that still has it loads fine).
 - Launch a gauntlet's critics and root orchestrator with the edit tools denied; the
   shell stays available.
 - Keep the mode of `mcp.json` when MCP servers are saved (0600 for a new file), and

@@ -481,7 +481,7 @@ authority where this and it disagree.
   engine suite stays valid. The host maps omp frames onto the event names the engine and
   `activity.ts` already read (`session.next.*`, `permission.v2.asked`, `question.v2.asked`,
   `session.created`), plus `flow.swarm.status` and `flow.notice`. The stage and settings wires are
-  `shared/{omp,uplift,memory,swarm,terminal,clarification}.ts`. Change a wire in `shared/` first;
+  `shared/{omp,uplift,memory,swarm,terminal}.ts`. Change a wire in `shared/` first;
   host and browser both import it.
 - **Process model.** One `omp --mode rpc-ui` per card session, owned by the host, leading its own
   process group (so tool shells and MCP servers die with it). The RPC core speaks JSONL over stdio
@@ -596,13 +596,30 @@ authority where this and it disagree.
   session is a 409 where the host queues it, a lost session is disposed where the host keeps a
   `lost` record, and looser create validation and title cleaning). A test that needs one of those
   belongs to the host's own tests, and none is to be closed in the double.
+- **Tool toggles omp cannot enforce.** `webfetch` has no omp equivalent (omp reads URLs through
+  `read`), so a card with it off gets a one-time info notice at session start saying so
+  (`describeLaunch` notes, emitted as `flow.notice` by `lib/omp/session.ts`). `skill` is enforced
+  with `--no-skills`; every other toggle is a deny entry in the card overlay.
+- **Engine teardown cannot leave a session live.** A run's `finally` in `src/server/engine.ts`
+  releases every session it holds and also calls `releaseRun(runId)` best effort, so a lost create
+  response or a failed per-session release does not strand one.
+- **Shutdown.** Ctrl+C (SIGINT) and SIGTERM on the Vite dev server dispose the host — every omp
+  session and PTY — before exit (`vite/flow-store.ts`); verified live, the session process is gone
+  within about 5 s. `server.ts` does the same.
 - **The host gate and the terminal gate.** Every HTTP request under `/flow` in both hosts — engine,
-  settings, uplift, memory, swarm, store routes, SSE — passes `lib/host/gate.ts` (`apiRefusal`)
-  first: a loopback `Host` (unless `FLOW_ALLOW_REMOTE=1`), a same-origin `Origin` (`null` is
+  settings, uplift, memory, swarm, store routes, SSE — passes `lib/host/gate.ts` first. A raw
+  request target under `/flow` containing `.`/`..`/`%2e` segments, a backslash (`%5c`), NUL
+  (`%00`) or `;` is refused with 400 `forbidden-path` (`rawPathRefusal`) before routing, and the
+  Vite store middleware takes the same normalised path the gate decided on. Then `apiRefusal`: a
+  loopback `Host` (unless `FLOW_ALLOW_REMOTE=1`; a missing or credentialed Host is refused on Vite
+  as on Bun), a same-origin `Origin` (`null` is
   refused), `Sec-Fetch-Site` `same-origin` or `none`, and `application/json` for any body. A refusal
   is a 403 with `forbidden-host`, `forbidden-origin` or `forbidden-content-type`. A request with no
   `Origin` or `Sec-Fetch-*` (curl, scripts) passes: only a browser is being fenced. This is what
-  stops a cross-site "simple" POST or a DNS-rebound name from running agents. The terminal keeps a
+  stops a cross-site "simple" POST or a DNS-rebound name from running agents. The dev server sets
+  `server.cors: false` (no CORS headers, no preflight answers). The standalone server runs with
+  `development: false`, answers malformed paths with 400, and never returns a stack page: a throw is
+  500 `{ "error": "internal error" }` (the handler lives in `server-app.ts`). The terminal keeps a
   stricter policy on top: every route needs the `x-openflow-pty: 1` header (a custom header forces a
   CORS preflight this host never answers), an `Origin` equal to the loopback `Host`, and — for the
   WebSocket — a one-shot ticket (60 seconds). The browser sends only a `kind` (`omp` or `shell`);
@@ -615,7 +632,7 @@ authority where this and it disagree.
   chosen once, in one file per runtime: the PTY (`lib/terminal/pty-bun.ts` uses Bun's own, because
   `@lydell/node-pty` fails under Bun; `pty-node.ts` uses `@lydell/node-pty` and must stay
   strippable by Node — no enums, no extensionless value imports) and the WebSocket upgrade
-  (`ws-bun.ts`, `ws-node.ts`). `shared/` imports nothing from `lib/`, `src/` or a runtime, and
+  (`ws-bun.ts`; `ws-node.ts`, whose `attachDevUpgrade` the Vite plugin mounts). `shared/` imports nothing from `lib/`, `src/` or a runtime, and
   `lib/` does not import `src/`; the engine runs in the browser and cannot import `lib/`.
 - **State that tests touch.** A test that reaches OpenFlow's own state sets `OPENFLOW_STATE_DIR`
   to a temp directory before the module loads; the alternative writes a developer's real
