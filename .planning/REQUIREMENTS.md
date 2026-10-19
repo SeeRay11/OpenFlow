@@ -31,7 +31,7 @@
 
 - [ ] **SWM-01**: Each card's omp session runs with the agent-swarm omp extension enabled.
 - [ ] **SWM-02**: Card status reflects swarm progress, including partial failure with an actionable message.
-- [ ] **SWM-03**: Cancelling a card kills the full swarm process tree, and failed swarm steps retry within a bounded budget.
+- [ ] **SWM-03**: Cancelling a card kills the full swarm process tree and settles its swarm status; failed swarm steps are retried by Agent Swarm's own bounded ladder (`max_attempts`, then ESCALATED) and the card shows the final state. OpenFlow adds no second retry layer. *(Amended 2026-10-19: the retry half is the swarm's own contract, verified in agent-swarm AGENTS.md and docs/substrate-leases.md; a second layer would multiply cost and loops.)*
 
 ### Configuration
 
@@ -41,7 +41,7 @@
 
 ### Terminal
 
-- [ ] **TRM-01**: A PTY terminal docks at the bottom of the app as a single global session bound to loopback with a per-launch token only.
+- [ ] **TRM-01**: A PTY terminal docks at the bottom of the app as one global dock, gated to loopback by a custom header, a same-origin check and a one-shot ticket. *(Amended 2026-10-19: the host keeps at most four PTYs so omp, shell and restarts can coexist; the UI shows one.)*
 - [ ] **TRM-02**: The user can run omp interactively, resize, copy, paste, scroll back and close the terminal.
 - [ ] **TRM-03**: After the PTY exits the terminal shows a visible message and can be reopened or restarted.
 
