@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import fs from "node:fs/promises"
 import path from "node:path"
 import type { BusEvent, WaitResult } from "../../shared/engine"
@@ -794,7 +794,7 @@ hosted("pruned state", () => {
     const { id } = await open()
     expect(host.holds(safeSegment("run1"))).toBe(true)
     expect(host.holds(safeSegment("other"))).toBe(false)
-    expect(await pruneState({ root: h.stateRoot, now: LATER, isLive: host.holds })).toEqual({ removed: [], errors: 0 })
+    expect(await pruneState({ root: h.stateRoot, now: LATER, claim: host.claim })).toEqual({ removed: [], errors: 0 })
     expect(await host.list(10)).toHaveLength(1)
     await host.releaseRun("run1")
     expect(host.holds(safeSegment("run1"))).toBe(false)
@@ -808,7 +808,7 @@ hosted("pruned state", () => {
     const restarted = createSessionHost(h.deps, { emit: (event) => events.push(event), tickMs: 3_600_000 })
     try {
       expect((await restarted.list(10)).map((row) => row.id)).toEqual([id])
-      expect(await pruneState({ root: h.stateRoot, now: LATER, isLive: restarted.holds })).toEqual({ removed: [safeSegment("run1")], errors: 0 })
+      expect(await pruneState({ root: h.stateRoot, now: LATER, claim: restarted.claim })).toEqual({ removed: [safeSegment("run1")], errors: 0 })
       expect(await restarted.list(10)).toEqual([])
       const error = await failure(restarted.create({ ...BODY, reuse: id }))
       expect(error.status).toBe(404)
@@ -840,6 +840,66 @@ hosted("pruned state", () => {
     expect(host.holds(safeSegment("run1"))).toBe(true)
     ;(h.fake.procs[0] as FakeProcess).release()
     await pending
+  })
+
+  test("a create for a run being pruned waits for the removal, then starts", async () => {
+    const release = host.claim(safeSegment("run1"))
+    expect(release).toBeDefined()
+    // A create for another run needs no wait: when it is done, the one held back has had every chance to start.
+    const held = host.create(BODY)
+    await host.create({ ...BODY, runId: "run2" })
+    expect(h.fake.procs).toHaveLength(1)
+    expect(host.holds(safeSegment("run1"))).toBe(false)
+    release?.()
+    expect((await held).id).toBeTruthy()
+    expect(h.fake.procs).toHaveLength(2)
+    expect(host.live()).toBe(2)
+  })
+
+  test("a run claimed for its removal cannot be claimed again, and is free once released", () => {
+    const release = host.claim(safeSegment("run1"))
+    expect(host.claim(safeSegment("run1"))).toBeUndefined()
+    release?.()
+    expect(host.claim(safeSegment("run1"))).toBeDefined()
+  })
+
+  test("a prune never starts on a run with a create in flight", async () => {
+    h.fake.next({ holdReady: true })
+    const pending = host.create(BODY)
+    await processes(1)
+    expect(await pruneState({ root: h.stateRoot, now: LATER, claim: host.claim })).toEqual({ removed: [], errors: 0 })
+    expect((await fs.stat(path.join(h.stateRoot, "run1", "n1"))).isDirectory()).toBe(true)
+    ;(h.fake.procs[0] as FakeProcess).release()
+    await pending
+    expect(host.live()).toBe(1)
+  })
+
+  test("a create that arrives while the prune is removing its run waits, and what it starts survives the removal", async () => {
+    await open()
+    await host.releaseRun("run1")
+    const removing = Promise.withResolvers<void>()
+    const removal = Promise.withResolvers<void>()
+    const real = fs.rm
+    const spy = spyOn(fs, "rm").mockImplementation(async (target, options) => {
+      removing.resolve()
+      await removal.promise
+      return real(target, options)
+    })
+    try {
+      const pruning = pruneState({ root: h.stateRoot, now: LATER, claim: host.claim })
+      await removing.promise
+      const creating = host.create(BODY)
+      await host.create({ ...BODY, runId: "run2" })
+      // Only the first session and run2's exist: the create for the run under removal has not spawned.
+      expect(h.fake.procs).toHaveLength(2)
+      removal.resolve()
+      expect(await pruning).toEqual({ removed: [safeSegment("run1")], errors: 0 })
+      const { id } = await creating
+      const meta = JSON.parse(await fs.readFile(path.join(h.stateRoot, "run1", "n1", ".openflow-session.json"), "utf8")) as { id: string }
+      expect(meta.id).toBe(id)
+    } finally {
+      spy.mockRestore()
+    }
   })
 })
 
@@ -898,6 +958,8 @@ hosted("idle reaper", () => {
 })
 
 hosted("listing", () => {
+  const TITLE = "Fix the parser (builder card)"
+
   test("lists live sessions with the first prompt as title, plus persisted ones after a dispose, newest first", async () => {
     const a = await open({ ...BODY, nodeId: "a" })
     await host.prompt(a.id, { text: `${"long ".repeat(40)}end` })
@@ -919,34 +981,34 @@ hosted("listing", () => {
   })
 
   test("a title from the engine is stored in the meta file, listed, and not replaced by the first prompt", async () => {
-    const a = await open({ ...BODY, title: "Builder · Fix the parser" })
+    const a = await open({ ...BODY, title: TITLE })
     await host.prompt(a.id, { text: "# OpenFlow You are one card in an OpenFlow pipeline" })
-    expect((await host.list(10))[0]?.title).toBe("Builder · Fix the parser")
+    expect((await host.list(10))[0]?.title).toBe(TITLE)
 
     const meta = JSON.parse(await fs.readFile(path.join(h.stateRoot, "run1", "n1", ".openflow-session.json"), "utf8")) as { title?: string }
-    expect(meta.title).toBe("Builder · Fix the parser")
+    expect(meta.title).toBe(TITLE)
 
     await host.close()
     const restarted = createSessionHost(h.deps, { emit: (event) => events.push(event), tickMs: 3_600_000 })
     try {
-      expect((await restarted.list(10)).map((row) => [row.id, row.title])).toEqual([[a.id, "Builder · Fix the parser"]])
+      expect((await restarted.list(10)).map((row) => [row.id, row.title])).toEqual([[a.id, TITLE]])
     } finally {
       await restarted.close()
     }
   })
 
   test("a resumed session keeps the title it was created with", async () => {
-    const a = await open({ ...BODY, title: "Builder · Fix the parser" })
+    const a = await open({ ...BODY, title: TITLE })
     await host.dispose(a.id)
-    await host.create({ ...BODY, title: "Builder · something else", reuse: a.id })
+    await host.create({ ...BODY, title: "something else entirely", reuse: a.id })
     await host.prompt(a.id, { text: "continue" })
-    expect((await host.list(10)).find((row) => row.id === a.id)?.title).toBe("Builder · Fix the parser")
+    expect((await host.list(10)).find((row) => row.id === a.id)?.title).toBe(TITLE)
 
     await host.close()
     const restarted = createSessionHost(h.deps, { emit: (event) => events.push(event), tickMs: 3_600_000 })
     try {
       await restarted.create({ ...BODY, reuse: a.id })
-      expect((await restarted.list(10)).find((row) => row.id === a.id)?.title).toBe("Builder · Fix the parser")
+      expect((await restarted.list(10)).find((row) => row.id === a.id)?.title).toBe(TITLE)
     } finally {
       await restarted.close()
     }
@@ -969,13 +1031,33 @@ hosted("listing", () => {
     expect((await host.list(10))[0]?.title).toBe("write the docs")
   })
 
+  test("the title taken from the first prompt is cleaned like a given one: no control characters or line breaks, clipped to 80 characters", async () => {
+    const dirty = await open({ ...BODY, nodeId: "dirty" })
+    await host.prompt(dirty.id, { text: "  fix\u001b[31m\u0000\n\tthe\u202e parser  " })
+    const long = await open({ ...BODY, nodeId: "long" })
+    await host.prompt(long.id, { text: "y".repeat(500) })
+    const rows = await host.list(10)
+    expect(rows.find((row) => row.id === dirty.id)?.title).toBe("fix the parser")
+    const clipped = rows.find((row) => row.id === long.id)?.title ?? ""
+    expect(clipped).toHaveLength(80)
+    expect(clipped.endsWith("…")).toBe(true)
+    // The stored title (what a restart lists) is the cleaned one too.
+    const meta = JSON.parse(await fs.readFile(path.join(h.stateRoot, "run1", "dirty", ".openflow-session.json"), "utf8")) as { title?: string }
+    expect(meta.title).toBe("fix the parser")
+  })
+
   test("a title that is not a string is a 400 and spawns nothing", async () => {
     const error = await failure(host.create({ ...BODY, title: 7 }))
     expect(error.status).toBe(400)
-    expect(error.message).toBe("title must be a string")
+    expect(error.code).toBe("bad-request")
     expect(h.fake.procs).toHaveLength(0)
   })
 })
+
+/** Resolves once `count` processes have been spawned. */
+async function processes(count: number) {
+  while (h.fake.procs.length < count) await new Promise<void>((resolve) => setImmediate(resolve))
+}
 
 /** A command that parks until `release()`; `reached` settles when it arrives, so a test acts at exactly that point. */
 function gate() {
@@ -1098,13 +1180,99 @@ hosted("concurrent session limit", () => {
     await boot({}, { maxLive: 2 })
   })
 
-  test("a create over the limit is a 429 too-many-sessions and spawns nothing", async () => {
-    await open({ ...BODY, nodeId: "a" })
-    await open({ ...BODY, nodeId: "b" })
+  /** A session with a turn in flight: busy until the test finishes it. */
+  async function working(nodeId: string) {
+    const session = await open({ ...BODY, nodeId })
+    await host.prompt(session.id, { text: "go" })
+    return session
+  }
+
+  test("with every session busy a create is refused once, with a status and text the engine does not take for a provider rate limit, and spawns nothing", async () => {
+    await working("a")
+    await working("b")
     const error = await failure(host.create({ ...BODY, nodeId: "c" }))
-    expect(error.status).toBe(429)
     expect(error.code).toBe("too-many-sessions")
+    // The engine retries what its `rateLimited()` matches (`HTTP 429`, "rate limit", "too many requests") on a 20 s backoff; a full host does not clear by itself.
+    expect(`${error.message} (HTTP ${error.status})`).not.toMatch(/\b429\b|rate.?limit|too many requests/i)
     expect(h.fake.procs).toHaveLength(2)
+    expect(host.live()).toBe(2)
+  })
+
+  test("at the limit the least recently used idle session is closed to make room, and it resumes on its next prompt", async () => {
+    let clock = 1_000_000
+    const now = spyOn(Date, "now").mockImplementation(() => clock)
+    try {
+      const a = await open({ ...BODY, nodeId: "a" })
+      clock += 1000
+      const b = await open({ ...BODY, nodeId: "b" })
+      clock += 1000
+      // Reading a session counts as use: b is now the one longest unused.
+      await host.wait(a.id, {})
+      clock += 1000
+      const c = await open({ ...BODY, nodeId: "c" })
+      expect(b.proc.exitedNow).toBe(true)
+      expect(a.proc.exitedNow).toBe(false)
+      expect(c.proc.exitedNow).toBe(false)
+      expect(host.live()).toBe(2)
+      // Closed, not lost: nobody is told it died, and it is still there.
+      expect(types(events)).not.toContain("flow.session.lost")
+      expect((await host.list(10)).map((row) => row.id)).toContain(b.id)
+
+      clock += 1000
+      await host.prompt(b.id, { text: "back again" })
+      const resumed = h.fake.procs.at(-1) as FakeProcess
+      expect(resumed).not.toBe(b.proc)
+      expect(resumed.of("open_session")).toHaveLength(1)
+      expect(resumed.of("prompt")).toHaveLength(1)
+      // Making room for it closed the now least recently used one, a.
+      expect(a.proc.exitedNow).toBe(true)
+      expect(c.proc.exitedNow).toBe(false)
+      expect(host.live()).toBe(2)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  const guarded = {
+    "a turn in flight": (session: { id: string; proc: FakeProcess }) => host.prompt(session.id, { text: "go" }),
+    "a permission waiting for an answer": (session: { id: string; proc: FakeProcess }) => session.proc.emit(frames.approval("r1", "Allow tool: bash")),
+    "a question waiting for an answer": (session: { id: string; proc: FakeProcess }) =>
+      session.proc.emit({ type: "extension_ui_request", id: "q1", method: "ask", questions: [{ id: "a", question: "Which?", options: [{ label: "x" }] }] }),
+  }
+  for (const [what, hold] of Object.entries(guarded)) {
+    test(`a session with ${what} is never the one closed, however long it has been unused`, async () => {
+      const first = await open({ ...BODY, nodeId: "a" })
+      await hold(first)
+      const second = await open({ ...BODY, nodeId: "b" })
+      await open({ ...BODY, nodeId: "c" })
+      expect(first.proc.exitedNow).toBe(false)
+      expect(second.proc.exitedNow).toBe(true)
+      expect(host.live()).toBe(2)
+    })
+  }
+
+  test("a session still starting is never the one closed, and counts against the limit", async () => {
+    const a = await open({ ...BODY, nodeId: "a" })
+    const configuring = gate()
+    h.fake.setup((proc, index) => {
+      if (index === 1) proc.on("set_ask_dialog", () => configuring.hold())
+    })
+    const starting = host.create({ ...BODY, nodeId: "b" })
+    await configuring.reached
+    await host.create({ ...BODY, nodeId: "c" })
+    expect(a.proc.exitedNow).toBe(true)
+    expect((h.fake.procs[1] as FakeProcess).exitedNow).toBe(false)
+    configuring.release()
+    await starting
+    expect(host.live()).toBe(2)
+  })
+
+  test("creates that arrive together close different sessions, so the limit holds", async () => {
+    const a = await open({ ...BODY, nodeId: "a" })
+    const b = await open({ ...BODY, nodeId: "b" })
+    await Promise.all([host.create({ ...BODY, nodeId: "c" }), host.create({ ...BODY, nodeId: "d" })])
+    expect(a.proc.exitedNow).toBe(true)
+    expect(b.proc.exitedNow).toBe(true)
     expect(host.live()).toBe(2)
   })
 
@@ -1118,11 +1286,11 @@ hosted("concurrent session limit", () => {
     expect(host.live()).toBe(2)
   })
 
-  test("resuming a session counts: a reuse over the limit is refused and the session stays on disk", async () => {
+  test("resuming a session counts: a reuse with every other session busy is refused and the session stays on disk", async () => {
     const a = await open({ ...BODY, nodeId: "a" })
     await host.dispose(a.id)
-    await open({ ...BODY, nodeId: "b" })
-    await open({ ...BODY, nodeId: "c" })
+    await working("b")
+    await working("c")
     expect((await failure(host.create({ ...BODY, nodeId: "a", reuse: a.id }))).code).toBe("too-many-sessions")
     expect(h.fake.procs).toHaveLength(3)
     expect((await host.list(10)).map((row) => row.id)).toContain(a.id)
@@ -1138,6 +1306,81 @@ hosted("concurrent session limit", () => {
     configuring.release()
     await first
     expect(host.live()).toBe(1)
+  })
+})
+
+hosted("aborted creates", () => {
+  const aborted = (promise: Promise<unknown>) => promise.then(() => undefined, (caught: unknown) => caught)
+
+  test("an abort while omp is becoming ready closes it, drops the record and rejects the create", async () => {
+    h.fake.next({ holdReady: true })
+    const controller = new AbortController()
+    const pending = aborted(host.create(BODY, controller.signal))
+    await processes(1)
+    controller.abort()
+    expect(await pending).toBe(controller.signal.reason)
+    expect((h.fake.procs[0] as FakeProcess).exitedNow).toBe(true)
+    expect(host.live()).toBe(0)
+    expect(host.holds(safeSegment("run1"))).toBe(false)
+    expect(host.active()).toEqual([])
+    expect(await host.list(10)).toEqual([])
+    // Nothing is left over to get in the way of the next create.
+    await host.create(BODY)
+    expect(host.live()).toBe(1)
+  })
+
+  test("an abort while a new session is being configured does the same", async () => {
+    const configuring = gate()
+    h.fake.setup((proc) => proc.on("set_ask_dialog", () => configuring.hold()))
+    const controller = new AbortController()
+    const pending = aborted(host.create(BODY, controller.signal))
+    await configuring.reached
+    controller.abort()
+    configuring.release()
+    expect(await pending).toBe(controller.signal.reason)
+    expect((h.fake.procs[0] as FakeProcess).exitedNow).toBe(true)
+    expect(host.live()).toBe(0)
+    expect(await host.list(10)).toEqual([])
+  })
+
+  test("an abort while a saved session is opening closes the process and leaves the session resumable", async () => {
+    const { id } = await open()
+    await host.dispose(id)
+    const opening = gate()
+    h.fake.setup((proc) => proc.on("open_session", () => opening.hold()))
+    const controller = new AbortController()
+    const pending = aborted(host.create({ ...BODY, reuse: id }, controller.signal))
+    await opening.reached
+    controller.abort()
+    opening.release()
+    expect(await pending).toBe(controller.signal.reason)
+    expect((h.fake.procs[1] as FakeProcess).exitedNow).toBe(true)
+    expect(host.live()).toBe(0)
+
+    h.fake.setup((proc) => proc.on("open_session", { cancelled: false, resumed: true }))
+    expect(await host.create({ ...BODY, reuse: id })).toEqual({ id })
+    expect(host.live()).toBe(1)
+  })
+
+  test("a signal that is already aborted spawns nothing", async () => {
+    const controller = new AbortController()
+    controller.abort()
+    expect(await aborted(host.create(BODY, controller.signal))).toBe(controller.signal.reason)
+    expect(h.fake.procs).toHaveLength(0)
+    expect(host.holds(safeSegment("run1"))).toBe(false)
+  })
+
+  test("an abort after the session is live changes nothing", async () => {
+    const controller = new AbortController()
+    const { id } = await host.create(BODY, controller.signal)
+    controller.abort()
+    await processes(1)
+    const proc = h.fake.procs[0] as FakeProcess
+    expect(proc.exitedNow).toBe(false)
+    expect(proc.closeCalls).toBe(0)
+    expect(host.live()).toBe(1)
+    await host.prompt(id, { text: "still here" })
+    expect(proc.of("prompt")).toHaveLength(1)
   })
 })
 

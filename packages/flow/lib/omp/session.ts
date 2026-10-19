@@ -50,7 +50,7 @@ export type EngineHostDeps = {
   stamp?: CredentialStamp
   /** A live session with no frames, no prompt in flight and no HTTP activity for this long is closed (and stays resumable). Default 30 minutes. */
   idleReapMs?: number
-  /** Most omp processes running (or starting) at once; a create beyond it is a 429. Default 32. */
+  /** Most omp processes running (or starting) at once. A create beyond it closes the least recently used idle session to make room; when every one is busy it is a 409 `too-many-sessions`. Default 32. */
   maxLive?: number
   /** How long a new omp may take to become ready (and to open a saved session) before it is killed. Default 60 s. */
   readyTimeoutMs?: number
@@ -71,7 +71,8 @@ export type SessionHostOptions = {
 }
 
 export interface SessionHost {
-  create(body: unknown): Promise<{ id: string }>
+  /** `signal` is the request's: aborted before the session is live, the start is torn down (process closed, record dropped) and the call rejects. */
+  create(body: unknown, signal?: AbortSignal): Promise<{ id: string }>
   prompt(id: string, request: PromptRequest): Promise<void>
   wait(id: string, request: WaitRequest, signal?: AbortSignal): Promise<WaitResult>
   /** Never fails: an unknown session or a dead process is simply nothing to interrupt. */
@@ -80,6 +81,8 @@ export interface SessionHost {
   releaseRun(runId: string): Promise<number>
   /** True while the host holds a session (live, idle or lost) or a start for this run directory name (`safeSegment(runId)`): its state must not be pruned. */
   holds(runDir: string): boolean
+  /** Takes a run directory for its removal by the prune: undefined when `holds` says it is in use, else a release. A create for the run waits until released. */
+  claim(runDir: string): (() => void) | undefined
   replyPermission(id: string, requestID: string, reply: PermissionReply): void
   replyQuestion(id: string, requestID: string, answers: string[][]): void
   rejectQuestion(id: string, requestID: string): void
@@ -183,9 +186,9 @@ export function safeSegment(value: string): string {
   return `${clean}-${createHash("sha1").update(value).digest("hex").slice(0, 6)}`
 }
 
-function oneLine(text: string, limit: number): string {
-  const flat = text.replace(/\s+/g, " ").trim()
-  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat
+/** A title out of free text: control characters out, one line, clipped. The one a caller names and the one taken from the first prompt are cleaned alike. */
+function cleanTitle(text: string, limit: number): string {
+  return capText(stripControl(text).replace(/\s+/g, " ").trim(), limit).text
 }
 
 function lastLine(text: string | undefined): string | undefined {
@@ -226,7 +229,7 @@ async function parseCreate(body: unknown, project: string): Promise<CreateReques
 
   if (input.reuse !== undefined && typeof input.reuse !== "string") throw bad("reuse must be a session id")
   if (input.title !== undefined && typeof input.title !== "string") throw bad("title must be a string")
-  const title = capText(stripControl(input.title ?? "").replace(/\s+/g, " ").trim(), GIVEN_TITLE_LIMIT).text
+  const title = cleanTitle(input.title ?? "", GIVEN_TITLE_LIMIT)
 
   const directory = input.directory === undefined ? project : input.directory
   if (typeof directory !== "string" || !path.isAbsolute(directory)) throw bad("directory must be an absolute path")
@@ -309,6 +312,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   const writes = new Set<Promise<void>>()
   /** Run directories with a create in flight, counted: the directory exists before the session is registered. */
   const claims = new Map<string, number>()
+  /** Run directories the prune is removing: a create for one waits for its removal to end. */
+  const prunes = new Map<string, PromiseWithResolvers<void>>()
   const idleReapMs = deps.idleReapMs ?? DEFAULT_IDLE_REAP_MS
   const maxLive = deps.maxLive ?? DEFAULT_MAX_LIVE
   const env = () => deps.env ?? process.env
@@ -446,11 +451,20 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     return new HttpError(409, `session ${session.id} was closed while it was starting`, "session-closed")
   }
 
-  /** Every spawn passes here, synchronously, before it starts: processes still starting count, so a burst cannot overshoot the limit. */
-  function admit(session: Session) {
-    const running = [...sessions.values()].filter((other) => other !== session && (other.state === "live" || other.starting !== undefined)).length
-    if (running < maxLive) return
-    throw new HttpError(429, `${running} omp sessions are already running (the limit is ${maxLive}); wait for a card to finish or stop a run, then try again.`, "too-many-sessions")
+  /**
+   * Every spawn passes here, synchronously, before it starts: processes still starting count, so a burst cannot overshoot the limit.
+   * At the limit the least recently used evictable session is closed (it keeps its files and resumes on its next prompt, like a reaped one); the
+   * state change is immediate, so a second spawn passing here does not pick it again, and the returned promise settles once its process is gone.
+   * With every session busy, starting or waiting on a dialog the create is refused. The status is 409, not 429: the engine retries a failure whose
+   * text says 429 as a provider rate limit, and a full host does not clear by waiting.
+   */
+  function admit(session: Session): Promise<void> | undefined {
+    const running = [...sessions.values()].filter((other) => other !== session && (other.state === "live" || other.starting !== undefined))
+    if (running.length < maxLive) return undefined
+    const idle = running.filter((other) => other.state === "live" && other.starting === undefined && !busy(other) && other.ui.pending() === 0)
+    const victim = idle.reduce<Session | undefined>((oldest, other) => (!oldest || other.lastActivity < oldest.lastActivity ? other : oldest), undefined)
+    if (!victim) throw new HttpError(409, `all ${running.length} omp sessions are busy (the limit is ${maxLive}); wait for a card to finish or stop a run, then try again.`, "too-many-sessions")
+    return stop(victim, "idle").then(trimRecords)
   }
 
   /**
@@ -459,7 +473,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
    * failure closes the process.
    */
   async function start(session: Session, resume: boolean) {
-    admit(session)
+    const evicting = admit(session)
     const generation = session.generation + 1
     session.generation = generation
     /** Disposed, released or closed since this start began: whatever it has built is to be torn down, never attached. */
@@ -472,6 +486,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     }
     const readyMs = deps.readyTimeoutMs ?? READY_TIMEOUT_MS
 
+    await step(Promise.resolve(evicting))
     const settings = await step(deps.settings())
     const binary = await step(requireBinary(settings, env()))
     const request = session.request
@@ -628,12 +643,33 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     return session
   }
 
-  async function reuse(request: CreateRequest, stateDir: string): Promise<{ id: string }> {
+  /**
+   * `begin` for a create: when `signal` aborts before the session is live the start is torn down and the record dropped (a saved session stays on disk), and the call rejects with the abort.
+   * Once the session is live an abort changes nothing.
+   */
+  async function beginFor(session: Session, resume: boolean, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    const abandon = () => {
+      if (session.state === "live") return
+      if (sessions.get(session.id) === session) sessions.delete(session.id)
+      void stop(session, "disposed")
+    }
+    signal?.addEventListener("abort", abandon, { once: true })
+    try {
+      await begin(session, resume)
+    } catch (error) {
+      throw signal?.aborted ? signal.reason : error
+    } finally {
+      signal?.removeEventListener("abort", abandon)
+    }
+  }
+
+  async function reuse(request: CreateRequest, stateDir: string, signal?: AbortSignal): Promise<{ id: string }> {
     const id = request.reuse as string
     const known = sessions.get(id)
     const session = known ?? (await adopt(request, stateDir))
     if (session.state === "live") return { id }
-    await begin(session, true).catch((error: unknown) => {
+    await beginFor(session, true, signal).catch((error: unknown) => {
       // A record this call created, or one omp cannot resume, is not kept.
       if ((known === undefined || (error instanceof HttpError && error.status === 404)) && sessions.get(id) === session) sessions.delete(id)
       throw error
@@ -661,7 +697,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   function ofRow(session: Session): SessionRow {
     return {
       id: session.id,
-      title: session.title ?? (oneLine(session.store.firstUserText() ?? "", TITLE_LIMIT) || session.request.card.key),
+      title: session.title ?? (cleanTitle(session.store.firstUserText() ?? "", TITLE_LIMIT) || session.request.card.key),
       agent: session.request.card.key,
       model: session.request.model,
       created: session.created,
@@ -683,8 +719,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     return found
   }
 
-  async function launch(request: CreateRequest, stateDir: string): Promise<{ id: string }> {
-    if (request.reuse) return reuse(request, stateDir)
+  async function launch(request: CreateRequest, stateDir: string, signal?: AbortSignal): Promise<{ id: string }> {
+    if (request.reuse) return reuse(request, stateDir, signal)
     await fs.mkdir(stateDir, { recursive: true, mode: 0o700 })
     // One card, one session at a time: a replaced critic session must not still hold the session directory.
     for (const other of [...sessions.values()]) {
@@ -695,7 +731,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     // Registered before it starts, with no await in between, so releaseRun, dispose and close see it and the limit counts it.
     const session = makeSession(`s_${randomBytes(6).toString("hex")}`, request, stateDir)
     sessions.set(session.id, session)
-    await begin(session, false).catch((error: unknown) => {
+    await beginFor(session, false, signal).catch((error: unknown) => {
       if (sessions.get(session.id) === session) sessions.delete(session.id)
       throw error
     })
@@ -703,22 +739,37 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     return { id: session.id }
   }
 
+  function holds(runDir: string): boolean {
+    return claims.has(runDir) || [...sessions.values()].some((session) => session.state !== "disposed" && safeSegment(session.request.runId) === runDir)
+  }
+
   return {
-    async create(body) {
+    async create(body, signal) {
       const request = await parseCreate(body, deps.project())
       const runDir = safeSegment(request.runId)
+      // A prune removing this run's directory finishes first: this create starts fresh, never into files being deleted.
+      while (prunes.has(runDir)) await prunes.get(runDir)?.promise
+      signal?.throwIfAborted()
       claims.set(runDir, (claims.get(runDir) ?? 0) + 1)
       try {
-        return await launch(request, path.join(deps.stateRoot(), runDir, safeSegment(request.nodeId)))
+        return await launch(request, path.join(deps.stateRoot(), runDir, safeSegment(request.nodeId)), signal)
       } finally {
         const left = (claims.get(runDir) ?? 1) - 1
         if (left > 0) claims.set(runDir, left)
-        else claims.delete(runDir)
+        if (left === 0) claims.delete(runDir)
       }
     },
 
-    holds(runDir) {
-      return claims.has(runDir) || [...sessions.values()].some((session) => session.state !== "disposed" && safeSegment(session.request.runId) === runDir)
+    holds,
+
+    claim(runDir) {
+      if (holds(runDir) || prunes.has(runDir)) return undefined
+      const pruning = Promise.withResolvers<void>()
+      prunes.set(runDir, pruning)
+      return () => {
+        prunes.delete(runDir)
+        pruning.resolve()
+      }
     },
 
     async prompt(id, request) {
@@ -731,7 +782,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
       session.last = { id: commandId }
       session.settled = false
       if (!session.title) {
-        session.title = oneLine(request.text, TITLE_LIMIT) || undefined
+        session.title = cleanTitle(request.text, TITLE_LIMIT) || undefined
         if (session.title) saveMeta(session)
       }
       try {

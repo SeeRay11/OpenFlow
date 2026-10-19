@@ -17,8 +17,11 @@ export type PruneOptions = {
   maxAgeMs?: number
   /** The clock. Default `Date.now`. */
   now?: () => number
-  /** True for a run directory name (`safeSegment(runId)`) the host still holds a session or a start for; it is never removed. */
-  isLive(runDir: string): boolean
+  /**
+   * Takes a run directory name (`safeSegment(runId)`) for its removal: undefined while the host holds a session or a start for it (it is never removed), else a release the
+   * prune calls once the removal ends. While taken, the host makes a create for that run wait, so nothing starts into files being deleted.
+   */
+  claim(runDir: string): (() => void) | undefined
 }
 
 export type PruneResult = {
@@ -69,26 +72,31 @@ async function onlyNodeDirectories(dir: string): Promise<boolean> {
   return true
 }
 
-async function pruneRun(root: string, name: string, cutoff: number, isLive: PruneOptions["isLive"]): Promise<boolean> {
+async function pruneRun(root: string, name: string, cutoff: number, claim: PruneOptions["claim"]): Promise<boolean> {
   // The names the host writes: `<safeSegment(runId)>`. Dotfiles, `uplift` and anything else are not runs.
   if (name.startsWith(".") || name === UPLIFT_DIR || name !== safeSegment(name)) return false
   const dir = path.join(root, name)
   const stat = await lstatIfPresent(dir)
   // lstat: a symlink at the root is neither a directory nor ours.
   if (!stat?.isDirectory()) return false
-  if (isLive(name)) return false
   if (!(await onlyNodeDirectories(dir))) return false
   if ((await newestIn(dir)) >= cutoff) return false
-  // A session may have started during the scan; look again right before the removal.
-  const real = await fs.realpath(dir).catch((error: unknown) => {
-    if (missing(error)) return undefined
-    throw error
-  })
-  if (!real) return false
-  if (real !== dir || path.dirname(real) !== root) return false
-  if (isLive(name)) return false
-  await fs.rm(real, { recursive: true, force: true })
-  return true
+  const release = claim(name)
+  if (!release) return false
+  try {
+    // A session may have started and ended during the scan above; what it wrote shows now, and no create can start until the claim is released.
+    if ((await newestIn(dir)) >= cutoff) return false
+    const real = await fs.realpath(dir).catch((error: unknown) => {
+      if (missing(error)) return undefined
+      throw error
+    })
+    if (!real) return false
+    if (real !== dir || path.dirname(real) !== root) return false
+    await fs.rm(real, { recursive: true, force: true })
+    return true
+  } finally {
+    release()
+  }
 }
 
 /**
@@ -97,8 +105,9 @@ async function pruneRun(root: string, name: string, cutoff: number, isLive: Prun
  * directory of every card in them. Skips a run the host holds, the `uplift`
  * directory, dotfiles, files, symlinks and any run directory holding something
  * other than node directories. Never throws: a failure on one run is counted
- * and the next run is still considered. Safe next to new sessions: a new
- * session's files are new, and a start in flight is reported by `isLive`.
+ * and the next run is still considered. Safe next to new sessions: a run is
+ * claimed from the host before its last check and held across the removal, so
+ * a create for it waits and a run with a create in flight is skipped.
  */
 export async function pruneState(options: PruneOptions): Promise<PruneResult> {
   const result: PruneResult = { removed: [], errors: 0 }
@@ -112,7 +121,7 @@ export async function pruneState(options: PruneOptions): Promise<PruneResult> {
     if (!root) return result
     for (const name of await readdirIfPresent(root)) {
       try {
-        if (await pruneRun(root, name, cutoff, options.isLive)) result.removed.push(name)
+        if (await pruneRun(root, name, cutoff, options.claim)) result.removed.push(name)
       } catch {
         result.errors++
       }

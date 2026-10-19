@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -155,7 +155,7 @@ describe("buildLaunch: files", () => {
 
   test("files live in the state directory, outside the project", () => {
     const spec = buildLaunch(input())
-    expect(spec.files.map((file) => file.path)).toEqual(["/state/s1/role.md", "/state/s1/overlay.yml"])
+    expect(spec.files.map((file) => file.path)).toEqual([path.join("/state/s1", "role.md"), path.join("/state/s1", "overlay.yml")])
   })
 
   test("the overlay is JSON text (valid YAML); empty when nothing is denied", () => {
@@ -330,7 +330,13 @@ describe("describeLaunch", () => {
 
 describe("the environment of a real child process", () => {
   const dirs: string[] = []
+  // Names of the kind the builder withholds, set on the real `process.env` of the host: a spawner that merged it into the child's environment would hand them over, under `env -i` as in CI too.
+  const sentinels = ["SOME_SENTINEL_TOKEN", "SOME_SENTINEL_SECRET"]
+  beforeEach(() => {
+    for (const name of sentinels) process.env[name] = "sentinel-value"
+  })
   afterEach(() => {
+    for (const name of sentinels) delete process.env[name]
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
   })
 
@@ -345,7 +351,9 @@ describe("the environment of a real child process", () => {
     try {
       await proc.ready
       const state = await proc.command<{ env: Record<string, boolean> }>({ type: "get_state" })
-      return Object.keys(state.env)
+      const names = Object.keys(state.env)
+      for (const sentinel of sentinels) expect(names).not.toContain(sentinel)
+      return names
     } finally {
       proc.kill()
       await proc.exited

@@ -27,7 +27,7 @@ export function createEngineHost(deps: EngineHostDeps): EngineHost {
   const pruned = Promise.withResolvers<PruneResult>()
   const pruneTimer = setTimeout(() => {
     // `pruneState` never throws; a failure is only counted in the result.
-    void pruneState({ root: deps.stateRoot(), maxAgeMs: deps.prune?.maxAgeMs, now: deps.prune?.now, isLive: sessions.holds }).then(pruned.resolve)
+    void pruneState({ root: deps.stateRoot(), maxAgeMs: deps.prune?.maxAgeMs, now: deps.prune?.now, claim: sessions.claim }).then(pruned.resolve)
   }, deps.prune?.delayMs ?? 15_000)
   pruneTimer.unref?.()
   return {

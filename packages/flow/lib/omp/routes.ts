@@ -240,7 +240,7 @@ export function createRoutes(deps: RoutesDeps): HostHandler {
         return json(200, { released: await deps.sessions.releaseRun(runId) })
       }
       case engineRoutes.sessions: {
-        if (method === "POST") return json(200, await deps.sessions.create(await readJson(request)))
+        if (method === "POST") return json(200, await deps.sessions.create(await readJson(request), request.signal))
         if (method === "GET") return json(200, await deps.sessions.list(limitOf(url, DEFAULT_LIST_LIMIT)))
         return methodNotAllowed()
       }
