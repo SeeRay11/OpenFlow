@@ -771,6 +771,21 @@ Two shapes that surprise, both learned the hard way:
   (anomalyco/opencode#45424) which this fork's vendored core does not have yet: against an engine
   without it *and* without the config override above, those models read as runnable and still fail
   to dispatch. Drop the id list from `COMPATIBLE_PROVIDERS` if that PR is rejected.
+- **A Claude subscription is not a provider, and no feature should pretend otherwise.** Anthropic
+  does not allow Pro/Max to drive another app, and OpenRouter's BYOK takes API keys only. Claude
+  reaches a card by API key, direct or through OpenRouter (whose BYOK is also how Bedrock/Vertex
+  credits pay for it). README "Using Claude" is the user-facing account.
+- **A local model is declared, with four fields the engine gets wrong by default** (`lib/local.ts`):
+  a `local-` id (a models.dev id such as `lmstudio` is hidden until a key is stored), `tools: true`
+  (default off), a limit (default `{0,0}`), and a **zero price row** — priced at nothing, so the
+  unpriced-never-$0 rule and a gauntlet's cap both still hold. Never special-case local in
+  `usage.ts`; the config price is the whole mechanism.
+- **Every run has a spend cap** (`spendCapOf`; absent means the $5 default, unlike the toggles,
+  because absent-means-off would leave the common case uncapped). Non-gauntlet runs hard-stop in
+  `enforceCap` on the repriced step and end `error` with `RunLog.capped`; a gauntlet keeps its
+  graceful `exhausted()` path at its own cap. The pre-run estimate in `graph/estimate.ts` is the
+  one guessed number here — it stays a range, and seat advice (`weak-seat`) fires only on an
+  inversion inside the canvas, never on a model merely being cheap.
 - `bun test` has **no `localStorage`** (it is a browser global). When persisting a preference
   the browser stores there — custom roles, the default-model preference (`graph/default-model.ts`),
   the walkthrough-dismissed flag — make a Solid signal the source of truth and treat

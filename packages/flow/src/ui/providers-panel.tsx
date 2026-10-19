@@ -7,7 +7,7 @@ import {
   usableCount,
   type ProviderRow,
 } from "../server/providers"
-import { store } from "../server/store"
+import { store, type LocalRuntimeStatus } from "../server/store"
 import { state } from "../state"
 import { IconBack, IconCheck, IconClose, IconSearch } from "./icons"
 
@@ -69,10 +69,52 @@ export function ProvidersPanel(props: {
     return props.rows.filter((row) => row.unlocked && offered.has(row.id) && !applied.has(row.id)).map((row) => row.id)
   })
 
+  const [local, setLocal] = createSignal<LocalRuntimeStatus[]>([])
+  const [customUrl, setCustomUrl] = createSignal<string>()
+
   onMount(async () => {
     setCli(await store.cliKeys().catch(() => undefined))
     setRepack(await store.repackageStatus().catch(() => undefined))
+    setLocal((await store.localStatus().catch(() => undefined))?.runtimes ?? [])
   })
+
+  /**
+   * Declares what a local server serves right now, then restarts the engine —
+   * config is read once at boot, so the models do not exist for any card until
+   * it does. Re-running it on a declared server is how a newly pulled model gets
+   * picked up. See [../../lib/local.ts].
+   */
+  async function useLocal(id: string, url?: string) {
+    setBusy(true)
+    try {
+      const result = await store.addLocal(id, url)
+      setLocal((await store.localStatus().catch(() => undefined))?.runtimes ?? [])
+      setCustomUrl(undefined)
+      if (!result.changed) return props.onNotice("info", `${result.models.length} local models already set up`)
+      props.onNotice("info", `added ${result.models.length} local model${result.models.length === 1 ? "" : "s"} at $0 in ${result.path}`)
+      if (result.restart && props.onRestart) await props.onRestart()
+      await props.onChanged()
+      if (result.restart && !props.onRestart) props.onNotice("info", "restart `opencode serve` for the local models to appear")
+    } catch (failure) {
+      props.onNotice("error", api.describe(failure))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function dropLocal(id: string) {
+    setBusy(true)
+    try {
+      const result = await store.removeLocal(id)
+      setLocal((await store.localStatus().catch(() => undefined))?.runtimes ?? [])
+      if (result.restart && props.onRestart) await props.onRestart()
+      await props.onChanged()
+    } catch (failure) {
+      props.onNotice("error", api.describe(failure))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   /**
    * Escape backs out one step, then closes — the same two-step retreat
@@ -238,6 +280,40 @@ export function ProvidersPanel(props: {
             <div class="oc-group">Connected</div>
             <For each={connected()}>{(row) => <Row row={row} />}</For>
           </Show>
+          <Show when={!query() && local().length}>
+            <div class="oc-group">Local models · free, on this machine</div>
+            <For each={local()}>{(runtime) => <LocalRow runtime={runtime} />}</For>
+            <Show
+              when={customUrl() !== undefined}
+              fallback={
+                <button type="button" class="oc-item" onClick={() => setCustomUrl("http://localhost:8000/v1")}>
+                  <span class="oc-item-label">Other OpenAI-compatible server…</span>
+                  <span class="oc-tag oc-faint">llama.cpp, vLLM</span>
+                </button>
+              }
+            >
+              <form
+                class="oc-form oc-inline-form"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void useLocal("local-custom", customUrl())
+                }}
+              >
+                <input
+                  autofocus
+                  class="mono"
+                  value={customUrl()}
+                  spellcheck={false}
+                  autocomplete="off"
+                  aria-label="Base URL"
+                  onInput={(event) => setCustomUrl(event.currentTarget.value)}
+                />
+                <button type="submit" class="oc-button" disabled={busy()}>
+                  Add
+                </button>
+              </form>
+            </Show>
+          </Show>
           <Show when={rest().popular.length}>
             <div class="oc-group">Popular</div>
             <For each={rest().popular}>{(row) => <Row row={row} />}</For>
@@ -291,9 +367,74 @@ export function ProvidersPanel(props: {
     )
   }
 
+  /**
+   * One local server. A click sets it up — or, when it is set up, picks up any
+   * model pulled since — and the tag says which of those a click will do.
+   */
+  function LocalRow(item: { runtime: LocalRuntimeStatus }) {
+    const fresh = () => {
+      const declared = item.runtime.declared
+      return !!declared && declared.length === item.runtime.models.length && declared.every((id) => item.runtime.models.includes(id))
+    }
+    return (
+      <div class="oc-item-row">
+        <button
+          type="button"
+          class="oc-item"
+          disabled={busy() || !item.runtime.running || !item.runtime.models.length}
+          title={item.runtime.error ?? item.runtime.url}
+          onClick={() => useLocal(item.runtime.id, item.runtime.url)}
+        >
+          <span class="oc-item-label">{item.runtime.name}</span>
+          <span class="oc-tag oc-faint mono">{item.runtime.url.replace(/^https?:\/\//, "")}</span>
+          <Show when={item.runtime.declared}>
+            <span class="oc-check">
+              <IconCheck />
+            </span>
+          </Show>
+          <span class="oc-tag">
+            {!item.runtime.running
+              ? "not running"
+              : !item.runtime.models.length
+                ? "no models"
+                : fresh()
+                  ? `${item.runtime.models.length} models · $0`
+                  : item.runtime.declared
+                    ? "new models — update"
+                    : `use ${item.runtime.models.length} models`}
+          </span>
+        </button>
+        <Show when={item.runtime.declared}>
+          <button
+            type="button"
+            class="oc-clear"
+            aria-label={`Remove ${item.runtime.name}`}
+            disabled={busy()}
+            onClick={() => dropLocal(item.runtime.id)}
+          >
+            <IconClose />
+          </button>
+        </Show>
+      </div>
+    )
+  }
+
   function KeyForm(item: { row: ProviderRow }) {
     return (
       <form class="oc-form" onSubmit={save}>
+        <Show when={item.row.id === "anthropic"}>
+          <p class="oc-note">
+            Claude runs here on an API key from <span class="mono">console.anthropic.com</span>, billed per token. A
+            Claude Pro or Max subscription cannot be used by other apps. To pay from AWS or Google Cloud credits
+            instead, connect OpenRouter and add your Bedrock or Vertex key under its BYOK settings.
+          </p>
+        </Show>
+        <Show when={item.row.id === "openrouter"}>
+          <p class="oc-note">
+            Claude through OpenRouter bills OpenRouter credits, or your own Anthropic, Bedrock or Vertex key if you add
+            one under its BYOK settings. Repackage it after connecting so this engine can dispatch it.
+          </p>
+        </Show>
         <p class="oc-note">
           <Show
             when={item.row.envSet.length}

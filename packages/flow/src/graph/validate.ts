@@ -1,7 +1,7 @@
 import { agentKey, toolMap } from "../server/store"
 import { isCritic, orchestrationShape } from "./orchestration"
 import { swarmShape } from "./swarm"
-import { depthOf, dispatchesOf, gauntletOf, modeOf, verifyOf, type Pipeline } from "./types"
+import { depthOf, dispatchesOf, gauntletOf, modeOf, spendCapOf, verifyOf, type Pipeline } from "./types"
 
 export type Validation = { ok: true; layers: string[][] } | { ok: false; error: string }
 
@@ -77,7 +77,12 @@ export type Preflight = { blocking: Problem[]; warnings: Problem[] }
  */
 export function preflight(
   pipeline: Pipeline,
-  ctx: { unlockedModels: Set<string>; engineReachable?: boolean },
+  ctx: {
+    unlockedModels: Set<string>
+    engineReachable?: boolean
+    /** Base list price per model; omitted, the price-based checks stay silent. */
+    prices?: Map<string, { input: number; output: number }>
+  },
 ): Preflight {
   const blocking: Problem[] = []
   const warnings: Problem[] = []
@@ -132,6 +137,24 @@ export function preflight(
         nodeId: node.id,
         kind: "unrestricted-write",
         message: `Node '${node.role}' sets no tool permissions, so it runs with the default agent's — it can edit files and run commands`,
+      })
+  }
+
+  if (ctx.prices) {
+    warnings.push(...seatProblems(pipeline, ctx.prices))
+    // A gauntlet already stops on this (`exhausted`), so it is only said for the
+    // modes where the run would carry on with part of its spend uncounted.
+    const unpriced = [
+      ...new Set(
+        pipeline.nodes
+          .map((node) => node.agent.model)
+          .filter((model): model is string => !!model && ctx.unlockedModels.has(model) && !ctx.prices!.has(model)),
+      ),
+    ]
+    if (unpriced.length && !gauntletOf(pipeline))
+      warnings.push({
+        kind: "unpriced-cap",
+        message: `${unpriced.join(", ")} has no published price, so the $${spendCapOf(pipeline)} cap cannot count what it spends — the run is capped on the other cards only`,
       })
   }
 
@@ -427,6 +450,52 @@ function orchestrationProblems(pipeline: Pipeline): Preflight {
     })
 
   return { blocking, warnings }
+}
+
+/**
+ * A seat that decides, dispatches or judges, running on a cheaper model than a
+ * card it is deciding about.
+ *
+ * Suggests, never sets: a user's model choice is theirs, and this only fires on
+ * an *inversion inside the canvas* — the orchestrator cheaper than its
+ * subagents, the critic cheaper than the builder it grades, the synthesizer
+ * cheaper than the peers it reads. Not "this model is cheap", which would fire
+ * on every canvas built to save money and train the user to skip the list.
+ * Price stands in for strength because it is the one number the catalog gives
+ * every model; within one canvas the ordering is usually right, and the message
+ * names both models so the user can judge. Most of a run's spend is in the
+ * leaves, so the fix it suggests usually costs little.
+ */
+function seatProblems(pipeline: Pipeline, prices: Map<string, { input: number; output: number }>): Problem[] {
+  const mode = modeOf(pipeline)
+  const shape = mode === "orchestration" ? orchestrationShape(pipeline) : undefined
+  const judging = !!gauntletOf(pipeline) || !!verifyOf(pipeline)
+  const seat = (node: Pipeline["nodes"][number]) => {
+    if (shape?.children(node.id).length) return "dispatches"
+    if (mode === "swarm" && swarmShape(pipeline).synthesizers.includes(node)) return "decides"
+    if (judging && isCritic(node)) return "judges"
+    return undefined
+  }
+  const priced = (model?: string) => (model ? prices.get(model) : undefined)
+  const workers = pipeline.nodes.filter((node) => !seat(node) && priced(node.agent.model))
+  const strongest = workers.reduce<Pipeline["nodes"][number] | undefined>(
+    (best, node) => (!best || priced(node.agent.model)!.output > priced(best.agent.model)!.output ? node : best),
+    undefined,
+  )
+  if (!strongest) return []
+  const top = priced(strongest.agent.model)!.output
+  return pipeline.nodes.flatMap((node) => {
+    const role = seat(node)
+    const own = priced(node.agent.model)
+    if (!role || !own || own.output >= top) return []
+    return [
+      {
+        nodeId: node.id,
+        kind: "weak-seat",
+        message: `Card '${node.role}' ${role}, and it runs on ${node.agent.model} — cheaper than ${strongest.agent.model} on '${strongest.role}'. The card that ${role} is where a strong model pays off; the others can run cheaper. Consider swapping them.`,
+      },
+    ]
+  })
 }
 
 /**

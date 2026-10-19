@@ -33,6 +33,17 @@ export type MergeReport = {
 }
 /** One file's line counts. `null` files means the project is not a git repository. */
 export type TreeStat = { files: { path: string; added: number; removed: number; binary?: boolean }[] | null }
+export type LocalRuntimeStatus = {
+  id: string
+  name: string
+  url: string
+  running: boolean
+  /** What the server lists right now. */
+  models: string[]
+  /** What the global config declares for it, or undefined when it is not set up. */
+  declared?: string[]
+  error?: string
+}
 export type BrowseEntry = { name: string; path: string }
 export type BrowseResult = { path: string | null; parent: string | null; entries: BrowseEntry[] }
 export type FlowPaths = {
@@ -197,6 +208,22 @@ export const store = {
     request<{ path: string; changed: string[]; applied: string[]; backup?: string; restart: boolean }>("/repackage", {
       method: "POST",
       body: JSON.stringify({ providers }),
+    }),
+  /**
+   * Local model servers (Ollama, LM Studio, a custom address), whether each is
+   * answering, what it serves, and which models the global config already
+   * declares for it. See [../../lib/local.ts].
+   */
+  localStatus: () => request<{ path: string; runtimes: LocalRuntimeStatus[]; error?: string }>("/local"),
+  /** Declares what that server serves right now, at $0. The engine must restart before it applies. */
+  addLocal: (id: string, url?: string) =>
+    request<{ path: string; changed: boolean; models: string[]; backup?: string; restart: boolean }>("/local", {
+      method: "POST",
+      body: JSON.stringify({ id, url }),
+    }),
+  removeLocal: (id: string) =>
+    request<{ path: string; changed: boolean; restart: boolean }>(`/local/${encodeURIComponent(id)}`, {
+      method: "DELETE",
     }),
   /**
    * Whether the *global* opencode config starts OpenFlow's dispatch MCP server,

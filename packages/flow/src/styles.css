@@ -939,6 +939,13 @@ input[type="checkbox"] {
   border-bottom: 1px solid var(--v2-border-border-muted);
 }
 
+/* a guess, so it reads as a hint and never squeezes the controls */
+.runbar-estimate {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 /* the task is the point of the bar, so it keeps a floor the settings cannot
    squeeze it past — past that the settings ellipsise their labels */
 .runbar-task {
@@ -2093,6 +2100,24 @@ main {
   font-weight: 530;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* a row with a trailing action (remove a local server) beside it */
+.oc-item-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.oc-inline-form {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+}
+
+.oc-inline-form input {
+  flex: 1;
 }
 
 .oc-item-hint {

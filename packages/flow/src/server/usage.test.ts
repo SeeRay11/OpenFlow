@@ -4,6 +4,7 @@ import {
   NO_TOKENS,
   addTokens,
   byProvider,
+  cacheShare,
   contextSize,
   costLabel,
   costOf,
@@ -194,5 +195,15 @@ describe("formatting", () => {
     expect(addTokens(tokens({ input: 1, cacheRead: 2 }), tokens({ input: 3, output: 4 }))).toEqual(
       tokens({ input: 4, output: 4, cacheRead: 2 }),
     )
+  })
+})
+
+describe("cacheShare", () => {
+  test("is cache reads over the whole input context, writes included", () => {
+    expect(cacheShare(tokens({ input: 100, cacheRead: 300, cacheWrite: 100 }))).toBeCloseTo(0.6)
+  })
+
+  test("is undefined when nothing was read, not zero", () => {
+    expect(cacheShare(NO_TOKENS)).toBeUndefined()
   })
 })

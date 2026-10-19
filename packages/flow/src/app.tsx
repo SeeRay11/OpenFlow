@@ -1,9 +1,11 @@
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { Canvas } from "./canvas/canvas"
 import {
+  DEFAULT_MAX_SPEND,
   depthOf,
   dispatchesOf,
   gauntletOf,
+  spendCapOf,
   MAX_DEPTH,
   MAX_DISPATCHES,
   MAX_ROUNDS,
@@ -14,6 +16,7 @@ import {
   type Pipeline,
   type RunLog,
 } from "./graph/types"
+import { estimate, estimateLabel } from "./graph/estimate"
 import { MCP_REACHES_SESSIONS } from "./graph/dispatch"
 import { layer, preflight, type Preflight } from "./graph/validate"
 import { isPipeline } from "./graph/pipeline-io"
@@ -125,6 +128,11 @@ const ISOLATE_OPTIONS: SelectOption[] = [
   { value: "off", label: "off", hint: "one shared working directory" },
   { value: "on", label: "on", hint: "a git worktree per card, merged after each batch" },
 ]
+const CAP_OPTIONS: SelectOption[] = [1, 2, 5, 10, 25, 50, 100, 250, 500].map((amount) => ({
+  value: String(amount),
+  label: `$${amount}`,
+  hint: amount === DEFAULT_MAX_SPEND ? "default" : undefined,
+}))
 const VERIFY_OPTIONS: SelectOption[] = [
   { value: "off", label: "off", hint: "the run ends when its cards do" },
   { value: "on", label: "on", hint: "a reviewer card judges the result and the run reports its verdict" },
@@ -244,6 +252,14 @@ export function App() {
    * gating on `unlockedRows` here would block a first-timer's run outright.
    */
   const unlockedModels = () => new Set(availableModels(providers()).map((model) => model.value))
+  /** Base list price per model the catalog quotes one for — the estimate and the seat check read it. */
+  const prices = createMemo(
+    () =>
+      new Map(
+        providers().flatMap((row) => row.models.flatMap((model) => (model.price ? [[model.value, model.price] as const] : []))),
+      ),
+  )
+  const runEstimate = createMemo(() => estimate(state.pipeline, prices()))
 
   /**
    * Every error this file reports goes through here rather than through
@@ -792,6 +808,7 @@ export function App() {
     const pre = preflight(state.pipeline, {
       unlockedModels: unlockedModels(),
       engineReachable: state.engineReachable,
+      prices: prices(),
     })
     setIssues(pre.blocking.length || pre.warnings.length ? pre : undefined)
     if (pre.blocking.length) {
@@ -1293,6 +1310,37 @@ export function App() {
               options={ISOLATE_OPTIONS}
               onChange={(value) => actions.setIsolate(value === "on")}
             />
+          </Show>
+          {/* Every mode. A gauntlet shows its own cap in its settings button,
+              and that one wins (`spendCapOf`), so it is not offered twice. */}
+          <Show when={!gauntletOf(state.pipeline)}>
+            <Select
+              variant="ghost"
+              prefix="cap: "
+              width={300}
+              title="the most this run may spend at list price before it is stopped — on by default, because nobody watches a run the whole way through"
+              value={String(spendCapOf(state.pipeline))}
+              options={CAP_OPTIONS}
+              onChange={(value) => actions.setMaxSpend(Number(value))}
+            />
+          </Show>
+          <Show when={state.pipeline.nodes.length}>
+            <span
+              class="hint runbar-estimate"
+              title={`Rough list-price range before any cache discount: ${runEstimate().turns.low}${
+                runEstimate().turns.high === undefined
+                  ? "+"
+                  : runEstimate().turns.high === runEstimate().turns.low
+                    ? ""
+                    : `–${runEstimate().turns.high}`
+              } card turns, each between a short turn and a heavy one. A turn's real size depends on the task and the repo.${
+                runEstimate().unpriced.length
+                  ? ` No published price for ${runEstimate().unpriced.join(", ")}, so that part is not counted.`
+                  : ""
+              }`}
+            >
+              {estimateLabel(runEstimate())}
+            </span>
           </Show>
           {/* Every mode, unlike the two above it: a gauntlet is the one canvas
               that already ends on a verdict, and `verifyOf` ignores it there. */}

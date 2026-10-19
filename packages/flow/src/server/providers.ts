@@ -35,6 +35,12 @@ export type ModelOption = {
    * are fine. See [isFreeModel].
    */
   free: boolean
+  /**
+   * The catalog's base list price, USD per 1M tokens — undefined when it quotes
+   * none, which is unknown and never free. Only the pre-run estimate and the
+   * seat check read it; real spend is priced from the full rows in `usage.ts`.
+   */
+  price?: { input: number; output: number }
 }
 
 /**
@@ -122,6 +128,7 @@ export type RawModel = {
   providerID: string
   name?: string
   api?: { type?: string; package?: string; url?: string }
+  cost?: ReadonlyArray<{ input: number; output: number; tier?: unknown }>
 }
 
 /**
@@ -150,7 +157,9 @@ export function providerRows(
     if (listed && !listed.has(model.id)) continue
     const list = byProvider.get(model.providerID) ?? []
     const routed = runnable(model.api, model.providerID)
+    const base = model.cost?.find((row) => !row.tier) ?? model.cost?.[0]
     list.push({
+      ...(base ? { price: { input: base.input, output: base.output } } : {}),
       value: `${model.providerID}/${model.id}`,
       id: model.id,
       name: model.name || model.id,
