@@ -1185,7 +1185,7 @@ async function applyLocal(runtime: { id: string; name: string; url: string }) {
   if (!found.running) return { error: `nothing is answering at ${runtime.url} — start ${runtime.name} first` }
   if (!found.models.length)
     return { error: found.error ?? `${runtime.name} at ${runtime.url} lists no models — pull or load one first` }
-  return writeGlobal((value) => declare(value, runtime, found.models), { models: found.models })
+  return writeGlobal((value) => declare(value, runtime, found.models, found.context), { models: found.models })
 }
 
 async function removeLocal(id: string) {

@@ -364,9 +364,12 @@ What is written, and why each part is not optional:
   with a models.dev id until a key is stored, and `lmstudio` is one.
 - `tools: true`, because an undeclared model has tool calling switched off and
   a card with no tools cannot read a file.
-- A 32k context limit, because the listing reports none and the engine's
-  default is zero. Raise it on the model in the config file; a later refresh
-  keeps the edit.
+- A context limit, because the engine's default is zero. LM Studio reports the
+  context each model is loaded with (`/api/v0/models`) and that is used; other
+  servers report none, so 32k is written. Raise it on the model in the config
+  file; a later refresh keeps the edit.
+- Only chat models. The OpenAI listing mixes in embedding models; LM Studio's
+  own route says which is which, and elsewhere an id naming `embed` is dropped.
 - A **price of zero**, written as a real price row. The model is priced, so
   spend reads `$0` and a gauntlet's cap still works — the rule that an unpriced
   model never shows as `$0` is unchanged.

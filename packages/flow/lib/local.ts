@@ -68,16 +68,56 @@ export function normalizeUrl(input: unknown) {
  * Ollama, LM Studio, llama.cpp's server and vLLM all answer this route the same
  * way. A server that is not running answers nothing, which is reported rather
  * than thrown: "Ollama is not running" is the common case, not an error.
+ *
+ * That listing does not say what a model *is*, and servers list embedding
+ * models beside chat ones — measured against LM Studio, which listed
+ * `text-embedding-nomic-embed-text-v1.5` as a peer of its chat models. A card
+ * dispatched to one fails on its first turn. LM Studio answers a richer route,
+ * `/api/v0/models`, with each model's type and the context it was loaded with,
+ * so that is read when it is there; anywhere else an id naming an embedding
+ * model is dropped, which is the convention every runtime's catalog follows.
  */
-export async function discover(url: string, fetcher: typeof fetch = fetch) {
+export async function discover(url: string, fetcher: typeof fetch = fetch): Promise<Discovered> {
   const response = await fetcher(`${url}/models`, { signal: AbortSignal.timeout(3_000) }).catch(() => undefined)
   if (!response) return { running: false, models: [] as string[] }
   if (!response.ok) return { running: true, models: [] as string[], error: `${url}/models answered ${response.status}` }
   const body: any = await response.json().catch(() => undefined)
-  const models = Array.isArray(body?.data)
+  const listed: string[] = Array.isArray(body?.data)
     ? body.data.map((entry: any) => entry?.id).filter((id: unknown): id is string => typeof id === "string" && !!id)
     : []
-  return { running: true, models: [...new Set<string>(models)].sort() }
+  const detail = await lmStudioDetail(url, fetcher)
+  const models = [...new Set(listed)]
+    .filter((id) => (detail.has(id) ? detail.get(id)!.chat : !/embed/i.test(id)))
+    .sort()
+  const context = Object.fromEntries(
+    models.flatMap((id) => (detail.get(id)?.context ? [[id, detail.get(id)!.context!] as const] : [])),
+  )
+  return { running: true, models, ...(Object.keys(context).length ? { context } : {}) }
+}
+
+/**
+ * LM Studio's own listing, keyed by model id: whether it is a chat model, and
+ * the context it is loaded with (or can be, when it is not loaded yet). Empty
+ * for any other server, which answers this route with a 404.
+ */
+async function lmStudioDetail(url: string, fetcher: typeof fetch) {
+  const origin = url.replace(/\/v1$/, "")
+  const response = await fetcher(`${origin}/api/v0/models`, { signal: AbortSignal.timeout(3_000) }).catch(() => undefined)
+  const body: any = response?.ok ? await response.json().catch(() => undefined) : undefined
+  const entries: any[] = Array.isArray(body?.data) ? body.data : []
+  return new Map(
+    entries
+      // An entry with no `type` is some other server echoing its OpenAI listing
+      // back on this route, and says nothing about what the model is.
+      .filter((entry) => typeof entry?.id === "string" && typeof entry?.type === "string")
+      .map((entry) => [
+        entry.id as string,
+        {
+          chat: entry.type === "llm" || entry.type === "vlm",
+          context: Number(entry.loaded_context_length ?? entry.max_context_length) || undefined,
+        },
+      ]),
+  )
 }
 
 /** Local providers this config declares, with the url and models each one lists. */
@@ -105,8 +145,9 @@ export function declared(config: any) {
  * What the user edited on a model that is still listed — a raised context
  * limit, most often — is kept. The price is not: it is always zero.
  */
-export function declare(config: any, runtime: LocalRuntime, models: string[]) {
+export function declare(config: any, runtime: LocalRuntime, models: string[], context: Record<string, number> = {}) {
   const value = { ...config }
+  const limit = (id: string) => (context[id] ? { ...LOCAL_LIMIT, context: context[id] } : LOCAL_LIMIT)
   if (isV1Config(config)) {
     const previous = config?.provider?.[runtime.id]?.models ?? {}
     value.provider = {
@@ -123,7 +164,7 @@ export function declare(config: any, runtime: LocalRuntime, models: string[]) {
               name: id,
               tool_call: true,
               modalities: { input: ["text"], output: ["text"] },
-              limit: LOCAL_LIMIT,
+              limit: limit(id),
               ...previous[id],
               cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
             },
@@ -147,7 +188,7 @@ export function declare(config: any, runtime: LocalRuntime, models: string[]) {
           {
             name: id,
             capabilities: { tools: true, input: ["text"], output: ["text"] },
-            limit: LOCAL_LIMIT,
+            limit: limit(id),
             ...previous[id],
             cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }],
           },
@@ -184,4 +225,12 @@ export function runtimeFor(id: string, url?: string): LocalRuntime | undefined {
 /** What the model menu heads this provider with. */
 function label(runtime: LocalRuntime) {
   return runtime.id === CUSTOM_LOCAL_ID ? runtime.name : `${runtime.name} (local)`
+}
+
+export type Discovered = {
+  running: boolean
+  models: string[]
+  /** Context each model is loaded with, when the server says (LM Studio does). */
+  context?: Record<string, number>
+  error?: string
 }

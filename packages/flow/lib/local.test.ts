@@ -80,6 +80,48 @@ describe("discover", () => {
     expect(found).toEqual({ running: true, models: ["llama3.2", "qwen3"] })
   })
 
+  // Measured against LM Studio: its OpenAI listing put an embedding model beside
+  // the chat ones, and its own /api/v0 route is what says which is which.
+  test("reads LM Studio's own listing to drop embedding models and take each loaded context", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: (request) =>
+        new URL(request.url).pathname === "/api/v0/models"
+          ? Response.json({
+              data: [
+                { id: "omnicoder-9b", type: "llm", loaded_context_length: 262_144 },
+                { id: "ornith-1.0-9b", type: "llm", max_context_length: 131_072 },
+                { id: "text-embedding-nomic-embed-text-v1.5", type: "embeddings" },
+              ],
+            })
+          : Response.json({
+              data: [{ id: "omnicoder-9b" }, { id: "ornith-1.0-9b" }, { id: "text-embedding-nomic-embed-text-v1.5" }],
+            }),
+    })
+    const found = await discover(`http://localhost:${server.port}/v1`)
+    server.stop(true)
+    expect(found.models).toEqual(["omnicoder-9b", "ornith-1.0-9b"])
+    expect(found.context).toEqual({ "omnicoder-9b": 262_144, "ornith-1.0-9b": 131_072 })
+  })
+
+  test("anywhere else, an id naming an embedding model is dropped", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: (request) =>
+        new URL(request.url).pathname === "/v1/models"
+          ? Response.json({ data: [{ id: "qwen3" }, { id: "nomic-embed-text:latest" }] })
+          : new Response("no", { status: 404 }),
+    })
+    const found = await discover(`http://localhost:${server.port}/v1`)
+    server.stop(true)
+    expect(found).toEqual({ running: true, models: ["qwen3"] })
+  })
+
+  test("declare writes a model's measured context in place of the floor", () => {
+    const value = declare({}, ollama, ["big"], { big: 262_144 })
+    expect(value.providers["local-ollama"].models.big.limit).toEqual({ context: 262_144, output: LOCAL_LIMIT.output })
+  })
+
   test("a server that is not there is reported as not running, not thrown", async () => {
     const server = Bun.serve({ port: 0, fetch: () => new Response("") })
     const port = server.port
