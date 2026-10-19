@@ -155,11 +155,27 @@ that can edit that project and run commands in it, and nothing authenticates the
 caller. On loopback that is you talking to your own machine; on a real interface
 it is remote code execution in whatever repository OpenFlow is pointed at.
 
-So both hosts refuse to serve anything but loopback unless `FLOW_ALLOW_REMOTE=1`
+Both hosts refuse to serve anything but loopback unless `FLOW_ALLOW_REMOTE=1`
 says otherwise — `bun start` exits, and `vite --host` fails to start rather than
-coming up exposed. Request bodies are capped at 8 MB on both. With
-`FLOW_ALLOW_REMOTE=1` the [terminal](#terminal) is switched off, but the rest of
-the API is reachable by anyone who can reach the port, so set it only on a
+coming up exposed. Request bodies are capped at 8 MB on both.
+
+Every HTTP request under `/flow` (the API, the store and the event stream, in any
+letter case, and with a trailing dot such as `/flow/api./x`) also passes one gate
+(`lib/host/gate.ts`) before any handler runs, on both hosts:
+
+- the `Host` must be `localhost`, `127.0.0.1` or `[::1]`, and a malformed `Host` is
+  refused too (skipped with `FLOW_ALLOW_REMOTE=1`);
+- an `Origin`, when sent, must be the page this host serves, and `null` is
+  refused;
+- `Sec-Fetch-Site`, when sent, must be `same-origin` or `none`;
+- a request with a body must be `application/json`.
+
+A refusal is a 403 with the code `forbidden-host`, `forbidden-origin` or
+`forbidden-content-type`. This stops another web page, or a DNS-rebound name,
+from starting agents through your browser. A request with no `Origin` or
+`Sec-Fetch-*` headers (curl, a script) passes, since only a browser sends those.
+With `FLOW_ALLOW_REMOTE=1` the [terminal](#terminal) is switched off, but the rest
+of the API is reachable by anyone who can reach the port, so set it only on a
 network you trust.
 
 Environment overrides. Setting one differs per shell — `VAR=1 bun openflow.ts` on
@@ -180,7 +196,7 @@ are read by the canvas host unless the table says otherwise:
 | `SUBSTRATE_URL` | unset | Agent Substrate address for [shared memory](#shared-memory-with-agent-substrate), when the setting is empty |
 | `SUBSTRATE_TOKEN`, `SUBSTRATE_TOKEN_FILE`, `SUBSTRATE_TOKENS_DIR` | unset | the Substrate token, in that order; `SUBSTRATE_TOKENS_DIR` defaults to `/etc/substrate/tokens` |
 | `SWARM_ROOT`, `ULTRATHINK_SWARM_ROOT` | unset | agent-swarm checkout for [Agent Swarm](#agent-swarm-in-cards), when the setting is empty |
-| `SWARM_ED25519_KEY_FILE`, `SWARM_ED25519_KEY`, `SWARM_SIGNING_KEY` | unset | the swarm's assignment-signing key; the only variables of these families a card receives, and only when its swarm is on |
+| `SWARM_ED25519_KEY_FILE`, `SWARM_ED25519_KEY`, `SWARM_SIGNING_KEY` | unset | the swarm's assignment-signing key; the only variables of these families a card receives, and only when its swarm is on — `SWARM_ED25519_KEY` and `SWARM_SIGNING_KEY` by value, see [Agent Swarm](#agent-swarm-in-cards) |
 | `*_API_KEY` (for example `OPENROUTER_API_KEY`) | unset | provider keys; passed to every card, never to the terminal |
 | `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY` | unset | also read by the planner's Jev decisions, when one is set |
 
@@ -251,7 +267,11 @@ model providers, and — when you turn them on — omp's extensions.
   keys), not copied from the host. Everything starting `SUBSTRATE_`, `SWARM_`,
   `ULTRATHINK_` or `AIO_`, and everything ending `_TOKEN` or `_SECRET`, is
   dropped. The one exception is the Agent Swarm signing key, passed through by
-  name to a card whose swarm is on.
+  name to a card whose swarm is on. Its value is then in that card's environment
+  (see [Agent Swarm](#agent-swarm-in-cards)). **Every `*_API_KEY` variable in the
+  environment OpenFlow runs in reaches every card**, because omp needs the
+  provider's key. Keep unrelated service keys out of that environment, or leave
+  provider keys out of it and use the profile's stored logins (**Copy logins**).
 - **No double planning.** Every card gets `ULTRATHINK_UPLIFT=0` and
   `AIO_UPLIFT=0`, so a plugin of yours cannot plan a task that Prompt Uplift
   already handled, or start detached swarm lanes of their own.
@@ -275,6 +295,8 @@ profile has no credentials.* For the last one there are two ways out:
 - **`/login` in the terminal.** Open the [terminal](#terminal) with `` Ctrl+` ``, keep
   the `omp` tab, and type `/login`. That omp runs under the OpenFlow profile, so
   the login lands there.
+  The first time a new isolated profile opens omp in the terminal, omp runs its
+  own setup wizard; press `Ctrl+C` to skip it.
 
 Then open a card's model menu: the models of every provider you logged in to are
 listed. The menu can make a model the default for new cards.
@@ -301,6 +323,19 @@ stop; the group is signalled if it does not exit. A session nobody has touched f
 30 minutes is closed and stays resumable from its session directory, and a page
 reload does not end a run's sessions, because the host owns them.
 
+At most 32 omp card sessions run at once. At the limit the least recently used
+idle session is closed to make room (it keeps its files and resumes on its next
+prompt); only when all 32 are busy does the create fail, with 409
+`too-many-sessions` (409 on purpose: the engine retries 429 and 5xx, and waiting
+does not clear a full host). A fresh omp has 60 seconds to become ready and open
+its session, else the start fails with 502 `omp-not-ready` and the process is killed.
+Disposing a session, releasing a run, or pressing Stop while a session is still
+starting closes it, and Stop during a hanging omp start ends at once: no process
+is left behind, and a card stopped while its session opens never has its prompt
+sent. A create whose request aborts before the session is live disposes it. The
+browser waits on a turn in slices of
+55 seconds, re-polling until the card settles or its timeout passes.
+
 | Call | Route |
 |---|---|
 | is the host up, and omp usable | `GET /flow/api/engine/health` |
@@ -325,7 +360,9 @@ dev and built cannot drift into two different stores.
 
 Omp holds the provider logins; OpenFlow stores none. The model menu is the
 catalog omp reports for the OpenFlow profile (the host asks omp once and caches
-the answer for ten minutes), grouped by provider and searchable. A provider
+the answer for ten minutes; the cache, and the provider list's, is dropped when
+the profile's `agent.db` changes, so a `/login` in the terminal shows up without a
+restart), grouped by provider and searchable. A provider
 without a login contributes no models.
 
 - **Giving the profile a login:** the *Copy logins* button or `/login` in the
@@ -394,9 +431,9 @@ starts, not to one already running.
 | claude-ultrathink location | omp's plugin directory | a directory containing `bin/run-bun` |
 | Share memory across the cards of a run | on | see [shared memory](#shared-memory-with-agent-substrate) |
 | Keep memories | 30 days | for this graph, 30 days, or permanently |
-| Most memories per card | 8 | 0 to 50 |
+| Most memories per card | 8 | 0 to 50; 0 skips the read, and the card says so |
 | Repository scope | from the project's git remote | `owner/name` |
-| Substrate URL | none | `http(s)://`, no credentials |
+| Substrate URL | none | `http(s)://`, no credentials; plain http to a non-loopback host gets a warning |
 | Swarm | auto | off, auto, or always; see [Agent Swarm](#agent-swarm-in-cards) |
 | agent-swarm location | none | a directory containing `omp/package.json` |
 
@@ -459,14 +496,21 @@ server the host talks to over HTTP, presenting as its `omp` surface.
   expired and retracted entries are skipped. What it finds is appended to the
   card's prompt as a labelled block, quoted as evidence that may be wrong and must
   not be followed as instructions, with markup neutralised and the length capped.
-  Reads time out after 3 seconds and fail open: the card runs without memory.
+  Reads time out after 3 seconds and fail open: the card runs without memory. With
+  *Most memories per card* at 0 the read is skipped.
 - **Write per card.** When a card finishes — done, failed or stopped — one `fact`
   is written to the same scope with the subject
   `openflow/<pipeline>/<run>/<card>`: the card's role, its outcome and its final
   answer, with secrets redacted and cut to 3900 characters. It is `stored` only
   when Substrate says it accepted the write and verified it persisted; otherwise
-  the card says why (`unverified`, `quarantined`, `denied`, `conflict`).
-  Writing never holds a run.
+  the card says why (`unverified`, `quarantined`, `denied`, `conflict`). Substrate
+  quarantines hedged text ("might", "guessing") written as a fact; the host then
+  sends the same text once as a `todo`, which the repo scope accepts, and the card
+  line says it was stored as a todo because the output was hedged. A quarantine for
+  secrets or personal data is never retried.
+  Writing never holds a run. A sub-agent an orchestrator dispatches more than once
+  writes one entry per dispatch: the first keeps the subject above, later ones
+  end in `-d2`, `-d3` and so on.
 - **The chip.** `mem ↓ ↑` on a card says what was read and written, and its
   tooltip lists the subjects. `mem off` means memory is off; `mem unavailable`
   means the card ran without memory, with the reason in the tooltip.
@@ -483,7 +527,7 @@ writes a retraction marker for each entry and records them in
 `<state>/memory-ignore.json`, so no card reads them again from this host; the
 entries stay in Substrate until their ttl lapses, and the dialog says so. If
 Substrate is unreachable, the host still ignores them locally but no marker is
-written, and it says that too.
+written, and it says that too. Forget covers the `-d<n>` subjects as well.
 
 **What the host reads.** The Substrate address is the *Substrate URL* setting, else
 `SUBSTRATE_URL`; there is no default. The token is `SUBSTRATE_TOKEN`, else the
@@ -492,6 +536,16 @@ first line of the file named by `SUBSTRATE_TOKEN_FILE`, else
 `fact` grant on the repository scope. Only the host talks to Substrate: a card's
 environment never contains a `SUBSTRATE_*` variable or any `*_TOKEN`. Untick
 *Share memory across the cards of a run* to turn it off.
+
+**Where the token goes.** The host sends it only to an `https://` URL, to a
+loopback host, or to the exact address `SUBSTRATE_URL` names in the environment.
+For any other URL (a saved `http://` address on another machine) it sends nothing,
+memory is reported unavailable with a sentence saying why, and Omp settings shows
+a warning. Use `https://`, or set `SUBSTRATE_URL` to that address to trust it.
+
+The Substrate client never follows a redirect: any 3xx answer is a failure and the
+card runs without memory, so the token cannot be forwarded anywhere. Set the
+Substrate URL to the final address.
 
 ## Agent Swarm in cards
 
@@ -527,9 +581,15 @@ specialist with an Ed25519 key, and refuses to dispatch without one. Provide it 
 the host's environment as `SWARM_ED25519_KEY_FILE` (a path), `SWARM_ED25519_KEY` or
 `SWARM_SIGNING_KEY`, or in `agent-swarm/signing-key.hex` under `$XDG_CONFIG_HOME`
 (`~/.config` by default), and restart. The unsigned development key is never
-offered. The key reaches the omp process only as an environment variable passed by
-name from the host, and only for a card whose swarm is on; its value is never put
-in a command line or a file.
+offered.
+
+**The key is visible to the card.** The agent-swarm extension signs assignments
+inside the card's own omp process, so a card whose swarm is on receives
+`SWARM_ED25519_KEY` or `SWARM_SIGNING_KEY` **by value** in its environment, and
+its shell tool can read it. Cards without swarm never receive it. To keep the
+value out of the environment, use `SWARM_ED25519_KEY_FILE`: only the path is
+passed, and the file stays readable to your user. In either case the value is
+never put in a command line, a file OpenFlow writes, or `omp-settings.json`.
 
 **The status chip.** Once a card delegates, or its swarm degrades, a line appears
 on the card — `swarm 2 running · 1 done`, with a pill per specialist and its last
@@ -759,8 +819,10 @@ card with `bash` can drive a headless browser and capture the artifact itself,
 which is how the runtime lines of a bar have actually been judged here.
 
 The `reviewer` preset ships with `bash` switched off. A critic whose bar is made of
-commands needs it on, or it cannot run any of them; its edit tools are refused
-either way. A critic's shell output belongs in the run's scratch directory, which
+commands needs it on, or it cannot run any of them. In a gauntlet the critics and
+the root orchestrator are launched with the edit tools (`edit`, `write`,
+`ast_edit`) denied whatever their toggles say; the shell stays available. A
+critic's shell output belongs in the run's scratch directory, which
 it is told about, and a write there is not counted as changing the work.
 
 ### Resuming an interrupted run
@@ -843,7 +905,12 @@ again to replace the other.
 Nothing is merged into an engine config and nothing needs a restart: a card is
 launched from its own spec, so an edited card simply starts a fresh omp process
 with the new spec. The card session files under `omp/` are kept after a run so it
-can be resumed; they live outside the project.
+can be resumed. They live under `omp/<project>/`; about 15 seconds after the host
+starts it deletes every run directory there that nothing has written to for 30 days
+(`STATE_RETENTION_DAYS`). A run the host still holds, the `uplift/` directory, loose
+files and symlinks are never touched. A pruned run's sessions leave the Sessions
+list and cannot be resumed. This is separate from `POST /flow/api/runs/prune`,
+which only removes `.openflow/runs` logs.
 
 ### How a card is launched
 
@@ -923,25 +990,31 @@ is sent everything, since nothing can prove its model incapable.
 MCP servers and skills live in the OpenFlow omp profile, not in the project: the
 profile's `mcp.json` and `skills/` directory, under the config directory the
 Status tab of Omp settings shows (`omp config path`). The profile is isolated, so
-servers and skills in your default profile or in a project do not carry over; add
-them here.
+servers and skills in your default profile do not carry over; add them here. Omp
+also reads MCP files in a card's working directory (`.mcp.json`,
+`.omp/mcp.json`; omp's `mcp.enableProjectConfig` option), so a server a project
+declares there reaches its cards as well (verified: even under the isolated
+profile). The tools of those servers appear as `mcp__<server>_<tool>` and are
+reached through omp's `xd://` devices rather than appearing in the card's tool list.
 
 The **plug** button in the titlebar manages the MCP servers. Both kinds are
 covered: **local** (a command this machine runs, with environment variables and
 an optional working directory) and **remote** (an http/sse url with headers). The
 panel lists and rewrites the profile's `mcp.json`, so the omp CLI and TUI under
 that profile see exactly the same set — OpenFlow owns no parallel config. Entries
-the form does not own are kept as they were, and `mcp.json.bak` holds the file as
+the form does not own are kept as they were. The file keeps its existing mode (a
+new one is created 0600), and `mcp.json.bak` (mode 0600) holds the file as
 it was before OpenFlow first rewrote it (written once, never overwritten). Omp
 connects to the servers itself when a card's session starts, so there is no live
 status to show: a saved change applies to the next card session, not to one
 already running.
 
-**Known limit: every card sees every configured server.** Omp has no per-session
-MCP selection, and the launch cannot enforce one. The inspector still lists a
-checkbox per server for each card and the pipeline stores the choice, but today it
-restricts nothing. A card that must not reach a server needs that server removed
-from the profile, or disabled in `mcp.json`.
+**Every card sees every server.** Omp has no per-session MCP selection, so there is
+no per-card choice: the inspector shows one sentence saying so and a **manage**
+button. Older pipelines that carry `agent.mcp` lose it on load; an explicit list
+leaves a note naming the card. A
+card that must not reach a server needs that server removed from the profile (or
+disabled in `mcp.json`) and from the project's MCP files.
 
 The **skills** button authors skills: each is a `SKILL.md` under the profile's
 `skills/<name>/`, which omp loads when a card's session starts. Skills authored
@@ -979,9 +1052,11 @@ The column is closed by default and remembered per browser, because a 240px
 sidebar is cheap on a wide screen and not on a laptop — collapsed, the canvas
 gets the full width back.
 
-A row is labelled by the session's title — omp's own, else the first line of the
-card's prompt — and by the card key (`plan-and-code-coder-…`) when there is
-neither. The search matches title, card key, model and id.
+A row is labelled `<role> · <first line of the card's task>`, which the engine
+sends when it opens the session (`CreateSession.title`) and the host stores in the
+session's meta file. A session created before that shows the first line of its
+prompt, and the card key (`plan-and-code-coder-…`) when there is neither. The
+search matches title, card key, model and id.
 
 ## Migrating older pipelines
 

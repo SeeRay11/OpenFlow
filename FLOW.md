@@ -471,9 +471,10 @@ authority where this and it disagree.
   frame-to-event mapper, UI requests, host tools), `lib/omp-config` (the settings store, status,
   `omp config`, providers, login import), `lib/uplift`, `lib/substrate`, `lib/swarm` and
   `lib/terminal`. It returns one `handle` — terminal, omp-config, engine, uplift, substrate, swarm,
-  tried in that order — plus `profileDir()` and an idempotent `dispose()`. Both hosts (`server.ts`
-  and `vite/flow-store.ts`) build one `createHost`, give it first refusal of every request, and
-  mount `handleFlow` (the store) after it. A new host route goes in a module, never in either host.
+  tried in that order — plus `gate`, `profileDir()` and an idempotent `dispose()`. Both hosts
+  (`server.ts` and `vite/flow-store.ts`) build one `createHost`, run `host.gate` on every
+  `/flow/api` request first, give `host.handle` first refusal after it, and mount `handleFlow`
+  (the store) last. A new host route goes in a module, never in either host.
 - **The wire.** `shared/engine.ts` is the engine wire: the routes under `/flow/api/engine`, the
   event names, `CardSpec`, and `EngineApi`, the port `src/server/engine.ts` depends on.
   `src/server/client.ts` implements it in the browser and `engine.test.ts` doubles it, so the long
@@ -488,13 +489,26 @@ authority where this and it disagree.
   eight chunks. Closing stdin is the graceful stop; the group is SIGTERMed and SIGKILLed on cancel,
   and swept again when the host exits. A live session with no frames, no prompt and no HTTP
   activity for 30 minutes is closed and stays resumable from its session directory
-  (`CreateSession.reuse`), which is also how a page reload keeps a run's sessions. The catalog,
-  the provider list and the status check each start a short-lived omp and cache the answer.
+  (`CreateSession.reuse`), which is also how a page reload keeps a run's sessions. At most 32
+  processes run or start at once; at the cap the least recently used idle session is closed (409
+  `too-many-sessions` only when all 32 are busy). Startup (`ready`, `open_session`) has a
+  60 s deadline (`lib/omp/ready.ts`: 502 `omp-not-ready`, process group killed). Dispose, release
+  and Stop are honoured while a session is still starting, so no process is orphaned; Stop during a
+  hanging start ends at once (`EngineApi.createSession(input, signal?)`), a create whose request
+  aborts before the session is live disposes it, and the
+  engine checks for a Stop right after `createSession` so a stopped card never sends its prompt.
+  The browser's `waitForIdle` long-polls in 55 s slices. The catalog, the provider list and the
+  status check each start a short-lived omp (with `--model a`, `PROBE_MODEL`: omp aborts at startup
+  without a default model, and any pattern that matches the catalog starts it) and cache the
+  answer; the first two also key their cache on a credential stamp (mtime and size of the
+  profile's `agent.db` and its WAL), so a `/login` typed in the terminal is noticed.
 - **Stage order.** For a card turn of kind `task`, `stage()` in `src/server/engine.ts` runs Prompt
   Uplift first, then the memory read, then the send; `raw:` at the start of a task and
   `agent.uplift === false` skip both. A failed uplift never falls back silently: the card parks
   and the user chooses (run the original, retry, cancel). The memory read fails open and shows on
-  the card. The memory write happens after the card settles and is never awaited by the card.
+  the card; `memory.readLimit` 0 skips it. The memory write happens after the card settles and is never awaited by the card.
+  A sub-agent dispatched more than once writes once per dispatch (subject suffix `-d<n>` for
+  n > 1, the first dispatch unchanged); Forget, which retracts by prefix, covers the suffixed subjects.
   Protocol turns (verdict, force-final, dispatch result, reassign) are never uplifted, and neither
   are upstream outputs or attachments — only the card's own task text.
 - **Isolation decisions.** Cards, the catalog and the terminal run under the omp profile
@@ -503,26 +517,98 @@ authority where this and it disagree.
   only). Cards start with `--no-extensions` unless `loadUserExtensions` is on. A card's environment
   is an allowlist (`lib/omp/env.ts`): deny rules beat allow rules, so `SUBSTRATE_*`, `SWARM_*`,
   `ULTRATHINK_*`, `AIO_*`, `*_TOKEN` and `*_SECRET` reach a card only when the launch builder hands
-  them over in `extra` — which it does for the swarm signing key (by name, only when the card's
-  swarm is on), `OPENFLOW_RUN`, `OPENFLOW_CARD`, `ULTRATHINK_UPLIFT=0` and `AIO_UPLIFT=0`. **No
-  secret goes to a card through argv, a file or `omp-settings.json`**; the Substrate token is read
-  by the host and never given to a card. Per-card files live outside the project, under
+  them over in `extra` — which it does for the swarm signing key (by name from the host env, only
+  when the card's swarm is on; see the residual risk below), `OPENFLOW_RUN`, `OPENFLOW_CARD`,
+  `ULTRATHINK_UPLIFT=0` and `AIO_UPLIFT=0`. **No secret goes to a card through argv, a file or
+  `omp-settings.json`** (the swarm key's environment value is the one residual below); the
+  Substrate token is read by the host and never given to a card. The host sends that token only
+  to https, loopback, or the origin `SUBSTRATE_URL` names (`tokenAllowed` in
+  `lib/substrate/client.ts`); otherwise memory reads as unavailable with a sentence and nothing
+  is sent, and the settings store warns about plain http to a non-loopback host. Per-card files live outside the project, under
   `<state>/omp/<12 hex of sha1(realpath(project))>/<run>/<card>/`. Tool toggles are enforced with a
   `tools.approval.<tool>: deny` overlay passed as `--config`, not `--tools`: probed against the
   real binary, `--tools` shrinks the active set to the named tools, so an extension's tool
   disappears unless it is listed, while a deny leaves everything else alone. The card's own denies
-  are merged last so no other overlay can switch a disabled tool back on.
-- **The per-card MCP allowlist is not enforced.** Omp has no per-session MCP selection and no
-  settings-overlay switch for it; server allow and deny live in the profile's `mcp.json`.
-  `CardSpec.mcp` is carried and `describeLaunch` builds a note about it, but nothing surfaces that
-  note yet and the inspector still draws the per-server checkboxes. Treat every configured server
-  as visible to every card.
-- **The terminal security gate.** A PTY is code execution as the user, so every terminal route
-  needs the `x-openflow-pty: 1` header (a custom header forces a CORS preflight this host never
-  answers), an `Origin` equal to the loopback `Host` it was sent to, and — for the WebSocket — a
-  one-shot ticket (60 seconds). The browser sends only a `kind` (`omp` or `shell`); argv, cwd and
-  env are host-derived, and the env is the card allowlist without `*_API_KEY` keys. It is off when
-  `FLOW_ALLOW_REMOTE=1`. All of this is `lib/terminal/policy.ts`, a table-driven test.
+  are merged last so no other overlay can switch a disabled tool back on. In a gauntlet,
+  `cardSpec` sets `edit: false` for the critics and the root, so they launch with `edit`, `write`
+  and `ast_edit` denied; `bash` stays as authored. Writes to `<profile>/mcp.json` keep the file's
+  existing mode (0600 for a new one) and its `.bak` is 0600.
+- **Residual risk: the swarm signing key is readable by a swarm card.** The agent-swarm extension
+  signs assignments in-process, so a card whose swarm is on gets `SWARM_ED25519_KEY` /
+  `SWARM_SIGNING_KEY` by value in its environment, and its shell tool can read it. Cards without
+  swarm never get it. `SWARM_ED25519_KEY_FILE` passes only a path. Do not run a swarm card on a task
+  whose output you would not trust with that key.
+- **Every card sees every MCP server; there is no per-card allowlist.** Omp has no per-session MCP
+  selection and no settings-overlay switch for it. A card reads the profile's `mcp.json` and also
+  the MCP files in its working directory (`.mcp.json`, `.omp/mcp.json`; omp's
+  `mcp.enableProjectConfig`; verified live, even in an isolated profile). Their tools appear as
+  `mcp__<server>_<tool>` and are reached through the `xd://` devices, not the tool list.
+  `CardSpec.mcp` is gone, the inspector shows one sentence and a manage
+  button, and `agent.mcp` in an older pipeline is dropped by `migrateAgent`
+  (`src/graph/migrate.ts`) when it loads; an explicit list leaves a note naming the card.
+- **A host route gate exists, and it is one gate.** `lib/host/gate.ts` runs before every handler on
+  both hosts, so a new route is covered without doing anything. It matches every path under `/flow`
+  in any case (`/FLOW/API/x`, `/flow/api./x`: connect matches its mount prefix case-insensitively and
+  lets a dot follow it), a malformed `Host` is 403 `forbidden-host`, and the Vite plugin mounts it
+  with no route prefix ahead of the routers. The node adapter keeps the request body when a handler
+  passes the request on. Do not add a route that bypasses
+  `host.gate`, and do not add a second copy of its rules.
+- **At most 32 omp sessions run or start at once** (`DEFAULT_MAX_LIVE` in `lib/omp/session.ts`).
+  `admit()` runs synchronously before every spawn. At the cap it closes the least recently used idle
+  session (files kept, resumes on its next prompt); with every session busy the create fails with
+  409 `too-many-sessions`, 409 on purpose because the engine retries 429 and 5xx. Anything that
+  spawns a card session counts against it; the short-lived
+  probes (catalog, provider list, status) are not sessions.
+- **A session is registered before it starts, and disposal is rechecked after every await.**
+  `lib/omp/session.ts` puts the session in its map with no await between making it and
+  registering it, so `releaseRun`, dispose, close and the limit all see a session that is still
+  starting; the startup steps then check `cancelled()` after each await and throw `closed` if it was
+  disposed meanwhile. Keep that shape in any new startup step: an await without a recheck is how a
+  process gets orphaned.
+- **Run state is pruned.** About 15 s after the host starts, `pruneState` (`lib/omp/prune.ts`)
+  deletes `<OPENFLOW_STATE_DIR or ~/.openflow>/omp/<12 hex>/<runId>/` when nothing under it has been
+  written for `STATE_RETENTION_DAYS` (30). It claims the run directory (`claim`) before its last
+  check and holds the claim across removal, and a create for that run waits for it. It never touches a run the host holds (`sessions.holds`,
+  which counts creates in flight), `uplift/`, dotfiles, loose files or symlinks. Pruned sessions
+  leave the list and cannot be resumed. `POST /runs/prune` is a different thing: it removes only
+  `.openflow/runs` logs.
+- **Session titles.** The engine sends `CreateSession.title` (`cardTitle` in `src/server/card-spec.ts`:
+  `<role> · <first line of the task>`); the host stores it in the session's meta file. A session
+  without one is titled from its first prompt.
+- **Memory quarantine.** Substrate quarantines hedged text written as a `fact`
+  (`quarantine.speculative`). `lib/substrate/memory.ts` re-sends the same text once as `kind: todo`
+  (the repo scope accepts todo; handoff is denied there) under a `:todo` idempotency key, and the
+  card line says it was stored as a todo because the output was hedged. Secret and PII
+  quarantines are never retried.
+- **Substrate never follows a redirect.** The client sends `redirect: "manual"` and treats any 3xx
+  as a failure, so the bearer token cannot be forwarded by a redirect.
+- **Environment API keys reach cards.** Any `*_API_KEY` in OpenFlow's environment is passed to every
+  card (omp needs the provider's), never to the terminal. Keep unrelated service keys out of the
+  environment OpenFlow runs in, or use the profile's stored logins (Copy logins).
+- **Changing the engine port: use the contract suite.** `src/server/engine-contract.ts` is one
+  shared suite of 40 scenarios for `EngineApi`. It runs against `FakeEngine`
+  (`src/server/testing/fake-engine.ts`, via `src/server/engine-contract.test.ts`) and against the
+  real browser client over HTTP to the real host wired to the stub omp
+  (`lib/host/engine-contract.test.ts`). A change to `shared/engine.ts` or to either side of the wire
+  is safe when both runs pass; add a scenario there rather than a one-off test on one side.
+  `FakeEngine` is not the host: the header of `fake-engine.ts` lists its intentional differences
+  (no session cap or eviction, no startup deadline, no idle reap or resume, a prompt to a busy
+  session is a 409 where the host queues it, a lost session is disposed where the host keeps a
+  `lost` record, and looser create validation and title cleaning). A test that needs one of those
+  belongs to the host's own tests, and none is to be closed in the double.
+- **The host gate and the terminal gate.** Every HTTP request under `/flow` in both hosts — engine,
+  settings, uplift, memory, swarm, store routes, SSE — passes `lib/host/gate.ts` (`apiRefusal`)
+  first: a loopback `Host` (unless `FLOW_ALLOW_REMOTE=1`), a same-origin `Origin` (`null` is
+  refused), `Sec-Fetch-Site` `same-origin` or `none`, and `application/json` for any body. A refusal
+  is a 403 with `forbidden-host`, `forbidden-origin` or `forbidden-content-type`. A request with no
+  `Origin` or `Sec-Fetch-*` (curl, scripts) passes: only a browser is being fenced. This is what
+  stops a cross-site "simple" POST or a DNS-rebound name from running agents. The terminal keeps a
+  stricter policy on top: every route needs the `x-openflow-pty: 1` header (a custom header forces a
+  CORS preflight this host never answers), an `Origin` equal to the loopback `Host`, and — for the
+  WebSocket — a one-shot ticket (60 seconds). The browser sends only a `kind` (`omp` or `shell`);
+  argv, cwd and env are host-derived, and the env is the card allowlist without `*_API_KEY` keys. It
+  is off when `FLOW_ALLOW_REMOTE=1`. The terminal policy is `lib/terminal/policy.ts`, a table-driven
+  test.
 - **Bun/Node dual runtime.** `server.ts` runs under Bun; the vite dev plugin runs under Node.
   Everything in `lib/` and `shared/` runs in both, so it uses `node:` APIs only — no `Bun.*` and no
   `bun:` imports — and `Promise.withResolvers()` rather than an executor. What genuinely differs is
@@ -533,7 +619,13 @@ authority where this and it disagree.
   `lib/` does not import `src/`; the engine runs in the browser and cannot import `lib/`.
 - **State that tests touch.** A test that reaches OpenFlow's own state sets `OPENFLOW_STATE_DIR`
   to a temp directory before the module loads; the alternative writes a developer's real
-  `~/.openflow/state.json`.
+  `~/.openflow/state.json`. The tests that run a real omp use a throwaway `HOME` and profile.
+- **Windows and macOS are unverified.** Suites that need a real PTY, process groups or a
+  `#!/bin/sh` wrapper are skipped on Windows (`skipIf(process.platform === "win32")`), so the
+  Windows CI leg runs only the cross-platform tests. PTY and process-group behaviour on Windows
+  and macOS has not been exercised in practice; do not assume it.
+- **CI.** `.github/workflows/openflow.yml` runs typecheck, `bun run check:no-opencode` and
+  `bun test` on Ubuntu and Windows.
 
 ## The post-run coach
 

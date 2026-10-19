@@ -17,9 +17,14 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
 - Add shared memory through Agent Substrate: a card reads the project's memory
   before it runs and writes its outcome when it finishes. Memory has a retention
   setting, a repository override, and a Forget that retracts entries (Substrate
-  cannot delete). A card never receives a Substrate token.
+  cannot delete). A card never receives a Substrate token, and the host sends it
+  only to https, loopback, or the address `SUBSTRATE_URL` names. A sub-agent
+  dispatched more than once writes one entry per dispatch, and 0 *Most memories per
+  card* skips the read.
 - Add Agent Swarm to cards: off, auto or always, with a preflight that degrades a
-  card to off and says why, and a status line on the card once it delegates.
+  card to off and says why, and a status line on the card once it delegates. A card
+  whose swarm is on receives the signing key by value in its environment, where its
+  shell can read it; `SWARM_ED25519_KEY_FILE` passes only a path.
 - Add the Omp settings dialog: status and problems, how cards are started, shared
   memory, and omp's own options. **Copy logins from your default profile** brings
   existing logins into the OpenFlow profile; secrets are only ever entered in the
@@ -27,15 +32,49 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
 - Add a terminal dock (``Ctrl+` ``): omp or your shell in the project folder, gated
   to loopback and off under `FLOW_ALLOW_REMOTE=1`.
 - Move MCP servers and skills into the omp profile. Omp has no per-session MCP
-  selection, so every card sees every configured server.
+  selection, so every card sees every server in the profile's `mcp.json` and in the
+  MCP files of its working directory. The per-card checkboxes are gone, and a saved
+  pipeline's `agent.mcp` is dropped silently when it loads.
 - Serve the orchestrator's `openflow_dispatch` and `openflow_finish` as omp host
   tools, with the fenced block kept as the fallback.
+- Store hedged memory output as a todo: Substrate quarantines hedged text written
+  as a fact, so the host sends it once more as a todo and the card says so. Secret
+  and personal-data quarantines are not retried.
+- Prune old run state: about 15 seconds after the host starts, run directories
+  under `omp/` that nothing has written to for 30 days are deleted, and their
+  sessions leave the Sessions list. Runs the host holds are never touched.
+- Title sessions `<role> · <first line of the card's task>`.
+- Add a shared 40-scenario contract suite for the engine port, run against an
+  in-memory fake and against the real client and host.
+- Gate every request under `/flow` on both hosts, in any letter case and with a
+  trailing dot (`/FLOW/API/x`, `/flow/api./x`): a loopback `Host` (a malformed one is
+  refused), a same-origin
+  `Origin` and `Sec-Fetch-Site`, and `application/json` bodies. A refusal is a 403
+  (`forbidden-host`, `forbidden-origin`, `forbidden-content-type`). This stops
+  another web page, or a DNS-rebound name, from starting agents through your
+  browser; curl and scripts are unaffected.
+- Limit omp sessions: at most 32 at once. At the cap the least recently used idle
+  session is closed to make room; only when all 32 are busy does the create fail
+  (409 `too-many-sessions`). A 60 second
+  startup deadline (502 `omp-not-ready`), and a Stop or dispose while a session is
+  starting leaves no process behind and never sends the prompt; Stop during a hanging
+  omp start ends at once.
+- Launch a gauntlet's critics and root orchestrator with the edit tools denied; the
+  shell stays available.
+- Keep the mode of `mcp.json` when MCP servers are saved (0600 for a new file), and
+  write its `.bak` 0600.
+- Refresh the model catalog and provider list when the profile's logins change, so
+  a `/login` in the terminal shows up without a restart.
+- Never follow a Substrate redirect, so the token cannot be forwarded.
+- Leave a note naming the card when an older pipeline's explicit `agent.mcp` list is
+  dropped on load.
+- Say plainly that every `*_API_KEY` in OpenFlow's environment reaches cards.
 - Open pipelines and run logs saved by the earlier build: model ids stay as written
   and are flagged when omp cannot run them, agent names are dropped with a note, and
   sessions from the earlier build are read-only. The shipped templates no longer pin
   a model.
 - Add `bun run check:no-opencode`, which fails when a fork-owned file still mentions
-  the removed engine outside a short, reasoned allowlist.
+  the removed engine outside a short, reasoned allowlist. CI runs it.
 - Remove the OpenCode engine and everything that served it: `opencode serve`
   startup and management, the restart button, the api keys and provider panels,
   repackaging, the zen model list, key import from the CLI, merging agents into
