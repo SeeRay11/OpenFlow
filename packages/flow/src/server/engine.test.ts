@@ -90,6 +90,8 @@ type HarnessOptions = {
   cleanupThrows?: boolean
   /** Holds every `createSession` until it resolves: a session that is still opening. */
   createGate?: Promise<void>
+  /** Nodes whose first prompt is refused once, before the host accepts it. */
+  promptRefusedOnce?: string[]
   /** Holds the model catalog read until it resolves: a host that is still enumerating its models. */
   modelsGate?: Promise<void>
   /** Makes `createSession` reject with the abort reason as soon as the signal the engine passed aborts, as the client does. */
@@ -182,6 +184,7 @@ function harness(options: HarnessOptions = {}) {
   const createSignals: (AbortSignal | undefined)[] = []
   /** Sessions handed back to the host, in order. */
   const released: string[] = []
+  const refusedOnce = new Set<string>()
   /** Runs handed back whole to the host, in order. */
   const releasedRuns: string[] = []
   const upliftRequests: UpliftRequest[] = []
@@ -229,6 +232,11 @@ function harness(options: HarnessOptions = {}) {
     },
     async prompt(sessionID: string, text: string, files: PromptFile[] = []) {
       const node = nodeOf.get(sessionID)!
+      // A first send the host refuses before accepting it: the provider said "not now".
+      if (options.promptRefusedOnce?.includes(node) && !refusedOnce.has(node)) {
+        refusedOnce.add(node)
+        throw new Error("HTTP 429 Too Many Requests: slow down")
+      }
       dispatched.push(node)
       prompts.set(node, text)
       promptLog.push({ node, text })
@@ -1438,6 +1446,75 @@ describe("run log", () => {
       expect(first.text).not.toContain("# A new assignment")
       expect(first.text).not.toContain("The run was interrupted")
       expect(first.text).toContain("do the thing")
+    })
+
+    describe("a first prompt the host refused before accepting it is sent again as the same first briefing", () => {
+      const final = (answer: string) => block(JSON.stringify({ final: answer }))
+
+      test("a card whose session is lost on its second turn is told the scratch directory again in the new session", async () => {
+        const scratch = "/tmp/openflow-scratch/run-1"
+        const h = harness({
+          scratch,
+          behavior: { root: { outputs: [dispatch("a"), final("done")], errors: ["", "session not found"] } },
+        })
+        await h.run({ ...pipeline("root->a"), mode: "orchestration" as const, dispatches: 2 }, "do the thing", { rateLimitBackoff: 1 }).done
+
+        const sent = h.promptLog.filter((entry) => entry.node === "root")
+        const told = sent.map((entry) => entry.text.includes(scratch))
+        // The first session, then the replacement; nothing in between repeats it.
+        expect(told[0]).toBe(true)
+        expect(told.filter(Boolean)).toHaveLength(2)
+        expect(told.at(-1)).toBe(true)
+        expect(h.created()).toBeGreaterThanOrEqual(3)
+      })
+
+      test("the scratch-directory note is in the retried first prompt, and said once, not again on the card's second turn", async () => {
+        const scratch = "/tmp/openflow-scratch/run-1"
+        const h = harness({ scratch, promptRefusedOnce: ["root"], behavior: { root: { outputs: [dispatch("a"), final("done")] } } })
+        await h.run({ ...pipeline("root->a"), mode: "orchestration" as const, dispatches: 2 }, "do the thing", { rateLimitBackoff: 1 }).done
+
+        const sent = h.promptLog.filter((entry) => entry.node === "root")
+        expect(sent.length).toBeGreaterThan(1)
+        expect(sent[0].text).toContain(scratch)
+        expect(sent.slice(1).some((entry) => entry.text.includes(scratch))).toBe(false)
+      })
+
+      test("an orchestrator keeps its roster and rules", async () => {
+        const h = harness({ promptRefusedOnce: ["root"], behavior: { root: { output: final("done") } } })
+        await h.run({ ...pipeline("root->a"), mode: "orchestration" as const, dispatches: 1 }, "do the thing", { rateLimitBackoff: 1 }).done
+
+        const sent = h.promptLog.filter((entry) => entry.node === "root")
+        expect(sent[0].text).not.toContain("# A new assignment")
+        expect(sent[0].text).toContain("You are the orchestrator")
+        expect(sent[0].text).toContain("do the thing")
+      })
+
+      test("a subagent keeps its assignment briefing", async () => {
+        const h = harness({
+          promptRefusedOnce: ["a"],
+          behavior: { root: { outputs: [dispatch("a"), final("done")] } },
+        })
+        await h.run({ ...pipeline("root->a"), mode: "orchestration" as const, dispatches: 2 }, "do the thing", { rateLimitBackoff: 1 }).done
+
+        const sent = h.promptLog.filter((entry) => entry.node === "a")
+        expect(sent[0].text).not.toContain("# A new assignment")
+        expect(sent[0].text).toContain("do a")
+      })
+
+      test("a critic keeps its bar", async () => {
+        const graph = { ...pipeline("root->reviewer"), mode: "orchestration" as const, dispatches: 2, gauntlet: { bar: "the reference build" } }
+        for (const node of graph.nodes) node.agent.model = "openai/gpt-x"
+        const h = harness({
+          models: ["openai/gpt-x"],
+          promptRefusedOnce: ["reviewer"],
+          behavior: { root: { outputs: [dispatch("reviewer"), final("done")] } },
+        })
+        await h.run(graph, "do the thing", { rateLimitBackoff: 1 }).done
+
+        const sent = h.promptLog.filter((entry) => entry.node === "reviewer")
+        expect(sent[0].text).not.toContain("# A new assignment")
+        expect(sent[0].text).toContain("the reference build")
+      })
     })
 
     test("if the replacement's first write failed, the next one that works closes the interrupted log", async () => {

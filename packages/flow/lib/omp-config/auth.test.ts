@@ -207,6 +207,31 @@ describe.skipIf(process.platform === "win32")("POST authImport", () => {
     expect(leaks(message)).toEqual([])
   })
 
+  /**
+   * The pids the fake omp wrote as it started to hang. It writes the file in place, in more than one step, so it is read until it parses and names both processes
+   * (no event exists for another process's write: deadline-bounded polling, not a fixed wait).
+   */
+  async function recordedPids(): Promise<{ child: number; grandchild: number }> {
+    const deadline = Date.now() + 15_000
+    for (;;) {
+      const text = await readFile(path.join(bin, "pids.json"), "utf8").catch(() => "")
+      try {
+        const pids: unknown = JSON.parse(text)
+        if (isRecord(pids) && typeof pids.child === "number" && typeof pids.grandchild === "number") return { child: pids.child, grandchild: pids.grandchild }
+      } catch {
+        // Not complete yet.
+      }
+      if (Date.now() > deadline) throw new Error("the fake omp recorded no pids")
+      await Bun.sleep(10)
+    }
+  }
+
+  /** Real processes dying is the thing under test; there is no event to await for a SIGKILLed group. */
+  async function gone(...pids: number[]) {
+    const deadline = Date.now() + 10_000
+    while (Date.now() < deadline && (await Promise.all(pids.map(alive))).some(Boolean)) await Bun.sleep(20)
+  }
+
   test("a hung omp is killed with everything it started and answered as a timeout", async () => {
     start(1500)
     await flag("hang")
@@ -216,13 +241,8 @@ describe.skipIf(process.platform === "win32")("POST authImport", () => {
     expect(response.status).toBe(502)
     expect(errorOf(await response.json())).toBe("omp did not answer in time")
 
-    const pids: unknown = JSON.parse(await readFile(path.join(bin, "pids.json"), "utf8"))
-    if (!isRecord(pids) || typeof pids.child !== "number" || typeof pids.grandchild !== "number") throw new Error("the fake omp recorded no pids")
-    const child = pids.child
-    const grandchild = pids.grandchild
-    // Real processes dying is the thing under test; there is no event to await for a SIGKILLed group.
-    const deadline = Date.now() + 3000
-    while (Date.now() < deadline && ((await alive(child)) || (await alive(grandchild)))) await Bun.sleep(50)
+    const { child, grandchild } = await recordedPids()
+    await gone(child, grandchild)
     expect(await alive(child)).toBe(false)
     expect(await alive(grandchild)).toBe(false)
   })
@@ -237,17 +257,13 @@ describe.skipIf(process.platform === "win32")("POST authImport", () => {
     start()
     await flag("hang")
     const posting = post()
-    const pidFile = path.join(bin, "pids.json")
-    // The fake omp writes its pids as it starts hanging: no event to await for another process.
-    const deadline = Date.now() + 10_000
-    while (Date.now() < deadline && !(await readFile(pidFile, "utf8").then((text) => text.trim() !== "", () => false))) await Bun.sleep(10)
-    const pids: unknown = JSON.parse(await readFile(pidFile, "utf8"))
-    if (!isRecord(pids) || typeof pids.child !== "number" || typeof pids.grandchild !== "number") throw new Error("the fake omp recorded no pids")
+    const pids = await recordedPids()
     expect(await alive(pids.child)).toBe(true)
 
     await configModule?.dispose()
 
     expect((await posting).status).toBe(502)
+    await gone(pids.child, pids.grandchild)
     expect(await alive(pids.child)).toBe(false)
     expect(await alive(pids.grandchild)).toBe(false)
     expect((await post()).status).toBe(503)

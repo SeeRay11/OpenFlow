@@ -1030,6 +1030,16 @@ export function start(
     track(api.release(sessionID).catch(() => undefined))
   }
 
+  /**
+   * Whether the card is still in the session it holds right now. Read at a card's entry: a card that has none
+   * is new (and stays new while its first prompt is retried), one that has one is returning until that very
+   * session is replaced.
+   */
+  function holding(id: string) {
+    const entered = nodeSession.get(id)
+    return () => entered !== undefined && nodeSession.get(id) === entered
+  }
+
   /** Forgets a card's session and releases it — for a card that will not be prompted into it again. */
   function abandon(id: string) {
     const sessionID = nodeSession.get(id)
@@ -1350,10 +1360,9 @@ export function start(
         // card captured the game, the orchestrator opened the capture, and the run
         // died. The attachment filter above never sees this path, so the card is
         // told what it cannot do instead.
-        // Said once per card, on the turn that opens its session. A card with
-        // no shell has nothing to redirect and is not told.
+        // Said once per card, on the turn that opens its session, and remembered only once the host has accepted
+        // the prompt that carried it. A card with no shell has nothing to redirect and is not told.
         const needsScratch = !!scratchDir && !toldScratch.has(node.id) && toolMap(node.agent.tools).bash !== false
-        if (needsScratch) toldScratch.add(node.id)
         const appended = [
           ...(model && !api.accepts(model, "image/png") ? [imageBlindNote()] : []),
           ...(needsScratch ? [scratchNote(scratchDir)] : []),
@@ -1415,6 +1424,8 @@ export function start(
 
         await api.prompt(sessionID, text, sendable)
         delivered = true
+        // Only now is the card told: a prompt the host refused carries the note again on its retry.
+        if (needsScratch) toldScratch.add(node.id)
         if (controller.signal.aborted) throw new StopError()
         assertOpen(sessionID)
         await api.waitForIdle(sessionID, { signal: turnWait.signal, timeout: nodeTimeout })
@@ -1545,6 +1556,8 @@ export function start(
           // A carried session the host could not resume is gone for good: retrying `reuse` would only be told so again.
           attach = undefined
           delivered = false
+          // What the lost session was told went with it: the replacement has not heard where output that is not the work goes.
+          toldScratch.delete(node.id)
           // A new session has no history to be told about: it starts as a fresh card would.
           build = opening
         }
@@ -1767,9 +1780,10 @@ export function start(
     // A card dispatched a second time is prompted into the session it already
     // holds, so it still has its briefing and its earlier task — only the job
     // is new.
-    // Read when the prompt is built, not once: a session lost on the way (a carried one the
-    // host no longer has) is replaced by a new one, and that one needs the full briefing.
-    const returning = () => nodeSession.has(node.id)
+    // Decided here, once: a first prompt the host refused leaves the new session in `nodeSession`, and the
+    // retry must still be the first briefing. It turns into the fresh-card prompt again only if the session
+    // this card entered with (a carried one, say) is later reported lost and replaced.
+    const returning = holding(node.id)
     let build: (skipped: Attachment[]) => TurnText = (skipped) =>
       returning()
         ? reassignPrompt(task)
@@ -2371,11 +2385,12 @@ export function start(
   async function runSubagent(node: FlowNode, parent: FlowNode, task: string) {
     dispatches.set(node.id, (dispatches.get(node.id) ?? 0) + 1)
     const critic = gauntlet && isCritic(node)
+    const returning = holding(node.id)
     await runTurn(
       node,
       task,
       (skipped) =>
-        nodeSession.has(node.id)
+        returning()
           ? reassignPrompt(task)
           : critic
             ? // A critic judges; it is never uplifted, and never given memory

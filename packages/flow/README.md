@@ -265,8 +265,10 @@ project's roles are still loading is merged into them when the read finishes
 project. If the project's roles cannot be read, nothing is written to the project
 and a notice says the change stays in the tab. Edits made before the project's
 roles are read are kept under a separate browser key for that project
-(`openflow.customRolesPending.v1:<project path>`; never the migration source),
-reported as unsynced and merged in when the read succeeds. Other projects never
+(`openflow.customRolesPending.v1:<project path>`; never the migration source). As
+soon as the project is known, what that key holds is loaded into the palette and
+later edits are applied on top of that full set; it is reported as unsynced and
+written to the project when the read succeeds. Other projects never
 read or push it, a project switch leaves it in place, and an edit made before the
 project is known is reported as not persisted. A read that finishes after a switch
 cannot write into the next project.
@@ -995,6 +997,9 @@ and that nothing it produced was discarded — a card given no account of the
 silence re-answers what it already answered. A carried session the host reports
 lost starts as a fresh card: the full prompt, with no "same session" or
 "interrupted" wrapper, and orchestrators and subagents get their briefing again.
+That is the only case that switches to a fresh briefing: when a fresh card's first
+prompt is refused before the host accepts it, the retry sends the full first
+briefing again (an orchestrator's roster and rules, a critic's bar).
 A carried id for a card that is no longer in the pipeline is skipped, and the
 sessions of cards that already finished are released when the resume starts, so
 they do not hold the project lock. The Resume button is disabled from the click
@@ -1237,9 +1242,14 @@ deleting one removes it from both `enabledServers` and `disabledServers`.
 (a non-boolean is 400, and it is never written to `mcp.json` or `SKILL.md`). With
 `create: true`, an exact name that already exists, or a slug that collides with
 one, answers 409 `{ "code": "name-taken" }` and writes nothing; without it the
-save edits in place. The panels send `create: true` only for New and for a real
-rename; editing a skill without renaming addresses it by its folder name, so a
-folder `my-skill` whose frontmatter name is `My Skill` is not refused. A skill
+save edits in place. The panels send `create: true` only for a new name or a move
+to a different folder; a rename that keeps the same folder (a change only in case
+or punctuation that the host slugs to the entry's own folder) saves in place.
+Editing a skill without renaming addresses it by its folder name, so a
+folder `my-skill` whose frontmatter name is `My Skill` is not refused. For MCP,
+letter case is part of the key (`Docs` and `docs` are two servers), while text the
+host reduces to the stored key (for example `my server` for `my-server`) is an
+edit of that server. A skill
 create claims the folder with a non-recursive `mkdir`, so of several concurrent
 creates of one name exactly one succeeds and the rest get 409 `name-taken`, and a
 failed `SKILL.md` write after claiming removes the empty folder. The panels keep

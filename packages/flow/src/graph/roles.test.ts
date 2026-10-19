@@ -216,6 +216,23 @@ describe("roles written before the project's own were read", () => {
     expect(browser.data.has("openflow.customRolesPending.v1:/p")).toBe(false)
   })
 
+  test("a role made while the read is still waiting is added to the pending roles of an earlier load, not written over them", async () => {
+    browser.data.set("openflow.customRolesPending.v1:/p", JSON.stringify([{ ...browserOnly, id: "A", label: "A" }]))
+    const gate = Promise.withResolvers<void>()
+    readGate = gate.promise
+    stored = []
+    const loading = hydrateCustomRoles("/p")
+
+    saveCustomRole({ label: "B", color: "#fff", agent: { prompt: "" } })
+    expect(JSON.parse(browser.data.get("openflow.customRolesPending.v1:/p")!).map((entry: Role) => entry.id)).toEqual(["A", "B"])
+
+    gate.resolve()
+    await loading
+    expect(customRoles().map((entry) => entry.id)).toEqual(["A", "B"])
+    expect(JSON.parse(sent[0].body).map((entry: Role) => entry.id)).toEqual(["A", "B"])
+    expect(browser.data.has("openflow.customRolesPending.v1:/p")).toBe(false)
+  })
+
   test("pending roles belong to their own project: another project neither reads, pushes nor clears them", async () => {
     browser.data.set("openflow.customRolesPending.v1:/a", JSON.stringify([{ ...browserOnly, id: "a-only", label: "a-only" }]))
     stored = [mine]

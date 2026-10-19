@@ -1835,6 +1835,29 @@ hosted("a resumed session follows the request that resumes it", () => {
     expect(h.launches.at(-1)?.stateDir).toBe(nodeDir("run1"))
   })
 
+  test("a live session resumed in the same directory under a new run belongs to the new run: it is released with it, saved under it, and never respawned", async () => {
+    const { elsewhere } = await directories()
+    const { id, proc } = await open({ ...BODY, directory: elsewhere })
+    await host.create({ ...BODY, runId: "run2", directory: elsewhere, model: "anthropic/claude-other", reuse: id })
+    expect(proc.closeCalls).toBe(0)
+    expect(h.fake.procs).toHaveLength(1)
+    expect(said("git -C")).toEqual([])
+    expect(host.holds(safeSegment("run2"))).toBe(true)
+    // The metadata is written asynchronously by the save the reuse queued: wait for the file, not for a number of turns.
+    const file = path.join(nodeDir("run1"), ".openflow-session.json")
+    const deadline = Date.now() + 10_000
+    let saved = JSON.parse(await fs.readFile(file, "utf8")).request?.runId
+    while (saved !== "run2" && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      saved = JSON.parse(await fs.readFile(file, "utf8")).request?.runId
+    }
+    expect(saved).toBe("run2")
+    expect(await host.releaseRun("run1")).toBe(0)
+    expect(host.live()).toBe(1)
+    expect(await host.releaseRun("run2")).toBe(1)
+    expect(host.live()).toBe(0)
+  })
+
   test("a live session reused with the same directory is left running, and one whose old directory is gone is not relaunched or announced", async () => {
     const { elsewhere, other } = await directories()
     const same = await open({ ...BODY, directory: elsewhere })

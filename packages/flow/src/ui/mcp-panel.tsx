@@ -1,4 +1,5 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
+import { mcpTarget } from "../server/skills"
 import { store, type McpServer } from "../server/store"
 import { IconBack, IconClose, IconPlus, IconTrash } from "./icons"
 
@@ -98,8 +99,10 @@ export function McpPanel(props: {
     setBusy(true)
     setError(undefined)
     try {
-      // A new server, or an edit that changes the name, must not land on a server that already has that name: the host answers 409 and the editor stays open.
-      const result = await store.saveMcpServer(server, !draft.original || draft.original !== name)
+      // A new server, or one moved to another key, must not land on a server that already has that name: the host answers 409 and the editor stays open.
+      // A change that only reduces to the stored key (spaces for dashes) is an edit of that server.
+      const target = mcpTarget(draft.original, name)
+      const result = await store.saveMcpServer(server, target.create, target.address)
       // A rename leaves the old key behind, exactly as a renamed skill leaves
       // its folder: the write is an upsert under the new name, nothing else.
       let renamed = ""

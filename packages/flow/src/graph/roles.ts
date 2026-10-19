@@ -271,6 +271,9 @@ export async function hydrateCustomRoles(project: string) {
   const current = hydrations.begin()
   // From here until the next switch, edits that cannot be saved yet are kept for this project, and only this one.
   scope = project
+  // What an earlier load left pending is loaded now, not when the read answers: an edit made while it waits is
+  // applied on top of the full set, and every write persists that whole set rather than a part of it.
+  if (!synced) setCustomRoles(mergeRoles(loadPending(project), customRoles()))
   const stored = await store.roles().catch(() => undefined)
   if (!current()) return
   // Edits made since `forgetCustomRoles()` are in the signal; the project's pending key adds what an earlier page load left unsynced.

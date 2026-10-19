@@ -54,7 +54,7 @@ describe.skipIf(process.platform === "win32")("checkOmp", () => {
       () => undefined,
       (error: unknown) => error,
     )
-    await until(() => existsSync(pids) && readFileSync(pids, "utf8").trim() !== "")
+    await until(() => existsSync(pids) && readFileSync(pids, "utf8").endsWith("\n"))
     const pid = Number(readFileSync(pids, "utf8"))
     await life.dispose()
 

@@ -199,7 +199,7 @@ posix("preflight dispose", () => {
       () => undefined,
       (error: unknown) => error,
     )
-    await until(() => fs.existsSync(pids) && fs.readFileSync(pids, "utf8").trim() !== "")
+    await until(() => fs.existsSync(pids) && fs.readFileSync(pids, "utf8").endsWith("\n"))
     const pid = Number(fs.readFileSync(pids, "utf8"))
     expect(await alive(pid)).toBe(true)
 

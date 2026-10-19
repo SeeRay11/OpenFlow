@@ -129,8 +129,10 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
   corrupt `memory-ignore.json` aside instead of failing.
 - Address existing MCP server and skill names exactly as written, drop a disabled or
   deleted server from `enabledServers`/`disabledServers`, answer 404 when deleting
-  a name that does not exist, and refuse a new name that would overwrite a
-  different entry (409 `name-taken`, requested with `create: true`).
+  a name that does not exist, and refuse a new name or a move to a different folder
+  that would overwrite another entry (409 `name-taken`, requested with `create:
+  true`). A rename that keeps the same folder saves in place; for MCP, letter case
+  is part of the key.
 - Stamp every run-log write with `updatedAt` and keep it fresh with a heartbeat, so
   Resume is offered only for a run abandoned for more than five minutes (the run
   list is re-read every 30 seconds while idle). A resumed run writes its own log
@@ -138,10 +140,13 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
   resumable until a later write succeeds. A carried session the host reports lost
   starts as a fresh card, and the Resume button is disabled until the run has
   started. A failing log save raises its notice once, not every heartbeat.
+- Give a session that is still live when its card is resumed in the same directory
+  to the resuming run, so releasing the new run disposes it and releasing the old
+  run no longer does.
 - Send `flow.stream.reset` to every event-stream subscriber that attaches within
   60 seconds of a gap in the stream.
-- Merge a role created while a project's roles are still loading into them, keep
-  edits made before the read under a separate key, and write nothing to the
+- Merge a role created while a project's roles are still loading into them, load the
+  project's unsynced edits as soon as the project is known, and write nothing to the
   project when its roles cannot be read.
 - Count a session create as engine work from the moment its request arrives, so a
   project switch cannot land while its body is still being read.

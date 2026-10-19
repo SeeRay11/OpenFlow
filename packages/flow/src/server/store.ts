@@ -109,10 +109,13 @@ export const store = {
   deletePipeline: (name: string) => request(`/pipelines/${encodeURIComponent(name)}`, { method: "DELETE" }),
   /** MCP servers of the OpenFlow Omp profile. */
   mcpServers: () => request<McpServer[]>("/mcp"),
-  /** `create` asks the host to refuse (409 `name-taken`) when the name already belongs to a server instead of overwriting it. */
-  saveMcpServer: (server: McpServer, create = false) =>
+  /**
+   * `create` asks the host to refuse (409 `name-taken`) when the name already belongs to a server instead of overwriting it;
+   * `address` is the stored key to write when it differs from the typed name.
+   */
+  saveMcpServer: (server: McpServer, create = false, address = server.name) =>
     request<{ name: string; path: string; backup?: string; unchanged?: boolean }>(
-      `/mcp/${encodeURIComponent(server.name)}`,
+      `/mcp/${encodeURIComponent(address)}`,
       {
         method: "PUT",
         body: JSON.stringify(create ? { ...server, create: true } : server),

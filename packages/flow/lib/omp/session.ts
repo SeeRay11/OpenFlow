@@ -957,7 +957,12 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     if (session.state === "live") {
       // A live process keeps the settings it was launched with, unless the card now works somewhere else: then it is stopped (its files stay, as for an idle reap) and resumed below
       // in the new directory, so its edits cannot land in a tree the new run does not know.
-      if (!moved) return { id }
+      if (!moved) {
+        // Not restarted, but it now belongs to the run that resumed it (the page reloaded, the host stayed up): `holds`, `releaseRun` and the saved metadata follow the new request.
+        session.request = request
+        saveMeta(session)
+        return { id }
+      }
       await stop(session, "idle")
       // Something started it again while it was being stopped (nothing should: prompts wait for this reuse): let that start finish and stop it once more, so exactly one process is started below.
       if (session.starting) {

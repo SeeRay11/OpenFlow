@@ -231,7 +231,7 @@ describe.skipIf(process.platform === "win32")("the host's children under the vit
     try {
       const base = await start()
       const reading = fetch(`${base}/flow/api/engine/models`).then((response) => response.status)
-      await until(() => fs.readFile(pids, "utf8").then((text) => text.trim() !== "", () => false))
+      await until(() => fs.readFile(pids, "utf8").then((text) => text.endsWith("\n"), () => false))
       const pid = Number((await fs.readFile(pids, "utf8")).trim().split("\n")[0])
       expect(await alive(pid)).toBe(true)
 

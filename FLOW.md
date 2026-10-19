@@ -205,7 +205,10 @@ file layout, and login/model behavior are documented there rather than re-derive
   (`resuming`). **The carried session id must be written to the
   run log** (`patch(node.id, { sessionID })`), because the create path that normally writes it
   is skipped — without it a resumed run reports cards with no session while they answer in one,
-  and the *next* interruption has nothing left to carry.
+  and the *next* interruption has nothing left to carry. A fresh card whose first prompt is refused before
+  the host accepts it retries with the full first briefing (`build` is not reassigned; orchestrator
+  roster and rules, critic bar); only a carried session replaced after the host reports it lost switches
+  to `build = opening`, a fresh briefing.
 - **Resume never merges, removes or releases the interrupted run's isolated worktrees.** Merging
   them is the user's call, because git state in a worktree cannot be assumed. `RunLog.isolation` (`{ trees:
   [{ card, directory, branch }] }`; informational, no `base`, absent on old logs; an old log's `base` is
@@ -632,7 +635,9 @@ authority where this and it disagree.
   engine decides where a resumed card works). `reuse` of a session still LIVE in a different, still
   existing directory stops it (files kept) and relaunches it in the new run's directory; released while
   it is being stopped, the reuse is 404 and spawns nothing, and if the old directory vanishes while
-  stopping it relaunches without a notice. The same directory is untouched, and a gone old directory is
+  stopping it relaunches without a notice. The same directory is not restarted, but the session now
+  belongs to the resuming run (`session.request` and the saved metadata follow the new request): releasing
+  the new run disposes it and releasing the old run no longer does. A gone old directory is
   untouched with no notice. Overlapping `reuse` calls of one session are served one at a time (a
   per-session queue); a prompt that arrives during a resume waits for it, and `begin` refuses to start
   a live session again, so a session never has two processes. This is the safety
@@ -721,8 +726,11 @@ authority where this and it disagree.
   `{ removed: false }`, which the UI's `removal()` treats as a result. `PUT` accepts an add-only
   boolean `create` (non-boolean is 400, never written to `mcp.json` or `SKILL.md`): with `create: true`
   an exact key/folder that exists, or a colliding slug, is 409 `{ code: "name-taken" }` and nothing
-  is written; without it the save edits in place. The panels send `create: true` only for New and a real
-  rename (editing without renaming addresses a skill by its folder, so a folder `my-skill` with
+  is written; without it the save edits in place. The panels send `create: true` only for a new name or a
+  move to a different folder (`skillTarget`, `mcpTarget` in `src/server/skills.ts`): a rename that
+  slugs to the entry's own folder saves in place; for MCP, case is part of the key (`Docs` ≠ `docs`)
+  while text the host reduces to the stored key (`my server` for `my-server`) is an edit. (Editing
+  without renaming addresses a skill by its folder, so a folder `my-skill` with
   frontmatter name `My Skill` is not 409); a skill create claims the folder with a non-recursive
   `mkdir` (concurrent creates: one 200, the rest 409; a failed `SKILL.md` write removes the empty
   folder), and the panels keep the editor open on a 409. The PUT answer's
