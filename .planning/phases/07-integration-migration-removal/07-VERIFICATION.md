@@ -1,8 +1,21 @@
 ---
 phase: 07-integration-migration-removal
-verified: 2026-10-19T00:00:00Z
+verified: 2026-10-19T18:02:47Z
 status: passed
 score: 4/5 must-haves verified (5th is QA-03 pending-audit by the orchestrator)
+covered_files: [".github/workflows/openflow.yml", ".planning/REQUIREMENTS.md", ".planning/ROADMAP.md", ".planning/phases/07-integration-migration-removal/07-01-SUMMARY.md", ".planning/phases/07-integration-migration-removal/07-INTEGRATION.md", ".planning/phases/07-integration-migration-removal/07-PARITY.md", "FLOW.md", "openflow.ps1", "openflow.sh", "openflow.ts", "packages/flow/CHANGELOG.md", "packages/flow/README.md", "packages/flow/lib/host/gate.ts", "packages/flow/scripts/check-no-opencode.ts", "packages/flow/server-app.ts", "packages/flow/server.ts", "packages/flow/src/graph/migrate.test.ts", "packages/flow/src/graph/migrate.ts", "packages/flow/vite.config.ts", "packages/flow/vite/flow-store.ts"]
+covered_digest: "v3:sha256:bccfca1cddf8c5150da3a020dc0593ad58114a7c602c3c10bb924c7677028996"
+behavior_unverified: 0
+overrides_applied: 0
+re_verification:
+  previous_status: passed
+  previous_score: 4/5
+  previous_verified: 2026-10-19T00:00:00Z
+  previous_commit: 2daf46d9f
+  current_commit: 9491ea496
+  gaps_closed: []
+  gaps_remaining: []
+  regressions: []
 pending_audit:
   - "QA-03 / SC5: milestone audit (run by the orchestrator after this report)"
 ---
@@ -10,9 +23,9 @@ pending_audit:
 # Phase 7: Integration, Migration and OpenCode Removal — Verification Report
 
 **Phase Goal:** Everything is wired end to end, persisted data migrates, OpenCode is removed from fork-owned code, and the milestone passes audit.
-**Verified:** 2026-10-19 against branch `omp-engine` at HEAD `2daf46d9f`
+**Verified:** 2026-10-19T18:02:47Z against branch `omp-engine` at HEAD `9491ea496`
 **Status:** passed (QA-03 recorded as pending-audit — the orchestrator runs it after this report)
-**Re-verification:** No — initial verification. No PLAN.md/SUMMARY.md exist (direct orchestration); must-haves derived from `.planning/ROADMAP.md` Phase 7 success criteria and `.planning/REQUIREMENTS.md` MIG-01..MIG-03, QA-01, QA-03.
+**Re-verification:** Yes — after orchestrator-reported tree changes (`b975f932b` gate hardening + dev-host shutdown, `c9d388905` tool-toggle notices + `releaseRun` + planner `engine` row removal, `9491ea496` final gate/shutdown docs, plus `2c8837392` planning summaries). Previous report at `2daf46d9f` was `passed`; no regressions found.
 
 ## Goal Achievement
 
@@ -20,64 +33,72 @@ pending_audit:
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | Existing pipelines, runs and settings referencing opencode load without crashing; unknown model ids are flagged (SC1, MIG-01) | ✓ VERIFIED | `src/graph/migrate.ts` (`migratePipeline`, `migrateRunLog`, `legacyModelProblems`, `isLegacySession`) wired in `src/app.tsx:226,231,745,786` (readPipeline, loadRun, legacy-session reschedule, legacy-model warnings). `src/graph/migrate.test.ts`: 39 pass — real saved pipelines migrate, ids kept verbatim, one `legacy-model` note per card, idempotent, input never mutated. Fixtures in `src/graph/__fixtures__/legacy/` (10 files). Live testimony (real omp 18.12.2): legacy `opencode/...` pipeline loaded with migration notice + preflight block. |
-| 2 | Parity checklist satisfied and docs describe the Omp engine (SC2, MIG-03) | ✓ VERIFIED | `07-PARITY.md` ends `PARITY: SATISFIED`, zero `gap` rows at re-check commit `7f54a3453`. The two later commits are docs/planning only (`2daf46d9f`: README/FLOW.md/CHANGELOG; `ab74592ec`: REQUIREMENTS amendments + parity file) — no code changed, so parity still holds at HEAD. Ten concrete README/FLOW.md claims spot-checked against code, all true (see Docs Truthfulness below). CHANGELOG has `## [1.4.0] - 2026-10-19` describing the Omp engine. |
-| 3 | `check:no-opencode` passes on fork-owned paths; vendored upstream untouched (SC3, MIG-02) | ✓ VERIFIED | `bun run check:no-opencode` → `clean (22 allowlisted files)` (ran 2026-10-19). Launchers `openflow.ts/.sh/.ps1` contain zero `opencode` mentions, do mention `omp`. `git log dev..HEAD -- packages/opencode packages/tui packages/web` is empty: branch commits touch no vendored package. CI `.github/workflows/openflow.yml` runs typecheck + `check:no-opencode` + `bun test` on ubuntu + windows. |
-| 4 | Tests cover adapter, pipeline stages with mocked boundaries, config validation, terminal lifecycle (SC4, QA-01) | ✓ VERIFIED | Targeted runs 2026-10-19, all green: migrate+gate 52 pass; adapter/pipeline/config/terminal spot (launch, session, routes, config, settings, terminal, policy, engine-contract, dispatch, swarm) 421 pass / 0 fail. Contract suite + FakeEngine exist (`lib/host/engine-contract.test.ts`). Orchestrator-measured full suite at `785370f5e`: 2488 pass / 0 fail / 1 skip. `bun run typecheck` clean (re-ran 2026-10-19). |
+| 1 | Existing pipelines, runs and settings referencing opencode load without crashing; unknown model ids are flagged (SC1, MIG-01) | ✓ VERIFIED | `src/graph/migrate.ts` UNCHANGED since previous report (not in `2daf46d9f..HEAD` diff); wiring in `src/app.tsx` unchanged. Re-ran `src/graph/migrate.test.ts` at HEAD: pass (part of 267-file batch, 0 fail). Fixtures intact (10 files in `src/graph/__fixtures__/legacy/`). |
+| 2 | Parity checklist satisfied and docs describe the Omp engine (SC2, MIG-03) | ✓ VERIFIED | `07-PARITY.md` unchanged, still `PARITY: SATISFIED`, zero gaps. Docs deltas in `9491ea496`/`c9d388905` re-spot-checked (6 new claims, all TRUE — see New-Claims table). `shared/clarification.ts`, `vite/flow-pty.ts`, `lib/substrate/live-check.ts` confirmed deleted as the docs now state; no dangling imports (grep clean). CHANGELOG 1.4.0 intact. |
+| 3 | `check:no-opencode` passes on fork-owned paths; vendored upstream untouched (SC3, MIG-02) | ✓ VERIFIED | Re-ran at HEAD: `check:no-opencode: clean (22 allowlisted files)`. `git log 2daf46d9f..HEAD -- packages/opencode packages/tui packages/web` empty. Launchers, `migrate.ts`, check script, CI workflow, pipelines all unchanged. New files (`server-app.ts`, gate hardening) introduce no `opencode` mentions — gate proves it. |
+| 4 | Tests cover adapter, pipeline stages with mocked boundaries, config validation, terminal lifecycle (SC4, QA-01) | ✓ VERIFIED | Re-ran at HEAD: gate/migrate/server batch 267 pass / 0 fail (incl. new `server-app.test.ts`, `vite/dev-server.test.ts`, `vite/signals.test.ts`); adapter/pipeline/config/terminal spot + `src/server/engine.test.ts` 683 pass / 0 fail. `bun run typecheck` clean (re-ran). Deletions (`uplift.hitl`, `clarification.ts`, `flow-pty.ts`, `live-check.ts`) leave no dangling imports; typecheck proves it. |
 | 5 | Milestone audit passes (SC5, QA-03) | PENDING-AUDIT | Per assignment, the orchestrator runs the milestone audit after this report. Not marked failed; awaiting orchestrator. |
 
 **Score:** 4/5 truths verified, 1 pending-audit (QA-03)
 
-### Required Artifacts
+### Required Artifacts (re-check deltas)
 
-| Artifact | Expected | Status | Details |
-|----------|----------|--------|---------|
-| `packages/flow/src/graph/migrate.ts` | Legacy pipeline/run migration | ✓ VERIFIED | Substantive (~200 lines), wired (4 call sites in `app.tsx`), tested (39 tests) |
-| `packages/flow/scripts/check-no-opencode.ts` | Removal gate scoped to fork-owned paths | ✓ VERIFIED | Passes; SURFACES covers `packages/flow`, launchers, FLOW.md, `.github`, `.openflow/pipelines`; vendored `packages/*` never read |
-| `openflow.ts` / `openflow.sh` / `openflow.ps1` | Launchers without OpenCode | ✓ VERIFIED | Zero `opencode` mentions; omp-based |
-| `.github/workflows/openflow.yml` | Fork-owned CI | ✓ VERIFIED | Typecheck + no-opencode gate + tests, ubuntu + windows |
-| `.openflow/pipelines/` | Sample pipelines | ✓ VERIFIED | `diamond.json`, `feature-build.json` load (no `opencode` refs; new-format) |
-| `07-PARITY.md` | Parity checklist | ✓ VERIFIED | 251 lines, SATISFIED, no gaps |
-| `packages/flow/README.md`, `FLOW.md`, `CHANGELOG.md` | Omp engine docs | ✓ VERIFIED | 10/10 spot-checked claims true |
+| Artifact | Change since `2daf46d9f` | Status |
+|----------|--------------------------|--------|
+| `src/graph/migrate.ts`, `migrate.test.ts`, fixtures | none | ✓ VERIFIED (unchanged, tests re-pass) |
+| `scripts/check-no-opencode.ts`, launchers, CI, pipelines | none | ✓ VERIFIED (gate re-passes) |
+| `server.ts` → split `server-app.ts` (standalone, `development: false`, no stack pages) | new file + slimmed host | ✓ VERIFIED (new `server-app.test.ts` passes; gate + typecheck clean) |
+| `lib/host/gate.ts` (`rawPathRefusal` 400 `forbidden-path`) | +33 lines | ✓ VERIFIED (`gate.test.ts` passes; docs match code) |
+| `vite/flow-store.ts` (SIGINT/SIGTERM disposal, normalised store path) | +60/-flow-pty | ✓ VERIFIED (`flow-store.test.ts`, `signals.test.ts`, `dev-server.test.ts` pass) |
+| `shared/engine.ts` (`releaseRun`), `src/server/engine.ts` (finally-release) | wired run teardown | ✓ VERIFIED (`engine.test.ts` passes, part of 683) |
+| Deleted: `shared/clarification.ts`, `uplift.hitl`, `vite/flow-pty.ts`, `lib/substrate/live-check.ts` | removals | ✓ VERIFIED (files absent; no dangling imports; typecheck clean) |
+| README / FLOW.md / CHANGELOG | gate/shutdown/teardown docs | ✓ VERIFIED (6 new claims checked) |
 
-### Key Link Verification
-
-| From | To | Via | Status | Details |
-|------|----|-----|--------|---------|
-| `src/app.tsx` readPipeline/loadRun | `src/graph/migrate.ts` | direct import + call | WIRED | Lines 19, 226, 231 |
-| `src/app.tsx` preflight dialog | `legacyModelProblems` | warnings list | WIRED | Line 786, `legacy-model` kind rendered at 1434+ |
-| Legacy sessions | resume path | `isLegacySession` → reschedule fresh | WIRED | Line 745 |
-| CI | `check:no-opencode` | workflow step | WIRED | `openflow.yml` "Removed-engine gate" |
-| Docs claims | code | 10 spot-checks | WIRED | See below |
-
-### Docs Truthfulness (10 spot-checks, README.md + FLOW.md vs code)
+### New-Claims Truthfulness (docs deltas `2daf46d9f..HEAD` vs code)
 
 | # | Claim | Code | Result |
 |---|-------|------|--------|
-| 1 | Omp 18.12.2 minimum, `MIN_OMP_VERSION` in `shared/omp.ts` | `shared/omp.ts:18` = `"18.12.2"` | TRUE |
-| 2 | One `omp --mode rpc-ui` process per card session | `lib/omp/launch.ts:96`, `lib/omp/session.ts` | TRUE |
-| 3 | Copy logins button | `src/ui/omp-settings.tsx`, `app.tsx`, `lib/omp-config/` | TRUE |
-| 4 | Ctrl+\` terminal toggle, bottom dock | `src/ui/terminal-dock.tsx`, `app.tsx` | TRUE |
-| 5 | 30-day run-state pruning | `lib/omp/prune.ts:6` `STATE_RETENTION_DAYS = 30` | TRUE |
-| 6 | "Run with original prompt" action | `src/ui/uplift-dialog.tsx` | TRUE |
-| 7 | `uplifted` / `uplifted ~` chip | `src/ui/card-stages.tsx` | TRUE |
-| 8 | FLOW.md names `check:no-opencode` + vendored constraint | `FLOW.md:4,17,627` | TRUE |
-| 9 | CHANGELOG 1.4.0 describes Omp engine | `CHANGELOG.md:6` `## [1.4.0] - 2026-10-19` | TRUE |
-| 10 | Settings generated from `omp config list` | `lib/omp-config/config.ts:16,19` | TRUE |
+| 1 | `shared/` wire list no longer includes `clarification` | `shared/clarification.ts` absent | TRUE |
+| 2 | Tool-toggle launch notices via `describeLaunch`, emitted as `flow.notice` | `lib/omp/session.ts:23,549-553` | TRUE |
+| 3 | Run end releases sessions + best-effort `releaseRun(runId)`; `EngineApi.releaseRun` wired in finally | `shared/engine.ts:199,238`, `src/server/engine.ts:2487` | TRUE |
+| 4 | Raw `/flow` path with `.`/`..`/`%2e`/backslash/NUL/`;` refused 400 `forbidden-path` (`rawPathRefusal`); Vite store takes the gate's normalised path | `lib/host/gate.ts:87,97,146` | TRUE |
+| 5 | Dev server `server.cors: false`; standalone `development: false` in `server-app.ts`, no stack pages | `vite.config.ts:47`, `server.ts:9,84` | TRUE |
+| 6 | SIGINT/SIGTERM disposal in `vite/flow-store.ts` (and `server.ts`) | `flow-store.ts:35-45,88` | TRUE |
+
+(Prior report's 10 README/FLOW.md spot-checks rest on unchanged code and the unchanged parity file; not re-duplicated.)
+
+### Key Link Verification (re-check)
+
+| From | To | Via | Status |
+|------|----|-----|--------|
+| `server.ts` / vite plugin | `server-app.ts` `createApp` | import, both hosts | WIRED (new tests pass) |
+| Gate → store middleware | normalised path | shared decision | WIRED (dev-server tests pass) |
+| Run teardown | `EngineApi.releaseRun` | finally block | WIRED (`engine.test.ts` passes) |
+| Session start | `describeLaunch` notes → `flow.notice` | emit loop | WIRED (session tests pass) |
+| CI → `check:no-opencode` | workflow step | unchanged | WIRED (re-ran clean) |
+
+### Data-Flow / Behavioral / Probes
+
+Unchanged from previous report: migration is pure-function + app wiring (unit-tested, live-observed); no new runtime data flows introduced by the hardening commits beyond refusal paths (tested in `gate.test.ts`). No probes declared for this phase. Step 7b covered by the targeted suites above (950 tests total across the two batches, 0 fail).
+
+### Requirements Coverage
+
+| Requirement | Status | Evidence |
+|-------------|--------|----------|
+| MIG-01 | ✓ SATISFIED | migrate.ts unchanged + tests re-pass at HEAD |
+| MIG-02 | ✓ SATISFIED | gate re-passes; vendored commits clean; new code opencode-free |
+| MIG-03 | ✓ SATISFIED | parity SATISFIED; docs deltas verified true (6/6) |
+| QA-01 | ✓ SATISFIED | 267 + 683 targeted passes incl. new server/gate/signal suites; typecheck clean |
+| QA-03 | PENDING-AUDIT | orchestrator-run milestone audit |
 
 ### Anti-Patterns Found
 
-| File | Pattern | Severity | Impact |
-|------|---------|----------|--------|
-| 4 uncommitted working-tree edits under `packages/opencode`, `packages/tui`, `packages/web` | trivial diffs (extensionless import, formatting-class) | ℹ️ Info | Not branch commits (`git log dev..HEAD` clean for those paths); pre-existing environment noise, unrelated to Phase 7. Recommend `git checkout --` those paths before merge to keep the vendored tree pristine. |
-| `07-PARITY.md` caveat "docs edits uncommitted" | stale text | ℹ️ Info | Resolved: commits `2daf46d9f` + `ab74592ec` committed exactly those files. Parity file needs no change. |
-
-No TBD/FIXME/XXX, stubs, or placeholders found in Phase 7 scope. No gaps; no human-verification items (live testimony consistent with code covers runtime behavior).
+Same single ℹ️ Info item as before: 4 uncommitted working-tree edits under vendored `packages/opencode|tui|web` (unchanged, still not branch commits). Recommend `git checkout --` those paths before merge. No new debt markers, stubs, or placeholders introduced by the new commits (docs + hardening + removals only).
 
 ### Gaps Summary
 
-None. All Phase 7 must-haves except the orchestrator-run audit (QA-03) are verified in code, tests, and gates. The single residual is procedural: four unrelated uncommitted edits in vendored packages should be reverted before merge (info only, not a blocker).
+None. Re-verification against HEAD `9491ea496` confirms the previous `passed` verdict: the intervening commits harden the gate, split the standalone server, wire run release, surface tool-toggle notices, delete dead files, and document all of it — every touched must-have re-checks green, nothing regressed.
 
 ---
-_Verified: 2026-10-19_
-_Verifier: Verify7 (gsd-verifier)_
+_Verified: 2026-10-19T18:02:47Z_
+_Verifier: Verify7 (gsd-verifier, re-verification)_
