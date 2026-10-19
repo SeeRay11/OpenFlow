@@ -45,6 +45,8 @@ export type PtyInfo = {
   cols: number
   rows: number
   createdAt: number
+  /** The project the session was spawned in. A session is only attachable while that project is the current one. */
+  project: string
 }
 
 export type PtyServerControl = { cursor: number } | { exit: { code: number | null; signal: string | null } }

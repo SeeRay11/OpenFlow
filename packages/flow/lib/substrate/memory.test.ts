@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DEFAULT_OMP_SETTINGS } from "../../shared/omp"
@@ -812,10 +812,73 @@ describe("long names keep their memory keys intact", () => {
     expect((await substrate.read(read("run-b", "y", { pipeline: longA }))).status).toBe("empty")
   })
 
-  test("short subjects are unchanged", () => {
-    expect(memorySubject("Demo Flow", "run-a", "Card One")).toBe("openflow/demo-flow/run-a/card-one")
+  test("names that are already clean stay byte-identical", () => {
+    expect(memorySubject("demo-flow", "run-a", "card-one")).toBe("openflow/demo-flow/run-a/card-one")
     expect(memorySubject("demo", "run-a", "x", 3)).toBe("openflow/demo/run-a/x-d3")
     expect(memorySubjectPrefix("demo")).toBe("openflow/demo/")
     expect(memorySubjectPrefix("demo", "run-a")).toBe("openflow/demo/run-a/")
+  })
+
+  test("names that cleaning would merge keep separate namespaces", () => {
+    const names = ["Review: A", "review a", "Review-A", "review-a"]
+    const prefixes = names.map((name) => memorySubjectPrefix(name))
+    expect(new Set(prefixes).size).toBe(names.length)
+    // Only the one that is already clean keeps the plain segment.
+    expect(prefixes.filter((prefix) => prefix === "openflow/review-a/")).toEqual(["openflow/review-a/"])
+    expect(memorySubject("Review: A", "run-a", "x").startsWith(prefixes[0]!)).toBe(true)
+  })
+
+  test("forgetting one pipeline never retracts another whose name cleans to the same text", async () => {
+    const a = await substrate.write(write("run-b", "x", "alpha review cache outcome", { pipeline: "Review: A" }))
+    const b = await substrate.write(write("run-b", "z", "bravo review cache outcome", { pipeline: "review a" }))
+    expect(a.subject).not.toBe(b.subject)
+
+    expect((await substrate.read(read("run-b", "y", { pipeline: "review a" }))).items.map((item) => item.subject)).toEqual([b.subject!])
+
+    await substrate.forget({ pipeline: "Review: A" })
+    const survivor = await substrate.read(read("run-b", "y", { pipeline: "review a" }))
+    expect(survivor.items.map((item) => item.subject)).toEqual([b.subject!])
+    expect((await substrate.read(read("run-b", "y", { pipeline: "Review: A" }))).status).toBe("empty")
+  })
+})
+
+describe("the local forget list survives failures", () => {
+  const ignoreFile = () => join(dir, "state", "memory-ignore.json")
+
+  test("a failed write does not poison the next forget, and dispose does not throw", async () => {
+    await substrate.write(write("run-a", "x", "outcome to forget"))
+    // A directory where the file belongs: the rename onto it fails.
+    await mkdir(ignoreFile(), { recursive: true })
+    const failed = await substrate.forget({ pipeline: "demo", runId: "run-a" })
+    expect(failed.error).toContain("ignore list could not be updated")
+
+    await rm(ignoreFile(), { recursive: true })
+    const recovered = await substrate.forget({ pipeline: "demo", runId: "run-a" })
+    expect(recovered.error).toBeUndefined()
+    const saved = JSON.parse(await readFile(ignoreFile(), "utf8")) as { cutoffs: Record<string, number> }
+    expect(Object.keys(saved.cutoffs)).toEqual(["repo:acme/widgets|openflow/demo/run-a/"])
+    await expect(substrate.dispose()).resolves.toBeUndefined()
+  })
+
+  test("a read error other than a missing file aborts the write instead of dropping earlier cutoffs", async () => {
+    await mkdir(ignoreFile(), { recursive: true })
+    const result = await substrate.forget({ pipeline: "demo" })
+    expect(result.error).toContain("ignore list could not be updated")
+    expect((await stat(ignoreFile())).isDirectory()).toBe(true)
+    expect((await readdir(join(dir, "state"))).filter((name) => name.endsWith(".tmp"))).toEqual([])
+  })
+
+  test("a corrupt file is moved aside before a fresh list starts", async () => {
+    await mkdir(join(dir, "state"), { recursive: true })
+    await writeFile(ignoreFile(), "{ not json")
+
+    expect((await substrate.forget({ pipeline: "demo" })).error).toBeUndefined()
+
+    const names = await readdir(join(dir, "state"))
+    const aside = names.find((name) => name.startsWith("memory-ignore.json.corrupt-"))
+    expect(aside).toBeDefined()
+    expect(await readFile(join(dir, "state", aside!), "utf8")).toBe("{ not json")
+    const fresh = JSON.parse(await readFile(ignoreFile(), "utf8")) as { cutoffs: Record<string, number> }
+    expect(Object.keys(fresh.cutoffs)).toEqual(["repo:acme/widgets|openflow/demo/"])
   })
 })

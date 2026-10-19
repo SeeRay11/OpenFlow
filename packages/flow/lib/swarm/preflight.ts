@@ -1,8 +1,10 @@
-import { execFile } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import type { OmpSettings } from "../../shared/omp"
 import type { SwarmMode, SwarmPreflight, SwarmProblem } from "../../shared/swarm"
+import { createLifecycle, type Lifecycle } from "../host/lifecycle"
+import { runProbe } from "../host/probe"
+import { HttpError } from "../host/respond"
 
 /**
  * Can a card run with agent-swarm's Omp extension loaded, and if not, why not.
@@ -58,16 +60,23 @@ function signingConfigured(env: NodeJS.ProcessEnv): boolean {
   return conventional !== undefined && isFile(conventional)
 }
 
-/** True when the command exits 0 within the probe budget. The probe never sees the host's secrets. */
-function probe(python: string, args: string[], env: NodeJS.ProcessEnv): Promise<boolean> {
-  const done = Promise.withResolvers<boolean>()
+/**
+ * True when the command exits 0 within the probe budget. The probe never sees the host's secrets.
+ * It leads its own process group on POSIX, so the lifecycle's stop takes the interpreter's children with it.
+ * A closed lifecycle is not "python is missing": its 503 propagates.
+ */
+function probe(life: Lifecycle, python: string, args: string[], env: NodeJS.ProcessEnv): Promise<boolean> {
   const clean = { PATH: env.PATH ?? "", HOME: env.HOME ?? "", LANG: env.LANG ?? "C" }
-  try {
-    execFile(python, args, { timeout: PROBE_TIMEOUT_MS, env: clean, windowsHide: true }, (error) => done.resolve(!error))
-  } catch {
-    done.resolve(false) // execFile throws synchronously for an unusable path, e.g. one containing NUL
-  }
-  return done.promise
+  return life.run((flight) => runProbe(python, args, { env: clean, timeoutMs: PROBE_TIMEOUT_MS, flight })).then(
+    (result) => result.code === 0,
+    (error: unknown) => {
+      // Stopped by `dispose`: the shutdown is the answer, not a missing interpreter.
+      life.assertOpen()
+      if (error instanceof HttpError) throw error
+      // Not runnable at all, e.g. a path containing NUL: the same answer as a non-zero exit.
+      return false
+    },
+  )
 }
 
 /**
@@ -95,7 +104,7 @@ function stateDirProblem(stateDir: string): SwarmProblem | undefined {
   }
 }
 
-async function environmentProblems(root: string | undefined, python: string, env: NodeJS.ProcessEnv): Promise<SwarmProblem[]> {
+async function environmentProblems(life: Lifecycle, root: string | undefined, python: string, env: NodeJS.ProcessEnv): Promise<SwarmProblem[]> {
   const problems: SwarmProblem[] = []
   if (!root) {
     problems.push({
@@ -111,13 +120,13 @@ async function environmentProblems(root: string | undefined, python: string, env
     })
   }
 
-  if (!(await probe(python, ["--version"], env))) {
+  if (!(await probe(life, python, ["--version"], env))) {
     problems.push({
       code: "no-python",
       message: `${python} did not run; every swarm tool shells out to it.`,
       fix: "Install Python 3 and make python3 resolvable on the host PATH.",
     })
-  } else if (!(await probe(python, ["-c", "import cryptography"], env))) {
+  } else if (!(await probe(life, python, ["-c", "import cryptography"], env))) {
     problems.push({
       code: "no-crypto",
       message: "Python cannot import `cryptography`, which Ed25519 assignment signing needs.",
@@ -139,13 +148,17 @@ async function environmentProblems(root: string | undefined, python: string, env
  * Environment checks (root, python, cryptography, signing presence) are cached
  * for 30 s per (root, python, signing sources). The state directory is checked
  * every call: it differs per session and is a single stat.
+ *
+ * `dispose` refuses further checks (a 503) and kills the probe in flight; the probes are flights of `life`.
  */
-export function createPreflight(options: { python?: string; now?: () => number } = {}): Preflight {
+export function createPreflight(options: { python?: string; now?: () => number; life?: Lifecycle } = {}): Preflight & { dispose(): Promise<void> } {
   const python = options.python ?? "python3"
   const now = options.now ?? Date.now
+  const life = options.life ?? createLifecycle("the swarm preflight")
   const cache = new Map<string, { at: number; problems: Promise<SwarmProblem[]> }>()
 
-  return async (input) => {
+  const preflight: Preflight = async (input) => {
+    life.assertOpen()
     const requested = input.requested
     if (requested === "off") return { ok: true, effective: "off", requested, problems: [] }
 
@@ -159,7 +172,7 @@ export function createPreflight(options: { python?: string; now?: () => number }
       conventionalKeyFile(input.env) ?? "",
     ])
     const hit = cache.get(key)
-    const entry = hit && now() - hit.at < CACHE_MS ? hit : { at: now(), problems: environmentProblems(root, python, input.env) }
+    const entry = hit && now() - hit.at < CACHE_MS ? hit : { at: now(), problems: environmentProblems(life, root, python, input.env) }
     cache.set(key, entry)
     const problems = [...(await entry.problems)]
 
@@ -171,4 +184,5 @@ export function createPreflight(options: { python?: string; now?: () => number }
       : { ok: true, effective: requested, requested, problems }
     return root ? { ...result, root } : result
   }
+  return Object.assign(preflight, { dispose: () => life.dispose() })
 }

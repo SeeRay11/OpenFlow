@@ -182,10 +182,7 @@ export function upliftFailureView(
 /* ------------------------------------------------------------------- memory */
 
 type MemoryRead = NonNullable<MemoryInfo["read"]>
-export type MemoryRowItem = MemoryRead["items"][number] & {
-  /** `MemoryInfo` items do not carry an age today; shown when the host adds one. */
-  ageDays?: number
-}
+export type MemoryRowItem = MemoryRead["items"][number]
 
 /** Write outcomes the user has to hear about: the fact may not exist. */
 const WRITE_PROBLEMS: Record<string, true> = {

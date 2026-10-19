@@ -1,6 +1,7 @@
 import { ENGINE_BASE, engineRoutes, type BusEvent, type HealthInfo, type PermissionReply, type PromptFile } from "../../shared/engine"
 import type { OmpSettings } from "../../shared/omp"
 import { HttpError, fail, json, readJson, type HostHandler } from "../host/respond"
+import type { Lifecycle } from "../host/lifecycle"
 import { checkOmp } from "./binary"
 import { asRecord, asString } from "./messages"
 import type { ModelCatalog } from "./models"
@@ -42,7 +43,7 @@ export interface EventBus {
   /** A `text/event-stream` response; the subscription ends when the request aborts or the stream is cancelled. */
   subscribe(signal?: AbortSignal): Response
   clients(): number
-  /** Ends every stream. */
+  /** Ends every stream and refuses later subscribers with a stream that is already closed. */
   close(): void
 }
 
@@ -54,6 +55,8 @@ export function createEventBus(options: EventBusOptions = {}): EventBus {
   let pinger: ReturnType<typeof setInterval> | undefined
   /** A subscriber was dropped for falling behind: whoever attaches next may have missed events and is told so. */
   let dropped = false
+  /** Set by `close()`: a client attaching later gets a closed stream, never a registration and a ping timer on a host that is gone. */
+  let closed = false
 
   function drop(controller: ReadableStreamDefaultController<Uint8Array>) {
     if (!clients.delete(controller)) return
@@ -87,10 +90,17 @@ export function createEventBus(options: EventBusOptions = {}): EventBus {
   return {
     publish(event) {
       if (!clients.size) return
-      send(encoder.encode(`data: ${JSON.stringify(event)}\n\n`))
+      let chunk = encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
+      // The queue drops a client on the chunk that overflows it. One event larger than the whole queue never reaches anyone, so say so instead of dropping every client for it.
+      if (chunk.byteLength > maxQueueBytes) {
+        const note = { type: "flow.notice", data: { sessionID: event.data?.sessionID, level: "error", message: `an ${event.type} event of ${chunk.byteLength} bytes was too large to deliver` } }
+        chunk = encoder.encode(`data: ${JSON.stringify(note)}\n\n`)
+      }
+      send(chunk)
     },
 
     subscribe(signal) {
+      if (closed) return new Response(new ReadableStream<Uint8Array>({ start: (controller) => controller.close() }), { headers: SSE_HEADERS })
       let mine: ReadableStreamDefaultController<Uint8Array> | undefined
       const stream = new ReadableStream<Uint8Array>(
         {
@@ -119,6 +129,7 @@ export function createEventBus(options: EventBusOptions = {}): EventBus {
     },
 
     close() {
+      closed = true
       for (const controller of [...clients]) drop(controller)
     },
   }
@@ -132,6 +143,8 @@ export type RoutesDeps = {
   sessions: SessionHost
   models: ModelCatalog
   bus: EventBus
+  /** The lifecycle the health probe's `omp --version` runs in. */
+  life?: Lifecycle
 }
 
 function limitOf(url: URL, fallback: number): number {
@@ -158,7 +171,7 @@ function decode(segment: string): string {
 
 export function createRoutes(deps: RoutesDeps): HostHandler {
   async function health(): Promise<Response> {
-    const status = await checkOmp(await deps.settings(), deps.env ?? process.env)
+    const status = await checkOmp(await deps.settings(), deps.env ?? process.env, deps.life)
     const body: HealthInfo = {
       ok: status.available,
       omp: { available: status.available, ...(status.version ? { version: status.version } : {}) },

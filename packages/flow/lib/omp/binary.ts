@@ -1,7 +1,8 @@
-import { execFile } from "node:child_process"
 import { accessSync, constants, realpathSync } from "node:fs"
 import path from "node:path"
 import { MIN_OMP_VERSION, type OmpProblem, type OmpSettings, type OmpStatus } from "../../shared/omp"
+import type { Flight, Lifecycle } from "../host/lifecycle"
+import { runProbe } from "../host/probe"
 import { filterEnv } from "./env"
 
 /**
@@ -59,22 +60,26 @@ export function resolveBinary(settings: Pick<OmpSettings, "binary">, env: NodeJS
   return undefined
 }
 
-/** The probe runs the user-chosen binary: it gets the same allowlisted environment as a card, never the whole host environment. */
-function readVersion(binary: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
-  const { promise, resolve, reject } = Promise.withResolvers<string | undefined>()
-  execFile(binary, ["--version"], { timeout: VERSION_TIMEOUT_MS, env: filterEnv(env), windowsHide: true }, (error, stdout) => {
-    if (error) return reject(error)
-    resolve(parseVersion(stdout)?.join("."))
-  })
-  return promise
+/**
+ * The probe runs the user-chosen binary: it gets the same allowlisted environment as a card, never the whole host environment.
+ * It leads its own process group on POSIX so a stop (the owner's `dispose`) takes a wrapper script's children with it.
+ */
+async function readVersion(binary: string, env: NodeJS.ProcessEnv, flight?: Flight): Promise<string | undefined> {
+  const result = await runProbe(binary, ["--version"], { env: filterEnv(env), timeoutMs: VERSION_TIMEOUT_MS, flight })
+  if (result.code !== 0) throw new Error(`${binary} --version exited with ${result.code}`)
+  return parseVersion(result.stdout)?.join(".")
 }
 
 /**
  * Whether omp is usable, as the status the settings dialog and every run
  * preflight read. Cached for 30 seconds per (binary setting, profile, PATH):
  * a version probe is a process spawn and the answer rarely changes.
+ *
+ * With `life` the probe is one of its flights: a closed lifecycle refuses a new probe with its 503, and a probe it
+ * stopped is never cached as "omp did not answer".
  */
-export async function checkOmp(settings: OmpSettings, env: NodeJS.ProcessEnv = process.env): Promise<OmpStatus> {
+export async function checkOmp(settings: OmpSettings, env: NodeJS.ProcessEnv = process.env, life?: Lifecycle): Promise<OmpStatus> {
+  life?.assertOpen()
   const key = `${settings.binary}|${settings.profile}|${env.PATH ?? ""}`
   if (cached && cached.key === key && Date.now() - cached.at < CACHE_MS) return cached.status
 
@@ -90,7 +95,9 @@ export async function checkOmp(settings: OmpSettings, env: NodeJS.ProcessEnv = p
     })
   }
   if (binary) {
-    version = await readVersion(binary, env).catch(() => undefined)
+    const probe = life ? life.run((flight) => readVersion(binary, env, flight)) : readVersion(binary, env)
+    version = await probe.catch(() => undefined)
+    life?.assertOpen()
     if (!version) {
       problems.push({
         code: "spawn",

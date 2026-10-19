@@ -16,6 +16,7 @@ import type {
 } from "../../shared/engine"
 import type { OmpSettings } from "../../shared/omp"
 import { SWARM_MODES, type SwarmHost, type SwarmMode, type SwarmTracker } from "../../shared/swarm"
+import type { Lifecycle } from "../host/lifecycle"
 import { HttpError } from "../host/respond"
 import { capText, stripControl } from "../substrate/guard"
 import { createEventMapper, type EventMapper } from "./events"
@@ -63,12 +64,18 @@ export type EngineHostDeps = {
     maxAgeMs?: number
     now?: () => number
   }
+  /** Persisted sessions are searched among the newest run directories and, of those, the newest card directories, up to these bounds. Default 2000 runs, 4000 cards. */
+  scan?: { runs?: number; nodes?: number }
+  /** The clock the run-directory touch is throttled by. Default `Date.now`. */
+  now?: () => number
 }
 
 export type SessionHostOptions = {
   emit(event: BusEvent): void
   /** How often the swarm trackers are polled and idle sessions reaped. Default 5 s. */
   tickMs?: number
+  /** The lifecycle the `--version` probe of a start runs in (see `checkOmp`); the owner disposes it. */
+  life?: Lifecycle
 }
 
 export interface SessionHost {
@@ -94,6 +101,8 @@ export interface SessionHost {
   active(): string[]
   list(limit: number): Promise<SessionRow[]>
   live(): number
+  /** True while a process is live or starting, or a create is in flight: work that must not be moved to another project. Idle and lost records do not count. */
+  working(): boolean
   /** The `permission.v2.asked` and `question.v2.asked` events of every dialog still waiting for an answer, as first raised: replayed to an event stream that attaches later. */
   pending(): BusEvent[]
   /** One tick: poll swarm trackers, reap idle sessions. Runs on a timer; exposed so tests need no clock. */
@@ -116,6 +125,8 @@ const TURNS_FILE_LIMIT = 16 * 1024 * 1024
 /** Run and node directories looked at when a persisted session is searched by id or listed. */
 const SCAN_RUNS = 2_000
 const SCAN_NODES = 4_000
+/** Directories statted at once when the newest are picked. */
+const SCAN_STAT_BATCH = 64
 const DEFAULT_IDLE_REAP_MS = 30 * 60_000
 const DEFAULT_TICK_MS = 5_000
 const DEFAULT_WAIT_MS = 30 * 60_000
@@ -128,6 +139,12 @@ const TITLE_LIMIT = 80
 const GIVEN_TITLE_LIMIT = 120
 /** Dead and idle records kept for reads after the fact. */
 const KEPT_RECORDS = 64
+/** Ids remembered as disposed on purpose; the oldest are forgotten past this. */
+const KEPT_RETIRED = 4096
+/** A run directory is touched at most this often. */
+const TOUCH_INTERVAL_MS = 1000
+/** Run directories whose last touch is remembered. */
+const KEPT_TOUCHES = 1024
 /** `provider/id`, the provider starting with a letter or digit so the value can never be read as a flag. */
 const MODEL_SHAPE = /^[A-Za-z0-9][^/\s]*\/\S+$/
 
@@ -148,7 +165,18 @@ type PromptOutcome = { status: "completed" | "aborted" | "error"; error?: string
 
 type Waiter = { resolve(result: WaitResult): void }
 
-type Meta = { id: string; runId: string; nodeId: string; key: string; model?: string; title?: string; created: number; updated: number }
+type Meta = {
+  id: string
+  runId: string
+  nodeId: string
+  key: string
+  model?: string
+  title?: string
+  created: number
+  updated: number
+  /** The create request the session was last started with, so a session that is only on disk resumes as it was launched. Absent in files written before this existed. */
+  request?: Record<string, unknown>
+}
 
 type Session = {
   id: string
@@ -333,6 +361,12 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   const sessions = new Map<string, Session>()
   /** In-flight metadata writes; teardown awaits them so none lands after a directory is removed. */
   const writes = new Set<Promise<void>>()
+  /** The tail of the writes to each file: writes to one file run one after another. */
+  const fileWrites = new Map<string, Promise<void>>()
+  /** When each run directory was last touched, so a streaming session does not touch it on every save. */
+  const touched = new Map<string, number>()
+  /** Ids disposed on purpose (DELETE, release, replaced): a prompt for one is a 404, not a resume from the files left behind. */
+  const retired = new Set<string>()
   /** Run directories with a create in flight, counted: the directory exists before the session is registered. */
   const claims = new Map<string, number>()
   /** Run directories the prune is removing: a create for one waits for its removal to end. */
@@ -374,18 +408,30 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     return currentTurns(session, SAVED_TURNS).map((turn) => ({ role: turn.role, text: capText(turn.text, SAVED_TURN_TEXT).text }))
   }
 
+  /** Writes `text` beside `file` and renames it into place: a reader (or a crash) never leaves half a file. Writes to one file are serialised, so an older snapshot never lands after a newer one. */
+  function writeAtomic(file: string, text: string): Promise<void> {
+    const write = (fileWrites.get(file) ?? Promise.resolve()).then(async () => {
+      const temp = `${file}.${randomBytes(4).toString("hex")}.tmp`
+      try {
+        await fs.writeFile(temp, text, { mode: 0o600 })
+        await fs.rename(temp, file)
+      } catch (error) {
+        await fs.rm(temp, { force: true }).catch(() => undefined)
+        throw error
+      }
+    })
+    const tail = write.catch(() => undefined)
+    fileWrites.set(file, tail)
+    void tail.then(() => {
+      if (fileWrites.get(file) === tail) fileWrites.delete(file)
+    })
+    return write
+  }
+
   async function writeMeta(session: Session) {
     await fs.mkdir(session.stateDir, { recursive: true, mode: 0o700 })
-    // The turns first: a listed session always has the history it is opened with. Written aside and renamed, so a reader never sees half a file.
-    const turnsFile = path.join(session.stateDir, TURNS_FILE)
-    const temp = `${turnsFile}.${randomBytes(4).toString("hex")}.tmp`
-    try {
-      await fs.writeFile(temp, JSON.stringify(savedTurns(session)), { mode: 0o600 })
-      await fs.rename(temp, turnsFile)
-    } catch (error) {
-      await fs.rm(temp, { force: true }).catch(() => undefined)
-      throw error
-    }
+    // The turns first: a listed session always has the history it is opened with.
+    await writeAtomic(path.join(session.stateDir, TURNS_FILE), JSON.stringify(savedTurns(session)))
     const meta: Meta = {
       id: session.id,
       runId: session.home.runId,
@@ -395,8 +441,26 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
       title: session.title,
       created: session.created,
       updated: Date.now(),
+      request: { ...session.request, reuse: undefined },
     }
-    await fs.writeFile(path.join(session.stateDir, META_FILE), JSON.stringify(meta), { mode: 0o600 })
+    await writeAtomic(path.join(session.stateDir, META_FILE), JSON.stringify(meta))
+    await touchRun(session.stateDir)
+  }
+
+  /**
+   * Moves the owning run directory's modification time to now, at most once a second per directory: the newest-first scan ranks run directories by it, so a session in
+   * an old run that is in use again must not look old. Best effort: a directory that is gone or not ours to touch is ignored.
+   */
+  function touchRun(stateDir: string): Promise<void> {
+    const runDir = path.dirname(stateDir)
+    const at = (deps.now ?? Date.now)()
+    const last = touched.get(runDir)
+    if (last !== undefined && at - last < TOUCH_INTERVAL_MS) return Promise.resolve()
+    touched.delete(runDir)
+    touched.set(runDir, at)
+    if (touched.size > KEPT_TOUCHES) touched.delete(touched.keys().next().value as string)
+    const when = new Date()
+    return fs.utimes(runDir, when, when).catch(() => undefined)
   }
 
   /** Listing, resume and history metadata only: a failed write costs a fresh session on reuse, never a failed turn. */
@@ -450,6 +514,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
         title: asString(meta.title),
         created: asNumber(meta.created) ?? 0,
         updated: asNumber(meta.updated) ?? 0,
+        request: asRecord(meta.request),
       }
     } catch {
       return undefined
@@ -516,8 +581,10 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     trimRecords()
   }
 
+  /** Dead and idle records beyond the limit go, least recently active first. A record with a dialog waiting or a turn in flight is a card still using it: it stays. */
   function trimRecords() {
-    const kept = [...sessions.values()].filter((session) => (session.state === "lost" || session.state === "idle") && !session.starting)
+    const kept = [...sessions.values()].filter((session) => (session.state === "lost" || session.state === "idle") && !session.starting && !busy(session) && session.ui.pending() === 0)
+    kept.sort((a, b) => a.lastActivity - b.lastActivity)
     for (const session of kept.slice(0, Math.max(0, kept.length - KEPT_RECORDS))) sessions.delete(session.id)
   }
 
@@ -562,7 +629,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
 
     await step(Promise.resolve(evicting))
     const settings = await step(deps.settings())
-    const binary = await step(requireBinary(settings, env()))
+    const binary = await step(requireBinary(settings, env(), options.life))
     const request = session.request
     const mode = request.swarm ?? settings.swarm.mode
     const swarm = await step(Promise.resolve(deps.swarm?.launch({ settings, mode, runId: request.runId, nodeId: request.nodeId, stateDir: session.stateDir, env: env() })))
@@ -661,7 +728,11 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     const proc = session.proc ?? session.spawning
     // What a person can still read of this conversation once the process is gone; a start that never became live has none.
     if (session.opened) saveMeta(session)
-    if (state === "disposed") session.held = []
+    if (state === "disposed") {
+      session.held = []
+      retired.add(session.id)
+      if (retired.size > KEPT_RETIRED) retired.delete(retired.values().next().value as string)
+    }
     session.state = state
     // Whatever start is in flight sees the change after its current await and winds itself down.
     session.generation++
@@ -694,6 +765,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
 
   /** The process, resuming a reaped session on the way. */
   async function attach(id: string): Promise<{ session: Session; proc: OmpProcess }> {
+    if (!sessions.has(id)) await revive(id)
     const session = find(id)
     if (session.state === "idle") await begin(session, true).catch((error: unknown) => {
       if (error instanceof HttpError && error.status === 404) sessions.delete(id)
@@ -733,6 +805,9 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     const found = await locate(id, stateDir)
     if (!found) throw notFound(id)
     const base = (await readTurns(found.dir)) ?? []
+    // The directory the session was launched in, when it is still there: its history names that directory's files. Else the new request's.
+    const original = asString(found.meta.request?.directory)
+    const directory = original && (await fs.stat(original).then((stat) => stat.isDirectory(), () => false)) ? original : request.directory
     // Read again right before registering: the run may have been pruned while the history was read.
     const meta = await readMeta(found.dir)
     if (!meta || meta.id !== id) throw notFound(id)
@@ -742,7 +817,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     const known = sessions.get(id)
     if (known) return known
     if (prunes.has(path.basename(path.dirname(found.dir)))) throw notFound(id)
-    const session = makeSession(id, request, found.dir)
+    const session = makeSession(id, { ...request, directory }, found.dir)
     session.home = { runId: meta.runId || request.runId, nodeId: meta.nodeId || request.nodeId }
     session.created = meta.created || session.created
     session.title = meta.title
@@ -776,8 +851,13 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   async function reuse(request: CreateRequest, stateDir: string, signal?: AbortSignal): Promise<{ id: string }> {
     if (closing) throw hostClosed()
     const id = request.reuse as string
+    retired.delete(id)
     const known = sessions.get(id)
     const session = known ?? (await adopt(request, stateDir))
+    void touchRun(session.stateDir)
+    // Resumed for this request, not the one it was first created with: its model, permissions, swarm mode, tools and run follow the new body (and `releaseRun` and `holds` match the new run).
+    // What stays is the session's own: its id, its state directory and the directory it works in. A live process keeps the settings it was launched with until it is next resumed.
+    session.request = { ...request, directory: session.request.directory }
     if (session.state === "live") return { id }
     await beginFor(session, true, signal).catch((error: unknown) => {
       // A record this call created, or one omp cannot resume, is not kept.
@@ -785,6 +865,25 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
       throw error
     })
     return { id }
+  }
+
+  /**
+   * A session this host holds no record of (the record was trimmed, or the host restarted) but whose files are on disk: resumed the way a reuse would, from the request saved
+   * beside them. One disposed on purpose, or with no files, is the usual 404.
+   */
+  async function revive(id: string) {
+    if (retired.has(id)) throw notFound(id)
+    const found = await locate(id)
+    if (!found) throw notFound(id)
+    const saved = found.meta.request ?? { runId: found.meta.runId, nodeId: found.meta.nodeId, card: { key: found.meta.key }, model: found.meta.model }
+    const project = deps.project()
+    const parse = (directory: unknown) => parseCreate({ ...saved, directory, reuse: id }, project)
+    // A directory that is gone (a removed worktree) falls back to the project.
+    const request = await parse(saved.directory)
+      .catch(() => parse(undefined))
+      .catch(() => undefined)
+    if (!request) throw notFound(id)
+    await reuse(request, found.dir)
   }
 
   const timer = setInterval(() => void maintain(), options.tickMs ?? DEFAULT_TICK_MS)
@@ -817,18 +916,29 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
 
   type Found = { meta: Meta; dir: string }
 
-  /** Every persisted session directory under the state root (any run), in directory order and bounded; `visit` returns true to stop. */
+  /** The paths, newest modification first. Stats run in bounded parallel batches; a path that cannot be read sorts last. */
+  async function newestFirst(targets: string[]): Promise<string[]> {
+    const stamped: Array<{ target: string; at: number }> = []
+    for (let from = 0; from < targets.length; from += SCAN_STAT_BATCH) {
+      const batch = targets.slice(from, from + SCAN_STAT_BATCH)
+      stamped.push(...(await Promise.all(batch.map(async (target) => ({ target, at: await fs.stat(target).then((stat) => stat.mtimeMs, () => 0) })))))
+    }
+    return stamped.sort((a, b) => b.at - a.at).map((entry) => entry.target)
+  }
+
+  /**
+   * The persisted session directories under the state root (any run), newest first and bounded: the newest run directories by modification time, and of their card directories the newest overall.
+   * Old directories can never crowd out a recent conversation, however many there are. `visit` returns true to stop.
+   */
   async function scan(visit: (found: Found) => boolean): Promise<void> {
     const root = deps.stateRoot()
-    let nodes = 0
-    const runs = await fs.readdir(root).catch(() => [] as string[])
-    for (const run of runs.slice(0, SCAN_RUNS)) {
-      for (const node of await fs.readdir(path.join(root, run)).catch(() => [] as string[])) {
-        if (++nodes > SCAN_NODES) return
-        const dir = path.join(root, run, node)
-        const meta = await readMeta(dir)
-        if (meta && visit({ meta, dir })) return
-      }
+    const names = await fs.readdir(root).catch(() => [] as string[])
+    const runs = (await newestFirst(names.map((name) => path.join(root, name)))).slice(0, deps.scan?.runs ?? SCAN_RUNS)
+    const cards: string[] = []
+    for (const run of runs) for (const node of await fs.readdir(run).catch(() => [] as string[])) cards.push(path.join(run, node))
+    for (const dir of (await newestFirst(cards)).slice(0, deps.scan?.nodes ?? SCAN_NODES)) {
+      const meta = await readMeta(dir)
+      if (meta && visit({ meta, dir })) return
     }
   }
 
@@ -869,7 +979,10 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   return {
     async create(body, signal) {
       if (closing) throw hostClosed()
-      const request = await parseCreate(body, deps.project())
+      // One project and one state root for the whole create: the canvas can switch folders while it awaits, and a card's directory and its state belong to the same one.
+      const project = deps.project()
+      const root = deps.stateRoot()
+      const request = await parseCreate(body, project)
       if (closing) throw hostClosed()
       const runDir = safeSegment(request.runId)
       // A prune removing this run's directory finishes first: this create starts fresh, never into files being deleted.
@@ -878,7 +991,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
       signal?.throwIfAborted()
       claims.set(runDir, (claims.get(runDir) ?? 0) + 1)
       try {
-        return await launch(request, path.join(deps.stateRoot(), runDir, safeSegment(request.nodeId)), signal)
+        return await launch(request, path.join(root, runDir, safeSegment(request.nodeId)), signal)
       } finally {
         const left = (claims.get(runDir) ?? 1) - 1
         if (left > 0) claims.set(runDir, left)
@@ -1056,6 +1169,10 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
 
     live() {
       return [...sessions.values()].filter((session) => session.state === "live").length
+    },
+
+    working() {
+      return claims.size > 0 || [...sessions.values()].some((session) => session.state === "live" || session.starting !== undefined)
     },
 
     pending() {

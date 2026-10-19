@@ -38,7 +38,8 @@ function readRoster(root: string): Set<string> {
   }
 }
 
-export function createSwarmHost(deps: SwarmDeps): SwarmHost & { handle: HostHandler } {
+/** `dispose` refuses further preflights (503) and kills a probe in flight; the swarm's own processes belong to the sessions that launched them. */
+export function createSwarmHost(deps: SwarmDeps): SwarmHost & { handle: HostHandler; dispose(): Promise<void> } {
   const env = deps.env ?? process.env
   const preflight = createPreflight({ python: deps.python })
   const sessions = new Map<string, Session>()
@@ -81,5 +82,6 @@ export function createSwarmHost(deps: SwarmDeps): SwarmHost & { handle: HostHand
     },
 
     handle: swarmRoutes({ settings: deps.settings, env, preflight }),
+    dispose: preflight.dispose,
   }
 }

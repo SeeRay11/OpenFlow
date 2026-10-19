@@ -1,5 +1,19 @@
 import { describe, expect, test } from "bun:test"
-import { findRun, RUN_DELETE, RUN_PRUNE, runDuration, runMenuOptions, runOption, runOptions, runTime } from "./runs"
+import type { RunLog } from "../graph/types"
+import {
+  abandoned,
+  findRun,
+  interrupted,
+  RESUME_STALE_MS,
+  RUN_DELETE,
+  RUN_PRUNE,
+  runDuration,
+  runMenuOptions,
+  runOption,
+  runOptions,
+  runTime,
+  superseded,
+} from "./runs"
 import type { RunEntry } from "./store"
 
 const at = new Date(2026, 8, 2, 14, 32).getTime()
@@ -184,5 +198,65 @@ describe("findRun", () => {
   test("no id and no match both come back empty", () => {
     expect(findRun([entry()], undefined)).toBeUndefined()
     expect(findRun([entry()], "ghost")).toBeUndefined()
+  })
+})
+
+describe("resuming an interrupted run", () => {
+  const live = (over: Partial<RunEntry> = {}) => entry({ status: "running", finished: undefined, ...over })
+
+  test("a running log that was written a moment ago belongs to a live page, not an interrupted one", () => {
+    const now = at + 10 * 60_000
+    expect(abandoned(live({ updatedAt: now - 30_000 }), now)).toBe(false)
+    expect(interrupted([live({ updatedAt: now - 30_000 })], "alpha", now)).toBeUndefined()
+  })
+
+  test("a running log that went quiet for the whole window is interrupted", () => {
+    const now = at + 60 * 60_000
+    expect(abandoned(live({ updatedAt: now - RESUME_STALE_MS }), now)).toBe(true)
+    expect(interrupted([live({ updatedAt: now - RESUME_STALE_MS })], "alpha", now)?.id).toBe("run-1")
+  })
+
+  test("an ended run is never interrupted, however old", () => {
+    expect(abandoned(entry({ status: "stopped", updatedAt: at }), at + 86_400_000)).toBe(false)
+  })
+
+  test("a log from before updatedAt existed is judged by when it started", () => {
+    expect(abandoned(live(), at + 60_000)).toBe(false)
+    expect(abandoned(live(), at + RESUME_STALE_MS)).toBe(true)
+  })
+
+  test("a newer run still being written hides an older abandoned one on the same canvas", () => {
+    const now = at + 60 * 60_000
+    const rows = [
+      live({ id: "old", started: at, updatedAt: at + 1_000 }),
+      live({ id: "new", started: now - 120_000, updatedAt: now - 10_000 }),
+    ]
+    expect(interrupted(rows, "alpha", now)).toBeUndefined()
+  })
+
+  test("another canvas's runs are not offered", () => {
+    const now = at + 60 * 60_000
+    expect(interrupted([live({ pipeline: "beta", updatedAt: at })], "alpha", now)).toBeUndefined()
+  })
+
+  test("a superseded log is stopped, names its successor and cannot be offered again", () => {
+    const node = (id: string, status: RunLog["nodes"][number]["status"]) => ({ id, role: id, status })
+    const log: RunLog = {
+      id: "run-old",
+      pipeline: "alpha",
+      pipelineID: "p",
+      input: "x",
+      status: "running",
+      started: at,
+      updatedAt: at + 5_000,
+      nodes: [node("a", "done"), node("b", "running"), node("c", "queued")],
+    }
+    const closed = superseded(log, "run-new", at + 999_000)
+
+    expect(closed).toMatchObject({ status: "stopped", resumedBy: "run-new", finished: at + 5_000 })
+    expect(closed.nodes.map((entry) => entry.status)).toEqual(["done", "stopped", "stopped"])
+    const listed = entry({ id: "run-old", status: closed.status, started: closed.started, updatedAt: closed.updatedAt })
+    expect(interrupted([listed], "alpha", at + 60 * 60_000)).toBeUndefined()
+    expect(log.status).toBe("running")
   })
 })

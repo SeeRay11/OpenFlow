@@ -77,6 +77,7 @@ export function flowStore(options: { project: string }): Plugin {
             search: url.searchParams,
             json: () => read(req),
             profileDir: created.profileDir,
+            projectLocked: created.projectLocked,
           })
           if (!result) return next()
           json(res, result.status, result.body)

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
+import { alive, until } from "../uplift/testing/stub-planner"
 import { configuredRoot, createPreflight } from "./preflight"
 import { DUMMY_KEYS, fakePython, fakeRoot, hostEnv, settings, tmpdir } from "./testing/fixtures"
 
@@ -178,5 +179,44 @@ posix("preflight with a python stand-in", () => {
     clock += 2_000
     await preflight({ requested: "auto", settings: settings(root), env: good() })
     expect(runs()).toBe(6)
+  })
+})
+
+posix("preflight dispose", () => {
+  /** A python whose probe hangs: it records its pid, then waits far longer than any test. */
+  function hungPython() {
+    const script = path.join(dir, "hung-python")
+    const pids = path.join(dir, "hung.pid")
+    fs.writeFileSync(script, `#!/bin/sh\necho $$ > "${pids}"\nexec sleep 300\n`)
+    fs.chmodSync(script, 0o755)
+    return { script, pids }
+  }
+
+  test("dispose kills the probe in flight and the check answers 503 instead of a missing interpreter", async () => {
+    const { script, pids } = hungPython()
+    const preflight = createPreflight({ python: script })
+    const checking = preflight({ requested: "always", settings: settings(root), env: good() }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    await until(() => fs.existsSync(pids) && fs.readFileSync(pids, "utf8").trim() !== "")
+    const pid = Number(fs.readFileSync(pids, "utf8"))
+    expect(await alive(pid)).toBe(true)
+
+    await preflight.dispose()
+
+    expect(await alive(pid)).toBe(false)
+    expect(await checking).toMatchObject({ status: 503 })
+  })
+
+  test("a disposed preflight refuses new checks, off included, and runs no probe", async () => {
+    const log = path.join(dir, "runs.log")
+    const counted = fakePython(dir, { runs: true, crypto: true, log })
+    const preflight = createPreflight({ python: counted })
+    await preflight.dispose()
+    for (const requested of ["auto", "off"] as const) {
+      expect(await preflight({ requested, settings: settings(root), env: good() }).then(() => undefined, (error: unknown) => error)).toMatchObject({ status: 503 })
+    }
+    expect(fs.existsSync(log)).toBe(false)
   })
 })

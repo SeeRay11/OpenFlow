@@ -19,6 +19,14 @@ import type { OmpFrame } from "./rpc-types"
 
 /** One tool result piece, cut so a `read` of a large file cannot fill the SSE queue. */
 const TOOL_TEXT_LIMIT = 32 * 1024
+/** The most pieces of one tool result an event carries: with the piece limit, one event stays under a megabyte. */
+const TOOL_PIECES = 32
+/** A JSON value (tool arguments, a raw result) that serialises larger than this is shrunk before it is sent. */
+const JSON_BUDGET = 256 * 1024
+/** What a string inside a shrunk JSON value keeps. */
+const JSON_LEAF = 2048
+const JSON_BREADTH = 100
+const JSON_DEPTH = 8
 
 export interface EventMapper {
   map(frame: OmpFrame): BusEvent[]
@@ -47,12 +55,37 @@ function clip(text: string): string {
   return text.length > TOOL_TEXT_LIMIT ? `${text.slice(0, TOOL_TEXT_LIMIT)}\n… ${text.length - TOOL_TEXT_LIMIT} more characters` : text
 }
 
+function shrink(value: unknown, depth: number): unknown {
+  if (typeof value === "string") return capText(value, JSON_LEAF).text
+  if (typeof value !== "object" || value === null) return value
+  if (depth >= JSON_DEPTH) return "…"
+  if (Array.isArray(value)) return value.slice(0, JSON_BREADTH).map((item) => shrink(item, depth + 1))
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, JSON_BREADTH)
+      .map(([key, item]) => [key, shrink(item, depth + 1)]),
+  )
+}
+
+/**
+ * A JSON value from the child that goes into one event: unbounded `args` of a `write` of a large file would be one chunk over the
+ * SSE queue's limit, and the stream drops a client on the chunk that overflows it. Small values pass untouched; a large one keeps
+ * its shape with long strings and lists cut, and one that is still too large is replaced by its size.
+ */
+function bounded(value: unknown): unknown {
+  const size = JSON.stringify(value)?.length ?? 0
+  if (size <= JSON_BUDGET) return value
+  const shrunk = shrink(value, 0)
+  return (JSON.stringify(shrunk)?.length ?? 0) <= JSON_BUDGET ? shrunk : { truncated: `${size} characters` }
+}
+
 /** The text pieces of a tool result (`{ content: [{ type: "text", text }] }`, or a bare string). Images and files are named, not inlined. */
 function contentOf(result: unknown): Array<{ type: "text"; text: string }> {
   if (typeof result === "string") return result ? [{ type: "text", text: clip(result) }] : []
   const blocks = asArray(asRecord(result)?.content)
   const parts: Array<{ type: "text"; text: string }> = []
   for (const raw of blocks) {
+    if (parts.length >= TOOL_PIECES) break
     const block = asRecord(raw)
     if (block?.type === "text" && asString(block.text)) parts.push({ type: "text", text: clip(block.text as string) })
     if (block?.type === "image") parts.push({ type: "text", text: "[image]" })
@@ -236,7 +269,7 @@ export function createEventMapper(options: EventMapperOptions): EventMapper {
     }
     if (!tool || !callID || entry.lastCall === callID) return
     entry.lastCall = callID
-    const args = asString(progress.currentToolArgs)
+    const args = asString(progress.currentToolArgs)?.slice(0, TOOL_TEXT_LIMIT)
     out.push({ type: "session.next.tool.input.started", data: { sessionID: entry.sessionID, callID, name: tool } })
     out.push({ type: "session.next.tool.called", data: { sessionID: entry.sessionID, callID, tool, input: args === undefined ? {} : { [asString(progress.currentToolArgsKey) ?? "args"]: args } } })
   }
@@ -275,7 +308,7 @@ export function createEventMapper(options: EventMapperOptions): EventMapper {
           announce(callID, tool, out)
           if (called.has(callID)) break
           called.add(callID)
-          out.push({ type: "session.next.tool.called", data: { sessionID, callID, tool, input: frame.args ?? {} } })
+          out.push({ type: "session.next.tool.called", data: { sessionID, callID, tool, input: bounded(frame.args ?? {}) } })
           break
         }
         case "tool_execution_update": {
@@ -290,10 +323,10 @@ export function createEventMapper(options: EventMapperOptions): EventMapper {
           if (!callID) break
           const content = contentOf(frame.result)
           if (frame.isError === true) {
-            out.push({ type: "session.next.tool.failed", data: { sessionID, callID, error: textOf(content) || "tool failed", result: frame.result } })
+            out.push({ type: "session.next.tool.failed", data: { sessionID, callID, error: textOf(content) || "tool failed", result: bounded(frame.result) } })
             break
           }
-          out.push({ type: "session.next.tool.success", data: { sessionID, callID, content, ...(content.length ? {} : { result: frame.result }) } })
+          out.push({ type: "session.next.tool.success", data: { sessionID, callID, content, ...(content.length ? {} : { result: bounded(frame.result) }) } })
           break
         }
         case "auto_retry_start": {

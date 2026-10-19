@@ -90,7 +90,7 @@ export function Inspector(props: {
                 />
               </div>
               <div class="row">
-                <span class="hint">a card needs a model: pick one here, or set a default model in the picker</span>
+                <span class="hint">a card needs a model: pick one here (a saved default applies only to cards added later)</span>
                 <button
                   class="btn"
                   disabled={!selected().agent.model || testing()}

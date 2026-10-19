@@ -355,7 +355,7 @@ function harness(options: HarnessOptions = {}) {
     },
     onPermission: options.onPermission,
     onQuestion: options.onQuestion,
-    onQuestionClosed: (requestID) => closed.push(requestID),
+    onQuestionClosed: (sessionID, requestID) => closed.push(`${sessionID}:${requestID}`),
     onUpliftFailure: options.onUpliftFailure,
   }
 
@@ -1266,6 +1266,31 @@ describe("run log", () => {
     await run.done
   })
 
+  test("every write stamps updatedAt, and a quiet run keeps writing on its heartbeat", async () => {
+    // Another tab reads this stamp to tell a live run from an abandoned one, so it
+    // has to keep moving through a turn that patches nothing.
+    const h = harness({ behavior: { a: { hold: true } } })
+    const run = h.run(pipeline("a"), "do the thing", { checkpointEvery: 10_000_000, heartbeatEvery: 1 })
+    for (let tries = 0; tries < 50 && h.saved.length < 2; tries++) await flush()
+
+    expect(h.saved.length).toBeGreaterThanOrEqual(2)
+    expect(h.saved.every((entry) => entry.status === "running" && typeof entry.updatedAt === "number")).toBe(true)
+    expect(h.saved.at(-1)!.updatedAt!).toBeGreaterThanOrEqual(h.saved[0].updatedAt!)
+
+    h.release("a")
+    const log = await run.done
+    expect(h.saved.at(-1)!.updatedAt).toBeGreaterThanOrEqual(log.finished!)
+  })
+
+  test("a finished run stops its heartbeat", async () => {
+    const h = harness()
+    await h.run(pipeline("a"), "do the thing", { checkpointEvery: 10_000_000, heartbeatEvery: 1 }).done
+    const writes = h.saved.length
+    await flush()
+    await flush()
+    expect(h.saved).toHaveLength(writes)
+  })
+
   test("the final write wins over a pending checkpoint", async () => {
     const h = harness({ behavior: { a: { hold: true } } })
     const run = h.run(pipeline("a"), "do the thing", { checkpointEvery: 1 })
@@ -1360,7 +1385,7 @@ describe("questions", () => {
     expect(h.questionRejects).toEqual([{ sessionID: h.sessionOf.get("a")!, requestID: "que-1" }])
     // The dialog must come down too, or it keeps offering buttons that answer
     // a request the server has already been told to drop.
-    expect(h.closed).toEqual(["que-1"])
+    expect(h.closed).toEqual([`${h.sessionOf.get("a")}:que-1`])
 
     h.release("a")
     await run.done
@@ -1395,6 +1420,21 @@ describe("questions", () => {
     await run.done
   })
 
+  test("a question closing names its session, so two sessions with one id close separately", async () => {
+    const h = harness({ behavior: { a: { hold: true }, b: { hold: true } }, onQuestion: async () => [["postgres"]] })
+    const run = h.run(pipeline("a", "b"))
+    await flush()
+
+    h.question("a", { id: "que-1", questions: [ask] })
+    h.question("b", { id: "que-1", questions: [ask] })
+    await flush()
+
+    expect(h.closed.toSorted()).toEqual([`${h.sessionOf.get("a")}:que-1`, `${h.sessionOf.get("b")}:que-1`].toSorted())
+    h.release("a")
+    h.release("b")
+    await run.done
+  })
+
   test("a question the host already withdrew is dropped without an error", async () => {
     const h = harness({
       behavior: { a: { hold: true } },
@@ -1408,7 +1448,7 @@ describe("questions", () => {
     await flush()
 
     expect(h.questionReplies).toHaveLength(1)
-    expect(h.closed).toEqual(["que-1"])
+    expect(h.closed).toEqual([`${h.sessionOf.get("a")}:que-1`])
     expect(h.notices.filter((notice) => notice.kind === "error")).toEqual([])
     h.release("a")
     await run.done
@@ -2231,6 +2271,14 @@ describe("a working copy per card", () => {
     expect(h.worktreeCalls.open).toEqual([])
     expect(h.worktreeCalls.merged).toBe(0)
     for (const node of log.nodes) expect(h.sessionDirs.get(node.sessionID!)).toBeUndefined()
+  })
+
+  test("cards without a tree are created in the project the run started in", async () => {
+    // The project can be switched while the run is going; every later card must stay where the run began.
+    const h = harness()
+    const log = await h.run(pipeline("a->b"), "do the thing", { project: "/work/started-here" }).done
+
+    for (const node of log.nodes) expect(h.sessionDirs.get(node.sessionID!)).toBe("/work/started-here")
   })
 
   test("an isolated card is counted from its own branch, not the shared tree", async () => {
@@ -4498,6 +4546,14 @@ describe("project memory", () => {
       ],
       briefState: "complete",
     })
+  })
+
+  test("a recalled memory keeps the age the host gave it", async () => {
+    const aged = (): MemoryReadResult => ({ ...found(), items: found().items.map((item) => ({ ...item, ageDays: 3 })) })
+    const h = harness({ memory: { read: aged } })
+    const log = await h.run(pipeline("a")).done
+
+    expect(log.nodes[0].memory?.read?.items.map((item) => item.ageDays)).toEqual([3])
   })
 
   test("with an uplifted task the block still comes last, after the context section", async () => {

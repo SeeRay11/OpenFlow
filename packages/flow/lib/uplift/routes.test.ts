@@ -98,6 +98,21 @@ describe("POST", () => {
     await until(async () => !(await alive(pids.leader)) && !(await alive(pids.helper)))
   })
 
+  test.skipIf(process.platform === "win32")("a planner counts as active work while it runs, and not once it was stopped", async () => {
+    const harness = await setup()
+    const uplift = harness.create()
+    const base = serve(uplift)
+    expect(uplift.active()).toBe(false)
+    const controller = new AbortController()
+    const pending = post(base, { runId: "run1", nodeId: "n1", original: "@hang x" }, { signal: controller.signal })
+    await until(async () => harness.pids("openflow-run1-n1-1").then(() => true, () => false))
+    expect(uplift.active()).toBe(true)
+
+    controller.abort()
+    await expect(pending).rejects.toThrow()
+    await until(() => !uplift.active())
+  })
+
   test.each([
     ["not JSON", "{nope", 400],
     ["null", "null", 400],

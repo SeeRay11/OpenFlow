@@ -109,8 +109,8 @@ export function NodeCard(props: {
       </div>
 
       <div class="node-body">
-        <div class="node-line" title="runs on the agent's own default when blank">
-          {props.node.agent.model || "default model"}
+        <div class="node-line" title={props.node.agent.model ? undefined : "this card cannot run until a model is picked"}>
+          {props.node.agent.model || "no model"}
         </div>
         <Show when={props.node.agent.name}>
           <div class="node-meta">agent: {props.node.agent.name}</div>

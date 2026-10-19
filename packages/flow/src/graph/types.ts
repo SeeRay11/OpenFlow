@@ -45,7 +45,7 @@ export type FlowAgent = {
    * an old file still loads; nothing reads it.
    */
   name?: string
-  /** "providerID/modelID". Empty = Omp's configured default model. */
+  /** "providerID/modelID". Empty = no model chosen yet; preflight blocks the run (`no-model`). */
   model?: string
   /** Role instructions, prepended to every prompt this node sends. */
   prompt: string
@@ -374,6 +374,14 @@ export type RunLog = {
   status: "running" | "done" | "error" | "stopped"
   started: number
   finished?: number
+  /**
+   * When the log was last written. The engine writes it on every checkpoint and on a fixed
+   * heartbeat, so a `running` log that has gone quiet is one whose page is gone. Absent on
+   * logs recorded before it existed.
+   */
+  updatedAt?: number
+  /** Set on an interrupted run once a resumed run took it over: the id of that run. */
+  resumedBy?: string
   nodes: RunNodeLog[]
   /** Every node's usage, summed. */
   usage?: Spend

@@ -8,6 +8,7 @@ import { createSwarmHost } from "../swarm"
 import { createTerminal, type TerminalModule } from "../terminal"
 import { createUplift } from "../uplift"
 import { createGate } from "./gate"
+import { createLifecycle } from "./lifecycle"
 import { stateDir, stateRoot } from "./paths"
 import { guarded, type HostHandler } from "./respond"
 
@@ -31,7 +32,12 @@ export type Host = {
   terminal: TerminalModule
   /** The omp profile's config directory (where `mcp.json` and skills live), once omp has reported it. */
   profileDir(): Promise<string | undefined>
-  /** Closes every omp process, planner and shell. Idempotent. */
+  /**
+   * True while the host has work bound to the project it started in: an omp process live or starting, a create in flight, a turn running, a planner
+   * running. `POST /project` refuses to switch while it is true (the store's `projectLocked`). Idle sessions waiting to be resumed do not count.
+   */
+  projectLocked(): boolean
+  /** Closes every omp process, planner, probe and shell, and refuses new work. Idempotent. */
   dispose(): Promise<void>
 }
 
@@ -46,6 +52,8 @@ export function createHost(options: HostOptions): Host {
   const project = options.project
   const root = () => stateRoot(project(), env)
 
+  // The terminal's `omp --version` probe: the engine, omp-config and swarm modules each own the probes and CLI runs of their own.
+  const life = createLifecycle("the host")
   const omp = createOmpConfig({ stateDir: () => stateDir(env), env, spawn: spawnOmp, launch: buildLaunch })
   const settings = omp.settings
   const swarm = createSwarmHost({ settings, env })
@@ -60,7 +68,7 @@ export function createHost(options: HostOptions): Host {
     allowRemote: options.allowRemote,
     async omp() {
       const current = await settings()
-      const status = await checkOmp(current, env)
+      const status = await checkOmp(current, env, life)
       if (status.available && status.binary) {
         return { argv: [status.binary, ...(current.profile ? ["--profile", current.profile] : [])] }
       }
@@ -85,8 +93,9 @@ export function createHost(options: HostOptions): Host {
     async profileDir() {
       return (await omp.status()).configDir
     },
+    projectLocked: () => engine.working() || uplift.active(),
     dispose() {
-      disposed ??= Promise.all([engine.dispose(), uplift.dispose(), substrate.dispose(), terminal.dispose()]).then(() => undefined)
+      disposed ??= Promise.all([engine.dispose(), uplift.dispose(), substrate.dispose(), terminal.dispose(), omp.dispose(), swarm.dispose(), life.dispose()]).then(() => undefined)
       return disposed
     },
   }

@@ -28,6 +28,7 @@ let dir: string
 let bin: string
 let server: { port?: number; stop(closeActive?: boolean): Promise<void> } | undefined
 let spawns: number
+let configModule: ReturnType<typeof createOmpConfig> | undefined
 
 function start(runTimeoutMs?: number) {
   const module = createOmpConfig({
@@ -46,6 +47,7 @@ function start(runTimeoutMs?: number) {
       } as Partial<OmpProcess> as OmpProcess
     },
   })
+  configModule = module
   server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -228,6 +230,26 @@ describe.skipIf(process.platform === "win32")("POST authImport", () => {
   test("omp missing is a 503", async () => {
     start()
     await rm(path.join(bin, "omp"))
+    expect((await post()).status).toBe(503)
+  })
+
+  test("dispose kills a run in flight with everything it started, answers it, and refuses the next call", async () => {
+    start()
+    await flag("hang")
+    const posting = post()
+    const pidFile = path.join(bin, "pids.json")
+    // The fake omp writes its pids as it starts hanging: no event to await for another process.
+    const deadline = Date.now() + 10_000
+    while (Date.now() < deadline && !(await readFile(pidFile, "utf8").then((text) => text.trim() !== "", () => false))) await Bun.sleep(10)
+    const pids: unknown = JSON.parse(await readFile(pidFile, "utf8"))
+    if (!isRecord(pids) || typeof pids.child !== "number" || typeof pids.grandchild !== "number") throw new Error("the fake omp recorded no pids")
+    expect(await alive(pids.child)).toBe(true)
+
+    await configModule?.dispose()
+
+    expect((await posting).status).toBe(502)
+    expect(await alive(pids.child)).toBe(false)
+    expect(await alive(pids.grandchild)).toBe(false)
     expect((await post()).status).toBe(503)
   })
 })

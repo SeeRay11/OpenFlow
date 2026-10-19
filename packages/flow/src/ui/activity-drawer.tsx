@@ -88,7 +88,7 @@ export function ActivityDrawer() {
             <span class="badge" data-status={runtime()?.status ?? "idle"}>
               {runtime()?.status ?? "idle"}
             </span>
-            <span class="hint mono">{selected().agent.model || "default model"}</span>
+            <span class="hint mono">{selected().agent.model || "no model"}</span>
             <Show when={elapsed()}>
               <span class="hint">{elapsed()}</span>
             </Show>

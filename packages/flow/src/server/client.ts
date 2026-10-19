@@ -50,17 +50,24 @@ let context: FlowContext | undefined
  * URL means nothing outside a page.
  */
 let origin = ""
+/** Bumped whenever the cached context is dropped, so a fetch that was already in flight cannot put its answer back. */
+let generation = 0
 
 export function setOrigin(value: string) {
   origin = value
   context = undefined
+  generation++
 }
 
 export async function connect() {
   if (context) return { context }
+  const mine = generation
   const response = await fetch(`${origin}/flow/api/context`)
   if (!response.ok) throw new Error(`flow store unavailable (${response.status})`)
-  context = (await response.json()) as FlowContext
+  const fetched = (await response.json()) as FlowContext
+  // A disconnect (project switch) or origin change while this was in flight made the answer stale: never cache it, ask again for the live project.
+  if (mine !== generation) return connect()
+  context = fetched
   return { context }
 }
 
@@ -77,6 +84,7 @@ export function project() {
  */
 export function disconnect() {
   context = undefined
+  generation++
 }
 
 /**
@@ -166,10 +174,12 @@ export type ModelTest = { ok: boolean; error?: string; ms: number }
  */
 export async function testModel(model: string, options: { timeout?: number } = {}): Promise<ModelTest> {
   const started = Date.now()
+  // One run per test: the host allows one session per run and card, so a shared id would let two tests in flight dispose each other.
+  const runId = `model-test-${crypto.randomUUID()}`
   let sessionID: string | undefined
   try {
     const session = await createSession({
-      runId: "model-test",
+      runId,
       nodeId: "model-test",
       card: { key: "openflow-model-test", role: "model test" },
       model,
@@ -186,6 +196,8 @@ export async function testModel(model: string, options: { timeout?: number } = {
     return { ok: false, error: describe(error), ms: Date.now() - started }
   } finally {
     if (sessionID) await release(sessionID)
+    // Takes the run's record with it, including a start whose answer never came back.
+    await releaseRun(runId)
   }
 }
 

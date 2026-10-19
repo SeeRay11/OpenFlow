@@ -12,7 +12,7 @@ import {
   modeOf,
   roundsOf,
 } from "./graph/types"
-import { actions, primary, runtimeOf, state } from "./state"
+import { actions, primary, requestKey, runtimeOf, state } from "./state"
 
 /**
  * The store is a module singleton, so every test starts from a reset graph.
@@ -336,16 +336,29 @@ describe("selection", () => {
 })
 
 describe("permissions", () => {
-  const request = { requestID: "req-1", nodeID: "n1", role: "coder", action: "bash", resources: ["ls"] }
+  const request = { sessionID: "s1", requestID: "req-1", nodeID: "n1", role: "coder", action: "bash", resources: ["ls"] }
 
   test("an answer resolves the promise the engine is waiting on", async () => {
     const pending = actions.askPermission(request)
     expect(state.permissions).toHaveLength(1)
 
-    actions.answerPermission("req-1", "once")
+    actions.answerPermission(requestKey("s1", "req-1"), "once")
 
     expect(await pending).toBe("once")
     expect(state.permissions).toEqual([])
+  })
+
+  test("two sessions asking with the same id are answered separately", async () => {
+    // omp numbers requests per process, so "1" from one card is not "1" from another.
+    const first = actions.askPermission(request)
+    const second = actions.askPermission({ ...request, sessionID: "s2", nodeID: "n2" })
+
+    actions.answerPermission(requestKey("s2", "req-1"), "reject")
+
+    expect(await second).toBe("reject")
+    expect(state.permissions.map((entry) => entry.sessionID)).toEqual(["s1"])
+    actions.answerPermission(requestKey("s1", "req-1"), "once")
+    expect(await first).toBe("once")
   })
 
   test("a stop rejects everything still pending", async () => {
@@ -362,6 +375,23 @@ describe("permissions", () => {
 
   test("answering something unknown is harmless", () => {
     expect(() => actions.answerPermission("nope", "once")).not.toThrow()
+  })
+})
+
+describe("questions", () => {
+  const request = { sessionID: "s1", requestID: "q1", nodeID: "n1", role: "coder", questions: [] }
+
+  test("a question closed in one session leaves the other session's dialog and resolver alone", async () => {
+    const first = actions.askQuestion(request)
+    const second = actions.askQuestion({ ...request, sessionID: "s2", nodeID: "n2" })
+
+    actions.answerQuestion(requestKey("s1", "q1"), undefined)
+
+    expect(await first).toBeUndefined()
+    expect(state.questions.map((entry) => entry.sessionID)).toEqual(["s2"])
+    actions.answerQuestion(requestKey("s2", "q1"), [["yes"]])
+    expect(await second).toEqual([["yes"]])
+    expect(state.questions).toEqual([])
   })
 })
 

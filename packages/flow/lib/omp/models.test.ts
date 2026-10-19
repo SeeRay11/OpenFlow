@@ -92,6 +92,33 @@ describe.skipIf(process.platform === "win32")("catalog", () => {
     expect(h.fake.procs).toHaveLength(1)
   })
 
+  test("dispose kills the omp process of a read in flight, the caller gets a 503, and later lists are refused without a spawn", async () => {
+    const asked = Promise.withResolvers<void>()
+    h.fake.setup((proc) =>
+      proc.on("get_available_models", async () => {
+        asked.resolve()
+        await proc.exited
+        throw rpcError("get_available_models", "omp exited before answering")
+      }),
+    )
+    const models = catalog()
+    const reading = models.list().then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    await asked.promise
+    await models.dispose()
+
+    expect(h.fake.procs[0]?.killCalls).toBe(1)
+    expect(await reading).toMatchObject({ status: 503 })
+    const later = await models.list().then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect(later).toMatchObject({ status: 503 })
+    expect(h.fake.procs).toHaveLength(1)
+  })
+
   test("the cache expires", async () => {
     h.fake.setup((proc) => proc.on("get_available_models", { models: [SONNET] }))
     const models = catalog({ ttlMs: 0 })

@@ -1,5 +1,6 @@
-import { For, Show, createEffect, createSignal, onCleanup, createMemo } from "solid-js"
+import { For, Show, createEffect, createSignal, on, onCleanup, createMemo } from "solid-js"
 import * as api from "../server/client"
+import { latest } from "../server/latest"
 import { formatAge, matches, sessionLabel, type SessionRow, type Turn } from "../server/sessions"
 import { state } from "../state"
 import { IconBack, IconRestart, IconSearch } from "./icons"
@@ -24,6 +25,8 @@ export function SessionsPanel(props: { project: string; onClose: () => void }) {
   const [open, setOpen] = createSignal<SessionRow>()
   const [turns, setTurns] = createSignal<Turn[]>()
   const [now, setNow] = createSignal(Date.now())
+  const listing = latest()
+  const opening = latest()
 
   // Ages are relative, so a list left open goes wrong without a clock of its
   // own — nothing else here changes between runs.
@@ -31,11 +34,16 @@ export function SessionsPanel(props: { project: string; onClose: () => void }) {
   onCleanup(() => clearInterval(clock))
 
   async function refresh() {
+    // The newest call owns the list and the spinner: an older list (the previous project's) landing late, or finishing first, must not overwrite or clear them.
+    const current = listing.begin()
     setLoading(true)
     try {
-      setRows(await api.sessions())
+      const loaded = await api.sessions()
+      if (!current()) return
+      setRows(loaded)
       setError(undefined)
     } catch (failure) {
+      if (!current()) return
       setError(api.describe(failure))
     }
     setLoading(false)
@@ -51,16 +59,24 @@ export function SessionsPanel(props: { project: string; onClose: () => void }) {
     void refresh()
   })
 
-  async function openSession(row: SessionRow) {
+  /** Shows one session's turns, or goes back to the list with no row. Only the newest call may write: a slower, older answer must not land under another row's header. */
+  async function openSession(row?: SessionRow) {
+    const current = opening.begin()
     setOpen(row)
     setTurns(undefined)
+    if (!row) return
     try {
-      setTurns(await api.sessionTranscript(row.id))
+      const loaded = await api.sessionTranscript(row.id)
+      if (current()) setTurns(loaded)
     } catch (failure) {
+      if (!current()) return
       setError(api.describe(failure))
       setTurns([])
     }
   }
+
+  // A transcript belongs to the project it was read from.
+  createEffect(on(() => props.project, () => void openSession(), { defer: true }))
 
   const visible = createMemo(() => rows().filter((row) => matches(row, query())))
 
@@ -76,7 +92,7 @@ export function SessionsPanel(props: { project: string; onClose: () => void }) {
                 type="button"
                 title="back to the session list"
                 aria-label="back to the session list"
-                onClick={() => setOpen(undefined)}
+                onClick={() => void openSession()}
               >
                 <IconBack />
               </button>

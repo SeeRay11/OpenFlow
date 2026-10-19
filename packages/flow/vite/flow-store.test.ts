@@ -5,6 +5,8 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { createServer, type ViteDevServer } from "vite"
+import { resetOmpCheck } from "../lib/omp/binary"
+import { alive, until } from "../lib/uplift/testing/stub-planner"
 import { flowStore } from "./flow-store"
 
 /**
@@ -212,5 +214,76 @@ describe("raw request lines on the vite dev host", () => {
     const base = await start()
     const response = await raw(base, { target: "/flow/api/context", host })
     expect(response.status).toBe(403)
+  })
+})
+
+// The omp stand-in is a `#!/bin/sh` script and the probe is a POSIX process group: nothing here runs on Windows.
+describe.skipIf(process.platform === "win32")("the host's children under the vite dev server", () => {
+  test("closing the server leaves no omp probe running, and the request that was waiting on it is answered", async () => {
+    // `omp --version` answers; anything else (the catalog read's rpc process) records its pid and hangs.
+    const bin = path.join(stateDir, "bin")
+    const pids = path.join(stateDir, "probe.pid")
+    await fs.mkdir(bin)
+    await fs.writeFile(path.join(bin, "omp"), `#!/bin/sh\ncase " $* " in *" --version "*) echo "omp/18.12.2"; exit 0;; esac\necho $$ >> "${pids}"\nexec sleep 300\n`, { mode: 0o755 })
+    const previous = process.env.PATH
+    process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`
+    resetOmpCheck()
+    try {
+      const base = await start()
+      const reading = fetch(`${base}/flow/api/engine/models`).then((response) => response.status)
+      await until(() => fs.readFile(pids, "utf8").then((text) => text.trim() !== "", () => false))
+      const pid = Number((await fs.readFile(pids, "utf8")).trim().split("\n")[0])
+      expect(await alive(pid)).toBe(true)
+
+      await vite?.close()
+
+      expect(await alive(pid)).toBe(false)
+      expect(await reading).toBe(503)
+    } finally {
+      process.env.PATH = previous
+      resetOmpCheck()
+    }
+  })
+
+  test("a project switch is refused while a card's omp process is live and allowed once the session is gone", async () => {
+    const bin = path.join(stateDir, "bin")
+    await fs.mkdir(bin)
+    await fs.writeFile(path.join(stateDir, "script.json"), "[]")
+    const stub = path.join(import.meta.dir, "..", "lib", "omp", "testing", "stub-omp.ts")
+    await fs.writeFile(
+      path.join(bin, "omp"),
+      `#!/bin/sh\ncase " $* " in *" --version "*) echo "omp/18.12.2"; exit 0;; esac\nexport STUB_OMP_SCRIPT="${path.join(stateDir, "script.json")}"\nexec "${process.execPath}" "${stub}" "$@"\n`,
+      { mode: 0o755 },
+    )
+    const previous = process.env.PATH
+    process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`
+    resetOmpCheck()
+    try {
+      const base = await start()
+      const send = (route: string, method: string, body?: unknown) =>
+        fetch(`${base}${route}`, {
+          method,
+          headers: { origin: base, "sec-fetch-site": "same-origin", "content-type": "application/json" },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+      const elsewhere = await fs.mkdtemp(path.join(os.tmpdir(), "flow-elsewhere-"))
+      try {
+        const created = await send("/flow/api/engine/sessions", "POST", { runId: "run-1", nodeId: "n1", card: { key: "card-1", role: "Builder" }, directory: scratch })
+        expect(created.status).toBe(200)
+        const { id } = (await created.json()) as { id: string }
+
+        const refused = await send("/flow/api/project", "POST", { path: elsewhere })
+        expect(refused.status).toBe(409)
+        expect(await refused.json()).toMatchObject({ code: "project-busy" })
+
+        expect((await send(`/flow/api/engine/sessions/${id}`, "DELETE")).status).toBe(200)
+        expect((await send("/flow/api/project", "POST", { path: elsewhere })).status).toBe(200)
+      } finally {
+        await fs.rm(elsewhere, { recursive: true, force: true })
+      }
+    } finally {
+      process.env.PATH = previous
+      resetOmpCheck()
+    }
   })
 })

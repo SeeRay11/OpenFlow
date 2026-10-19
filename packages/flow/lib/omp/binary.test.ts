@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { DEFAULT_OMP_SETTINGS } from "../../shared/omp"
+import { createLifecycle } from "../host/lifecycle"
+import { alive, until } from "../uplift/testing/stub-planner"
 import { checkOmp, resetOmpCheck } from "./binary"
 
 const dirs: string[] = []
@@ -33,5 +35,34 @@ describe.skipIf(process.platform === "win32")("checkOmp", () => {
     )
     expect(status.problems).toEqual([])
     expect(status.version).toBe("99.0.0")
+  })
+
+  test("a probe stopped by the lifecycle's dispose dies with its group, answers 503 and is not cached as a missing omp", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "omp-binary-test-"))
+    dirs.push(dir)
+    const binary = path.join(dir, "omp")
+    const hang = path.join(dir, "hang")
+    const pids = path.join(dir, "pid")
+    writeFileSync(hang, "")
+    writeFileSync(binary, `#!/bin/sh\nif [ -f "${hang}" ]; then echo $$ > "${pids}"; exec sleep 300; fi\necho omp/99.0.0\n`)
+    chmodSync(binary, 0o755)
+    const settings = { ...DEFAULT_OMP_SETTINGS, binary }
+    const env = { PATH: process.env.PATH }
+    const life = createLifecycle("test")
+
+    const checking = checkOmp(settings, env, life).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    await until(() => existsSync(pids) && readFileSync(pids, "utf8").trim() !== "")
+    const pid = Number(readFileSync(pids, "utf8"))
+    await life.dispose()
+
+    expect(await alive(pid)).toBe(false)
+    expect(await checking).toMatchObject({ status: 503 })
+    // The refusal is for the closed host only: nothing was remembered about this omp.
+    rmSync(hang)
+    expect(await checkOmp(settings, env, life).then(() => undefined, (error: unknown) => error)).toMatchObject({ status: 503 })
+    expect((await checkOmp(settings, env)).version).toBe("99.0.0")
   })
 })

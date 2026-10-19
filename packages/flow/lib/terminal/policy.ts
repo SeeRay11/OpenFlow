@@ -196,7 +196,8 @@ export function resolveShell(
   return { file: "/bin/sh", args: ["-l"] }
 }
 
-export type SpawnPlan = { file: string; args: string[]; cwd: string; env: Record<string, string> }
+/** `project` is the project at spawn time (as `deps.project()` named it); `cwd` is its real path. */
+export type SpawnPlan = { file: string; args: string[]; cwd: string; project: string; env: Record<string, string> }
 
 export type PlanDeps = {
   project(): string
@@ -219,22 +220,23 @@ export class PlanError extends Error {
 
 /** Argv, cwd and env for a `kind`: always host-derived, never browser-supplied. */
 export async function spawnPlan(kind: PtyKind, deps: PlanDeps): Promise<SpawnPlan> {
+  const project = deps.project()
   let cwd: string
   try {
-    cwd = realpathSync(deps.project())
+    cwd = realpathSync(project)
   } catch {
     throw new PlanError(409, "no-project", "the project directory does not exist")
   }
   const env = terminalEnv(deps.env, deps.platform)
   if (kind === "shell") {
     const shell = resolveShell(deps.env, { platform: deps.platform, shells: deps.shells })
-    return { ...shell, cwd, env }
+    return { ...shell, cwd, project, env }
   }
   const omp = await deps.omp()
   if ("error" in omp) throw new PlanError(409, "omp-unavailable", omp.error)
   const [file, ...args] = omp.argv
   if (!file) throw new PlanError(409, "omp-unavailable", "omp has no launch command")
-  return { file, args, cwd, env }
+  return { file, args, cwd, project, env }
 }
 
 /** A binary control frame: `0x00` then JSON. */

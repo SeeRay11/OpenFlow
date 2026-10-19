@@ -191,4 +191,48 @@ describe("createProviders", () => {
     expect(h.spawns).toBe(2)
     expect(h.closes).toBe(2)
   })
+
+  test("dispose kills the process of a probe in flight, the caller gets a 503, and later lists spawn nothing", async () => {
+    const stuck = Promise.withResolvers<never>()
+    const asked = Promise.withResolvers<void>()
+    let kills = 0
+    let spawns = 0
+    const exited = Promise.withResolvers<void>()
+    const providers = createProviders({
+      env: {},
+      launch: harness().launch,
+      spawn: () => {
+        spawns++
+        return {
+          ready: Promise.resolve({ protocolVersion: 2 }),
+          exited: exited.promise as never,
+          async command() {
+            asked.resolve()
+            return stuck.promise
+          },
+          kill() {
+            kills++
+            stuck.reject(new Error("omp was killed"))
+            exited.resolve()
+          },
+          async close() {},
+        } as Partial<OmpProcess> as OmpProcess
+      },
+    })
+    const probing = providers.list(settings, "/opt/omp").then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    await asked.promise
+    await providers.dispose()
+
+    expect(kills).toBe(1)
+    expect(await probing).toBeInstanceOf(Error)
+    const later = await providers.list(settings, "/opt/omp").then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect(later).toMatchObject({ status: 503 })
+    expect(spawns).toBe(1)
+  })
 })

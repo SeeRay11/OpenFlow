@@ -243,7 +243,7 @@ export function swarmBriefing(pipeline: Pipeline, node: FlowNode) {
   const shape = swarmShape(pipeline)
   const rounds = roundsOf(pipeline)
   const row = (entry: FlowNode) =>
-    `- ${label(pipeline, entry.id)} · ${entry.agent.model ?? "its agent's own model"}${entry.id === node.id ? "  <-- YOU ARE HERE" : ""}`
+    `- ${label(pipeline, entry.id)} · ${entry.agent.model ?? "no model chosen"}${entry.id === node.id ? "  <-- YOU ARE HERE" : ""}`
   const verdict = shape.synthesizers[0]
 
   return [
@@ -259,7 +259,7 @@ export function swarmBriefing(pipeline: Pipeline, node: FlowNode) {
     "",
     ...shape.agents.map(row),
     ...(verdict
-      ? [`- verdict: ${label(pipeline, verdict.id)} · ${verdict.agent.model ?? "its agent's own model"}`]
+      ? [`- verdict: ${label(pipeline, verdict.id)} · ${verdict.agent.model ?? "no model chosen"}`]
       : []),
     "",
     "## How this runs",
@@ -393,7 +393,7 @@ export function orchestratorBriefing(pipeline: Pipeline, node: FlowNode) {
     const owns = subagentsOf(pipeline, child)
     const role = child.agent.prompt.trim().split("\n")[0] || "no role instructions"
     return [
-      `- \`${child.id}\` — ${child.role} · ${child.agent.model ?? "its agent's own model"}`,
+      `- \`${child.id}\` — ${child.role} · ${child.agent.model ?? "no model chosen"}`,
       `  what it is for: ${role}`,
       gauntlet && isCritic(child)
         ? "  it judges work against the bar — send it output to grade, never work to do"

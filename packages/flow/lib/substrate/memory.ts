@@ -150,20 +150,40 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
 
   const ignorePath = () => join(env.OPENFLOW_STATE_DIR || join(homedir(), ".openflow"), "memory-ignore.json")
 
-  async function readCutoffs(): Promise<Record<string, number>> {
+  /**
+   * The forget list. A missing file is an empty list; a file that does not parse
+   * is moved aside (`.corrupt-<ts>`) and starts fresh, so one bad byte neither
+   * wipes the list on the next write nor is lost; any other error throws, so a
+   * write never lands over a file that was merely unreadable for a moment.
+   */
+  async function readCutoffs(repair = false): Promise<Record<string, number>> {
+    const path = ignorePath()
+    const raw = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined
+      throw error
+    })
+    if (raw === undefined) return {}
     try {
-      const parsed = JSON.parse(await readFile(ignorePath(), "utf8")) as { cutoffs?: Record<string, number> }
-      return parsed.cutoffs ?? {}
+      const parsed: unknown = JSON.parse(raw)
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        if (!("cutoffs" in parsed)) return {}
+        const cutoffs = parsed.cutoffs
+        if (cutoffs && typeof cutoffs === "object" && !Array.isArray(cutoffs)) {
+          return Object.fromEntries(Object.entries(cutoffs).filter((entry): entry is [string, number] => typeof entry[1] === "number"))
+        }
+      }
     } catch {
-      return {}
+      // falls through to the corrupt-file handling
     }
+    if (repair) await rename(path, `${path}.corrupt-${now()}`)
+    return {}
   }
 
   /** Records a forget for one scope. Keys without a scope (written before cutoffs were scoped) are kept in the file but match nothing. */
   function addCutoff(scope: string, prefix: string, at: number): Promise<void> {
-    ignoreChain = ignoreChain.then(async () => {
+    const next = ignoreChain.then(async () => {
       const path = ignorePath()
-      const cutoffs = await readCutoffs()
+      const cutoffs = await readCutoffs(true)
       const key = `${scope}|${prefix}`
       cutoffs[key] = Math.max(cutoffs[key] ?? 0, at)
       await mkdir(dirname(path), { recursive: true, mode: 0o700 })
@@ -171,7 +191,19 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
       await writeFile(temporary, `${JSON.stringify({ version: 1, cutoffs }, null, 2)}\n`, { mode: 0o600 })
       await rename(temporary, path)
     })
-    return ignoreChain
+    // The chain must outlive one failed write; the caller still gets that failure from `next`.
+    ignoreChain = next.catch(() => undefined)
+    return next
+  }
+
+  /** Records a forget locally; the message when the ignore list could not be updated, undefined when it was. */
+  async function hide(scope: string, prefix: string, at: number): Promise<string | undefined> {
+    try {
+      await addCutoff(scope, prefix, at)
+      return undefined
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
   }
 
   /** Whether a forget on this host hides the entry: only cutoffs recorded for this very scope count (keys are `<scope>|<prefix>`). */
@@ -326,7 +358,7 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
       }
     }
     const at = now()
-    const cutoffs = await readCutoffs()
+    const cutoffs = await readCutoffs().catch(() => ({}))
     const found = search.ok ? search.value.entries : []
     const marked = markedSubjects(found)
     const visible = found
@@ -462,21 +494,30 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     if ("error" in connection) {
       // Without a repo there is no scope to ignore the entries under, so nothing is hidden.
       if (!connection.repo) return { status: "unavailable", retracted: 0, error: `${connection.error} No retraction marker was written.` }
-      await addCutoff(`repo:${connection.repo}`, prefix, now())
-      return { status: "unavailable", retracted: 0, error: `${connection.error} This host will ignore those entries, but no retraction marker was written.` }
+      const unrecorded = await hide(`repo:${connection.repo}`, prefix, now())
+      return {
+        status: "unavailable",
+        retracted: 0,
+        error: unrecorded
+          ? `${connection.error} No retraction marker was written, and the ignore list could not be updated (${unrecorded}).`
+          : `${connection.error} This host will ignore those entries, but no retraction marker was written.`,
+      }
     }
     const { client, scope } = connection
     const listing = await track(list(client, scope, prefix, 500))
     if (!listing.ok) {
-      await addCutoff(scope, prefix, now())
+      const unrecorded = await hide(scope, prefix, now())
       return {
         status: "unavailable",
         retracted: 0,
-        error: `${describe(listing, "")} This host will ignore those entries, but no retraction marker was written.`.replace(/\s+/g, " "),
+        error: (unrecorded
+          ? `${describe(listing, "")} No retraction marker was written, and the ignore list could not be updated (${unrecorded}).`
+          : `${describe(listing, "")} This host will ignore those entries, but no retraction marker was written.`
+        ).replace(/\s+/g, " "),
       }
     }
     const entries = listing.value.entries
-    await addCutoff(scope, prefix, Math.max(now(), ...entries.map((entry) => Date.parse(entry.created) || 0)))
+    const unrecorded = await hide(scope, prefix, Math.max(now(), ...entries.map((entry) => Date.parse(entry.created) || 0)))
     const marked = markedSubjects(entries)
     const subjects = [...new Set(entries.map((entry) => entry.subject))].filter((subject) => !subject.endsWith(RETRACTED))
     const pending = subjects.filter((subject) => !marked.has(subject))
@@ -498,12 +539,14 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
       )
       failed += replies.filter((reply) => !reply.ok || reply.outcome !== "accepted").length
     }
-    if (failed === 0) return { status: "retracted", retracted: subjects.length }
-    return {
-      status: "retracted",
-      retracted: subjects.length,
-      error: `${failed} retraction marker${failed === 1 ? "" : "s"} could not be written to Substrate; those entries are ignored on this host only.`,
-    }
+    const errors = [
+      ...(unrecorded ? [`The ignore list could not be updated (${unrecorded}), so these entries may still show on this host.`] : []),
+      ...(failed === 0
+        ? []
+        : [`${failed} retraction marker${failed === 1 ? "" : "s"} could not be written to Substrate; those entries are ignored on this host only.`]),
+    ]
+    if (errors.length === 0) return { status: "retracted", retracted: subjects.length }
+    return { status: "retracted", retracted: subjects.length, error: errors.join(" ") }
   }
 
   async function entries(request: { pipeline: string; runId?: string; limit?: number }): Promise<MemoryEntriesResult> {
@@ -514,7 +557,7 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     const listing = await track(list(connection.client, connection.scope, memorySubjectPrefix(request.pipeline, request.runId), request.limit ?? 50))
     if (!listing.ok) return { status: "unavailable", items: [], error: describe(listing, "") }
     const at = now()
-    const cutoffs = await readCutoffs()
+    const cutoffs = await readCutoffs().catch(() => ({}))
     const marked = markedSubjects(listing.value.entries)
     const items = listing.value.entries.map((entry) => ({
       ...toItem(entry, at),
@@ -554,6 +597,7 @@ export function createMemory(deps: SubstrateDeps & { runGraphs: RunGraphs }): Me
     async dispose() {
       disposed = true
       await Promise.allSettled([...inflight])
+      // Never rejects: addCutoff keeps the chain alive past a failed write.
       await ignoreChain
     },
   }

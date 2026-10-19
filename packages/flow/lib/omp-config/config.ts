@@ -1,7 +1,8 @@
-import { spawn, type ChildProcess } from "node:child_process"
+import { spawn } from "node:child_process"
 import { stat } from "node:fs/promises"
 import type { OmpConfigEntry, OmpConfigType, OmpSettings, ValidationError } from "../../shared/omp"
 import { resolveBinary } from "../omp/binary"
+import { killTree, type Flight, type Lifecycle } from "../host/lifecycle"
 import { HttpError } from "../host/respond"
 import { isRecord } from "./settings"
 
@@ -58,25 +59,16 @@ export class RunTimeout extends Error {
   }
 }
 
-function killTree(child: ChildProcess) {
-  if (child.pid !== undefined && process.platform !== "win32") {
-    try {
-      process.kill(-child.pid, "SIGKILL")
-      return
-    } catch {
-      // The group is already gone; fall back to the child itself.
-    }
-  }
-  child.kill("SIGKILL")
-}
-
 /**
  * Runs a command to completion. The child leads its own process group on POSIX so a
  * timeout kills grandchildren too, and every pipe is closed so nothing keeps the
  * event loop alive. `input` goes to stdin and is not kept; without it stdin is closed.
+ *
+ * With `life` every run is one of its flights: a closed lifecycle refuses a new run (503), and its `dispose`
+ * kills the group of a run in progress, which rejects like any other stopped run.
  */
-export function createRun(timeoutMs: number): Run {
-  return (binary, args, env, input) => {
+export function createRun(timeoutMs: number, life?: Lifecycle): Run {
+  function execute(binary: string, args: string[], env: Record<string, string>, input: string | undefined, flight: Flight | undefined) {
     const { promise, resolve, reject } = Promise.withResolvers<RunResult>()
     const child = spawn(binary, args, {
       env,
@@ -86,6 +78,8 @@ export function createRun(timeoutMs: number): Run {
     })
     let stdout = ""
     let stderr = ""
+    /** The child is gone: what a stop by the lifecycle waits for. */
+    const exited = Promise.withResolvers<void>()
     let settled = false
 
     function settle(finish: () => void) {
@@ -102,6 +96,10 @@ export function createRun(timeoutMs: number): Run {
       child.stderr?.destroy()
     }
     const timer = setTimeout(() => abort(new RunTimeout(args.at(-1) ?? "")), timeoutMs)
+    flight?.onClose(() => {
+      abort(new Error("omp was stopped: the host is shutting down"))
+      return exited.promise
+    })
 
     child.stdout?.setEncoding("utf8")
     child.stderr?.setEncoding("utf8")
@@ -113,16 +111,22 @@ export function createRun(timeoutMs: number): Run {
       stderr += chunk
       if (stderr.length > MAX_OUTPUT) abort(new Error("omp printed too much output"))
     })
-    child.on("error", (error) => abort(error))
-    child.on("close", (code, signal) =>
-      settle(() => (code === null ? reject(new Error(`omp stopped on ${signal ?? "a signal"}`)) : resolve({ code, stdout, stderr }))),
-    )
+    child.on("error", (error) => {
+      abort(error)
+      exited.resolve()
+    })
+    child.on("close", (code, signal) => {
+      settle(() => (code === null ? reject(new Error(`omp stopped on ${signal ?? "a signal"}`)) : resolve({ code, stdout, stderr })))
+      exited.resolve()
+    })
     if (input !== undefined) {
       child.stdin?.on("error", () => undefined)
       child.stdin?.end(input)
     }
     return promise
   }
+
+  return (binary, args, env, input) => (life ? life.run((flight) => execute(binary, args, env, input, flight)) : execute(binary, args, env, input, undefined))
 }
 
 export const defaultRun: Run = createRun(RUN_TIMEOUT_MS)

@@ -133,6 +133,28 @@ describe("the store through the gate", () => {
       expect(response.body).toContain("forbidden-path")
     }
   })
+
+  test("a project switch is refused with 409 project-busy while the host reports live work, and the project stays", async () => {
+    const terminal = bunWebSocket(host.terminal)
+    const paths = flowPaths(project)
+    const busy = { ...host, projectLocked: () => true } satisfies Host
+    const locked = Bun.serve({ port: 0, hostname: "127.0.0.1", development: false, fetch: createApp({ host: busy, terminal, paths, dist }), websocket: terminal.websocket })
+    try {
+      const origin = `http://127.0.0.1:${locked.port}`
+      const elsewhere = path.join(dir, "elsewhere")
+      mkdirSync(elsewhere, { recursive: true })
+      const response = await fetch(`${origin}/flow/api/project`, {
+        method: "POST",
+        headers: { origin, "sec-fetch-site": "same-origin", "content-type": "application/json" },
+        body: JSON.stringify({ path: elsewhere }),
+      })
+      expect(response.status).toBe(409)
+      expect(await response.json()).toMatchObject({ code: "project-busy" })
+      expect(paths.project).toBe(project)
+    } finally {
+      await locked.stop(true)
+    }
+  })
 })
 
 describe("an unexpected throw", () => {

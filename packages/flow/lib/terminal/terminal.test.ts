@@ -88,6 +88,32 @@ suite("the whole route", () => {
     expect(after).toEqual([])
   })
 
+  test("a session stays bound to the project it was spawned in: another project cannot attach, and nothing is killed", async () => {
+    const state = { project: "" }
+    const { terminal, dir } = await setup("read x; echo back-again", { project: () => state.project })
+    state.project = dir
+    const other = await scratch()
+
+    const ticket = await create(terminal)
+    const listed = (await (await call(terminal, "GET", PTY_ROUTES.list, undefined, { [PTY_HEADER]: "1" })).json()) as PtyInfo[]
+    expect(listed[0]).toMatchObject({ id: ticket.id, project: dir })
+
+    state.project = other
+    const refusedTicket = await call(terminal, "POST", PTY_ROUTES.ticket, { id: ticket.id })
+    expect(refusedTicket.status).toBe(409)
+    expect(await refusedTicket.json()).toMatchObject({ code: "project-mismatch" })
+    // A ticket issued while the project matched is useless once it no longer does.
+    expect(terminal.upgrade(wsRequest(ticket.id, `?ticket=${ticket.ticket}`), ticket.id)).toEqual({ ok: false, status: 409 })
+    const still = (await (await call(terminal, "GET", PTY_ROUTES.list, undefined, { [PTY_HEADER]: "1" })).json()) as PtyInfo[]
+    expect(still[0]).toMatchObject({ id: ticket.id, state: "running" })
+
+    state.project = dir
+    const again = await call(terminal, "POST", PTY_ROUTES.ticket, { id: ticket.id })
+    expect(again.status).toBe(200)
+    const next = (await again.json()) as PtyTicket
+    expect(terminal.upgrade(wsRequest(ticket.id, `?ticket=${next.ticket}`), ticket.id).ok).toBe(true)
+  })
+
   test("a second ticket attaches to the same session and resumes from the cursor in the URL", async () => {
     const { terminal } = await setup("echo one; read x; echo two; read y")
     const first = await create(terminal)

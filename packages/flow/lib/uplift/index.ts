@@ -35,6 +35,8 @@ export type UpliftModule = {
    * queued request) the way `dispose()` does for all of them.
    */
   run(request: UpliftRequest, signal?: AbortSignal): Promise<UpliftResult>
+  /** True while a planner is queued or running: it works in the project it was started in. */
+  active(): boolean
   dispose(): Promise<void>
 }
 
@@ -57,7 +59,8 @@ export function createUplift(deps: UpliftDeps): UpliftModule {
     return key
   }
 
-  async function plan(request: UpliftRequest, signal: AbortSignal | undefined, started: number) {
+  /** `dir` and `project` are read once when the request arrives: the canvas can switch folders while a planner runs, and one request writes under one state directory. */
+  async function plan(request: UpliftRequest, signal: AbortSignal | undefined, started: number, dir: string, project: string) {
     const original = request.original
     const settled = (result: Omit<UpliftResult, "original" | "elapsedMs">): UpliftResult => ({ ...result, original, elapsedMs: Date.now() - started })
     const env = deps.env ?? process.env
@@ -71,7 +74,6 @@ export function createUplift(deps: UpliftDeps): UpliftModule {
     const located = await locate(settings, env)
     if ("reason" in located) return settled({ status: "failed", reason: located.reason })
 
-    const dir = stateDir()
     // claude-ultrathink silently ignores a state dir inside a `.planning` tree and writes to the user's own.
     if (dir.split(path.sep).includes(".planning")) {
       return settled({ status: "failed", reason: `the OpenFlow state directory (${dir}) is inside a .planning tree, which claude-ultrathink refuses: move OPENFLOW_STATE_DIR` })
@@ -91,7 +93,7 @@ export function createUplift(deps: UpliftDeps): UpliftModule {
         cwd: command.cwd,
         env: plannerEnv(env, settings, dir),
         // The host must not be "omp" (native-unavailable) or unknown (unsupported-host): report 06 §A.
-        stdin: `${JSON.stringify({ host: "prime-agent", session_id: sessionId, prompt: original, cwd: request.cwd ?? deps.project() })}\n`,
+        stdin: `${JSON.stringify({ host: "prime-agent", session_id: sessionId, prompt: original, cwd: request.cwd ?? project })}\n`,
         timeoutMs,
       },
       signal,
@@ -101,9 +103,8 @@ export function createUplift(deps: UpliftDeps): UpliftModule {
   }
 
   /** Best effort: the result is still returned when the disk refuses; only GET across a restart loses it. */
-  async function remember(request: UpliftRequest, result: UpliftResult) {
+  async function remember(request: UpliftRequest, result: UpliftResult, dir: string) {
     try {
-      const dir = stateDir()
       const key = await attemptsSoFar(dir, request.runId, request.nodeId)
       await saveStored(dir, request.runId, request.nodeId, { attempt: attempts.get(key)!, result })
     } catch {
@@ -116,14 +117,16 @@ export function createUplift(deps: UpliftDeps): UpliftModule {
 
   async function execute(request: UpliftRequest, signal?: AbortSignal): Promise<UpliftResult> {
     const started = Date.now()
+    const dir = stateDir()
+    const project = deps.project()
     let result: UpliftResult
     try {
-      result = await plan(request, signal, started)
+      result = await plan(request, signal, started, dir, project)
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown error"
       result = { status: "failed", original: request.original, reason: `the planner could not be run (${redact(message).slice(0, 200)})`, elapsedMs: Date.now() - started }
     }
-    await remember(request, result)
+    await remember(request, result, dir)
     return result
   }
 
@@ -141,6 +144,7 @@ export function createUplift(deps: UpliftDeps): UpliftModule {
       read: async (runId, nodeId) => (await loadStored(stateDir(), runId, nodeId))?.result,
     }),
     run,
+    active: () => running.size > 0,
     async dispose() {
       await pool.dispose()
       await Promise.allSettled([...running])

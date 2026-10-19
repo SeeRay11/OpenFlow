@@ -59,6 +59,8 @@ const RUN_KEYS = [
   "verdict",
   "rounds",
   "best",
+  "updatedAt",
+  "resumedBy",
   MIGRATED,
 ]
 const RUN_NODE_KEYS = [

@@ -42,6 +42,7 @@ export type NodeRuntime = {
 }
 
 export type PendingPermission = {
+  sessionID: string
   requestID: string
   nodeID: string
   role: string
@@ -50,6 +51,7 @@ export type PendingPermission = {
 }
 
 export type PendingQuestion = {
+  sessionID: string
   requestID: string
   nodeID: string
   role: string
@@ -131,6 +133,15 @@ export function primary() {
 /** Resolvers live outside the store — they are callbacks, not state. */
 const waiting = new Map<string, (reply: PermissionReply) => void>()
 type PermissionReply = "once" | "always" | "reject"
+
+/**
+ * What a pending request is addressed by. omp numbers its requests per process, so
+ * two sessions can ask with the same id at once: the id alone would overwrite the
+ * first card's resolver and close the other card's dialog.
+ */
+export function requestKey(sessionID: string, requestID: string) {
+  return `${sessionID}:${requestID}`
+}
 
 /** Same idea for questions: `undefined` is a rejection, not an empty answer. */
 const asking = new Map<string, (answers: string[][] | undefined) => void>()
@@ -510,16 +521,16 @@ export const actions = {
 
   /** Shows a permission request and resolves once someone answers it. */
   askPermission(request: PendingPermission) {
-    return new Promise<PermissionReply>((resolve) => {
-      waiting.set(request.requestID, resolve)
-      setState("permissions", (pending) => [...pending, request])
-    })
+    const { promise, resolve } = Promise.withResolvers<PermissionReply>()
+    waiting.set(requestKey(request.sessionID, request.requestID), resolve)
+    setState("permissions", (pending) => [...pending, request])
+    return promise
   },
 
-  answerPermission(requestID: string, reply: PermissionReply) {
-    waiting.get(requestID)?.(reply)
-    waiting.delete(requestID)
-    setState("permissions", (pending) => pending.filter((request) => request.requestID !== requestID))
+  answerPermission(key: string, reply: PermissionReply) {
+    waiting.get(key)?.(reply)
+    waiting.delete(key)
+    setState("permissions", (pending) => pending.filter((request) => requestKey(request.sessionID, request.requestID) !== key))
   },
 
   /** Files attached to the run itself. */
@@ -564,16 +575,16 @@ export const actions = {
 
   /** Shows a question from an agent and resolves once someone answers or rejects it. */
   askQuestion(request: PendingQuestion) {
-    return new Promise<string[][] | undefined>((resolve) => {
-      asking.set(request.requestID, resolve)
-      setState("questions", (pending) => [...pending, request])
-    })
+    const { promise, resolve } = Promise.withResolvers<string[][] | undefined>()
+    asking.set(requestKey(request.sessionID, request.requestID), resolve)
+    setState("questions", (pending) => [...pending, request])
+    return promise
   },
 
-  answerQuestion(requestID: string, answers: string[][] | undefined) {
-    asking.get(requestID)?.(answers)
-    asking.delete(requestID)
-    setState("questions", (pending) => pending.filter((request) => request.requestID !== requestID))
+  answerQuestion(key: string, answers: string[][] | undefined) {
+    asking.get(key)?.(answers)
+    asking.delete(key)
+    setState("questions", (pending) => pending.filter((request) => requestKey(request.sessionID, request.requestID) !== key))
   },
 
   rejectQuestions() {

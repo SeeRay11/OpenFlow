@@ -165,14 +165,16 @@ function stableHash(text: string): string {
 }
 
 /**
- * One subject segment: lower-cased, anything outside `[a-z0-9._-]` collapsed to `-`. A segment longer
- * than its limit keeps its head and ends in a hash of the whole cleaned value, so two long names that
- * share their first characters stay apart and the segments after it are never pushed out of the subject.
+ * One subject segment: lower-cased, anything outside `[a-z0-9._-]` collapsed to `-`. A name that cleaning
+ * changed (or that is longer than its limit) keeps its cleaned head and ends in a hash of the RAW name, so
+ * `Review: A`, `review a` and `Review-A` stay in separate namespaces and two long names that share their first
+ * characters stay apart; the segments after it are never pushed out of the subject. A name that is already
+ * clean and short is used as is, so memory written under it keeps matching.
  */
 function subjectSegment(value: string, limit: number): string {
   const clean = value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "x"
-  if (clean.length <= limit) return clean
-  return `${clean.slice(0, limit - HASH_LENGTH - 1)}-${stableHash(clean)}`
+  if (clean === value && clean.length <= limit) return clean
+  return `${clean.slice(0, limit - HASH_LENGTH - 1)}-${stableHash(value)}`
 }
 
 /**

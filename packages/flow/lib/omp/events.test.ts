@@ -131,6 +131,30 @@ describe("tools", () => {
     expect(text.length).toBeLessThan(40_000)
     expect(text).toContain("more characters")
   })
+
+  test("the arguments of a call are bounded so one event cannot outgrow the SSE queue, and the call keeps its shape", () => {
+    const content = "y".repeat(5 * 1024 * 1024)
+    const events = run([frames.toolStart("big", "write", { path: "a.ts", content })])
+    const called = events.find((event) => event.type === "session.next.tool.called")
+    const input = called?.data?.input as { path: string; content: string }
+    expect(input.path).toBe("a.ts")
+    expect(input.content.length).toBeLessThan(10_000)
+    expect(JSON.stringify(events).length).toBeLessThan(512 * 1024)
+  })
+
+  test("arguments that fit are sent untouched", () => {
+    const args = { path: "a.ts", content: "z".repeat(50_000), nested: { list: [1, 2, 3] } }
+    const events = run([frames.toolStart("c", "write", args)])
+    expect(events.find((event) => event.type === "session.next.tool.called")?.data?.input).toEqual(args)
+  })
+
+  test("a raw result and an error result are bounded too, and a result of many pieces is cut to a bounded number", () => {
+    const big = { details: { blob: "q".repeat(5 * 1024 * 1024) } }
+    const failed = run([{ type: "tool_execution_end", toolCallId: "f", toolName: "x", isError: true, result: big }])
+    const succeeded = run([{ type: "tool_execution_end", toolCallId: "s", toolName: "x", result: big }])
+    const pieces = run([{ type: "tool_execution_end", toolCallId: "p", toolName: "x", result: { content: Array.from({ length: 500 }, () => ({ type: "text", text: "w".repeat(30_000) })) } }])
+    for (const events of [failed, succeeded, pieces]) expect(JSON.stringify(events).length).toBeLessThan(2 * 1024 * 1024)
+  })
 })
 
 describe("notices", () => {

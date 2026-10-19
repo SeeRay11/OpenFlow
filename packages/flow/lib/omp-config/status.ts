@@ -1,9 +1,16 @@
 import type { OmpProblem, OmpSettings, OmpStatus } from "../../shared/omp"
+import type { Lifecycle } from "../host/lifecycle"
 import { checkOmp } from "../omp/binary"
 import { childEnv, firstLine, profileArgs, type Run } from "./config"
 import type { Providers } from "./providers"
 
-export type StatusDeps = { run: Run; env: NodeJS.ProcessEnv; providers: Providers }
+export type StatusDeps = {
+  run: Run
+  env: NodeJS.ProcessEnv
+  providers: Providers
+  /** The lifecycle the `--version` probe runs in. */
+  life?: Lifecycle
+}
 
 export type StatusChecker = {
   status(settings: OmpSettings): Promise<OmpStatus>
@@ -47,7 +54,7 @@ export function createStatusChecker(deps: StatusDeps): StatusChecker {
     reset: () => dirs.clear(),
     configDir,
     async status(settings) {
-      const base = await checkOmp(settings, deps.env)
+      const base = await checkOmp(settings, deps.env, deps.life)
       const status: OmpStatus = { ...base, problems: [...base.problems], checkedAt: Date.now() }
       const binary = base.binary
       if (!binary || status.problems.length) return status

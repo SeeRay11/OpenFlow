@@ -27,7 +27,7 @@ export async function cleanScratch() {
 export async function stub(dir: string, body: string, name = "stub.sh"): Promise<SpawnPlan> {
   const file = path.join(dir, name)
   await fs.writeFile(file, body)
-  return { file: "/bin/sh", args: [file], cwd: dir, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", TERM: "xterm-256color" } }
+  return { file: "/bin/sh", args: [file], cwd: dir, project: dir, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", TERM: "xterm-256color" } }
 }
 
 export type Collector = PtySink & {

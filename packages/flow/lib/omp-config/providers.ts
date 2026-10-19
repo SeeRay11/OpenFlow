@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import type { OmpProviderRow, OmpSettings } from "../../shared/omp"
+import { createLifecycle, type Lifecycle } from "../host/lifecycle"
 import { PROBE_MODEL } from "../omp/launch"
 import type { BuildLaunch, OmpProcess, SpawnOmp } from "../omp/rpc-types"
 import { readStamp, type CredentialStamp } from "../omp/stamp"
@@ -25,12 +26,16 @@ export type ProvidersDeps = {
   launch: BuildLaunch
   /** The profile's credential stamp, read on every `list()` and folded into the cache key. */
   stamp?: CredentialStamp
+  /** The lifecycle the probe runs in; default its own. The owner disposes it. */
+  life?: Lifecycle
 }
 
 export type Providers = {
-  /** Cached for 60 s per (binary, profile, credential stamp); concurrent callers share one process. */
+  /** Cached for 60 s per (binary, profile, credential stamp); concurrent callers share one process. Rejects with a 503 once disposed. */
   list(settings: OmpSettings, binary: string): Promise<OmpProviderRow[]>
   reset(): void
+  /** Refuses new probes and kills the omp process of one in flight. Idempotent. */
+  dispose(): Promise<void>
 }
 
 export function parseProviders(data: unknown): OmpProviderRow[] {
@@ -50,48 +55,57 @@ export function parseProviders(data: unknown): OmpProviderRow[] {
 }
 
 export function createProviders(deps: ProvidersDeps): Providers {
+  const life = deps.life ?? createLifecycle("the provider probe")
   let cached: { key: string; at: number; rows: OmpProviderRow[] } | undefined
   let inflight: { key: string; promise: Promise<OmpProviderRow[]> } | undefined
 
-  async function query(settings: OmpSettings, binary: string): Promise<OmpProviderRow[]> {
-    const directory = os.tmpdir()
-    const stateDir = await mkdtemp(path.join(directory, "openflow-omp-providers-"))
-    let proc: OmpProcess | undefined
-    const deadline = Promise.withResolvers<never>()
-    const timer = setTimeout(() => deadline.reject(new Error("omp did not list its providers in time")), DEADLINE_MS)
-    deadline.promise.catch(() => undefined)
-    try {
-      const spec = deps.launch({
-        settings,
-        binary,
-        session: {
-          runId: "omp-config",
-          nodeId: "providers",
-          card: { key: "omp-config-providers", role: "providers" },
-          model: PROBE_MODEL,
-          directory,
-          permissions: "auto",
-        },
-        stateDir,
-        env: deps.env,
-      })
-      proc = deps.spawn(spec)
-      const started = proc
-      const rows = (async () => {
-        await started.ready
-        return parseProviders(await started.command({ type: "get_login_providers" }, { timeoutMs: DEADLINE_MS }))
-      })()
-      rows.catch(() => undefined)
-      return await Promise.race([rows, deadline.promise])
-    } finally {
-      clearTimeout(timer)
-      if (proc) await proc.close({ graceMs: 1_000, killMs: 1_000 })
-      await rm(stateDir, { recursive: true, force: true })
-    }
+  function query(settings: OmpSettings, binary: string): Promise<OmpProviderRow[]> {
+    return life.run(async (scope) => {
+      const directory = os.tmpdir()
+      const stateDir = await mkdtemp(path.join(directory, "openflow-omp-providers-"))
+      let proc: OmpProcess | undefined
+      const deadline = Promise.withResolvers<never>()
+      const timer = setTimeout(() => deadline.reject(new Error("omp did not list its providers in time")), DEADLINE_MS)
+      deadline.promise.catch(() => undefined)
+      try {
+        life.assertOpen()
+        const spec = deps.launch({
+          settings,
+          binary,
+          session: {
+            runId: "omp-config",
+            nodeId: "providers",
+            card: { key: "omp-config-providers", role: "providers" },
+            model: PROBE_MODEL,
+            directory,
+            permissions: "auto",
+          },
+          stateDir,
+          env: deps.env,
+        })
+        proc = deps.spawn(spec)
+        const started = proc
+        scope.onClose(() => {
+          started.kill()
+          return started.exited
+        })
+        const rows = (async () => {
+          await started.ready
+          return parseProviders(await started.command({ type: "get_login_providers" }, { timeoutMs: DEADLINE_MS }))
+        })()
+        rows.catch(() => undefined)
+        return await Promise.race([rows, deadline.promise])
+      } finally {
+        clearTimeout(timer)
+        if (proc) await proc.close({ graceMs: 1_000, killMs: 1_000 })
+        await rm(stateDir, { recursive: true, force: true })
+      }
+    })
   }
 
   return {
     async list(settings, binary) {
+      life.assertOpen()
       const key = `${binary}|${settings.profile}|${await readStamp(deps.stamp)}`
       if (cached && cached.key === key && Date.now() - cached.at < CACHE_MS) return cached.rows
       if (inflight && inflight.key === key) return inflight.promise
@@ -112,5 +126,6 @@ export function createProviders(deps: ProvidersDeps): Providers {
       cached = undefined
       inflight = undefined
     },
+    dispose: () => life.dispose(),
   }
 }

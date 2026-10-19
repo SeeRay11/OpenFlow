@@ -1,3 +1,4 @@
+import type { RunLog } from "../graph/types"
 import type { SelectOption } from "../ui/select"
 import type { RunEntry } from "./store"
 import { costLabel } from "./usage"
@@ -152,4 +153,50 @@ export function runTime(started: number | undefined, now = Date.now()) {
     ...(at.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }),
   })
   return `${day}, ${clock}`
+}
+
+/**
+ * How long a `running` log may go unwritten before it counts as abandoned.
+ *
+ * A live run rewrites its log on every change and on a 30 s heartbeat, and a hidden
+ * tab's timers are throttled to about a minute, so five minutes of silence means the
+ * page that owned the run is gone rather than busy.
+ */
+export const RESUME_STALE_MS = 5 * 60_000
+
+/** Whether a log still marked `running` has gone quiet: its page is gone, so it can be resumed. */
+export function abandoned(run: { status?: string; updatedAt?: number; finished?: number; started?: number }, now = Date.now()) {
+  if (run.status !== "running") return false
+  // A log from before `updatedAt` existed is judged by the last time it said anything at all.
+  const last = run.updatedAt ?? run.finished ?? run.started ?? 0
+  return now - last >= RESUME_STALE_MS
+}
+
+/**
+ * The newest run of this canvas that never reached an end state, when it is
+ * abandoned. A newer run that is still being written (another tab is running it)
+ * hides every older one: resuming under it would run the same cards twice.
+ */
+export function interrupted(entries: RunEntry[], pipeline: string, now = Date.now()) {
+  const newest = entries
+    .filter((entry) => entry.status === "running" && entry.pipeline === pipeline)
+    .sort((a, b) => (b.started ?? 0) - (a.started ?? 0))[0]
+  return newest && abandoned(newest, now) ? newest : undefined
+}
+
+/**
+ * The old log of a resumed run, closed: the new run carries on from it, so it is
+ * no longer interrupted and must not be offered for resuming again. Cards it left
+ * working are marked stopped, as the engine does at the end of a run of its own.
+ */
+export function superseded(log: RunLog, by: string, now = Date.now()): RunLog {
+  return {
+    ...log,
+    status: "stopped",
+    resumedBy: by,
+    finished: log.finished ?? log.updatedAt ?? now,
+    nodes: log.nodes.map((node) =>
+      node.status === "queued" || node.status === "running" ? { ...node, status: "stopped" } : node,
+    ),
+  }
 }

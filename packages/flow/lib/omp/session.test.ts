@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, setSystemTime, spyOn, test } from "bun:test"
 import fs from "node:fs/promises"
 import path from "node:path"
 import type { BusEvent, Turn, WaitResult } from "../../shared/engine"
@@ -1735,6 +1735,260 @@ hosted("shutdown", () => {
       held.release()
       expect((await resuming).code).toBe("session-closed")
       expect(h.fake.procs).toHaveLength(1)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})
+
+hosted("a resumed session follows the request that resumes it", () => {
+  const FAR = 24 * 60 * 60_000
+
+  async function directories() {
+    const elsewhere = path.join(h.dir, "elsewhere")
+    const other = path.join(h.dir, "other")
+    await fs.mkdir(elsewhere)
+    await fs.mkdir(other)
+    return { elsewhere, other }
+  }
+
+  test("a reaped session reused by a new run launches with the new model, permissions and run, and keeps its id, files and directory", async () => {
+    const { elsewhere, other } = await directories()
+    const { id } = await open({ ...BODY, directory: elsewhere, permissions: "auto" })
+    await host.maintain(Date.now() + FAR)
+    expect(host.live()).toBe(0)
+
+    await host.create({ ...BODY, runId: "run2", model: "anthropic/claude-other", permissions: "manual", directory: other, reuse: id })
+
+    expect(h.launches.at(-1)?.session).toMatchObject({ runId: "run2", model: "anthropic/claude-other", permissions: "manual", directory: elsewhere })
+    expect(h.launches.at(-1)?.stateDir).toBe(nodeDir("run1"))
+    expect((h.fake.procs[1] as FakeProcess).of("open_session")[0]?.sessionDir).toBe(path.join(nodeDir("run1"), SESSION_SUBDIR))
+    // The session now belongs to the run that resumed it: that run's release finds it, the old run's does not.
+    expect(host.holds(safeSegment("run2"))).toBe(true)
+    expect(await host.releaseRun("run1")).toBe(0)
+    expect(host.live()).toBe(1)
+    expect(await host.releaseRun("run2")).toBe(1)
+    expect(host.live()).toBe(0)
+  })
+
+  test("a lost session reused by a new run is resumed with the new request too", async () => {
+    const { id, proc } = await open({ ...BODY, permissions: "auto" })
+    proc.exit(1)
+    await proc.exited
+    await host.create({ ...BODY, runId: "run2", permissions: "manual", swarm: "off", reuse: id })
+    expect(h.launches.at(-1)?.session).toMatchObject({ runId: "run2", permissions: "manual" })
+    expect(await host.releaseRun("run2")).toBe(1)
+  })
+
+  test("a session resumed from its files works in the directory it was launched in, while that directory exists", async () => {
+    const { elsewhere, other } = await directories()
+    const { id } = await open({ ...BODY, directory: elsewhere })
+    await host.dispose(id)
+    await host.create({ ...BODY, runId: "run2", directory: other, reuse: id })
+    expect(h.launches.at(-1)?.session.directory).toBe(elsewhere)
+
+    await host.dispose(id)
+    await fs.rm(elsewhere, { recursive: true })
+    await host.create({ ...BODY, runId: "run3", directory: other, reuse: id })
+    expect(h.launches.at(-1)?.session.directory).toBe(other)
+  })
+})
+
+hosted("a prompt for a session this host holds no record of", () => {
+  const FAR = 24 * 60 * 60_000
+
+  test("after a restart it resumes the session as it was launched instead of answering 404", async () => {
+    const card = { key: "card-1", role: "Builder", prompt: "be brief", tools: { bash: false } }
+    const { id } = await open({ ...BODY, card, permissions: "manual" })
+    await host.close()
+    const restarted = createSessionHost(h.deps, { emit: (event) => events.push(event), tickMs: 3_600_000 })
+    try {
+      await restarted.prompt(id, { text: "carry on" })
+      const proc = h.fake.procs[1] as FakeProcess
+      expect(proc.of("open_session")).toHaveLength(1)
+      expect(JSON.stringify(proc.of("prompt")[0]?.message)).toContain("carry on")
+      expect(h.launches.at(-1)?.session).toMatchObject({ model: "anthropic/claude-test", permissions: "manual", card })
+      expect(restarted.live()).toBe(1)
+    } finally {
+      await restarted.close()
+    }
+  })
+
+  test("a session whose files are gone, and one disposed on purpose, are still the usual 404", async () => {
+    const { id } = await open()
+    await host.dispose(id)
+    expect((await failure(host.prompt(id, { text: "x" }))).status).toBe(404)
+    expect((await failure(host.prompt("s_000000000000", { text: "x" }))).status).toBe(404)
+    expect(h.fake.procs).toHaveLength(1)
+  })
+
+  test("records past the limit are dropped by last activity, never by age of creation, and a dropped one resumes on its next prompt", async () => {
+    await boot({}, { maxLive: 200 })
+    const base = Date.now()
+    const ids: string[] = []
+    try {
+      for (let index = 0; index < 70; index++) {
+        setSystemTime(new Date(base + index * 1000))
+        ids.push((await open({ ...BODY, nodeId: `n${index}` })).id)
+      }
+      // The oldest card is the one in use: its record is the most recently active.
+      setSystemTime(new Date(base + 500_000))
+      await host.wait(ids[0] as string, {})
+    } finally {
+      setSystemTime()
+    }
+    await host.maintain(base + FAR)
+    expect(host.live()).toBe(0)
+
+    expect(await host.wait(ids[0] as string, {})).toEqual({ status: "idle", result: "completed" })
+    expect(await host.wait(ids[1] as string, {})).toEqual({ status: "missing" })
+    expect(await host.wait(ids[69] as string, {})).toEqual({ status: "idle", result: "completed" })
+
+    await host.prompt(ids[1] as string, { text: "still there?" })
+    expect(host.live()).toBe(1)
+    expect((h.fake.procs.at(-1) as FakeProcess).of("open_session")).toHaveLength(1)
+  })
+})
+
+hosted("session files and project capture", () => {
+  test("the metadata and turns files are written aside and renamed into place, privately, leaving nothing behind", async () => {
+    const spy = spyOn(fs, "writeFile")
+    try {
+      const { id } = await open()
+      await host.prompt(id, { text: "hello" })
+      await host.dispose(id)
+      const targets = spy.mock.calls.map((call) => String(call[0]))
+      expect(targets.some((target) => target.endsWith(".openflow-session.json") || target.endsWith(".openflow-turns.json"))).toBe(false)
+      expect(targets.filter((target) => target.includes(".openflow-session.json.") && target.endsWith(".tmp")).length).toBeGreaterThan(0)
+    } finally {
+      spy.mockRestore()
+    }
+    for (const name of [".openflow-session.json", ".openflow-turns.json"]) expect((await fs.stat(path.join(nodeDir("run1"), name))).mode & 0o777).toBe(0o600)
+    expect((await fs.readdir(nodeDir("run1"))).filter((name) => name.endsWith(".tmp"))).toEqual([])
+  })
+
+  test("a create reads the project once: a switch while it parses cannot split a card's directory from its state", async () => {
+    const other = path.join(h.dir, "project-b")
+    await fs.mkdir(other)
+    let current = h.project
+    const rootOf = (project: string) => path.join(h.stateRoot, project === h.project ? "a" : "b")
+    const switching = createSessionHost({ ...h.deps, project: () => current, stateRoot: () => rootOf(current) }, { emit: (event) => events.push(event), tickMs: 3_600_000 })
+    // The canvas switches folders while the request is being checked.
+    const real = fs.stat as (...args: unknown[]) => Promise<unknown>
+    const spy = spyOn(fs, "stat").mockImplementation((async (...args: unknown[]) => {
+      current = other
+      return real(...args)
+    }) as never)
+    try {
+      await switching.create({ runId: "run1", nodeId: "n1", card: { key: "card-1", role: "Builder" } })
+    } finally {
+      spy.mockRestore()
+      await switching.close()
+    }
+    expect(h.launches[0]?.session.directory).toBe(h.project)
+    expect(h.launches[0]?.stateDir).toBe(path.join(rootOf(h.project), "run1", "n1"))
+  })
+
+  test("working is true while a process is live, and false for a reaped or disposed session", async () => {
+    expect(host.working()).toBe(false)
+    const { id } = await open()
+    expect(host.working()).toBe(true)
+    await host.maintain(Date.now() + 24 * 60 * 60_000)
+    expect(host.live()).toBe(0)
+    expect(host.working()).toBe(false)
+    await host.prompt(id, { text: "wake up" })
+    expect(host.working()).toBe(true)
+    await host.dispose(id)
+    expect(host.working()).toBe(false)
+  })
+
+  test("working is true while a create is still starting its process", async () => {
+    const opening = gate()
+    h.fake.setup((proc) => proc.on("set_ask_dialog", opening.hold))
+    const creating = host.create(BODY)
+    await opening.reached
+    expect(host.working()).toBe(true)
+    opening.release()
+    await creating
+  })
+})
+
+hosted("finding persisted sessions under a bounded scan", () => {
+  const DAY = 24 * 60 * 60_000
+
+  /** Directories in the state root that sort first in readdir order and are all older than any real session. */
+  async function fillWithOldRuns(count: number) {
+    const old = new Date(Date.now() - 40 * DAY)
+    for (let index = 0; index < count; index++) {
+      const node = path.join(h.stateRoot, `a-old-${index}`, "n1")
+      await fs.mkdir(node, { recursive: true })
+      await fs.utimes(node, old, old)
+      await fs.utimes(path.dirname(node), old, old)
+    }
+  }
+
+  test("a recent conversation is listed and resumable even when more old run directories than the bound sort before it", async () => {
+    await boot({}, { scan: { runs: 3, nodes: 3 } })
+    const { id } = await open({ ...BODY, runId: "recent" })
+    await host.dispose(id)
+    await fillWithOldRuns(8)
+
+    expect((await host.list(10)).map((row) => row.id)).toContain(id)
+    expect(await host.create({ ...BODY, runId: "next", reuse: id })).toEqual({ id })
+    expect(h.fake.procs).toHaveLength(2)
+  })
+
+  test("the card bound picks the newest cards across the chosen runs, not the first ones in directory order", async () => {
+    await boot({}, { scan: { runs: 10, nodes: 1 } })
+    const first = await open({ ...BODY, runId: "run-a", nodeId: "n1" })
+    await host.dispose(first.id)
+    const old = new Date(Date.now() - 40 * DAY)
+    await fs.utimes(nodeDir("run-a"), old, old)
+    const second = await open({ ...BODY, runId: "run-b", nodeId: "n1" })
+    await host.dispose(second.id)
+
+    expect((await host.list(10)).map((row) => row.id)).toEqual([second.id])
+  })
+
+  test("a session in use again keeps its old run directory ranked as recent: still listed and resumable under a bound below the number of runs", async () => {
+    let clock = 1_000_000
+    await boot({}, { scan: { runs: 3, nodes: 10 }, now: () => clock })
+    const { id } = await open({ ...BODY, runId: "old-run" })
+    // Reaped, not disposed: the record stays, as for a card between turns.
+    await host.maintain(Date.now() + DAY)
+    const runDir = path.dirname(nodeDir("old-run"))
+    const long = new Date(Date.now() - 40 * DAY)
+    await fs.utimes(runDir, long, long)
+    const recent = new Date(Date.now() - DAY)
+    for (let index = 0; index < 5; index++) {
+      const other = path.join(h.stateRoot, `b-run-${index}`, "n1")
+      await fs.mkdir(other, { recursive: true })
+      await fs.utimes(path.dirname(other), recent, recent)
+    }
+
+    clock += 10_000
+    await host.create({ ...BODY, runId: "next", reuse: id })
+    await host.dispose(id)
+    clock += 10_000
+
+    expect((await host.list(10)).map((row) => row.id)).toContain(id)
+    expect(await host.create({ ...BODY, runId: "after", reuse: id })).toEqual({ id })
+  })
+
+  test("the run directory is touched at most once a second however often the session saves", async () => {
+    let clock = 1_000_000
+    await boot({}, { now: () => clock })
+    const runDir = path.dirname(nodeDir("run1"))
+    const spy = spyOn(fs, "utimes")
+    const touches = () => spy.mock.calls.filter((call) => String(call[0]) === runDir).length
+    try {
+      const { id } = await open()
+      await host.prompt(id, { text: "hello" })
+      await host.dispose(id)
+      expect(touches()).toBe(1)
+      clock += 1_500
+      await host.create({ ...BODY, reuse: id })
+      expect(touches()).toBe(2)
     } finally {
       spy.mockRestore()
     }

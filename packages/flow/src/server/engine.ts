@@ -127,7 +127,7 @@ export type EngineHooks = {
    * waiting. Without it a timed-out prompt stays on screen forever, still
    * offering buttons that now answer nothing.
    */
-  onQuestionClosed?: (requestID: string) => void
+  onQuestionClosed?: (sessionID: string, requestID: string) => void
 }
 
 export type RunOptions = {
@@ -161,6 +161,18 @@ export type RunOptions = {
    * killed at minute 25 still leaves what it had on disk.
    */
   checkpointEvery?: number
+  /**
+   * How often the run log is rewritten while nothing else changes it, in
+   * milliseconds. The write stamps `updatedAt`, which is what tells a second tab
+   * that a `running` log still belongs to a live page. Only worth changing in tests.
+   */
+  heartbeatEvery?: number
+  /**
+   * The project directory this run started in. Cards without a worktree of their own
+   * are launched there, so a project switch made while the run is going cannot move the
+   * rest of the run into the new project. Absent: the host's current project.
+   */
+  project?: string
   /** Delays between attempts to re-attach the event stream after it drops; only worth changing in tests. */
   streamRetry?: StreamRetry
   /**
@@ -272,6 +284,8 @@ export const DEFAULT_RATE_LIMIT_BACKOFF = 20_000
 export const DEFAULT_NODE_TIMEOUT = 30 * 60_000
 export const DEFAULT_QUESTION_TIMEOUT = 5 * 60_000
 export const DEFAULT_CHECKPOINT_EVERY = 2_000
+/** How often a running run rewrites its log, so `updatedAt` keeps moving through a long quiet turn. */
+export const DEFAULT_HEARTBEAT_EVERY = 30_000
 /** How long to wait before re-reading a model catalog that looked incomplete. */
 export const DEFAULT_CATALOG_RETRY = 1_500
 /** Prompt Uplift attempts per task turn, the first included, before a failure ends the card. */
@@ -425,6 +439,7 @@ export function start(
   const nodeTimeout = Math.max(1_000, options.nodeTimeout ?? DEFAULT_NODE_TIMEOUT)
   const questionTimeout = Math.max(100, options.questionTimeout ?? DEFAULT_QUESTION_TIMEOUT)
   const checkpointEvery = Math.max(1, options.checkpointEvery ?? DEFAULT_CHECKPOINT_EVERY)
+  const heartbeatEvery = Math.max(1, options.heartbeatEvery ?? DEFAULT_HEARTBEAT_EVERY)
   const catalogRetry = Math.max(0, options.catalogRetry ?? DEFAULT_CATALOG_RETRY)
   const rateLimitBackoff = Math.max(0, options.rateLimitBackoff ?? DEFAULT_RATE_LIMIT_BACKOFF)
   const streamRetry = options.streamRetry ?? DEFAULT_STREAM_RETRY
@@ -708,6 +723,7 @@ export function start(
   function save() {
     if (checkpointTimer) clearTimeout(checkpointTimer)
     checkpointTimer = undefined
+    log.updatedAt = Date.now()
     // The full stream stays in memory for the open page; the log keeps the
     // tail, with bodies clipped, so reopening a run replays what happened
     // without turning the run file into a transcript store.
@@ -731,6 +747,9 @@ export function start(
     if (checkpointTimer) return
     checkpointTimer = setTimeout(save, checkpointEvery)
   }
+
+  // A turn can go minutes without a patch, and the log's age is how another tab tells a live run from an abandoned one.
+  const heartbeat = setInterval(() => void save(), heartbeatEvery)
 
   // Live status from the event bus. Best-effort: execution never depends on it.
   const bus = keepSubscribed(
@@ -909,7 +928,7 @@ export function start(
       ])
     }
 
-    hooks.onQuestionClosed?.(requestID)
+    hooks.onQuestionClosed?.(sessionID, requestID)
 
     try {
       if (answers) await api.replyQuestion(sessionID, requestID, answers)
@@ -1013,6 +1032,8 @@ export function start(
       patch(node.id, { uplift: { status: "skipped", original, reason: "already a spec" } })
       return undefined
     }
+    // A card's own tree, else the project the run started in.
+    const cwd = nodeDir.get(node.id) ?? options.project
     for (let attempt = 1; ; attempt++) {
       const started = Date.now()
       patch(node.id, { uplift: { status: "running", original }, activity: "uplifting prompt" })
@@ -1024,7 +1045,7 @@ export function start(
               nodeId: node.id,
               role: node.role,
               original,
-              ...(nodeDir.has(node.id) ? { cwd: nodeDir.get(node.id) } : {}),
+              ...(cwd ? { cwd } : {}),
             },
             controller.signal,
           )
@@ -1140,6 +1161,7 @@ export function start(
           run: item.run,
           card: item.card,
           origin: item.origin,
+          ageDays: item.ageDays,
         })),
         briefState: result.briefState,
         error: result.error,
@@ -1311,7 +1333,7 @@ export function start(
               model: node.agent.model,
               // Fixed for the life of the session, which is why a card keeps the
               // tree it was first given rather than moving between batches.
-              directory: nodeDir.get(node.id),
+              directory: nodeDir.get(node.id) ?? options.project,
               permissions: policy,
               swarm: swarmOf(pipeline, node),
               ...(attach ? { reuse: attach } : {}),
@@ -2515,6 +2537,7 @@ export function start(
       }
       controller.abort()
       void bus
+      clearInterval(heartbeat)
       hooks.onRun?.(log)
       await save()
     }

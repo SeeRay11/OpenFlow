@@ -65,6 +65,7 @@ export function createTerminal(deps: TerminalDeps): TerminalModule {
     host: new TerminalHost(deps.spawn ?? defaultSpawn, deps.tuning),
     tickets: new TicketStore(deps.token ?? randomUUID()),
     enabled: !deps.allowRemote,
+    project: deps.project,
     plan: (kind) => spawnPlan(kind, { project: deps.project, env, omp: deps.omp, shells: deps.shells }),
   }
   return {

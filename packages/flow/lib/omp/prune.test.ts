@@ -244,4 +244,105 @@ describe("pruneState", () => {
     expect(result?.errors).toBe(0)
     expect(await exists(path.join(root, "a"))).toBe(false)
   })
+
+  describe("runs that can still be resumed", () => {
+    const RUN = "run-2026-01-02T03-04-05-678Z"
+    let logs: string
+
+    /** The run listing as `lib/store.ts` keeps it: the log named by the lower-cased id, the index describing it. */
+    async function log(status: string, options: { index?: boolean } = {}) {
+      logs = path.join(dir, "runs")
+      await fs.mkdir(logs)
+      const id = RUN.toLowerCase()
+      await fs.writeFile(path.join(logs, `${id}.json`), JSON.stringify({ id: RUN, status }))
+      if (options.index !== false) await fs.writeFile(path.join(logs, ".index.json"), JSON.stringify([{ id, status }]))
+    }
+
+    test("a run whose log is still `running` keeps its state however old, though the directory is named by the log's mixed-case id", async () => {
+      await run(RUN, STATE_RETENTION_DAYS + 40)
+      await run("stopped-run", STATE_RETENTION_DAYS + 40)
+      await log("running")
+      expect(await pruneState({ root, now: () => NOW, claim: free, runLogs: logs })).toEqual({ removed: ["stopped-run"], errors: 0 })
+      expect(await exists(path.join(root, RUN, "n1", "session", "a.jsonl"))).toBe(true)
+    })
+
+    test("a run that finished is pruned like any other", async () => {
+      await run(RUN, STATE_RETENTION_DAYS + 40)
+      await log("done")
+      expect((await pruneState({ root, now: () => NOW, claim: free, runLogs: logs })).removed).toEqual([RUN])
+    })
+
+    test.each(["missing", "unreadable", "not-a-list"])("an index that is %s keeps nothing extra and never throws", async (shape) => {
+      await run(RUN, STATE_RETENTION_DAYS + 40)
+      await log("running", { index: false })
+      if (shape === "unreadable") await fs.writeFile(path.join(logs, ".index.json"), "{truncated")
+      if (shape === "not-a-list") await fs.writeFile(path.join(logs, ".index.json"), JSON.stringify({ running: true }))
+      expect(await pruneState({ root, now: () => NOW, claim: free, runLogs: logs })).toEqual({ removed: [RUN], errors: 0 })
+    })
+
+    test("a run log directory that does not exist is the same as no run logs", async () => {
+      await run(RUN, STATE_RETENTION_DAYS + 40)
+      expect((await pruneState({ root, now: () => NOW, claim: free, runLogs: path.join(dir, "nowhere") })).removed).toEqual([RUN])
+    })
+  })
+
+  describe("the uplift planner's files", () => {
+    const OLD = STATE_RETENTION_DAYS + 10
+
+    async function file(relative: string, ageDays: number) {
+      const target = path.join(root, "uplift", relative)
+      await fs.mkdir(path.dirname(target), { recursive: true })
+      await fs.writeFile(target, "x")
+      const when = new Date(NOW - ageDays * DAY)
+      await fs.utimes(target, when, when)
+      return target
+    }
+
+    test("results and session records past the age limit go, recent ones and the planner's other files stay", async () => {
+      const oldResult = await file("results/run-a~n1~0123456789ab.json", OLD)
+      const oldSpec = await file("sessions/openflow-run-a-n1-1.xml", OLD)
+      const oldRecord = await file("sessions/openflow-run-a-n1-1.json", OLD)
+      const freshResult = await file("results/run-b~n1~0123456789ab.json", 1)
+      const control = await file("control.json", OLD)
+      const foreign = await file("sessions/notes.txt", OLD)
+      const result = await pruneState({ root, now: () => NOW, claim: free })
+      expect(result).toEqual({ removed: [], errors: 0 })
+      for (const gone of [oldResult, oldSpec, oldRecord]) expect(await exists(gone)).toBe(false)
+      for (const kept of [freshResult, control, foreign]) expect(await exists(kept)).toBe(true)
+    })
+
+    test("a result of a run the host holds is kept, and its run is claimed by directory name", async () => {
+      const held = await file("results/run-held~n1~0123456789ab.json", OLD)
+      const other = await file("results/run-other~n1~0123456789ab.json", OLD)
+      const claimed: string[] = []
+      await pruneState({
+        root,
+        now: () => NOW,
+        claim: (name) => {
+          claimed.push(name)
+          return name === "run-held" ? undefined : () => undefined
+        },
+      })
+      expect(claimed.sort()).toEqual(["run-held", "run-other"])
+      expect(await exists(held)).toBe(true)
+      expect(await exists(other)).toBe(false)
+    })
+
+    // Symlinks are POSIX-only in these tests.
+    test.skipIf(process.platform === "win32")("a link is never followed or removed, and a link in place of the directory is skipped whole", async () => {
+      const outside = path.join(dir, "outside")
+      await fs.mkdir(outside)
+      const target = path.join(outside, "precious.json")
+      await fs.writeFile(target, "keep")
+      await fs.utimes(target, new Date(NOW - OLD * DAY), new Date(NOW - OLD * DAY))
+      await fs.mkdir(path.join(root, "uplift", "results"), { recursive: true })
+      const link = path.join(root, "uplift", "results", "run-x~n1~0123456789ab.json")
+      await fs.symlink(target, link)
+      await fs.symlink(outside, path.join(root, "uplift", "sessions"))
+      await pruneState({ root, now: () => NOW, claim: free })
+      expect(await exists(link)).toBe(true)
+      expect(await fs.readFile(target, "utf8")).toBe("keep")
+      expect(await exists(path.join(outside, "precious.json"))).toBe(true)
+    })
+  })
 })

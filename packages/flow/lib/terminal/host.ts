@@ -174,7 +174,7 @@ export class TerminalHost {
       throw new HttpError(409, "the terminal host is shutting down", "disposed")
     }
     this.#install()
-    const info: PtyInfo = { id: crypto.randomUUID(), kind, pid: proc.pid, state: "running", cols, rows, createdAt: Date.now() }
+    const info: PtyInfo = { id: crypto.randomUUID(), kind, pid: proc.pid, state: "running", cols, rows, createdAt: Date.now(), project: plan.project }
     const session: Session = {
       info,
       proc,

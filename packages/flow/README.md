@@ -242,6 +242,19 @@ Both are recorded host-side in `~/.openflow/state.json` — outside any project,
 since they describe the app rather than the repo, and a user might commit or
 delete the repo.
 
+**Switching project.** The folder picker (and the Runs menu) is disabled while a
+run is active, and the run keeps the project it started in: cards without a
+worktree, and the uplift planner's working directory, stay in that project even
+if the page is switched. `POST /flow/api/project` answers 409 `project-busy` while
+any omp process is live or starting, a session create is in flight, or an uplift
+planner is running; the picker shows the host's sentence. Idle sessions waiting
+to be resumed do not count. Terminals belong to a project too (see
+[Terminal](#terminal)), and so do custom roles: opening a project replaces the
+roles with that project's own `.openflow/roles.json`. Roles saved in this
+browser before that are copied once per browser (`openflow.customRolesMigrated.v1`),
+and nothing is written to a project's `roles.json` before it has been read
+successfully.
+
 ## Omp engine and requirements
 
 Cards run on Omp, the Oh-My-Pi coding agent. The canvas host starts one
@@ -310,7 +323,8 @@ profile has no credentials.* For the last one there are two ways out:
   own setup wizard; press `Ctrl+C` to skip it.
 
 Then open a card's model menu: the models of every provider you logged in to are
-listed. The menu can make a model the default for new cards.
+listed. The menu can make a model the default for cards added afterwards; a card
+that already has no model keeps none.
 
 ## How the host drives Omp
 
@@ -334,6 +348,24 @@ stop; the group is signalled if it does not exit. A session nobody has touched f
 30 minutes is closed and stays resumable from its session directory, and a page
 reload does not end a run's sessions, because the host owns them.
 
+A session keeps two small files beside its session directory, both written
+atomically with mode 0600: `.openflow-session.json` (what it is, including the
+request it was created with, so a session that exists only on disk resumes as it
+was launched) and `.openflow-turns.json` (the last 200 turns, each cut to 32 KiB).
+The host keeps at most 64 idle or lost session records in memory, dropping the
+least recently active first and never one with a turn running or a dialog waiting;
+a prompt to a session it no longer holds resumes it from its files. A session
+disposed on purpose answers 404.
+
+**Resume.** A card carried over from an earlier run is found by its session id
+across every run directory of the state root (the newest 2,000 run directories,
+then the newest 4,000 card directories) and re-attached from the directory it was
+first launched in; the new run id is kept for new work. The new request applies:
+model, permissions, swarm and tool toggles are the ones the run is asking for now.
+Using a session touches its run directory (at most once a second), so recently
+used runs rank newest. If the host cannot find the session (pruned, or deleted),
+the card starts fresh, once.
+
 At most 32 omp card sessions run at once. At the limit the least recently used
 idle session is closed to make room (it keeps its files and resumes on its next
 prompt); only when all 32 are busy does the create fail, with 409
@@ -346,6 +378,23 @@ is left behind, and a card stopped while its session opens never has its prompt
 sent. A create whose request aborts before the session is live disposes it. The
 browser waits on a turn in slices of
 55 seconds, re-polling until the card settles or its timeout passes.
+
+**Event stream.** While a run is active the browser reconnects to
+`/flow/api/engine/events` by itself, waiting 250 ms and doubling up to 8 s. After a
+drop the host first sends `{"type":"flow.stream.reset"}`, then replays every
+permission and question that is still waiting, to the new subscriber only, so an
+open dialog survives a reconnect. A single event larger than the whole queue is
+replaced by a notice, and tool-call arguments and raw results are capped. Start-up
+notices (a tool toggle omp cannot enforce, a swarm that degraded to off) are sent
+once, when the card's first prompt is accepted, and not again on a resume.
+
+**Shutdown.** After `dispose` the host is a closed gate: creating or resuming a
+session answers 409 `session-closed` and spawns nothing, a terminal create answers
+409 `disposed`, a late event-stream subscriber gets a stream that is already
+closed, and the model catalog, provider probe and `omp config`/`omp auth` runs
+answer 503 `host-closed`. Every probe and CLI run the host started, including the
+`omp --version` checks, is killed with its process group and waited for, for at
+most 10 seconds.
 
 | Call | Route |
 |---|---|
@@ -362,6 +411,10 @@ browser waits on a turn in slices of
 | answer a question the agent asked | `POST /flow/api/engine/sessions/{id}/question/{requestID}` (or `/reject`) |
 | read back | `GET /flow/api/engine/sessions/{id}/transcript`, `/final`, `/steps`, `/calls` |
 | close one session / every session of a run | `DELETE /flow/api/engine/sessions/{id}` / `POST /flow/api/engine/runs/release` |
+
+`/transcript` also answers for a session the host no longer holds, from
+`.openflow-turns.json`; `/final`, `/steps` and `/calls` answer 404 once a session
+is released.
 
 The store routes (`lib/store.ts`) are separate: pipelines, run logs, roles, MCP
 servers, skills, folders, checkpoints and worktrees. Both hosts mount them too, so
@@ -380,12 +433,16 @@ without a login contributes no models.
   terminal, see [First run](#first-run). A provider key in the host's
   environment (`*_API_KEY`) also reaches every card; the terminal never gets one.
 - **Whether a login works** is only known when something is sent. The **test**
-  button beside a card's model runs one throwaway session and reports the
+  button beside a card's model runs one throwaway session (under its own run id,
+  released afterwards) and reports the
   provider's own answer — a real `403 Authorization failed` beats guessing.
 - **Prices** come from the catalog's per-million-token costs. A model the catalog
   quotes no price for is *unpriced*, never free: its tokens are shown and its
   money is not.
-- **A retired or unknown model id** fails preflight before a session is created.
+- **A card with no model cannot run.** Preflight blocks it (*pick a model for this
+  node*) and the canvas shows `no model` on the card; there is no fallback to a
+  default. A retired or unknown model id fails preflight before a session is
+  created.
 
 ## Omp settings
 
@@ -521,10 +578,15 @@ server the host talks to over HTTP, presenting as its `omp` surface.
   secrets or personal data is never retried.
   Writing never holds a run. A sub-agent an orchestrator dispatches more than once
   writes one entry per dispatch: the first keeps the subject above, later ones
-  end in `-d2`, `-d3` and so on.
+  end in `-d2`, `-d3` and so on. Each part of the subject is bounded (pipeline 64,
+  run 48, card 48 characters); a longer part, or one whose cleaning to lower-case
+  `a-z0-9._-` changed the name you gave, ends in a stable hash of the raw name, so
+  `Review: A`, `review a` and `Review-A` never share a namespace. A short name that
+  is already clean is used as it is.
 - **The chip.** `mem ↓ ↑` on a card says what was read and written, and its
   tooltip lists the subjects. `mem off` means memory is off; `mem unavailable`
-  means the card ran without memory, with the reason in the tooltip.
+  means the card ran without memory, with the reason in the tooltip. A recalled
+  memory shows how old it is.
 
 **Which repository.** `owner/name` comes from the project's `origin` remote,
 lower-cased (https, ssh and `git@host:owner/name` forms). *Repository scope*
@@ -536,9 +598,17 @@ graph (each run registers a Graph ID), 30 days (the default), or permanently.
 Substrate cannot delete. **Forget this pipeline's memory** (Omp settings → Memory)
 writes a retraction marker for each entry and records them in
 `<state>/memory-ignore.json`, so no card reads them again from this host; the
-entries stay in Substrate until their ttl lapses, and the dialog says so. If
-Substrate is unreachable, the host still ignores them locally but no marker is
-written, and it says that too. Forget covers the `-d<n>` subjects as well.
+entries stay in Substrate until their ttl lapses, and the dialog says so. The
+records are scoped to the repository (`<scope>|<prefix>`, for example
+`repo:acme/widgets|openflow/demo/`), so forgetting in one repository hides nothing
+in another. A file from before that, with unscoped keys, still loads but hides
+nothing; an offline Forget recorded then stops hiding, while a Forget that reached
+Substrate keeps its retraction markers. If
+Substrate is unreachable, the host still ignores the entries locally but no marker is
+written, and it says that too. Forget covers the `-d<n>` subjects as well. A
+failed write does not break later Forgets, and an unreadable file other than a
+missing one stops the write; a corrupt file is moved aside as
+`memory-ignore.json.corrupt-<time>`.
 
 **What the host reads.** The Substrate address is the *Substrate URL* setting, else
 `SUBSTRATE_URL`; there is no default. The token is `SUBSTRATE_TOKEN`, else the
@@ -631,6 +701,15 @@ Everything typed in the dock goes to the terminal — `Esc` included — except
 `` Ctrl+` ``, which returns to the dock's own controls; `Ctrl+Shift+C` copies the
 selection. The dock and a card's activity drawer share the bottom of the window,
 so opening one closes the other.
+
+Terminal sessions belong to a project and a kind: switching project replaces the
+dock, and the host records the project each terminal was started in
+(`PtyInfo.project`). A ticket or attach for a terminal started in another project
+answers 409 `project-mismatch`; nothing is killed, and switching back allows it
+again. A terminal create after the host has shut down answers 409 `disposed`.
+Closing, disposing or exiting sweeps the whole process group — SIGHUP, then SIGKILL
+after the grace period, even when the shell itself already exited — so a background
+child that ignores SIGHUP does not survive.
 
 **The terminal is code execution as you**, so it is gated three ways. Every
 request must carry the `x-openflow-pty` header, which a web page on another origin
@@ -841,9 +920,12 @@ it is told about, and a write there is not counted as changing the work.
 The engine runs **in the page**, so a reload, a crash or a closed tab ends a run
 with nothing alive to write `done`, `error` or `stopped` — while the sessions
 themselves are still held by the host and still addressable. A live run is guarded by
-`beforeunload`, and whatever gets past that is recoverable: a run still marked
-`running` on disk for this canvas, with nothing live, is one the page abandoned,
-and **Resume** appears beside Run.
+`beforeunload`, and whatever gets past that is recoverable: the newest run log for
+this pipeline still marked `running`, whose `updatedAt` is more than five minutes
+old, is one the page abandoned, and **Resume** appears beside Run. Every write of a
+run log stamps `updatedAt`, and a 30-second heartbeat keeps it fresh through a long
+quiet turn, so a run another tab is still writing is not offered. Starting the
+resumed run marks the old log `stopped` with `resumedBy`.
 
 Resuming splits that run log in two. Cards that finished keep their answers and
 never run again — reopening a finished card's session only bills. Cards that were
@@ -852,7 +934,9 @@ difference between resuming and starting over wearing the old run's name: an
 orchestrator seven rounds into a gauntlet remembers every verdict it has read. A
 carried card is told once, on its first turn only, that the run around it stopped
 and that nothing it produced was discarded — a card given no account of the
-silence re-answers what it already answered.
+silence re-answers what it already answered. A carried session the host cannot
+find any more starts fresh, as described under
+[How the host drives Omp](#how-the-host-drives-omp).
 
 **Re-run failed** is the neighbouring, narrower tool: it reuses the outputs of
 everything that finished and re-runs only what did not, in fresh sessions.
@@ -901,7 +985,8 @@ any project:
 state.json                               the remembered folder and pipeline
 omp-settings.json                        Omp settings
 memory-ignore.json                       what Forget told this host to ignore
-omp/<project>/<run>/<card>/              one card's role.md, overlay.yml, session/ and swarm/
+omp/<project>/<run>/<card>/              one card's role.md, overlay.yml, session/ and swarm/,
+                                         plus .openflow-session.json and .openflow-turns.json
 ```
 
 `.openflow/runs/` is disposable — worth adding to `.gitignore` if you keep
@@ -911,15 +996,20 @@ pipelines in version control.
 *different* pipeline already holds is refused rather than silently overwriting —
 every new pipeline is born `untitled`, so that used to be a reliable way to
 destroy the last one. The refusal offers both ways out: rename this one, or save
-again to replace the other.
+again to replace the other. A pipeline is marked saved only if it did not change
+while the save was in flight; edits made meanwhile keep it unsaved and the notice
+says so.
 
 Nothing is merged into an engine config and nothing needs a restart: a card is
 launched from its own spec, so an edited card simply starts a fresh omp process
 with the new spec. The card session files under `omp/` are kept after a run so it
 can be resumed. They live under `omp/<project>/`; about 15 seconds after the host
 starts it deletes every run directory there that nothing has written to for 30 days
-(`STATE_RETENTION_DAYS`). A run the host still holds, the `uplift/` directory, loose
-files and symlinks are never touched. A pruned run's sessions leave the Sessions
+(`STATE_RETENTION_DAYS`). A run the host still holds, a run whose log under
+`.openflow/runs` is still `running` (it can be resumed), loose files and symlinks
+are never touched. Inside `uplift/` only the planner's `results/` and `sessions/`
+`.json` and `.xml` files older than 30 days are removed (files only, never through
+a symlink); the rest of `uplift/` stays. A pruned run's sessions leave the Sessions
 list and cannot be resumed. This is separate from `POST /flow/api/runs/prune`,
 which only removes `.openflow/runs` logs.
 
@@ -965,6 +1055,8 @@ Every decision is recorded on the node and in the run log with the action,
 resources, reply and policy — an approval that leaves no trace is how a run
 quietly changes something nobody expected. Stopping a run rejects anything still
 pending rather than leaving the node waiting on an answer that will never come.
+Permission and question dialogs are keyed by session and request id together, so two
+sessions that reuse the same request id cannot overwrite each other.
 
 ### Questions during a run (human in the loop)
 
@@ -993,8 +1085,8 @@ with a reason rather than failing later as an opaque request error.
 A card only receives a file whose modality its model actually accepts, read from
 `capabilities.input` in omp's model catalog. A text-only model in the middle of a
 chain is not sent the image; it is told, in the prompt, which files were withheld
-and not to claim it saw them, and the run continues. A card with no pinned model
-is sent everything, since nothing can prove its model incapable.
+and not to claim it saw them, and the run continues. A card whose model the
+catalog does not list is sent no files, since nothing can show it accepts them.
 
 ## MCP servers and skills
 
@@ -1033,6 +1125,16 @@ by earlier builds under `.openflow/skills` are still listed, flagged `legacy`, a
 move to the profile when you save them. A card with its **skill** toggle off
 starts with `--no-skills`.
 
+Existing server and skill names are addressed exactly as they are written: a name
+with `.`, `:` or upper case is listed, edited and deleted as it stands, and only
+names the app makes up itself are slugged. A name must be one safe path segment (no
+separator, no `..`, no NUL, not hidden); an MCP server name must also be a usable
+JSON key (not empty, not `__proto__`, no control characters, at most 128
+characters). Saving a server as disabled removes it from `enabledServers`, and
+deleting one removes it from both `enabledServers` and `disabledServers`. Deleting
+a name that does not exist answers 404 `{ "removed": false }`, and the panel shows
+that as an error.
+
 Values in `mcp.json` are plain text. For a secret, prefer an environment variable
 the host already holds.
 
@@ -1067,7 +1169,10 @@ A row is labelled `<role> · <first line of the card's task>`, which the engine
 sends when it opens the session (`CreateSession.title`) and the host stores in the
 session's meta file. A session created before that shows the first line of its
 prompt, and the card key (`plan-and-code-coder-…`) when there is neither. The
-search matches title, card key, model and id.
+search matches title, card key, model and id. The list includes sessions the host no
+longer holds, as long as their saved history can be read; a session with none is not
+listed, since opening it would fail. Slow answers never overwrite newer ones: the
+list and the open session show the result of the latest request only.
 
 ## Migrating older pipelines
 
@@ -1113,6 +1218,9 @@ for the same reason.
 | the terminal says it is disabled | `FLOW_ALLOW_REMOTE=1` is set | unset it; the terminal is never available on a non-loopback host |
 | *omp profile directory unknown* from the MCP or skills panel | omp has not reported its config directory yet | open Omp settings and fix what the Status tab lists |
 | a run says the host did not answer | the canvas host is not running, or crashed | start it with `bun openflow.ts` |
+| 409 `project-busy` when picking a folder | a run, a session start or an uplift planner is still working in the current project | stop the run or wait for it to end, then switch |
+| 409 `project-mismatch` on a terminal | that terminal was started in another project | open that project again, or start a new terminal |
+| 409 `session-closed` or `disposed`, 503 `host-closed` | the host is shutting down | restart it with `bun openflow.ts` |
 
 ## Canvas
 

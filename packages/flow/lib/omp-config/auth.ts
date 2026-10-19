@@ -50,6 +50,8 @@ export function createAuth(deps: { run: Run; env: NodeJS.ProcessEnv }): Auth {
     try {
       return await deps.run(binary, args, childEnv(deps.env), input)
     } catch (error) {
+      // A stopped host's own 503 is the answer: omp itself was never at fault.
+      if (error instanceof HttpError) throw error
       if (error instanceof RunTimeout) throw new HttpError(502, "omp did not answer in time", "omp-timeout")
       throw new HttpError(502, "omp could not be run", "omp-failed")
     }

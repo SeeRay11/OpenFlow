@@ -487,7 +487,41 @@ describe("skills", () => {
     const result = await call("DELETE", "/flow/api/skills/gone")
     expect(result!.body).toEqual({ name: "gone", removed: true })
     expect((await call("GET", "/flow/api/skills/gone"))!.status).toBe(404)
-    expect((await call("DELETE", "/flow/api/skills/gone"))!.body).toEqual({ name: "gone", removed: false })
+    const again = await call("DELETE", "/flow/api/skills/gone")
+    expect(again!.status).toBe(404)
+    expect(again!.body).toMatchObject({ name: "gone", removed: false, error: expect.any(String) })
+  })
+
+  test("a folder with a non-slug name is read, edited in place and deleted under its own name", async () => {
+    await fs.mkdir(path.join(skillsDir(), "MySkill"), { recursive: true })
+    await fs.writeFile(path.join(skillsDir(), "MySkill", "SKILL.md"), "---\nname: MySkill\ndescription: Installed\n---\n\nbody\n")
+
+    expect(((await call("GET", "/flow/api/skills"))!.body as any[]).map((row) => row.name)).toEqual(["MySkill"])
+    const loaded = await call("GET", "/flow/api/skills/MySkill")
+    expect(loaded!.status).toBe(200)
+    expect(loaded!.body).toMatchObject({ name: "MySkill", folder: "MySkill" })
+
+    const saved = await call("PUT", "/flow/api/skills/MySkill", { body: { ...(loaded!.body as object), content: "edited" } })
+    expect((saved!.body as any).path).toBe(path.join(skillsDir(), "MySkill", "SKILL.md"))
+    expect(await fs.readdir(skillsDir())).toEqual(["MySkill"])
+
+    expect((await call("DELETE", "/flow/api/skills/MySkill"))!.body).toEqual({ name: "MySkill", removed: true })
+    expect(await fs.readdir(skillsDir())).toEqual([])
+  })
+
+  test("deleting never reaches a differently-cased sibling or a name outside the skills directory", async () => {
+    await call("PUT", "/flow/api/skills/myskill", { body: skill })
+    await fs.mkdir(path.join(profile, "keep"), { recursive: true })
+
+    expect((await call("DELETE", "/flow/api/skills/MySkill"))!.status).toBe(404)
+    expect(await fs.readdir(skillsDir())).toEqual(["myskill"])
+
+    for (const hostile of ["..", "../keep", "a\\b", ".hidden", "bad\u0000name"]) {
+      const route = `/flow/api/skills/${encodeURIComponent(hostile)}`
+      expect((await call("DELETE", route))!.status).toBe(400)
+      expect((await call("GET", route))!.status).toBe(400)
+    }
+    expect(await fs.readdir(profile)).toContain("keep")
   })
 
   test("keeps a traversing name inside the skills directory", async () => {
@@ -544,7 +578,8 @@ describe("skills", () => {
 
       const result = await call("DELETE", "/flow/api/skills/old")
 
-      expect(result!.body).toEqual({ name: "old", removed: false })
+      expect(result!.status).toBe(404)
+      expect(result!.body).toMatchObject({ name: "old", removed: false })
       await expect(read(legacyFile("old"))).resolves.toContain("old body")
     })
   })
@@ -669,6 +704,35 @@ describe("routes: browse and project", () => {
     try {
       await call("POST", "/flow/api/project", { body: { path: next } })
       expect(recallProject()).toBe(path.resolve(next))
+    } finally {
+      await fs.rm(next, { recursive: true, force: true })
+    }
+  })
+
+  test("POST /project answers 409 project-busy while the host reports live work, and moves nothing", async () => {
+    const next = await fs.mkdtemp(path.join(os.tmpdir(), "openflow-store-next-"))
+    try {
+      const result = await handleFlow(paths, {
+        method: "POST",
+        path: "/flow/api/project",
+        search: new URLSearchParams(),
+        json: async () => ({ path: next }),
+        projectLocked: () => true,
+      })
+      expect(result!.status).toBe(409)
+      expect(result!.body).toMatchObject({ code: "project-busy", error: expect.any(String) })
+      expect(paths.project).toBe(dir)
+      expect(recallProject()).toBeUndefined()
+
+      const free = await handleFlow(paths, {
+        method: "POST",
+        path: "/flow/api/project",
+        search: new URLSearchParams(),
+        json: async () => ({ path: next }),
+        projectLocked: () => false,
+      })
+      expect(free!.status).toBe(200)
+      expect(paths.project).toBe(path.resolve(next))
     } finally {
       await fs.rm(next, { recursive: true, force: true })
     }
@@ -826,9 +890,65 @@ describe("mcp servers", () => {
     expect(list[1]).toMatchObject({ url: "https://b" })
   })
 
-  test("a name omp would parse differently is rewritten, not stored as typed", async () => {
+  test("a name omp would parse differently is rewritten for a new server, not stored as typed", async () => {
     await call("PUT", `/mcp/${encodeURIComponent("my server")}`, { body: local })
     expect(Object.keys((await config()).mcpServers)).toEqual(["my-server"])
+  })
+
+  test("an existing key omp accepts is edited and deleted under its own name", async () => {
+    await fs.mkdir(profile, { recursive: true })
+    await fs.writeFile(
+      configPath(),
+      JSON.stringify({ mcpServers: { "my.server": { command: "a" }, "github:x": { command: "b" } } }),
+    )
+
+    const dotted = encodeURIComponent("my.server")
+    await call("PUT", `/mcp/${dotted}`, { body: { type: "local", command: ["edited"] } })
+    expect(Object.keys((await config()).mcpServers).sort()).toEqual(["github:x", "my.server"])
+    expect((await config()).mcpServers["my.server"].command).toBe("edited")
+
+    expect((await call("DELETE", `/mcp/${dotted}`))!.body).toMatchObject({ name: "my.server", removed: true })
+    expect(Object.keys((await config()).mcpServers)).toEqual(["github:x"])
+  })
+
+  test("deleting a server that is not there is a 404, not a silent success", async () => {
+    expect((await call("DELETE", "/mcp/ghost"))!.status).toBe(404)
+    await fs.mkdir(profile, { recursive: true })
+    await fs.writeFile(configPath(), JSON.stringify({ mcpServers: { real: { command: "a" } } }))
+    const missing = await call("DELETE", "/mcp/ghost")
+    expect(missing!.status).toBe(404)
+    expect(missing!.body).toMatchObject({ name: "ghost", removed: false })
+    // `constructor` is on every object's prototype but is no server.
+    expect((await call("DELETE", "/mcp/constructor"))!.status).toBe(404)
+    expect(Object.keys((await config()).mcpServers)).toEqual(["real"])
+  })
+
+  test("names that cannot be a config key are refused", async () => {
+    for (const bad of ["__proto__", "tab\there", "x".repeat(129), " "]) {
+      const response = await call("PUT", `/mcp/${encodeURIComponent(bad)}`, { body: local })
+      expect(response!.status).toBe(400)
+    }
+    await expect(read(configPath())).rejects.toThrow()
+  })
+
+  test("deleting a server also drops its name from enabledServers and disabledServers", async () => {
+    await fs.mkdir(profile, { recursive: true })
+    await fs.writeFile(
+      configPath(),
+      JSON.stringify({
+        mcpServers: { a: { command: "a", enabled: false }, b: { command: "b" } },
+        enabledServers: ["a", "b"],
+        disabledServers: ["a", "x"],
+      }),
+    )
+
+    await call("DELETE", "/mcp/a")
+
+    const saved = await config()
+    expect(saved.enabledServers).toEqual(["b"])
+    expect(saved.disabledServers).toEqual(["x"])
+    await call("PUT", "/mcp/a", { body: { type: "local", command: ["a"], enabled: false } })
+    expect(((await call("GET", "/mcp"))!.body as any[]).find((row) => row.name === "a").enabled).toBe(false)
   })
 
   test("saving a server the config already describes writes nothing", async () => {

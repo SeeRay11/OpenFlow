@@ -29,6 +29,9 @@ import {
   waitForIdle,
 } from "./client"
 
+/** The run id a recorded request body carries, or "" when it names none. */
+const runIdOf = (body: unknown) => (body && typeof body === "object" && "runId" in body ? String(body.runId) : "")
+
 type Seen = { method: string; path: string; search: string; body: unknown }
 
 const seen: Seen[] = []
@@ -38,6 +41,9 @@ const waits = new Map<string, WaitResult>()
 const waitQueue = new Map<string, WaitResult[]>()
 /** Run when a `/wait` request arrives, before the host answers; receives the `timeoutMs` it asked for. */
 let onWait: ((timeoutMs: number) => void) | undefined
+/** The project `/context` answers with, and what runs before it answers: a slow host. */
+let contextProject = "/tmp/project"
+let onContext: (() => Promise<void>) | undefined
 /** Transcript per session id for `/final`. */
 const finals = new Map<string, { text: string; error?: string }>()
 /** What the `events` route writes, chunk by chunk, then closes (or holds open when `hold`). */
@@ -65,7 +71,9 @@ const server = Bun.serve({
     seen.push({ method: request.method, path: url.pathname, search: url.search, body })
 
     if (url.pathname === "/flow/api/context") {
-      return reply(200, { project: "/tmp/project", pipelines: "/tmp/p", runs: "/tmp/r", generated: "/tmp/g" })
+      const project = contextProject
+      await onContext?.()
+      return reply(200, { project, pipelines: "/tmp/p", runs: "/tmp/r", generated: "/tmp/g" })
     }
     if (url.pathname === `${ENGINE_BASE}/health`) {
       return reply(200, { ok: true, omp: { available: true, version: "18.12.2" }, sessions: { live: 0 } })
@@ -168,6 +176,8 @@ beforeEach(() => {
   waits.clear()
   waitQueue.clear()
   onWait = undefined
+  contextProject = "/tmp/project"
+  onContext = undefined
   finals.clear()
   eventChunks = []
   hold = false
@@ -214,6 +224,25 @@ describe("context and catalog over the wire", () => {
     expect(seen.filter((entry) => entry.path === "/flow/api/context")).toHaveLength(1)
     disconnect()
     expect(() => project()).toThrow("not connected")
+  })
+
+  test("a connect that was in flight across a disconnect does not cache the old project", async () => {
+    const held = Promise.withResolvers<void>()
+    const arrived = Promise.withResolvers<void>()
+    contextProject = "/tmp/old"
+    onContext = async () => {
+      arrived.resolve()
+      await held.promise
+    }
+    const slow = connect()
+    await arrived.promise
+    // The user switched project while the old answer was still on its way.
+    disconnect()
+    contextProject = "/tmp/new"
+    onContext = undefined
+    held.resolve()
+    expect((await slow).context.project).toBe("/tmp/new")
+    expect(project()).toBe("/tmp/new")
   })
 
   test("health, models, sessions and a transcript read their routes", async () => {
@@ -472,13 +501,14 @@ describe("testModel", () => {
     const result = await testModel("anthropic/claude-opus-5")
     expect(result.ok).toBe(true)
     const create = seen.find((entry) => entry.method === "POST" && entry.path === `${ENGINE_BASE}/sessions`)
+    expect(runIdOf(create?.body)).toStartWith("model-test-")
     expect(create?.body).toMatchObject({
-      runId: "model-test",
       card: { key: "openflow-model-test" },
       model: "anthropic/claude-opus-5",
     })
     expect(seen.find((entry) => entry.path.endsWith("/prompt"))?.body).toEqual({ text: "Reply with the single word ok." })
-    expect(seen.at(-1)).toMatchObject({ method: "DELETE", path: `${ENGINE_BASE}/sessions/ses_1` })
+    expect(seen.find((entry) => entry.method === "DELETE")).toMatchObject({ path: `${ENGINE_BASE}/sessions/ses_1` })
+    expect(seen.at(-1)?.path).toBe(`${ENGINE_BASE}/runs/release`)
   })
 
   test("a provider error in the transcript is the failure, and the session is still released", async () => {
@@ -486,7 +516,7 @@ describe("testModel", () => {
     finals.set("ses_1", { text: "", error: "HTTP 401 Unauthorized" })
     const result = await testModel("openai/gpt-5")
     expect(result).toMatchObject({ ok: false, error: "HTTP 401 Unauthorized" })
-    expect(seen.at(-1)?.method).toBe("DELETE")
+    expect(seen.some((entry) => entry.method === "DELETE")).toBe(true)
   })
 
   test("an empty answer is not ok", async () => {
@@ -499,5 +529,18 @@ describe("testModel", () => {
     expect(result.ok).toBe(false)
     expect(result.error).toMatch(/HTTP 429/)
     expect(seen.some((entry) => entry.method === "DELETE")).toBe(false)
+  })
+
+  test("every test opens its own run, and gives it back", async () => {
+    waits.set("ses_1", { status: "idle", result: "completed" })
+    finals.set("ses_1", { text: "ok" })
+    await Promise.all([testModel("anthropic/claude-opus-5"), testModel("openai/gpt-5")])
+    const runs = seen
+      .filter((entry) => entry.method === "POST" && entry.path === `${ENGINE_BASE}/sessions`)
+      .map((entry) => runIdOf(entry.body))
+    expect(runs).toHaveLength(2)
+    expect(new Set(runs).size).toBe(2)
+    const released = seen.filter((entry) => entry.path === `${ENGINE_BASE}/runs/release`).map((entry) => runIdOf(entry.body))
+    expect(released.toSorted()).toEqual(runs.toSorted())
   })
 })

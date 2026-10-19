@@ -29,10 +29,11 @@ import {
 } from "./server/engine"
 import { availableModels, providerRows, type ProviderRow } from "./server/providers"
 import { setAvailableModels } from "./graph/default-model"
-import { hydrateCustomRoles, onRolesSyncError } from "./graph/roles"
-import { findRun, PRUNE_DAYS, RUN_DELETE, RUN_PRUNE, runMenuOptions } from "./server/runs"
+import { forgetCustomRoles, hydrateCustomRoles, onRolesSyncError } from "./graph/roles"
+import { latest } from "./server/latest"
+import { abandoned, findRun, interrupted, PRUNE_DAYS, RUN_DELETE, RUN_PRUNE, runMenuOptions, superseded } from "./server/runs"
 import { store, type PipelineEntry, type RunEntry } from "./server/store"
-import { actions, state } from "./state"
+import { actions, requestKey, state } from "./state"
 import {
   IconAlert,
   IconClose,
@@ -140,6 +141,7 @@ const HEALTH_INTERVAL = 15_000
 const CLOCK_INTERVAL = 10_000
 
 const HOST_DOWN = "cannot reach the OpenFlow host — start it with `bun openflow.ts`, then reload this page"
+const PROJECT_BUSY = "a run is in progress — stop it or wait for it to end before switching project"
 const OMP_MISSING = "omp is not available — install it, or set its path in the Omp settings"
 
 /** What a probe found: all well, the host does not answer, or the host answers and omp cannot run. */
@@ -266,6 +268,9 @@ export function App() {
   const [issues, setIssues] = createSignal<Preflight>()
   let current: Run | undefined
   let providersRequest = 0
+  const probes = latest()
+  const listings = latest()
+  const openings = latest()
 
   const ompReady = () => ompInfo()?.available !== false
   const ompMessage = () => ompProblem() ?? OMP_MISSING
@@ -298,24 +303,34 @@ export function App() {
    * "connected", and the only thing that clears `hostReachable`. Never throws.
    */
   async function probe(): Promise<Health> {
+    // Heartbeat, notices and runs all probe: only the newest answer may touch the statusbar, or an old failure lands over a newer success.
+    const current = probes.begin()
     try {
       const health = await api.health()
-      actions.setHostReachable(true)
-      setOmpInfo(health.omp)
+      if (current()) {
+        actions.setHostReachable(true)
+        setOmpInfo(health.omp)
+      }
       if (health.omp.available) {
-        setOmpProblem(undefined)
-        setStatus(health.omp.version ? `connected · omp ${health.omp.version}` : "connected")
+        if (current()) {
+          setOmpProblem(undefined)
+          setStatus(health.omp.version ? `connected · omp ${health.omp.version}` : "connected")
+        }
         return "ready"
       }
       // The health answer only says omp is missing; its status view names the problem and the fix.
       const detail = await omp.status()
-      const problem = detail.ok ? detail.value.problems[0] : undefined
-      setOmpProblem(problem ? `${problem.message}${problem.fix ? ` — ${problem.fix}` : ""}` : undefined)
-      setStatus("omp unavailable")
+      if (current()) {
+        const problem = detail.ok ? detail.value.problems[0] : undefined
+        setOmpProblem(problem ? `${problem.message}${problem.fix ? ` — ${problem.fix}` : ""}` : undefined)
+        setStatus("omp unavailable")
+      }
       return "omp"
     } catch (error) {
-      actions.setHostReachable(false)
-      setStatus(`offline — ${api.describe(error)}`)
+      if (current()) {
+        actions.setHostReachable(false)
+        setStatus(`offline — ${api.describe(error)}`)
+      }
       return "host"
     }
   }
@@ -326,6 +341,8 @@ export function App() {
    * pipelines, recorded runs.
    */
   async function bootstrap() {
+    // Roles belong to one project: nothing of the previous project's may be on screen if this one's cannot be read.
+    forgetCustomRoles()
     setStatus("connecting…")
     let reachable = true
     try {
@@ -510,21 +527,29 @@ export function App() {
    */
   async function pickProject() {
     if (pickingProject()) return
+    if (state.running) return actions.notice("info", PROJECT_BUSY)
     setPickingProject(true)
     try {
-      const { path } = await store.pickFolder(project() || undefined)
-      if (!path) return
-      const paths = await store.setProject(path)
+      // No native dialog (a remote or headless host) leaves the in-app browser as the way to choose.
+      const picked = await store.pickFolder(project() || undefined).then(
+        (result) => result,
+        () => undefined,
+      )
+      if (!picked) return setShowProjectPicker(true)
+      if (!picked.path) return
+      const paths = await store.setProject(picked.path)
       api.disconnect()
       await switchProject(paths.project)
     } catch (error) {
-      setShowProjectPicker(true)
+      // The host refuses while a run holds the project, and says so in a sentence: show it as it is.
+      notice("error", api.describe(error))
     } finally {
       setPickingProject(false)
     }
   }
 
   async function switchProject(next: string) {
+    if (state.running) return actions.notice("info", PROJECT_BUSY)
     setShowProjectPicker(false)
     await bootstrap()
     actions.notice("info", `switched project to ${next}`)
@@ -564,9 +589,16 @@ export function App() {
   }
 
   async function refresh() {
-    const entries = await store.pipelines().catch(() => [])
-    setPipelines(entries)
-    setRuns(await store.runs().catch(() => []))
+    // Called from boot, save, a project switch and the end of every run: the newest read owns the lists.
+    const current = listings.begin()
+    const [entries, recorded] = await Promise.all([
+      store.pipelines().catch(() => []),
+      store.runs().catch(() => []),
+    ])
+    if (current()) {
+      setPipelines(entries)
+      setRuns(recorded)
+    }
     return entries
   }
 
@@ -590,14 +622,17 @@ export function App() {
   async function save(overwrite = false) {
     const check = layer(state.pipeline)
     if (!check.ok) return notice("error", check.error)
+    // What this request writes. Edits made while it is in flight are not in it, so they must keep the graph dirty.
+    const snapshot = JSON.stringify(state.pipeline)
+    const name = state.pipeline.name
     try {
       const response = await fetch(
-        `/flow/api/pipelines/${encodeURIComponent(state.pipeline.name)}${overwrite ? "?overwrite=1" : ""}`,
-        { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(state.pipeline) },
+        `/flow/api/pipelines/${encodeURIComponent(name)}${overwrite ? "?overwrite=1" : ""}`,
+        { method: "PUT", headers: { "content-type": "application/json" }, body: snapshot },
       )
       const body = await response.json().catch(() => undefined)
       if (response.status === 409) {
-        const conflict = body?.error ?? `a different pipeline is already saved as "${state.pipeline.name}"`
+        const conflict = body?.error ?? `a different pipeline is already saved as "${name}"`
         // Never overwrite on the user's behalf: replacing somebody's saved work
         // is the whole thing this guard exists to prevent.
         if (
@@ -607,8 +642,9 @@ export function App() {
         return notice("error", `${conflict} — rename this pipeline in the title bar, then save again`)
       }
       if (!response.ok) return notice("error", body?.error ?? `could not save the pipeline (HTTP ${response.status})`)
-      actions.markSaved()
-      actions.notice("info", `saved ${body.path}`)
+      const unchanged = JSON.stringify(state.pipeline) === snapshot
+      if (unchanged) actions.markSaved()
+      actions.notice("info", unchanged ? `saved ${body.path}` : `saved ${body.path} — edits made while saving are not saved yet`)
       await refresh()
     } catch (error) {
       notice("error", api.describe(error))
@@ -715,27 +751,15 @@ export function App() {
   }
 
   /**
-   * The newest run of this canvas that never reached an end state.
-   *
-   * `running` on disk means the page went away mid-run: the engine lives in the
-   * page, so nothing was left to write `done`, `error` or `stopped`. The
-   * sessions themselves are still on the server, which is what makes the run
-   * recoverable rather than merely readable.
-   */
-  function interruptedRun() {
-    if (state.running) return undefined
-    return runs()
-      .filter((entry) => entry.status === "running" && entry.pipeline === state.pipeline.name)
-      .sort((a, b) => (b.started ?? 0) - (a.started ?? 0))[0]
-  }
-
-  /**
    * Picks an interrupted run back up: finished cards keep their answers, and the
    * ones that were still working are continued in the sessions they already hold.
    */
   async function resumeRun(id: string) {
     try {
       const { log, summary } = await loadRun(id)
+      // The list this was offered from can be minutes old: the log itself says whether another tab is still writing it.
+      if (!abandoned(log))
+        return notice("error", `run ${id} was written a moment ago — it is probably still running in another tab`)
       const outputs: Record<string, string> = {}
       const sessions: Record<string, string> = {}
       const fresh: string[] = []
@@ -755,13 +779,13 @@ export function App() {
             : ""),
         { title: summary?.title },
       )
-      await run(outputs, sessions)
+      await run(outputs, sessions, log)
     } catch (error) {
       actions.notice("error", api.describe(error))
     }
   }
 
-  async function run(resume?: Record<string, string>, sessions?: Record<string, string>) {
+  async function run(resume?: Record<string, string>, sessions?: Record<string, string>, supersedes?: RunLog) {
     // One place tells the user everything that is wrong before a session is
     // ever created. Blocking problems abort; warnings are shown but let the run
     // proceed. The list survives on screen so each problem can select its node.
@@ -780,6 +804,14 @@ export function App() {
       setShowOmp(true)
       return
     }
+    // The project is read from the host rather than from this page, and handed to the engine: a project switch made while the run is going must not move the rest of it somewhere else.
+    api.disconnect()
+    const startedIn = await api.connect().then(
+      ({ context }) => context.project,
+      () => undefined,
+    )
+    if (startedIn) setProject(startedIn)
+    openings.cancel()
     const pre = preflight(state.pipeline, { unlockedModels: unlockedModels() })
     // A card carried over from an earlier build can name a model this catalog
     // does not hold; say why before the generic "no logged-in provider" line.
@@ -807,6 +839,7 @@ export function App() {
           onNotice: notice,
           onPermission: (request) =>
             actions.askPermission({
+              sessionID: request.sessionID,
               requestID: request.requestID,
               nodeID: request.nodeID,
               role: request.role,
@@ -815,6 +848,7 @@ export function App() {
             }),
           onQuestion: (request) =>
             actions.askQuestion({
+              sessionID: request.sessionID,
               requestID: request.requestID,
               nodeID: request.nodeID,
               role: request.role,
@@ -822,11 +856,12 @@ export function App() {
             }),
           // The engine settles a question on its own once it times out, so the
           // dialog has to come down even though nobody touched it.
-          onQuestionClosed: (requestID) => actions.answerQuestion(requestID, undefined),
+          onQuestionClosed: (sessionID, requestID) => actions.answerQuestion(requestKey(sessionID, requestID), undefined),
           // Blocks the card until a person says what to do with the original prompt.
           onUpliftFailure: (request) => actions.askUpliftFailure({ requestID: crypto.randomUUID(), ...request }),
         },
         {
+          project: startedIn,
           pipe: pipe(),
           permissions: policy(),
           maxParallel: parallel(),
@@ -836,6 +871,11 @@ export function App() {
           sessions,
         },
       )
+      // The resumed run carries on from the interrupted one, so that log stops being offered for resuming.
+      if (supersedes)
+        void store
+          .saveRun(superseded(supersedes, current.log.id))
+          .catch((error) => notice("error", `the interrupted run's log was not closed: ${api.describe(error)}`))
       const log = await current.done
       // Whoever asked for this is not necessarily here — a gauntlet is bounded
       // in hours, and the ending worth knowing about is exactly the one the
@@ -912,6 +952,7 @@ export function App() {
 
   /** The Runs menu both opens a recording and manages one, so its rows are routed here. */
   async function chooseRun(value: string) {
+    if (state.running) return
     if (value === RUN_DELETE) return deleteOpenRun()
     if (value === RUN_PRUNE) return pruneRuns()
     return openRun(value)
@@ -966,8 +1007,13 @@ export function App() {
   }
 
   async function openRun(id: string) {
+    // A run in progress is still writing the canvas this would replace, and `resetRuntime` would cancel its pending uplift decisions.
+    if (state.running) return
+    const current = openings.begin()
     try {
       const { log, summary } = await loadRun(id)
+      // Another recording was picked, or a run started, while this one was loading: it is not what the user is looking at any more.
+      if (!current() || state.running) return
       actions.setRun(log)
       actions.resetRuntime({})
       for (const node of log.nodes) {
@@ -1337,7 +1383,7 @@ export function App() {
             <IconPlay />
             Run
           </button>
-          <Show when={interruptedRun()}>
+          <Show when={state.running ? undefined : interrupted(runs(), state.pipeline.name)}>
             {(entry) => (
               <button
                 class="btn"
@@ -1462,13 +1508,17 @@ export function App() {
                   </Show>
                 </span>
                 <span class="permission-actions">
-                  <button class="btn" type="button" onClick={() => actions.answerPermission(request.requestID, "once")}>
+                  <button
+                    class="btn"
+                    type="button"
+                    onClick={() => actions.answerPermission(requestKey(request.sessionID, request.requestID), "once")}
+                  >
                     allow once
                   </button>
                   <button
                     class="btn"
                     type="button"
-                    onClick={() => actions.answerPermission(request.requestID, "always")}
+                    onClick={() => actions.answerPermission(requestKey(request.sessionID, request.requestID), "always")}
                     title="persists to the project's saved permissions, beyond this run"
                   >
                     always
@@ -1476,7 +1526,7 @@ export function App() {
                   <button
                     class="btn btn-danger"
                     type="button"
-                    onClick={() => actions.answerPermission(request.requestID, "reject")}
+                    onClick={() => actions.answerPermission(requestKey(request.sessionID, request.requestID), "reject")}
                   >
                     reject
                   </button>
@@ -1557,7 +1607,7 @@ export function App() {
         the accessor goes stale mid-handler ("Attempting to access a stale
         value from <Show>").
       */}
-      <Show when={state.questions[0]?.requestID} keyed>
+      <Show when={state.questions[0] && requestKey(state.questions[0].sessionID, state.questions[0].requestID)} keyed>
         <QuestionDialog request={state.questions[0]!} onAnswer={actions.answerQuestion} />
       </Show>
 
@@ -1710,7 +1760,9 @@ export function App() {
             // Wider than the 284px default: a row carries a timestamp, a
             // duration and a price, and the hint is ellipsised at half the row.
             width={460}
-            title="reopen a recorded run"
+            // Opening a recording replaces everything the canvas shows, which a run in progress is still writing.
+            disabled={state.running}
+            title={state.running ? "recorded runs can be opened once the current run ends" : "reopen a recorded run"}
             value=""
             search
             options={runMenuOptions(runs(), state.pipeline.name, state.run?.id, tick())}
@@ -1720,11 +1772,18 @@ export function App() {
           <button
             type="button"
             class="icon-btn statusbar-project"
-            title={`${project()} — click to choose a folder (right-click to browse in-app)`}
+            // The run is bound to the project it started in; the host refuses a switch too.
+            disabled={state.running}
+            title={
+              state.running
+                ? PROJECT_BUSY
+                : `${project()} — click to choose a folder (right-click to browse in-app)`
+            }
             aria-label="switch project"
             onClick={() => void pickProject()}
             onContextMenu={(event) => {
               event.preventDefault()
+              if (state.running) return actions.notice("info", PROJECT_BUSY)
               setShowProjectPicker(true)
             }}
           >

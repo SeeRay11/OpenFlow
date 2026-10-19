@@ -1,4 +1,5 @@
 import type { OmpSettings, OmpStatus } from "../../shared/omp"
+import { createLifecycle } from "../host/lifecycle"
 import type { HostHandler } from "../host/respond"
 import { resolveBinary } from "../omp/binary"
 import type { BuildLaunch, SpawnOmp } from "../omp/rpc-types"
@@ -36,14 +37,22 @@ export type OmpConfigModule = {
    * `auth import` rewrites the profile's `agent.db`. Cheap; safe to call from inside a provider read.
    */
   stamp(): Promise<string>
+  /**
+   * Refuses new work and stops what runs: an `omp config` or `auth` run, the provider probe and the `--version`
+   * probe of the status check each lose their process group. Later calls answer 503. Idempotent.
+   */
+  dispose(): Promise<void>
 }
 
 export function createOmpConfig(deps: OmpConfigDeps): OmpConfigModule {
   const env = deps.env ?? process.env
-  const run: Run = deps.run ?? createRun(deps.runTimeoutMs ?? RUN_TIMEOUT_MS)
+  const life = createLifecycle("omp settings")
+  // The seam is tracked too, so a run in flight keeps `dispose` waiting and none starts after it.
+  const injected = deps.run
+  const run: Run = injected ? (binary, args, runEnv, input) => life.run(() => injected(binary, args, runEnv, input)) : createRun(deps.runTimeoutMs ?? RUN_TIMEOUT_MS, life)
   const store = createSettingsStore({ stateDir: deps.stateDir, env })
-  const providers = createProviders({ env, spawn: deps.spawn, launch: deps.launch, stamp })
-  const checker = createStatusChecker({ run, env, providers })
+  const providers = createProviders({ env, spawn: deps.spawn, launch: deps.launch, stamp, life })
+  const checker = createStatusChecker({ run, env, providers, life })
   const config = createConfig({ run, env })
   const auth = createAuth({ run, env })
 
@@ -85,5 +94,6 @@ export function createOmpConfig(deps: OmpConfigDeps): OmpConfigModule {
       return () => loginListeners.delete(listener)
     },
     stamp,
+    dispose: () => life.dispose(),
   }
 }

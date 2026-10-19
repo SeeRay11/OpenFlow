@@ -152,6 +152,12 @@ export type FlowRequest = {
    * have been resolved, which the mcp and skills routes report as a 409.
    */
   profileDir?: () => Promise<string | undefined>
+  /**
+   * True while the host has live work bound to the current project (an engine
+   * session, a running turn). `POST /project` refuses to move the shared paths
+   * out from under it. Absent means nothing is ever locked.
+   */
+  projectLocked?: () => boolean
 }
 
 export type FlowResponse = { status: number; body: unknown }
@@ -226,17 +232,25 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
   }
 
   if (segments[0] === "mcp") {
-    const name = segments[1] ? mcpName(decodeURIComponent(segments[1])) : undefined
+    // An existing key is addressed exactly as written: omp accepts names such
+    // as `my.server` or `github:x`, and rewriting them here would edit and
+    // delete a copy instead of the server the panel listed.
+    const name = segments[1] ? decodeURIComponent(segments[1]) : undefined
+    const invalid = name === undefined ? undefined : mcpNameProblem(name)
+    if (invalid) return { status: 400, body: { error: invalid } }
 
     if (!name && method !== "GET") return { status: 400, body: { error: "mcp server name required" } }
-
     if (!name || method === "PUT" || method === "DELETE") {
       const profile = await request.profileDir?.()
       if (!profile) return noProfile()
       const file = path.join(profile, "mcp.json")
       if (!name) return ok(await listMcpServers(file))
       try {
-        if (method === "DELETE") return ok(await deleteMcpServer(file, name))
+        if (method === "DELETE") {
+          const result = await deleteMcpServer(file, name)
+          if (result.removed) return ok(result)
+          return { status: 404, body: { ...result, error: `mcp server "${name}" not found: nothing was removed` } }
+        }
         return ok(await writeMcpServer(file, name, await request.json()))
       } catch (error) {
         return { status: 400, body: { error: error instanceof Error ? error.message : String(error) } }
@@ -245,30 +259,45 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
   }
 
   if (segments[0] === "skills") {
-    const name = segments[1] ? slug(decodeURIComponent(segments[1])) : undefined
+    const raw = segments[1] ? decodeURIComponent(segments[1]) : undefined
 
-    if (!name && method !== "GET") return { status: 400, body: { error: "skill name required" } }
+    if (raw === undefined && method !== "GET") return { status: 400, body: { error: "skill name required" } }
 
     // Reading works without a profile — the legacy skills live in the project —
     // but anything that writes has nowhere to go.
-    if (!name) return ok(await listSkills(paths, await request.profileDir?.()))
+    if (raw === undefined) return ok(await listSkills(paths, await request.profileDir?.()))
 
-    if (method === "GET") {
-      const found = await readSkill(paths, await request.profileDir?.(), name)
-      if (!found) return { status: 404, body: { error: `skill "${name}" not found` } }
-      return ok(found)
-    }
-    if (method === "PUT" || method === "DELETE") {
+    // A listed folder is addressed exactly as it is named on disk (omp and
+    // plugins install `MySkill`); only a name that is new is slugged.
+    if (method === "PUT") {
       const profile = await request.profileDir?.()
       if (!profile) return noProfile()
-      if (method === "PUT") return ok(await writeSkill(profile, name, await request.json()))
-      const dir = path.join(profile, "skills", name)
-      const existed = await fs.stat(dir).then(
+      const name = await skillFolder(path.join(profile, "skills"), raw)
+      return ok(await writeSkill(profile, name, await request.json()))
+    }
+    if (method === "GET" || method === "DELETE") {
+      if (!isSafeSegment(raw)) return { status: 400, body: { error: `invalid skill name "${raw}": use a single folder name` } }
+
+      if (method === "GET") {
+        const found = await readSkill(paths, await request.profileDir?.(), raw)
+        if (!found) return { status: 404, body: { error: `skill "${raw}" not found` } }
+        return ok(found)
+      }
+      const profile = await request.profileDir?.()
+      if (!profile) return noProfile()
+      const dir = path.join(profile, "skills", raw)
+      // lstat: a dangling symlink is still a folder the listing may have shown, and removing it is safe.
+      const existed = await fs.lstat(dir).then(
         () => true,
         () => false,
       )
+      if (!existed)
+        return {
+          status: 404,
+          body: { name: raw, removed: false, error: `skill "${raw}" not found in the Omp profile: nothing was removed` },
+        }
       await fs.rm(dir, { recursive: true, force: true })
-      return ok({ name, removed: existed })
+      return ok({ name: raw, removed: true })
     }
   }
 
@@ -310,6 +339,14 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
   }
 
   if (segments[0] === "project" && method === "POST") {
+    if (request.projectLocked?.())
+      return {
+        status: 409,
+        body: {
+          error: "a run is still active in this project: stop it, or wait for it to finish, before switching projects",
+          code: "project-busy",
+        },
+      }
     const body = await request.json()
     const target = typeof body?.path === "string" ? body.path : undefined
     if (!target) return { status: 400, body: { error: "path required" } }
@@ -500,6 +537,9 @@ function runSummary(id: string, parsed: any) {
     // reading each log back. Absent on runs written before usage existed —
     // those count as unknown, not as zero.
     usage: parsed.usage,
+    // Stamped by the engine on every save, so a `running` log that stopped
+    // being written can be told from one still in progress. Absent on old logs.
+    updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : undefined,
   }
 }
 
@@ -620,13 +660,45 @@ function noProfile(): FlowResponse {
 }
 
 /**
- * MCP server names become part of a tool name (`mcp__<server>_<tool>`), so
- * anything the sanitiser would rewrite is rejected here instead of silently
- * producing a server nobody can address from a per-node allowlist. This is
- * stricter than omp itself, which also accepts `.`, `:` and inner spaces.
+ * MCP server names become part of a tool name (`mcp__<server>_<tool>`), so a
+ * name the app itself invents is reduced to characters the sanitiser leaves
+ * alone. This is stricter than omp, which also accepts `.`, `:` and inner
+ * spaces — so it only ever applies to a NEW name; an existing key is addressed
+ * exactly.
  */
 export function mcpName(value: string) {
   return value.trim().replace(/[^a-zA-Z0-9-_]/g, "-")
+}
+
+const MCP_NAME_MAX = 128
+
+/** Why a name cannot safely be a key of `mcpServers`, or undefined when it can. */
+function mcpNameProblem(name: string) {
+  if (!name.trim()) return "mcp server name required"
+  if (name === "__proto__") return `invalid mcp server name "${name}": reserved`
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(name)) return "invalid mcp server name: control characters are not allowed"
+  if (name.length > MCP_NAME_MAX) return `invalid mcp server name: at most ${MCP_NAME_MAX} characters`
+  return undefined
+}
+
+/** One path segment that cannot leave its directory or name a hidden entry. */
+function isSafeSegment(value: string) {
+  if (!value || value.length > 255 || value.startsWith(".")) return false
+  return !/[\\/\u0000]/.test(value)
+}
+
+/**
+ * The folder a skill save lands in: the exact name when that folder already
+ * exists (so `MySkill` is edited in place), otherwise the slug of a new name.
+ */
+async function skillFolder(root: string, raw: string) {
+  if (!isSafeSegment(raw)) return slug(raw)
+  const exists = await fs.lstat(path.join(root, raw)).then(
+    () => true,
+    () => false,
+  )
+  return exists ? raw : slug(raw)
 }
 
 const MCP_SCHEMA =
@@ -734,11 +806,14 @@ async function readMcpFile(file: string): Promise<{ value: Record<string, any>; 
  * Saving an enabled server also lifts it off `disabledServers`, which would
  * otherwise keep it off whatever its own `enabled` says.
  */
-async function writeMcpServer(file: string, name: string, body: unknown) {
+async function writeMcpServer(file: string, requested: string, body: unknown) {
   return serialize(file, async () => {
     const config = await readMcpFile(file)
     const servers = (config.value.mcpServers ?? {}) as Record<string, Record<string, unknown> | undefined>
-    const entry = buildMcpEntry(body, servers[name])
+    // An existing key is edited in place; only a new name is slugged.
+    const name = Object.hasOwn(servers, requested) ? requested : mcpName(requested)
+    const current = Object.hasOwn(servers, name) ? servers[name] : undefined
+    const entry = buildMcpEntry(body, current)
     const disabled = stringList(config.value.disabledServers)
     const lift = entry.enabled && disabled.includes(name)
     // `enabledServers` outranks the entry's own `enabled: false`, so a disabled save must leave that list too.
@@ -746,7 +821,7 @@ async function writeMcpServer(file: string, name: string, body: unknown) {
     const unforce = !entry.enabled && forced.includes(name)
     // Saving a server the config already describes writes nothing, so a
     // pointless rewrite does not push the pre-OpenFlow `.bak` out of reach.
-    if (isDeepStrictEqual(servers[name], entry) && !lift && !unforce) return { name, path: file, unchanged: true }
+    if (isDeepStrictEqual(current, entry) && !lift && !unforce) return { name, path: file, unchanged: true }
     const next: Record<string, unknown> = {
       ...(config.raw?.trim() ? {} : { $schema: MCP_SCHEMA }),
       ...config.value,
@@ -811,10 +886,15 @@ async function deleteMcpServer(file: string, name: string) {
   return serialize(file, async () => {
     const config = await readMcpFile(file)
     const servers = config.value.mcpServers as Record<string, unknown> | undefined
-    if (config.raw === undefined || !servers || !(name in servers)) return { name, removed: false }
+    if (config.raw === undefined || !servers || !Object.hasOwn(servers, name)) return { name, removed: false }
     const { [name]: _removed, ...remaining } = servers
+    const next: Record<string, unknown> = { ...config.value, mcpServers: remaining }
+    // A forced state outlives the server otherwise: re-adding the name would inherit it.
+    for (const key of ["enabledServers", "disabledServers"]) {
+      if (Array.isArray(next[key])) next[key] = (next[key] as unknown[]).filter((item) => item !== name)
+    }
     const backup = await backupOnce(file, config.raw)
-    await writeAtomic(file, jsonText({ ...config.value, mcpServers: remaining }, config.raw))
+    await writeAtomic(file, jsonText(next, config.raw))
     return { name, removed: true, path: file, backup }
   })
 }

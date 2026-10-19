@@ -116,7 +116,7 @@ function loadCustomRoles(): Role[] {
   }
 }
 
-const [customRoles, setCustomRoles] = createSignal<Role[]>(loadCustomRoles())
+const [customRoles, setCustomRoles] = createSignal<Role[]>([])
 export { customRoles }
 
 /**
@@ -130,9 +130,11 @@ function persistCustomRoles(roles: Role[]) {
   // caller here is synchronous, so its failure is reported through `onSyncError`
   // rather than the return value. Returning the localStorage result keeps the
   // immediate answer honest: "this survives a reload on this machine".
-  void store
-    .saveRoles(roles)
-    .catch((error) => syncError?.(error instanceof Error ? error.message : String(error)))
+  if (synced)
+    void store
+      .saveRoles(roles)
+      .catch((error) => syncError?.(error instanceof Error ? error.message : String(error)))
+  else syncError?.("this project's roles have not been read yet, so this change stays in this browser tab")
   try {
     localStorage.setItem(CUSTOM_ROLES_KEY, JSON.stringify(roles))
     return true
@@ -148,22 +150,74 @@ export function onRolesSyncError(handler: (reason: string) => void) {
   syncError = handler
 }
 
+/** Set once the project's own roles have been read: before that the signal holds nothing that belongs to it. */
+let synced = false
+
+/**
+ * Drops whatever roles are on screen. Roles belong to one project, so this runs
+ * whenever the project is about to change: if the next project's file cannot be
+ * read, the previous project's roles must not stay behind to be saved into it.
+ */
+export function forgetCustomRoles() {
+  synced = false
+  setCustomRoles([])
+}
+
+/** Set after the browser's own copy was offered to a project once; it is never offered again. */
+const MIGRATED_KEY = "openflow.customRolesMigrated.v1"
+
+function readMigrated() {
+  try {
+    return localStorage.getItem(MIGRATED_KEY) === "1"
+  } catch {
+    return false
+  }
+}
+
+function writeMigrated() {
+  try {
+    localStorage.setItem(MIGRATED_KEY, "1")
+  } catch {
+    // Without storage the offer is repeated next time, which only matters while the project has no roles.
+  }
+}
+
+/**
+ * What opening a project does to the roles: adopt its file, or — once per browser
+ * — offer it the roles this browser held before the store existed.
+ *
+ * `stored` is the project's `roles.json`, `undefined` when it could not be read.
+ * `mirror` is the browser's own copy, read from storage and never from the live
+ * signal, which may be a different project's. Unreadable means do nothing at all.
+ */
+export function rolesOnOpen(stored: Role[] | undefined, mirror: Role[], migrated: boolean) {
+  if (!stored) return undefined
+  if (stored.length) return { roles: stored, push: false }
+  if (migrated || !mirror.length) return { roles: [] as Role[], push: false }
+  return { roles: mirror, push: true }
+}
+
 /**
  * Adopts the project's saved roles, and migrates a browser-only set the first
  * time a project that has none is opened.
  *
- * Called once at boot, before the palette renders — otherwise the palette
- * flashes the built-ins alone. A store that cannot be read leaves whatever
- * localStorage already gave the signal, so this never empties a working setup.
+ * Called at boot and again on every project switch, before the palette renders —
+ * otherwise the palette flashes the built-ins alone. A store that cannot be read
+ * leaves the roles empty and unsynced: nothing is written to a project whose
+ * roles were never seen.
  */
 export async function hydrateCustomRoles() {
   const stored = await store.roles().catch(() => undefined)
-  if (!stored) return
-  if (stored.length) return setCustomRoles(stored as Role[])
-  // Nothing on disk yet: push up whatever this browser was holding, so a role
-  // written before the store existed becomes a project file rather than staying
-  // one cleared cache away from gone.
-  if (customRoles().length) await store.saveRoles(customRoles()).catch(() => undefined)
+  const plan = rolesOnOpen(Array.isArray(stored) ? (stored as Role[]) : undefined, loadCustomRoles(), readMigrated())
+  if (!plan) return
+  setCustomRoles(plan.roles)
+  synced = true
+  if (plan.push) {
+    // A role written before the store existed becomes a project file rather than staying one cleared cache away from gone.
+    const pushed = await store.saveRoles(plan.roles).then(() => true, () => false)
+    if (!pushed) return
+  }
+  writeMigrated()
 }
 
 export function isCustomRole(id: string) {

@@ -17,6 +17,8 @@ export type TerminalCore = {
   tickets: TicketStore
   /** False while FLOW_ALLOW_REMOTE=1: the terminal answers nothing. */
   enabled: boolean
+  /** The current project, as `spawnPlan` names it. A session attaches only while it is the one it was spawned in. */
+  project(): string
   plan(kind: PtyKind): Promise<SpawnPlan>
 }
 
@@ -64,6 +66,7 @@ async function ticket(core: TerminalCore, body: unknown): Promise<Response> {
   if (parsed.id !== undefined) {
     const info = core.host.info(parsed.id)
     if (!info) return fail(404, "no such terminal", "gone")
+    if (info.project !== core.project()) return fail(409, "that terminal belongs to another project: open that project again to use it", "project-mismatch")
     return json(200, issue(core, info.id, info.kind))
   }
 
@@ -95,7 +98,9 @@ export function terminalUpgrade(core: TerminalCore, request: Request, id: string
   if (refusal) return { ok: false, status: refusal.status }
   if (request.method !== "GET") return { ok: false, status: 405 }
   const url = new URL(request.url)
-  if (!core.host.info(id)) return { ok: false, status: 404 }
+  const info = core.host.info(id)
+  if (!info) return { ok: false, status: 404 }
+  if (info.project !== core.project()) return { ok: false, status: 409 }
   if (!core.tickets.consume(url.searchParams.get("ticket"), id)) return { ok: false, status: 403 }
   const raw = url.searchParams.get("cursor")
   const cursor = raw === null || raw === "" ? undefined : Number(raw)

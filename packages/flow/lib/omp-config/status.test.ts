@@ -35,6 +35,7 @@ function providersOf(rows: OmpProviderRow[] | Error): Providers & { calls: numbe
       return rows
     },
     reset() {},
+    async dispose() {},
   }
   return fake
 }

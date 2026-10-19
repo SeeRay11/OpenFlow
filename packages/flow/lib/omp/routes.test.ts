@@ -320,6 +320,31 @@ describe("event bus", () => {
     bus.close()
   })
 
+  test("a stream asked for after close is already closed and registers nothing", async () => {
+    const bus = createEventBus({ pingMs: 60_000 })
+    bus.close()
+    const response = bus.subscribe()
+    expect(response.headers.get("content-type")).toContain("text/event-stream")
+    expect(bus.clients()).toBe(0)
+    const reader = response.body?.getReader() as ReadableStreamDefaultReader<Uint8Array>
+    expect((await reader.read()).done).toBe(true)
+    expect(bus.clients()).toBe(0)
+  })
+
+  test("one event larger than the whole queue is replaced by a notice and drops nobody", async () => {
+    const bus = createEventBus({ maxQueueBytes: 2048, pingMs: 60_000 })
+    const reader = bus.subscribe().body?.getReader() as ReadableStreamDefaultReader<Uint8Array>
+    await readUntil(reader, ": connected\n\n")
+    bus.publish({ type: "session.next.tool.called", data: { sessionID: "s_1", input: { text: "x".repeat(10_000) } } })
+    expect(bus.clients()).toBe(1)
+    const text = await readUntil(reader, "flow.notice", { value: "" })
+    expect(text).toContain('"sessionID":"s_1"')
+    expect(text).not.toContain("xxxxxxxx")
+    bus.publish({ type: "later" })
+    expect(await readUntil(reader, `"later"`, { value: "" })).toContain(`"later"`)
+    bus.close()
+  })
+
   test("a subscriber that attaches after a drop is told, first, that it missed events, then gets the replay, and only it does", async () => {
     const asked: BusEvent = { type: "permission.v2.asked", data: { id: "r1", sessionID: "s_1", action: "bash", resources: [] } }
     const bus = createEventBus({ maxQueueBytes: 1024, pingMs: 60_000, replay: () => [asked] })

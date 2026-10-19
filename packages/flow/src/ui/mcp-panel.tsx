@@ -103,8 +103,10 @@ export function McpPanel(props: {
       // its folder: the write is an upsert under the new name, nothing else.
       let renamed = ""
       if (draft.original && draft.original !== name) {
-        await store.deleteMcpServer(draft.original)
-        renamed = ` (renamed from ${draft.original})`
+        const old = await store.deleteMcpServer(draft.original)
+        renamed = old.removed
+          ? ` (renamed from ${draft.original})`
+          : ` (the old entry ${draft.original} was not found, so it was not removed)`
       }
       await refresh()
       setEditing(undefined)
@@ -127,7 +129,13 @@ export function McpPanel(props: {
     if (!window.confirm(`Remove the mcp server "${draft.original}" from the OpenFlow Omp profile?`)) return
     setBusy(true)
     try {
-      await store.deleteMcpServer(draft.original)
+      const result = await store.deleteMcpServer(draft.original)
+      if (!result.removed) {
+        // The host found nothing under that name: saying "removed" would leave a server in the profile that the user believes is gone.
+        setError(`${draft.original} was not removed: the OpenFlow Omp profile has no mcp server by that name`)
+        await refresh()
+        return
+      }
       await refresh()
       setEditing(undefined)
       props.onNotice("info", `removed ${draft.original}. It is gone from the next card session.`)

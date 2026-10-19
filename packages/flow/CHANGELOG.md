@@ -78,6 +78,37 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
 - Leave a note naming the card when an older pipeline's explicit `agent.mcp` list is
   dropped on load.
 - Say plainly that every `*_API_KEY` in OpenFlow's environment reaches cards.
+- Reconnect the event stream by itself while a run is active. After a drop the host
+  sends `flow.stream.reset` and replays the permissions and questions still
+  waiting, to the new subscriber only, so an open dialog survives. Dialogs are keyed
+  by session and request id.
+- Resume a card's session from any run directory of the state root, as it was
+  launched, with the new run's model, permissions, swarm and tool toggles. A session
+  the host cannot find starts the card fresh, once.
+- Keep readable history for finished sessions (`.openflow-turns.json`, last 200
+  turns) and list only sessions whose history can be opened. Session records are
+  written atomically with mode 0600.
+- Treat host shutdown as a closed gate: a create or resume answers 409
+  `session-closed`, a terminal create 409 `disposed`, and the catalog, provider and
+  `omp config`/`omp auth` runs 503 `host-closed`. Every probe and CLI run is killed
+  with its process group on dispose.
+- Refuse to switch project while work is bound to it (409 `project-busy`), keep a
+  run in the project it started in, scope terminals and custom roles to the project
+  (409 `project-mismatch` for a terminal from another project), and sweep a
+  terminal's whole process group on close.
+- Prune skips runs whose log is still `running` and removes the uplift planner's
+  results and session records older than 30 days.
+- Scope Forget to the repository, bound each part of a memory subject and end a long
+  or cleaned name in a stable hash so differently spelled names never share a
+  namespace, and keep a corrupt `memory-ignore.json` aside instead of failing.
+- Address existing MCP server and skill names exactly as written, drop a disabled or
+  deleted server from `enabledServers`/`disabledServers`, and answer 404 when
+  deleting a name that does not exist.
+- Stamp every run-log write with `updatedAt` and keep it fresh with a heartbeat, so
+  Resume is offered only for a run abandoned for more than five minutes; the resumed
+  run closes the old log as `stopped`.
+- Block a card with no model at preflight (there is no default fallback) and send
+  attachments to no card whose model the catalog does not list.
 - Open pipelines and run logs saved by the earlier build: model ids stay as written
   and are flagged when omp cannot run them, agent names are dropped with a note, and
   sessions from the earlier build are read-only. The shipped templates no longer pin

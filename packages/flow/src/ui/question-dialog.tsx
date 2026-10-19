@@ -1,5 +1,5 @@
 import { For, Show, createMemo, createSignal } from "solid-js"
-import type { PendingQuestion } from "../state"
+import { requestKey, type PendingQuestion } from "../state"
 import { IconQuestion } from "./icons"
 
 /**
@@ -18,7 +18,7 @@ import { IconQuestion } from "./icons"
  */
 export function QuestionDialog(props: {
   request: PendingQuestion
-  onAnswer: (requestID: string, answers: string[][] | undefined) => void
+  onAnswer: (key: string, answers: string[][] | undefined) => void
 }) {
   const [chosen, setChosen] = createSignal<string[][]>(props.request.questions.map(() => []))
   const [custom, setCustom] = createSignal<string[]>(props.request.questions.map(() => ""))
@@ -97,7 +97,7 @@ export function QuestionDialog(props: {
             type="button"
             class="oc-button oc-primary"
             disabled={!complete()}
-            onClick={() => props.onAnswer(props.request.requestID, answers())}
+            onClick={() => props.onAnswer(requestKey(props.request.sessionID, props.request.requestID), answers())}
           >
             Send answer
           </button>
@@ -105,7 +105,7 @@ export function QuestionDialog(props: {
             type="button"
             class="oc-button"
             title="the card is told nobody answered and continues on its own assumption"
-            onClick={() => props.onAnswer(props.request.requestID, undefined)}
+            onClick={() => props.onAnswer(requestKey(props.request.sessionID, props.request.requestID), undefined)}
           >
             Skip
           </button>

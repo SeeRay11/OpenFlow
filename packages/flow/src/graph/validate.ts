@@ -86,7 +86,7 @@ export function preflight(pipeline: Pipeline, ctx: { unlockedModels: Set<string>
       blocking.push({
         nodeId: node.id,
         kind: "no-model",
-        message: `Node '${node.role}' has no model — pick one or set a default`,
+        message: `Node '${node.role}' has no model — pick a model for this node`,
       })
     } else if (!ctx.unlockedModels.has(model)) {
       blocking.push({

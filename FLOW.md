@@ -185,8 +185,11 @@ file layout, and login/model behavior are documented there rather than re-derive
   that turn only, that the run around it stopped and nothing it produced was discarded, because
   a card given no account of the silence re-answers what it already answered. A card in both
   `resume` and `sessions` keeps its output and never runs — reopening a finished card only
-  bills. The UI finds the case itself: a run still marked `running` on disk for this canvas,
-  with nothing live, is one the page abandoned. **The carried session id must be written to the
+  bills. The UI finds the case itself: the newest `running` log for the pipeline whose `updatedAt`
+  is older than `RESUME_STALE_MS` (5 min) is one the page abandoned (`abandoned()` in
+  `src/server/runs.ts`). Every run-log write stamps `updatedAt` and a 30 s heartbeat
+  (`DEFAULT_HEARTBEAT_EVERY`) keeps it moving, so a run another tab is writing is never offered;
+  starting the resumed run writes the old log `stopped` with `resumedBy` (`superseded()`). **The carried session id must be written to the
   run log** (`patch(node.id, { sessionID })`), because the create path that normally writes it
   is skipped — without it a resumed run reports cards with no session while they answer in one,
   and the *next* interruption has nothing left to carry.
@@ -568,10 +571,70 @@ authority where this and it disagree.
 - **Run state is pruned.** About 15 s after the host starts, `pruneState` (`lib/omp/prune.ts`)
   deletes `<OPENFLOW_STATE_DIR or ~/.openflow>/omp/<12 hex>/<runId>/` when nothing under it has been
   written for `STATE_RETENTION_DAYS` (30). It claims the run directory (`claim`) before its last
-  check and holds the claim across removal, and a create for that run waits for it. It never touches a run the host holds (`sessions.holds`,
-  which counts creates in flight), `uplift/`, dotfiles, loose files or symlinks. Pruned sessions
-  leave the list and cannot be resumed. `POST /runs/prune` is a different thing: it removes only
-  `.openflow/runs` logs.
+  check and holds the claim across removal, and a create for that run waits for it. It never touches
+  a run the host holds (`sessions.holds`, which counts creates in flight), a run whose log in
+  `<project>/.openflow/runs/.index.json` is still `running` (it can be resumed), loose files or
+  symlinks. In `uplift/` it removes only `results/` and `sessions/` `.json` and `.xml` files older
+  than 30 days (files only, symlinks never followed). The stored uplift result's `attempt` stays the
+  card's attempt counter on purpose. Pruned sessions leave the list and cannot be resumed.
+  `POST /runs/prune` is a different thing: it removes only `.openflow/runs` logs.
+- **Resume finds a session by id across the whole state root.** `lib/omp/session.ts` scans the
+  newest 2,000 run directories by mtime and, of those, the newest 4,000 card directories, and adopts
+  the session from its original directory; the new run id is kept for new work. The NEW request
+  applies (model, permissions, swarm, tool toggles), and `.openflow-session.json` stores the saved
+  create request (`request`) so a disk-only session resumes as launched. Using a session touches its
+  run directory's mtime (at most once a second per run) so recent use ranks newest. A carried session
+  the host cannot find makes the engine clear its attach and start the card fresh, once.
+- **Session files and history.** `.openflow-session.json` and `.openflow-turns.json` (last 200 turns,
+  each clipped to 32 KiB, read back up to 16 MiB) are written atomically — temp file and rename, mode
+  0600, serialised per file. `GET …/transcript` reads the saved turns for a session the host no
+  longer holds; `final`, `steps` and `calls` answer 404 once it is released. A session with no
+  readable history is not listed. The table keeps at most 64 idle or lost records (`KEPT_RECORDS`),
+  dropping the least recently active, never one with a turn in flight or a dialog waiting; `prompt`
+  on a session with no record resumes it from its files; a session disposed on purpose is 404.
+- **Shutdown is a closed gate, and every child is tracked.** After `close()` a create or reuse is
+  409 `session-closed` and spawns nothing; a terminal create is 409 `disposed`; a late SSE
+  subscriber gets a closed stream; the model catalog, provider probe and `omp config`/`omp auth`
+  runs are 503 `host-closed` (`lib/host/lifecycle.ts`). The catalog, provider probe, `omp config` and
+  `omp auth` runs, swarm preflight probes and every `omp --version` probe are tracked flights:
+  `dispose` kills their process groups and waits, capped at 10 s. Start-up notices (tool-toggle
+  notes, swarm degradation) are emitted when the first prompt is accepted, once, and not on a resume.
+- **The event stream survives a drop.** The browser re-subscribes by itself while a run is active
+  (`keepSubscribed` in `src/server/stream.ts`, 250 ms doubling to 8 s). After a dropped client the
+  host sends `{"type":"flow.stream.reset"}` first, then replays every still-pending
+  `permission.v2.asked` / `question.v2.asked` (`sessions.pending()`) to the new subscriber only. One
+  event larger than the whole queue is replaced by a `flow.notice`, and tool-call arguments and raw
+  results are capped (`lib/omp/events.ts`). Dialogs are keyed `sessionID:requestID` (`requestKey` in
+  `src/state.ts`).
+- **A project switch is refused while work is bound to the project.** `POST /project` answers 409
+  `project-busy` while any omp process is live or starting, a create is in flight or an uplift planner
+  runs (`projectLocked` = `engine.working() || uplift.active()`); idle sessions waiting for resume do
+  not count. The UI disables the picker and the Runs menu while a run is active, shows the host's
+  sentence on a 409, and hands the project it read at run start to the engine, so cards without a
+  worktree and the uplift cwd stay in that project. Terminals are per project and kind in the
+  browser, and the host records the spawn project on each PTY (`PtyInfo.project`): a ticket or attach
+  from another project is 409 `project-mismatch`, nothing is killed. Terminal cleanup sweeps the whole
+  process group, SIGHUP then SIGKILL after the grace, even when the leader already exited. Custom
+  roles are per project (`.openflow/roles.json`); the old browser copy is migrated once per browser
+  (`openflow.customRolesMigrated.v1`) and nothing is written to a project's file before it was read.
+- **Memory records are scoped and bounded.** Forget cutoffs in `<state>/memory-ignore.json` are keyed
+  `<scope>|<prefix>` (for example `repo:acme/widgets|openflow/demo/`); an old unscoped key loads but
+  hides nothing. A failed write does not poison later Forgets, a read error other than ENOENT aborts
+  the write, and a corrupt file is moved aside as `.corrupt-<ts>`. `memorySubject` in
+  `shared/memory.ts` bounds each segment (pipeline 64, run 48, card 48) and ends a long or cleaned
+  segment in a stable hash of the raw name, so `Review: A`, `review a` and `Review-A` never share a
+  namespace; a clean short name is byte-identical, and there is no fixed 200-character cut.
+- **MCP and skill names are exact.** Existing names are listed, edited and deleted as written; only
+  names the app invents are slugged. A name is one safe segment, and an MCP name a usable JSON key (not
+  empty, not `__proto__`, no control characters, at most 128). Saving a server disabled removes it from
+  `enabledServers`; deleting removes it from both lists; DELETE of a missing name is 404
+  `{ removed: false }`.
+- **A blank model cannot run.** `preflight` blocks `no-model` ("pick a model for this node"); the
+  default model only applies to cards added afterwards, and the canvas shows `no model`.
+  `accepts(undefined, …)` is false, so a card whose model is not in the catalog gets no attachments.
+- **Stale answers lose.** The sessions panel, run list, host probe, pipeline list and project connect
+  take the newest call only (`src/server/latest.ts`); `save()` marks a pipeline saved only if it did
+  not change while the PUT ran; the model test uses its own run id and releases it.
 - **Session titles.** The engine sends `CreateSession.title` (`cardTitle` in `src/server/card-spec.ts`:
   `<role> · <first line of the task>`); the host stores it in the session's meta file. A session
   without one is titled from its first prompt.
@@ -842,7 +905,8 @@ Check these first when the UI misbehaves — each one cost a debugging session.
 
 The sessions sidebar (`src/ui/sessions-panel.tsx`) lists `GET /flow/api/engine/sessions` — rows
 the host builds from its live sessions and from the per-card state it keeps under
-`<state>/omp/<project>/<run>/<card>/` (`.openflow-session.json` beside each session directory).
+`<state>/omp/<project>/<run>/<card>/` (`.openflow-session.json` and `.openflow-turns.json` beside each
+session directory).
 **Never read or write those directories from the browser or from a second writer**: the host owns
 the processes and rewrites that file as a session changes, and a session in use is not a file to
 open.

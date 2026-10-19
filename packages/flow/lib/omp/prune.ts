@@ -1,5 +1,6 @@
 import fs from "node:fs/promises"
 import path from "node:path"
+import { asRecord, asString } from "./messages"
 import { safeSegment } from "./session"
 
 /** A run's state directory is kept for this long after the last write under it. */
@@ -9,6 +10,11 @@ const DAY_MS = 24 * 60 * 60 * 1000
 
 /** The one directory of the state root that is not a run (the uplift planner's state). */
 const UPLIFT_DIR = "uplift"
+/** What the planner and the host write under it: stored results and the planner's per-session records. Anything else there is the planner's own. */
+const UPLIFT_SUBDIRS = ["results", "sessions"]
+const UPLIFT_FILE = /\.(json|xml)$/
+/** The file the run listing keeps next to the logs (`lib/store.ts`). */
+const RUNS_INDEX = ".index.json"
 
 export type PruneOptions = {
   /** The project's state root: `<state>/omp/<hash>`. Run directories are its direct children. */
@@ -22,6 +28,11 @@ export type PruneOptions = {
    * prune calls once the removal ends. While taken, the host makes a create for that run wait, so nothing starts into files being deleted.
    */
   claim(runDir: string): (() => void) | undefined
+  /**
+   * The project's run logs (`<project>/.openflow/runs`). A run whose log is still `running` is what the Resume button offers, so its state directory is kept
+   * whatever its age. Read from the listing's index, best effort: an unreadable index keeps nothing extra.
+   */
+  runLogs?: string
 }
 
 export type PruneResult = {
@@ -72,9 +83,82 @@ async function onlyNodeDirectories(dir: string): Promise<boolean> {
   return true
 }
 
-async function pruneRun(root: string, name: string, cutoff: number, claim: PruneOptions["claim"]): Promise<boolean> {
+/**
+ * Lower-cased names of the run directories that belong to a run still marked `running`: the index names the logs (their file name is the lower-cased run id), and
+ * each log names the real id the directory was made from (`safeSegment(log.id)`). Never throws.
+ */
+async function runningRuns(runLogs: string | undefined): Promise<Set<string>> {
+  const keep = new Set<string>()
+  if (!runLogs) return keep
+  let index: unknown
+  try {
+    index = JSON.parse(await fs.readFile(path.join(runLogs, RUNS_INDEX), "utf8"))
+  } catch {
+    return keep
+  }
+  if (!Array.isArray(index)) return keep
+  for (const row of index) {
+    const entry = asRecord(row)
+    const id = asString(entry?.id)
+    if (!id || entry?.status !== "running" || path.basename(id) !== id) continue
+    keep.add(id.toLowerCase())
+    try {
+      const log = asRecord(JSON.parse(await fs.readFile(path.join(runLogs, `${id}.json`), "utf8")))
+      const runId = asString(log?.id)
+      if (runId) keep.add(safeSegment(runId).toLowerCase())
+    } catch {
+      // The listing's id is still kept.
+    }
+  }
+  return keep
+}
+
+async function pruneUpliftFile(file: string, cutoff: number, claim: PruneOptions["claim"]): Promise<void> {
+  const stat = await lstatIfPresent(file)
+  // lstat: a symlink is neither a file nor ours, and the removal never follows one.
+  if (!stat?.isFile() || stat.mtimeMs >= cutoff) return
+  // `results/<run>~<node>~<hash>.json` belongs to a run: one the host still holds keeps its result.
+  const name = path.basename(file)
+  const release = name.includes("~") ? claim(name.split("~")[0]) : () => undefined
+  if (!release) return
+  try {
+    await fs.rm(file, { force: true })
+  } finally {
+    release()
+  }
+}
+
+/** The uplift planner's results and session records older than the cutoff: files only, in directories that are real directories directly under the state root. Returns how many failed. */
+async function pruneUplift(root: string, cutoff: number, claim: PruneOptions["claim"]): Promise<number> {
+  let errors = 0
+  const base = path.join(root, UPLIFT_DIR)
+  for (const sub of UPLIFT_SUBDIRS) {
+    try {
+      const dir = path.join(base, sub)
+      const stat = await lstatIfPresent(dir)
+      if (!stat?.isDirectory()) continue
+      const real = await fs.realpath(dir)
+      if (real !== dir) continue
+      for (const name of await readdirIfPresent(dir)) {
+        if (!UPLIFT_FILE.test(name)) continue
+        try {
+          await pruneUpliftFile(path.join(dir, name), cutoff, claim)
+        } catch {
+          errors++
+        }
+      }
+    } catch {
+      errors++
+    }
+  }
+  return errors
+}
+
+async function pruneRun(root: string, name: string, cutoff: number, claim: PruneOptions["claim"], running: Set<string>): Promise<boolean> {
   // The names the host writes: `<safeSegment(runId)>`. Dotfiles, `uplift` and anything else are not runs.
   if (name.startsWith(".") || name === UPLIFT_DIR || name !== safeSegment(name)) return false
+  // An interrupted run is resumed from these files.
+  if (running.has(name.toLowerCase())) return false
   const dir = path.join(root, name)
   const stat = await lstatIfPresent(dir)
   // lstat: a symlink at the root is neither a directory nor ours.
@@ -102,12 +186,14 @@ async function pruneRun(root: string, name: string, cutoff: number, claim: Prune
 /**
  * Removes the run directories under a project's state root that nothing has
  * written to for `maxAgeMs`: the omp session files, overlay, role file and swarm
- * directory of every card in them. Skips a run the host holds, the `uplift`
- * directory, dotfiles, files, symlinks and any run directory holding something
- * other than node directories. Never throws: a failure on one run is counted
- * and the next run is still considered. Safe next to new sessions: a run is
- * claimed from the host before its last check and held across the removal, so
- * a create for it waits and a run with a create in flight is skipped.
+ * directory of every card in them, and the uplift planner's results and session
+ * records of that age (files only). Skips a run the host holds, a run whose log is
+ * still `running` (it can be resumed), dotfiles, files, symlinks and any run
+ * directory holding something other than node directories. Never throws: a
+ * failure on one run is counted and the next run is still considered. Safe next to
+ * new sessions: a run is claimed from the host before its last check and held
+ * across the removal, so a create for it waits and a run with a create in flight
+ * is skipped.
  */
 export async function pruneState(options: PruneOptions): Promise<PruneResult> {
   const result: PruneResult = { removed: [], errors: 0 }
@@ -119,13 +205,15 @@ export async function pruneState(options: PruneOptions): Promise<PruneResult> {
       throw error
     })
     if (!root) return result
+    const running = await runningRuns(options.runLogs)
     for (const name of await readdirIfPresent(root)) {
       try {
-        if (await pruneRun(root, name, cutoff, options.claim)) result.removed.push(name)
+        if (await pruneRun(root, name, cutoff, options.claim, running)) result.removed.push(name)
       } catch {
         result.errors++
       }
     }
+    result.errors += await pruneUplift(root, cutoff, options.claim)
   } catch {
     result.errors++
   }
