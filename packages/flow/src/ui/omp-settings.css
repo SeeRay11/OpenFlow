@@ -66,6 +66,10 @@
   color: var(--oc-text-muted);
 }
 
+.omp-note[data-failed="true"] {
+  color: var(--oc-danger);
+}
+
 .omp-hint,
 .omp-count {
   font-size: 12px;

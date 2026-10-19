@@ -137,6 +137,8 @@ export const OMP_ROUTES = {
   /** GET lists entries; PUT `/<key>` sets `{ value }`; POST `/<key>/reset` resets. */
   config: "/flow/api/omp/config",
   providers: "/flow/api/omp/providers",
+  /** POST, no body: copies the default profile's logins into the configured profile. */
+  authImport: "/flow/api/omp/auth/import",
 } as const
 
 /** Where a value actually comes from. Names of environment variables only, never their values. */
@@ -152,3 +154,6 @@ export type OmpSettingsView = {
 
 /** `OmpStatus` as the route sends it: settings-file warnings ride along so the dialog can show them. */
 export type OmpStatusView = OmpStatus & { warnings: string[] }
+
+/** `POST OMP_ROUTES.authImport`: how many stored logins were copied, and the status afterwards. */
+export type OmpAuthImportResult = { imported: number; status: OmpStatusView }

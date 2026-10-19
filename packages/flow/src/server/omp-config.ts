@@ -1,5 +1,6 @@
 import {
   OMP_ROUTES,
+  type OmpAuthImportResult,
   type OmpConfigEntry,
   type OmpProviderRow,
   type OmpSettingsPatch,
@@ -33,6 +34,8 @@ export type OmpClient = {
   setConfig(key: string, value: unknown): Promise<OmpResult<OmpConfigEntry>>
   resetConfig(key: string): Promise<OmpResult<OmpConfigEntry>>
   providers(): Promise<OmpResult<OmpProviderRow[]>>
+  /** Copies the default omp profile's logins into the OpenFlow profile; answers how many and the fresh status. */
+  importAuth(): Promise<OmpResult<OmpAuthImportResult>>
 }
 
 function readErrors(body: unknown, status: number): ValidationError[] {
@@ -90,6 +93,7 @@ export function createOmpClient(options: OmpClientOptions = {}): OmpClient {
       request<{ entry: OmpConfigEntry }, OmpConfigEntry>(`${key(name)}/reset`, "POST", undefined, (payload) => payload.entry),
     providers: () =>
       request<{ providers: OmpProviderRow[] }, OmpProviderRow[]>(OMP_ROUTES.providers, "GET", undefined, (payload) => payload.providers),
+    importAuth: () => request<OmpAuthImportResult>(OMP_ROUTES.authImport, "POST"),
   }
 }
 

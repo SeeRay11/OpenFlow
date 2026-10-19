@@ -8,10 +8,14 @@ import { IconClose } from "./icons"
 import { MemoryPanel } from "./memory-panel"
 import { memoryLineView } from "./memory-panel-model"
 import {
+  COPY_LOGINS_LABEL,
+  COPY_LOGINS_WARNING,
   FIELDS,
   SECTIONS,
   TABS,
   buildPatch,
+  canCopyLogins,
+  copyLoginsOutcome,
   describedBy,
   dirtyPaths,
   displayValue,
@@ -37,6 +41,8 @@ import {
   tabTarget,
   toDraft,
   trapTarget,
+  type CopyOutcome,
+  type CopyStep,
   type Draft,
   type DraftValue,
   type Field,
@@ -166,6 +172,11 @@ function Dialog(props: Omit<OmpSettingsDialogProps, "open">) {
   const memoryLine = createMemo(() => memoryLineView(memoryStatus()))
   let extrasRequest = 0
   let closed = false
+  const [copyStep, setCopyStep] = createSignal<CopyStep>("idle")
+  const [copyResult, setCopyResult] = createSignal<CopyOutcome>()
+  let copyButton: HTMLButtonElement | undefined
+  let copyCancel: HTMLButtonElement | undefined
+  let checkButton: HTMLButtonElement | undefined
   const [settings, loadSettings, setSettings] = createRemote(() => omp.settings())
   const [config, loadConfig, setConfig] = createRemote(() => omp.config())
 
@@ -237,6 +248,34 @@ function Dialog(props: Omit<OmpSettingsDialogProps, "open">) {
     restoreFocus = false
     props.onOpenTerminal()
     props.onClose()
+  }
+
+  // --------------------------------------------------------- copy logins
+
+  function askCopy() {
+    setCopyStep("confirm")
+    queueMicrotask(() => copyCancel?.focus())
+  }
+
+  function cancelCopy() {
+    setCopyStep("idle")
+    queueMicrotask(() => copyButton?.focus())
+  }
+
+  async function copyLogins() {
+    setCopyStep("running")
+    setCopyResult(undefined)
+    const outcome = copyLoginsOutcome(await omp.importAuth())
+    if (closed) return
+    setCopyStep("idle")
+    setCopyResult(outcome)
+    setAnnouncement(outcome.text)
+    if (!outcome.ok) {
+      queueMicrotask(() => copyButton?.focus())
+      return
+    }
+    await loadStatus()
+    if (!closed) checkButton?.focus()
   }
 
   function onKeyDown(event: KeyboardEvent) {
@@ -399,6 +438,13 @@ function Dialog(props: Omit<OmpSettingsDialogProps, "open">) {
             return current.message
           })()}
         </p>
+        <Show when={copyResult()}>
+          {(result) => (
+            <p class="omp-note" data-failed={!result().ok}>
+              {result().text}
+            </p>
+          )}
+        </Show>
         <RemoteView remote={status()} label="omp status" retry={() => void loadStatus()}>
           {(value) => (
             <>
@@ -422,6 +468,42 @@ function Dialog(props: Omit<OmpSettingsDialogProps, "open">) {
                         <Show when={problem.fix}>
                           <p>{problem.fix}</p>
                         </Show>
+                        <Show when={canCopyLogins(value, problem)}>
+                          <Show
+                            when={copyStep() !== "idle"}
+                            fallback={
+                              <div class="omp-actions">
+                                <button type="button" class="oc-button" ref={copyButton} onClick={askCopy}>
+                                  {COPY_LOGINS_LABEL}
+                                </button>
+                              </div>
+                            }
+                          >
+                            <div
+                              class="mem-confirm"
+                              role="group"
+                              aria-labelledby="omp-copy-title"
+                              onKeyDown={(event) => {
+                                if (event.key !== "Escape") return
+                                // The dialog's Escape closes the whole dialog; here it only backs out of the confirm.
+                                event.preventDefault()
+                                event.stopPropagation()
+                                if (copyStep() === "confirm") cancelCopy()
+                              }}
+                            >
+                              <strong id="omp-copy-title">Copy your logins into the OpenFlow profile?</strong>
+                              <p>{COPY_LOGINS_WARNING}</p>
+                              <div class="mem-actions">
+                                <button type="button" class="oc-button" disabled={copyStep() === "running"} onClick={() => void copyLogins()}>
+                                  {copyStep() === "running" ? "Copying…" : "Copy logins"}
+                                </button>
+                                <button type="button" class="oc-button" ref={copyCancel} disabled={copyStep() === "running"} onClick={cancelCopy}>
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          </Show>
+                        </Show>
                         <div class="omp-actions">
                           <For each={problemActions(problem)}>
                             {(action) => (
@@ -441,7 +523,7 @@ function Dialog(props: Omit<OmpSettingsDialogProps, "open">) {
                 </ul>
               </Show>
               <div class="omp-actions">
-                <button type="button" class="oc-button" onClick={() => void loadStatus()}>
+                <button type="button" class="oc-button" ref={checkButton} onClick={() => void loadStatus()}>
                   Check again
                 </button>
                 <button type="button" class="oc-button" onClick={openTerminal}>

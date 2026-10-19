@@ -8,11 +8,14 @@ import {
 } from "../../shared/omp"
 import type { SwarmPreflight } from "../../shared/swarm"
 import {
+  COPY_LOGINS_WARNING,
   FIELDS,
   SECTIONS,
   TABS,
   UNGROUPED,
   buildPatch,
+  canCopyLogins,
+  copyLoginsOutcome,
   describedBy,
   dirtyPaths,
   displayValue,
@@ -303,6 +306,33 @@ describe("status", () => {
     expect(problemActions({ code: "no-models", message: "" })).toEqual(["terminal"])
     expect(problemActions({ code: "spawn", message: "" })).toEqual(["settings", "terminal"])
     expect(problemActions({ code: "profile", message: "" })).toEqual(["settings", "terminal"])
+  })
+
+  test("the copy-logins button is offered for a missing-credentials problem in a named profile only", () => {
+    const missing = { code: "no-credentials", message: "m" } as const
+    expect(canCopyLogins(healthy, missing)).toBe(true)
+    expect(canCopyLogins({ ...healthy, profile: "" }, missing)).toBe(false)
+    expect(canCopyLogins(healthy, { code: "no-models", message: "m" })).toBe(false)
+    expect(canCopyLogins(healthy, { code: "profile", message: "m" })).toBe(false)
+  })
+
+  test("the copy outcome counts logins, or carries the host's sentence", () => {
+    const value = (imported: number) => ({ ok: true as const, value: { imported, status: healthy } })
+    expect(copyLoginsOutcome(value(3))).toEqual({ ok: true, text: "Copied 3 logins." })
+    expect(copyLoginsOutcome(value(1))).toEqual({ ok: true, text: "Copied 1 login." })
+    expect(
+      copyLoginsOutcome({
+        ok: false,
+        status: 400,
+        errors: [{ path: "", message: "Your default omp profile has no logins to copy. Run omp and use /login there first." }],
+      }),
+    ).toEqual({ ok: false, text: "Your default omp profile has no logins to copy. Run omp and use /login there first." })
+    expect(copyLoginsOutcome({ ok: false, status: 0, errors: [{ path: "", message: "The OpenFlow host did not answer." }] }).ok).toBe(false)
+  })
+
+  test("the confirm sentence says where the keys go", () => {
+    expect(COPY_LOGINS_WARNING).toContain("API keys and logins")
+    expect(COPY_LOGINS_WARNING).toContain("OpenFlow profile on this machine")
   })
 })
 

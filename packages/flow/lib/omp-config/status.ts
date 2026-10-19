@@ -49,7 +49,7 @@ export function createStatusChecker(deps: StatusDeps): StatusChecker {
           problems.push({
             code: "no-credentials",
             message: `The ${profile} profile has no credentials.`,
-            fix: "Open the terminal and run /login.",
+            fix: "Use the Copy logins button in Omp settings, or open the terminal and run /login.",
           })
         } else if (!authenticated.some((row) => row.available)) {
           problems.push({

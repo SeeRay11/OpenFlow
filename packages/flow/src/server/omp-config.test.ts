@@ -103,6 +103,23 @@ describe("omp client", () => {
     expect(result.ok && result.value).toEqual([{ id: "a", name: "A", available: true, authenticated: false }])
   })
 
+  test("importAuth POSTs without a body and returns the count and fresh status", async () => {
+    const status = { available: true, problems: [], warnings: [], profile: "openflow", minVersion: "18.12.2", checkedAt: 1 }
+    reply = () => Response.json({ imported: 2, status })
+    const result = await client.importAuth()
+    expect(result).toEqual({ ok: true, value: { imported: 2, status } })
+    expect(seen).toEqual([{ method: "POST", path: OMP_ROUTES.authImport, body: undefined }])
+  })
+
+  test("importAuth carries the host's sentence when it refuses", async () => {
+    reply = () => Response.json({ error: "Your default omp profile has no logins to copy. Run omp and use /login there first." }, { status: 400 })
+    expect(await client.importAuth()).toEqual({
+      ok: false,
+      status: 400,
+      errors: [{ path: "", message: "Your default omp profile has no logins to copy. Run omp and use /login there first." }],
+    })
+  })
+
   test("a host that is not listening is status 0, never a throw", async () => {
     const closed = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("") })
     const base = `http://127.0.0.1:${closed.port}`

@@ -10,7 +10,8 @@ import path from "node:path"
  */
 
 const SCRIPT = String.raw`
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { spawn } from "node:child_process"
 import path from "node:path"
 
 const dir = path.dirname(process.argv[1])
@@ -48,10 +49,37 @@ if (rest[0] === "--version") {
   console.log("omp/" + VERSION)
   process.exit(0)
 }
-if (rest[0] !== "config") fail("unsupported: " + rest.join(" "))
+if (rest[0] === "auth") {
+  const readFlag = (name) => (existsSync(path.join(dir, name)) ? readFileSync(path.join(dir, name), "utf8") : undefined)
+  if (readFlag("hang") !== undefined) {
+    const grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })
+    writeFileSync(path.join(dir, "pids.json"), JSON.stringify({ child: process.pid, grandchild: grandchild.pid }))
+    setInterval(() => {}, 1000)
+  } else if (rest[1] === "export") {
+    const store = path.join(dir, "credentials.json")
+    if (readFlag("fail-export") !== undefined || !existsSync(store)) fail("No stored credentials")
+    process.stdout.write(readFileSync(store))
+    process.exit(0)
+  } else if (rest[1] === "import" && rest[2] === "-") {
+    const input = readFileSync(0)
+    const failure = readFlag("fail-import")
+    if (failure !== undefined) fail(failure)
+    try {
+      JSON.parse(input.toString("utf8"))
+    } catch {
+      fail("not a credentials file")
+    }
+    const target = path.join(dir, "profiles", profile || "default")
+    mkdirSync(target, { recursive: true })
+    writeFileSync(path.join(target, "credentials.json"), input)
+    process.exit(0)
+  } else fail("unsupported auth call")
+} else if (rest[0] !== "config") fail("unsupported: " + rest.join(" "))
 const [, action, key, ...values] = rest
 
-if (action === "path") console.log(path.join(dir, "profiles", profile || "default", "agent"))
+if (rest[0] === "auth") {
+  // Only the hanging variant gets here; the event loop stays alive on purpose.
+} else if (action === "path") console.log(path.join(dir, "profiles", profile || "default", "agent"))
 else if (action === "list" && key === "--json") {
   const out = {}
   for (const row of SCHEMA) {

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process"
+import { spawn, type ChildProcess } from "node:child_process"
 import { stat } from "node:fs/promises"
 import type { OmpConfigEntry, OmpConfigType, OmpSettings, ValidationError } from "../../shared/omp"
 import { resolveBinary } from "../omp/binary"
@@ -28,14 +28,16 @@ import { isRecord } from "./settings"
 
 const TYPES: readonly string[] = ["boolean", "number", "enum", "string", "array", "record"]
 const SCALAR_NAMES: readonly string[] = ["boolean", "number", "string", "array", "record"]
-const RUN_TIMEOUT_MS = 30_000
+export const RUN_TIMEOUT_MS = 30_000
+const MAX_OUTPUT = 32 * 1024 * 1024
 /** Anchored at the end: `compaction.reserveTokens` is a count, `auth.broker.token` is a credential. */
 const SENSITIVE = /(token|secret|password|passphrase|api[-_]?key|credentials?|private[-_]?key)$/i
 /** The host environment omp needs to find its profile; provider keys and OpenFlow's own tokens stay out. */
 const ENV_ALLOW = /^(PATH|HOME|USER|LOGNAME|SHELL|LANG|LC_[A-Z_]+|TMPDIR|XDG_[A-Z_]+|PI_[A-Z_]+|OMP_PROFILE|USERPROFILE|APPDATA|LOCALAPPDATA|SystemRoot|SYSTEMROOT)$/
 
 export type RunResult = { code: number; stdout: string; stderr: string }
-export type Run = (binary: string, args: string[], env: Record<string, string>) => Promise<RunResult>
+/** `input`, when given, is written to the child's stdin; it is never logged or kept. */
+export type Run = (binary: string, args: string[], env: Record<string, string>, input?: string) => Promise<RunResult>
 
 export type ListingMeta = { type: OmpConfigType; group?: string; options?: string[] }
 
@@ -49,20 +51,81 @@ export class ValidationFailure extends HttpError {
   }
 }
 
-export const defaultRun: Run = (binary, args, env) => {
-  const { promise, resolve, reject } = Promise.withResolvers<RunResult>()
-  execFile(
-    binary,
-    args,
-    { env, timeout: RUN_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, windowsHide: true },
-    (error, stdout, stderr) => {
-      if (!error) return resolve({ code: 0, stdout, stderr })
-      if (typeof error.code === "number") return resolve({ code: error.code, stdout, stderr })
-      reject(error.killed ? new Error(`omp ${args.at(-1) ?? ""} timed out`) : error)
-    },
-  )
-  return promise
+/** The child did not finish within the deadline; its process group was killed. */
+export class RunTimeout extends Error {
+  constructor(command: string) {
+    super(`omp ${command} timed out`)
+  }
 }
+
+function killTree(child: ChildProcess) {
+  if (child.pid !== undefined && process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, "SIGKILL")
+      return
+    } catch {
+      // The group is already gone; fall back to the child itself.
+    }
+  }
+  child.kill("SIGKILL")
+}
+
+/**
+ * Runs a command to completion. The child leads its own process group on POSIX so a
+ * timeout kills grandchildren too, and every pipe is closed so nothing keeps the
+ * event loop alive. `input` goes to stdin and is not kept; without it stdin is closed.
+ */
+export function createRun(timeoutMs: number): Run {
+  return (binary, args, env, input) => {
+    const { promise, resolve, reject } = Promise.withResolvers<RunResult>()
+    const child = spawn(binary, args, {
+      env,
+      detached: process.platform !== "win32",
+      windowsHide: true,
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    })
+    let stdout = ""
+    let stderr = ""
+    let settled = false
+
+    function settle(finish: () => void) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      finish()
+    }
+    function abort(error: Error) {
+      settle(() => reject(error))
+      killTree(child)
+      child.stdin?.destroy()
+      child.stdout?.destroy()
+      child.stderr?.destroy()
+    }
+    const timer = setTimeout(() => abort(new RunTimeout(args.at(-1) ?? "")), timeoutMs)
+
+    child.stdout?.setEncoding("utf8")
+    child.stderr?.setEncoding("utf8")
+    child.stdout?.on("data", (chunk: string) => {
+      stdout += chunk
+      if (stdout.length > MAX_OUTPUT) abort(new Error("omp printed too much output"))
+    })
+    child.stderr?.on("data", (chunk: string) => {
+      stderr += chunk
+      if (stderr.length > MAX_OUTPUT) abort(new Error("omp printed too much output"))
+    })
+    child.on("error", (error) => abort(error))
+    child.on("close", (code, signal) =>
+      settle(() => (code === null ? reject(new Error(`omp stopped on ${signal ?? "a signal"}`)) : resolve({ code, stdout, stderr }))),
+    )
+    if (input !== undefined) {
+      child.stdin?.on("error", () => undefined)
+      child.stdin?.end(input)
+    }
+    return promise
+  }
+}
+
+export const defaultRun: Run = createRun(RUN_TIMEOUT_MS)
 
 export function childEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   const result: Record<string, string> = { NO_COLOR: "1", TERM: "dumb" }

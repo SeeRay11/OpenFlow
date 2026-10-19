@@ -1,6 +1,7 @@
-import { OMP_ROUTES, type OmpStatusView } from "../../shared/omp"
+import { OMP_ROUTES, type OmpAuthImportResult, type OmpStatusView } from "../../shared/omp"
 import { fail, guarded, HttpError, json, readJson, type HostHandler } from "../host/respond"
-import { resolveBinary } from "../omp/binary"
+import { resolveBinary, resetOmpCheck } from "../omp/binary"
+import type { Auth } from "./auth"
 import { ValidationFailure, firstLine, type Config } from "./config"
 import type { Providers } from "./providers"
 import { isRecord, type SettingsStore } from "./settings"
@@ -11,6 +12,7 @@ export type RouteParts = {
   checker: StatusChecker
   config: Config
   providers: Providers
+  auth: Auth
   env: NodeJS.ProcessEnv
 }
 
@@ -74,6 +76,19 @@ export function createRoutes(parts: RouteParts): HostHandler {
     if (pathname === OMP_ROUTES.settingsReset) {
       if (request.method !== "POST") return methodNotAllowed("POST")
       return json(200, await parts.store.reset())
+    }
+
+    if (pathname === OMP_ROUTES.authImport) {
+      if (request.method !== "POST") return methodNotAllowed("POST")
+      const loaded = await parts.store.load()
+      const binary = resolveBinary(loaded.settings, parts.env)
+      if (!binary) throw new HttpError(503, "omp was not found; set its path in Omp settings", "omp-unavailable")
+      const imported = await parts.auth.copy(loaded.settings, binary)
+      // The new logins change what the check and the provider list answer.
+      resetOmpCheck()
+      parts.providers.reset()
+      const status = await parts.checker.status(loaded.settings)
+      return json(200, { imported, status: { ...status, warnings: loaded.warnings } } satisfies OmpAuthImportResult)
     }
 
     if (pathname === OMP_ROUTES.providers) {

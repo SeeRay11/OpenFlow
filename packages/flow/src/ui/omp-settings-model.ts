@@ -1,5 +1,6 @@
 import {
   DEFAULT_OMP_SETTINGS,
+  type OmpAuthImportResult,
   type OmpConfigEntry,
   type OmpProblem,
   type OmpSettings,
@@ -355,6 +356,28 @@ export function problemActions(problem: OmpProblem): ProblemAction[] {
     case "profile":
       return ["settings", "terminal"]
   }
+}
+
+// ------------------------------------------------------------ copy logins
+
+export type CopyStep = "idle" | "confirm" | "running"
+
+export const COPY_LOGINS_LABEL = "Copy logins from your default profile"
+
+export const COPY_LOGINS_WARNING =
+  "This copies the API keys and logins stored in your default omp profile into the OpenFlow profile on this machine. Nothing is removed from the default profile."
+
+/** Only a named profile can receive logins, and only a profile with none is missing them. */
+export function canCopyLogins(status: OmpStatusView, problem: OmpProblem): boolean {
+  return problem.code === "no-credentials" && status.profile !== ""
+}
+
+export type CopyOutcome = { ok: boolean; text: string }
+
+/** The sentence for the live region: the count on success, the host's own sentence otherwise. */
+export function copyLoginsOutcome(result: OmpResult<OmpAuthImportResult>): CopyOutcome {
+  if (!result.ok) return { ok: false, text: result.errors.map((error) => error.message).join(" ") }
+  return { ok: true, text: `Copied ${result.value.imported} ${result.value.imported === 1 ? "login" : "logins"}.` }
 }
 
 export type StatusRow = { label: string; value: string; ok: boolean }

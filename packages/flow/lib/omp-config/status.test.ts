@@ -86,6 +86,7 @@ describe("createStatusChecker", () => {
     expect(status.problems).toHaveLength(1)
     expect(status.problems[0]).toMatchObject({ code: "no-credentials" })
     expect(status.problems[0]?.message).toContain("openflow")
+    expect(status.problems[0]?.fix).toContain("Copy logins")
     expect(status.problems[0]?.fix).toContain("/login")
   })
 
