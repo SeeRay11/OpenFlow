@@ -1871,32 +1871,61 @@ describe("questions", () => {
     await run.done
   })
 
-  test("a question with the id of one already answered is answered again: a resumed session numbers its requests afresh", async () => {
-    const h = harness({ behavior: { a: { hold: true } }, onQuestion: async () => [["postgres"]] })
+  test("a replay that arrives after the answer already went through does not open the question again", async () => {
+    let shown = 0
+    const h = harness({
+      behavior: { a: { hold: true } },
+      onQuestion: async () => {
+        shown++
+        return [["postgres"]]
+      },
+    })
     const run = h.run(pipeline("a"))
     await flush()
 
-    h.question("a", { id: "que-1", questions: [ask] })
+    h.question("a", { id: "ep1.1", questions: [ask] })
     await flush()
-    h.question("a", { id: "que-1", questions: [ask] })
+    expect(h.questionReplies).toHaveLength(1)
+    // The host queued the pending ask for a reconnecting stream; the answer had already been handled over HTTP.
+    h.question("a", { id: "ep1.1", questions: [ask] })
     await flush()
 
-    expect(h.questionReplies).toHaveLength(2)
+    expect(shown).toBe(1)
+    expect(h.questionReplies).toHaveLength(1)
     h.release("a")
     await run.done
   })
 
-  test("a permission with the id of one already answered is answered again", async () => {
+  test("the same goes for a permission: an answered one replayed later is not decided again", async () => {
     const h = harness({ behavior: { a: { hold: true } } })
     const run = h.run(pipeline("a"))
     await flush()
 
-    h.ask("a", { id: "req-1", action: "read" })
+    h.ask("a", { id: "ep1.1", action: "read" })
     await flush()
-    h.ask("a", { id: "req-1", action: "read" })
+    h.ask("a", { id: "ep1.1", action: "read" })
     await flush()
 
-    expect(h.replies).toHaveLength(2)
+    expect(h.replies).toHaveLength(1)
+    h.release("a")
+    await run.done
+  })
+
+  test("a process that restarted asks under a new public id, which is asked and answered normally", async () => {
+    const h = harness({ behavior: { a: { hold: true } }, onQuestion: async () => [["postgres"]] })
+    const run = h.run(pipeline("a"))
+    await flush()
+
+    h.question("a", { id: "ep1.1", questions: [ask] })
+    await flush()
+    h.question("a", { id: "ep2.1", questions: [ask] })
+    await flush()
+    h.ask("a", { id: "ep1.2", action: "read" })
+    h.ask("a", { id: "ep2.2", action: "read" })
+    await flush()
+
+    expect(h.questionReplies.map((reply) => reply.requestID)).toEqual(["ep1.1", "ep2.1"])
+    expect(h.replies.map((reply) => reply.requestID)).toEqual(["ep1.2", "ep2.2"])
     h.release("a")
     await run.done
   })

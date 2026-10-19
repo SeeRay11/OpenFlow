@@ -610,24 +610,54 @@ hosted("events and reads", () => {
   })
 })
 
+/** The id the browser was given for omp's own request id, read from the event that announced it. */
+const askedId = (raw: string) => String(events.find((event) => String(event.data?.id).endsWith(`.${raw}`))?.data?.id)
+
 hosted("approvals and questions", () => {
-  test("an approval is an event and is answered through the session", async () => {
+  test("an approval is an event under a public id and is answered through the session with omp's own id", async () => {
     const { id, proc } = await open()
     proc.emit(frames.approval("r1", "Allow tool: edit\npath: a.ts"))
-    expect(events).toEqual([{ type: "permission.v2.asked", data: { id: "r1", sessionID: id, action: "edit", resources: ["path: a.ts"] } }])
-    host.replyPermission(id, "r1", "always")
+    expect(events).toEqual([{ type: "permission.v2.asked", data: { id: askedId("r1"), sessionID: id, action: "edit", resources: ["path: a.ts"] } }])
+    expect(askedId("r1")).toMatch(/^[A-Za-z0-9_-]{6}\.r1$/)
+    host.replyPermission(id, askedId("r1"), "always")
     expect(proc.sent).toEqual([{ type: "extension_ui_response", id: "r1", value: "Approve bash for this session" }])
-    expect(() => host.replyPermission(id, "r1", "once")).toThrow(HttpError)
+    expect(() => host.replyPermission(id, askedId("r1"), "once")).toThrow(HttpError)
   })
 
   test("a question is answered or rejected through the session", async () => {
     const { id, proc } = await open()
     proc.emit({ type: "extension_ui_request", id: "q1", method: "ask", questions: [{ id: "a", question: "Which?", options: [{ label: "x" }] }] })
-    host.replyQuestion(id, "q1", [["x"]])
+    host.replyQuestion(id, askedId("q1"), [["x"]])
     expect(proc.sent[0]).toEqual({ type: "extension_ui_response", id: "q1", answers: [{ id: "a", selectedOptions: ["x"] }] })
     proc.emit({ type: "extension_ui_request", id: "q2", method: "ask", questions: [{ id: "a", question: "Which?", options: [] }] })
-    host.rejectQuestion(id, "q2")
+    host.rejectQuestion(id, askedId("q2"))
     expect(proc.sent[1]).toEqual({ type: "extension_ui_response", id: "q2", cancelled: true })
+  })
+
+  test("an answer addressed to a process that was relaunched never answers the new process' prompt, though omp numbers its prompts from 1 again", async () => {
+    const { id, proc } = await open({ ...BODY, permissions: "manual" })
+    proc.emit(frames.approval("r1", "Allow tool: bash"))
+    const old = askedId("r1")
+    // The process dies with the dialog open and the card is resumed: a new process, whose first prompt is "r1" again.
+    proc.exit(1)
+    await proc.exited
+    await host.create({ ...BODY, permissions: "manual", reuse: id })
+    const second = h.fake.procs.at(-1) as FakeProcess
+    expect(second).not.toBe(proc)
+    events.length = 0
+    second.emit(frames.approval("r1", "Allow tool: bash"))
+    const fresh = askedId("r1")
+    expect(fresh).not.toBe(old)
+    expect(() => host.replyPermission(id, old, "once")).toThrow(HttpError)
+    expect(second.sent).toEqual([])
+    host.replyPermission(id, fresh, "once")
+    expect(second.sent).toEqual([{ type: "extension_ui_response", id: "r1", value: "Approve" }])
+  })
+
+  test("a replayed ask carries the id it was first raised under", async () => {
+    const { proc } = await open()
+    proc.emit(frames.approval("r1", "Allow tool: bash"))
+    expect(host.pending()).toEqual(events)
   })
 
   test("replies to an unknown session are 404", () => {
@@ -2163,7 +2193,7 @@ hosted("session files and project capture", () => {
     await host.prompt(id, { text: "go" })
     proc.emit(frames.approval("r1", "Allow tool: bash\ncommand: ls"))
     expect(host.holders()).toEqual([id])
-    host.replyPermission(id, "r1", "once")
+    host.replyPermission(id, askedId("r1"), "once")
     finish(proc)
     expect(host.holders()).toEqual([id])
   })

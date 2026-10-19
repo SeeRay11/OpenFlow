@@ -904,20 +904,11 @@ export function start(
    * edits things nobody expected.
    */
   async function answer(nodeID: string, sessionID: string, data: { id: string; action: string; resources?: string[] }) {
-    const key = `${sessionID}:${data.id}`
+    const requestID = data.id
+    // Remembered for the whole run, as for questions: ids are unique per process, so nothing legitimate repeats one.
+    const key = `${sessionID}:${requestID}`
     if (answered.has(key)) return
     answered.add(key)
-    // Held while the request is open, so a replay of a still-pending one is answered once; given back once the reply
-    // was handed over, because the host drops the request then and a resumed session numbers its requests afresh.
-    try {
-      await settlePermission(nodeID, sessionID, data)
-    } finally {
-      answered.delete(key)
-    }
-  }
-
-  async function settlePermission(nodeID: string, sessionID: string, data: { id: string; action: string; resources?: string[] }) {
-    const requestID = data.id
     const resources = data.resources ?? []
     const node = nodes.get(nodeID)
 
@@ -979,20 +970,12 @@ export function start(
    * finishes instead of hanging until the node times out.
    */
   async function inquire(nodeID: string, sessionID: string, data: { id: string; questions?: QuestionInfo[] }) {
-    const key = `${sessionID}:${data.id}`
+    const requestID = data.id
+    // Remembered for the whole run: the host's ids carry a per-process prefix, so a restarted process cannot collide,
+    // and a replay that reaches us after the answer already went through must not open the question again.
+    const key = `${sessionID}:${requestID}`
     if (asked.has(key)) return
     asked.add(key)
-    // Held while the question is open, so a replay of a still-pending ask is shown once; given back once the reply
-    // was handed over, because the host drops the request then and a resumed session numbers its requests afresh.
-    try {
-      await settleQuestion(nodeID, sessionID, data)
-    } finally {
-      asked.delete(key)
-    }
-  }
-
-  async function settleQuestion(nodeID: string, sessionID: string, data: { id: string; questions?: QuestionInfo[] }) {
-    const requestID = data.id
     const questions = data.questions ?? []
     const node = nodes.get(nodeID)
     const headers = questions.map((question) => question.header || question.question)

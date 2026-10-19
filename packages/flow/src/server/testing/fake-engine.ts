@@ -61,6 +61,9 @@ import { DEFAULT_USAGE } from "./engine-script"
 /** How long after a gap every stream that attaches hears `flow.stream.reset`. */
 export const DEFAULT_GAP_WINDOW_MS = 60_000
 
+/** The token the fake's one "process" puts in front of every request id it publishes, as the host does per launched process. */
+const PROCESS_EPOCH = "ep1"
+
 export type FakeEngineOptions = {
   /** The catalog `models()` answers. Default: two text-and-image models. */
   models?: ModelInfo[]
@@ -312,18 +315,20 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
 
   async function ask(session: Session, run: Run, request: PermissionAsk | QuestionAsk) {
     const answered = Promise.withResolvers<void>()
+    // What the host does: the id it publishes carries the launched process's token, so the agent's own counter cannot collide across restarts.
+    const published = `${PROCESS_EPOCH}.${request.id}`
     const asked: BusEvent =
       request.kind === "permission"
-        ? { type: "permission.v2.asked", data: { id: request.id, sessionID: session.id, action: request.action, resources: [request.resource] } }
+        ? { type: "permission.v2.asked", data: { id: published, sessionID: session.id, action: request.action, resources: [request.resource] } }
         : {
             type: "question.v2.asked",
             data: {
-              id: request.id,
+              id: published,
               sessionID: session.id,
               questions: [{ question: request.question, header: request.header, options: request.options.map((label) => ({ label, description: "" })), multiple: false, custom: true }],
             },
           }
-    session.open.set(request.id, {
+    session.open.set(published, {
       kind: request.kind,
       count: request.kind === "question" ? 1 : 0,
       asked,

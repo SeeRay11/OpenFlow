@@ -373,12 +373,15 @@ suite("engine", () => {
     const id = await open("n2", { permissions: "manual" }, "run-2")
     await prompt(id)
     const asked = await events.next((event) => event.type === "permission.v2.asked")
-    expect(asked.data).toMatchObject({ sessionID: id, id: "r1", action: "bash", resources: ["command: rm -rf build"] })
+    // Read before the matcher below: `toMatchObject` writes the matched value into the object it was given.
+    const request = String(asked.data?.id)
+    expect(request).toMatch(/^[A-Za-z0-9_-]{6}\.r1$/)
+    expect(asked.data).toMatchObject({ sessionID: id, action: "bash", resources: ["command: rm -rf build"] })
 
-    expect((await send(sessionRoute(id, "/permission/r1"), "POST", { reply: "once" })).status).toBeLessThan(300)
+    expect((await send(sessionRoute(id, `/permission/${request}`), "POST", { reply: "once" })).status).toBeLessThan(300)
     expect((await wait(id)).result).toBe("completed")
     expect(logged()).toEqual([{ type: "extension_ui_response", id: "r1", value: "Approve" }])
-    expect((await send(sessionRoute(id, "/permission/r1"), "POST", { reply: "once" })).status).toBe(404)
+    expect((await send(sessionRoute(id, `/permission/${request}`), "POST", { reply: "once" })).status).toBe(404)
     await events.close()
   })
 
@@ -395,9 +398,11 @@ suite("engine", () => {
     const id = await open("n3", {}, "run-3")
     await prompt(id)
     const asked = await events.next((event) => event.type === "question.v2.asked")
-    expect(asked.data).toMatchObject({ sessionID: id, id: "q1", questions: [{ question: "Which database?", header: "Storage", options: [{ label: "sqlite" }, { label: "postgres" }] }] })
+    const request = String(asked.data?.id)
+    expect(request).toMatch(/^[A-Za-z0-9_-]{6}\.q1$/)
+    expect(asked.data).toMatchObject({ sessionID: id, questions: [{ question: "Which database?", header: "Storage", options: [{ label: "sqlite" }, { label: "postgres" }] }] })
 
-    expect((await send(sessionRoute(id, "/question/q1"), "POST", { answers: [["sqlite"]] })).status).toBeLessThan(300)
+    expect((await send(sessionRoute(id, `/question/${request}`), "POST", { answers: [["sqlite"]] })).status).toBeLessThan(300)
     expect((await wait(id)).result).toBe("completed")
     expect(logged()).toEqual([{ type: "extension_ui_response", id: "q1", answers: [{ id: "db", selectedOptions: ["sqlite"] }] }])
     await events.close()

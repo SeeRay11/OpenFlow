@@ -44,8 +44,8 @@ describe("fake engine driver", () => {
 
     engine.driver.askPermission(id, { id: "p1", action: "edit", resource: "path: a.txt" }, "edited")
     await engine.prompt(id, "go")
-    expect(engine.driver.open(id)).toEqual([{ kind: "permission", sessionID: id, id: "p1" }])
-    await engine.replyPermission(id, "p1", "always")
+    expect(engine.driver.open(id)).toEqual([{ kind: "permission", sessionID: id, id: "ep1.p1" }])
+    await engine.replyPermission(id, "ep1.p1", "always")
     await engine.waitForIdle(id)
     expect(engine.driver.open(id)).toEqual([])
     expect(await engine.driver.decision("p1")).toEqual({ kind: "permission", reply: "always" })

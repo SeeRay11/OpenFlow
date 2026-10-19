@@ -81,7 +81,7 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
 - Reconnect the event stream by itself while a run is active. After a drop the host
   sends `flow.stream.reset` and replays the permissions and questions still
   waiting, to the new subscriber only, so an open dialog survives. Dialogs are keyed
-  by session and request id.
+  by session and public request id.
 - Resume a card's session from any run directory of the state root, as it was
   launched, with the new run's model, permissions, swarm and tool toggles. A session
   the host cannot find starts the card fresh, once.
@@ -159,9 +159,11 @@ the rest of the repo is a vendored OpenCode fork and is not covered by this file
   briefing, so a card whose first prompt was refused through every retry gets the
   full briefing and the run attachments again when it is re-dispatched, and re-send
   the scratch-directory note to a replacement session.
-- De-duplicate permission and question requests only while they are pending, so a
-  session resumed after a reap, whose request counter restarted, is asked and
-  answered again.
+- Publish every permission and question request under a public id
+  `<epoch>.<ompId>` (epoch random per omp process): reply routes accept only that
+  id and answer 404 `request-not-found` for an earlier process's id or the bare omp
+  id, and the engine remembers answered ids for the whole run so a delayed replay
+  is never shown again while a restarted process is asked normally.
 - Keep a role deleted while the project's roles are still being read deleted, and
   save a legacy skill under its own name as a plain migration (any other name that
   is taken is refused with 409 `name-taken`).

@@ -462,6 +462,10 @@ most 10 seconds.
 | read back | `GET /flow/api/engine/sessions/{id}/transcript`, `/final`, `/steps`, `/calls` |
 | close one session / every session of a run | `DELETE /flow/api/engine/sessions/{id}` / `POST /flow/api/engine/runs/release` |
 
+`{requestID}` is the public id the host published, `<epoch>.<ompId>` (see
+[Permissions during a run](#permissions-during-a-run)); anything else answers 404
+`request-not-found`.
+
 `/transcript` also answers for a session the host no longer holds, from
 `.openflow-turns.json`; `/final`, `/steps` and `/calls` answer 404 once a session
 is released.
@@ -1170,11 +1174,19 @@ Every decision is recorded on the node and in the run log with the action,
 resources, reply and policy — an approval that leaves no trace is how a run
 quietly changes something nobody expected. Stopping a run rejects anything still
 pending rather than leaving the node waiting on an answer that will never come.
-Permission and question dialogs are keyed by session and request id together, so two
-sessions that reuse the same request id cannot overwrite each other. A request is
-de-duplicated only while it is pending: the key is dropped once the reply is handed
-back, so a session resumed after a reap, whose request counter restarted, is asked
-and answered again.
+Every permission and question request is published under a public id
+`<epoch>.<ompId>`. The epoch is 6 base64url characters, random per omp process; the
+id is opaque to clients and the host: everything before the first `.` is the epoch and
+the rest is omp's own id, which may itself contain dots. The
+reply routes (`/permission/<id>`, `/question/<id>`, `/question/<id>/reject`) take
+only the public id and answer 404 `request-not-found` for an id from an earlier
+process or for the bare omp id, so a stale answer can never answer a new process's
+prompt; omp still receives its own raw id. A replayed ask carries the same public
+id as when first raised. Dialogs are keyed by session and public id together, so
+two sessions cannot overwrite each other. The engine remembers answered ids for the
+whole run, so a delayed replay of an already-answered ask is never shown again,
+while a restarted process asks under a new prefix and is asked normally; a
+still-pending ask replayed after a stream reset is shown once.
 
 ### Questions during a run (human in the loop)
 

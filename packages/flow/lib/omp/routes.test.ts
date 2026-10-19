@@ -47,6 +47,25 @@ async function create(body: Record<string, unknown> = BODY) {
   return { id: response?.body.id as string, proc, response }
 }
 
+/** The id the browser is given for omp's own request id: read from the replay a stream gets when it attaches, as a real client would. */
+async function publicId(raw: string): Promise<string> {
+  const response = await engine.handle(new Request(`http://flow.test${engineRoutes.events}`))
+  const reader = response?.body?.getReader() as ReadableStreamDefaultReader<Uint8Array>
+  const decoder = new TextDecoder()
+  const pattern = new RegExp(`"id":"([A-Za-z0-9_-]{6}\\.${raw})"`)
+  let text = ""
+  try {
+    for (;;) {
+      const match = pattern.exec(text)
+      if (match) return match[1] as string
+      const chunk = await reader.read()
+      if (chunk.done) throw new Error(`no asked event for ${raw}`)
+      text += decoder.decode(chunk.value)
+    }
+  } finally {
+    await reader.cancel()
+  }
+}
 describe("routing", () => {
   test("paths outside the engine base are not ours", async () => {
     expect(await call("/flow/api/context")).toBeUndefined()
@@ -193,27 +212,37 @@ hosted("writes", () => {
     expect((await call(sessionRoute(id, "/wait"), { body: { timeoutMs: -1 } }))?.status).toBe(400)
   })
 
-  test("permission replies: once, always, reject; bad reply 400; unknown request 404", async () => {
+  test("permission replies: once, always, reject; bad reply 400; unknown request 404; omp gets its own id", async () => {
     const { id, proc } = await create()
     proc.emit(frames.approval("r1", "Allow tool: bash"))
-    expect((await call(sessionRoute(id, "/permission/r1"), { body: { reply: "maybe" } }))?.status).toBe(400)
-    expect((await call(sessionRoute(id, "/permission/r1"), { body: { reply: "once" } }))?.status).toBe(200)
+    const request = await publicId("r1")
+    expect((await call(sessionRoute(id, `/permission/${request}`), { body: { reply: "maybe" } }))?.status).toBe(400)
+    expect((await call(sessionRoute(id, `/permission/${request}`), { body: { reply: "once" } }))?.status).toBe(200)
     expect(proc.sent).toEqual([{ type: "extension_ui_response", id: "r1", value: "Approve" }])
-    const again = await call(sessionRoute(id, "/permission/r1"), { body: { reply: "once" } })
+    const again = await call(sessionRoute(id, `/permission/${request}`), { body: { reply: "once" } })
     expect(again?.status).toBe(404)
     expect(typeof again?.body.error).toBe("string")
-    expect((await call(sessionRoute("s_nope", "/permission/r1"), { body: { reply: "once" } }))?.status).toBe(404)
+    expect((await call(sessionRoute("s_nope", `/permission/${request}`), { body: { reply: "once" } }))?.status).toBe(404)
+  })
+
+  test("omp's own id is not an id the browser can answer with, and nothing reaches omp for it", async () => {
+    const { id, proc } = await create()
+    proc.emit(frames.approval("r1", "Allow tool: bash"))
+    expect((await call(sessionRoute(id, "/permission/r1"), { body: { reply: "once" } }))?.status).toBe(404)
+    expect(proc.sent).toEqual([])
   })
 
   test("question answers and rejection", async () => {
     const { id, proc } = await create()
     proc.emit({ type: "extension_ui_request", id: "q1", method: "ask", questions: [{ id: "a", question: "?", options: [{ label: "x" }] }] })
-    expect((await call(sessionRoute(id, "/question/q1"), { body: { answers: "x" } }))?.status).toBe(400)
-    expect((await call(sessionRoute(id, "/question/q1"), { body: { answers: [["x"], ["y"]] } }))?.status).toBe(400)
-    expect((await call(sessionRoute(id, "/question/q1"), { body: { answers: [["x"]] } }))?.status).toBe(200)
+    const q1 = await publicId("q1")
+    expect((await call(sessionRoute(id, `/question/${q1}`), { body: { answers: "x" } }))?.status).toBe(400)
+    expect((await call(sessionRoute(id, `/question/${q1}`), { body: { answers: [["x"], ["y"]] } }))?.status).toBe(400)
+    expect((await call(sessionRoute(id, `/question/${q1}`), { body: { answers: [["x"]] } }))?.status).toBe(200)
     proc.emit({ type: "extension_ui_request", id: "q2", method: "ask", questions: [{ id: "a", question: "?", options: [] }] })
-    expect((await call(sessionRoute(id, "/question/q2/reject"), { method: "POST" }))?.status).toBe(200)
-    expect((await call(sessionRoute(id, "/question/q2/reject"), { method: "POST" }))?.status).toBe(404)
+    const q2 = await publicId("q2")
+    expect((await call(sessionRoute(id, `/question/${q2}/reject`), { method: "POST" }))?.status).toBe(200)
+    expect((await call(sessionRoute(id, `/question/${q2}/reject`), { method: "POST" }))?.status).toBe(404)
   })
 
   test("interrupt, delete and release are idempotent 200s", async () => {
@@ -496,14 +525,14 @@ describe("event bus", () => {
     // The attached stream never reads: a few megabytes of output pass its limit and it is dropped.
     proc.emit(frames.messageStart("msg-1"))
     for (let index = 0; index < 5; index++) proc.emit(frames.textDelta("msg-1", 0, "x".repeat(1024 * 1024)))
-    expect((await call(sessionRoute(id, "/permission/r1"), { body: { reply: "once" } }))?.status).toBe(200)
+    expect((await call(sessionRoute(id, `/permission/${await publicId("r1")}`), { body: { reply: "once" } }))?.status).toBe(200)
 
     const reader = await attach()
     const text = await readUntil(reader, "question.v2.asked")
     expect(text).toContain("flow.stream.reset")
     expect(text.match(/permission\.v2\.asked/g)).toHaveLength(1)
-    expect(text).toContain('"id":"r2"')
-    expect(text).not.toContain('"id":"r1"')
+    expect(text).toMatch(/"id":"[A-Za-z0-9_-]{6}\.r2"/)
+    expect(text).not.toMatch(/"id":"[A-Za-z0-9_-]{6}\.r1"/)
     expect(text.match(/question\.v2\.asked/g)).toHaveLength(1)
     await reader.cancel()
   })

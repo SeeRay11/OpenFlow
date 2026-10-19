@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto"
 import type { BusEvent, PermissionReply, QuestionInfo } from "../../shared/engine"
 import { HttpError } from "../host/respond"
 import { capText, stripControl } from "../substrate/guard"
@@ -23,7 +24,8 @@ const DENY = "Deny"
 
 type AskQuestion = { id: string; question: string; header?: string; options: Array<{ label: string; description?: string }>; multi: boolean }
 
-type Pending = { kind: "permission"; sessionOption?: string; asked: BusEvent } | { kind: "question"; questions: AskQuestion[]; asked: BusEvent }
+/** `raw` is omp's own request id: what `extension_ui_response` must carry. The map key is the public id. */
+type Pending = { kind: "permission"; raw: string; sessionOption?: string; asked: BusEvent } | { kind: "question"; raw: string; questions: AskQuestion[]; asked: BusEvent }
 
 export type UiRequestsOptions = {
   sessionID: string
@@ -69,8 +71,14 @@ function parseQuestions(value: unknown): AskQuestion[] {
 
 export function createUiRequests(options: UiRequestsOptions): UiRequests {
   const sessionID = options.sessionID
+  /** Open dialogs by PUBLIC id (`<epoch>.<omp id>`). */
   const pending = new Map<string, Pending>()
-
+  /**
+   * Random per instance, and an instance lives as long as one omp process: omp numbers its dialogs from 1 in every process, so the id the browser sees names the
+   * incarnation too. An answer addressed to a process that is gone (or a replay that arrives after its answer) can never match a dialog of the next one.
+   */
+  const epoch = randomBytes(4).toString("base64url")
+  const publicId = (raw: string) => `${epoch}.${raw}`
   function notice(level: "info" | "error", message: string) {
     options.emit({ type: "flow.notice", data: { sessionID, level, message: capText(stripControl(message), NOTICE_LIMIT).text } })
   }
@@ -86,8 +94,8 @@ export function createUiRequests(options: UiRequestsOptions): UiRequests {
     const lines = title.slice(APPROVAL_PREFIX.length).split("\n")
     const action = (lines[0] ?? "").trim()
     const resources = lines.slice(1).filter((line) => line.trim().length > 0)
-    const asked: BusEvent = { type: "permission.v2.asked", data: { id, sessionID, action, resources } }
-    pending.set(id, { kind: "permission", sessionOption: choices.find((choice) => choice !== APPROVE && choice !== DENY), asked })
+    const asked: BusEvent = { type: "permission.v2.asked", data: { id: publicId(id), sessionID, action, resources } }
+    pending.set(publicId(id), { kind: "permission", raw: id, sessionOption: choices.find((choice) => choice !== APPROVE && choice !== DENY), asked })
     options.emit(asked)
   }
 
@@ -116,8 +124,8 @@ export function createUiRequests(options: UiRequestsOptions): UiRequests {
       multiple: question.multi,
       custom: true,
     }))
-    const asked: BusEvent = { type: "question.v2.asked", data: { id, sessionID, questions: info } }
-    pending.set(id, { kind: "question", questions, asked })
+    const asked: BusEvent = { type: "question.v2.asked", data: { id: publicId(id), sessionID, questions: info } }
+    pending.set(publicId(id), { kind: "question", raw: id, questions, asked })
     options.emit(asked)
   }
 
@@ -141,7 +149,7 @@ export function createUiRequests(options: UiRequestsOptions): UiRequests {
           break
         case "cancel": {
           const target = asString(frame.targetId)
-          if (target) pending.delete(target)
+          if (target) pending.delete(publicId(target))
           break
         }
         case "notify": {
@@ -159,7 +167,7 @@ export function createUiRequests(options: UiRequestsOptions): UiRequests {
       const entry = take(id, "permission", "permission")
       const sessionOption = entry.kind === "permission" ? entry.sessionOption : undefined
       const value = reply === "reject" ? DENY : reply === "always" ? (sessionOption ?? APPROVE) : APPROVE
-      options.send({ type: "extension_ui_response", id, value })
+      options.send({ type: "extension_ui_response", id: entry.raw, value })
     },
 
     replyQuestion(id, answers) {
@@ -177,16 +185,16 @@ export function createUiRequests(options: UiRequestsOptions): UiRequests {
         if (!question.multi && matched.length) return { id: question.id, selectedOptions: matched.slice(0, 1) }
         return { id: question.id, selectedOptions: matched, ...(custom ? { customInput: custom } : {}) }
       })
-      options.send({ type: "extension_ui_response", id, answers: response })
+      options.send({ type: "extension_ui_response", id: entry.raw, answers: response })
     },
 
     rejectQuestion(id) {
-      take(id, "question", "question")
-      options.send({ type: "extension_ui_response", id, cancelled: true })
+      const entry = take(id, "question", "question")
+      options.send({ type: "extension_ui_response", id: entry.raw, cancelled: true })
     },
 
     cancelAll() {
-      for (const id of pending.keys()) options.send({ type: "extension_ui_response", id, cancelled: true })
+      for (const entry of pending.values()) options.send({ type: "extension_ui_response", id: entry.raw, cancelled: true })
       pending.clear()
     },
 

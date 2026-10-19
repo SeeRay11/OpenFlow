@@ -390,6 +390,17 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
       await ctx.api.waitForIdle(id)
     })
 
+    /**
+     * The id an ask is published under. It is opaque: an implementation may put a per-process prefix in front of the
+     * id the agent asked with, so replies go back under what the event carried and the agent's own id keys the driver.
+     */
+    async function publicId(events: Listener, type: string, sessionID: string, request: string) {
+      const [asked] = await events.waitFor((event) => event.type === type && event.data?.sessionID === sessionID)
+      const published = String(asked?.data?.id)
+      expect(published === request || published.endsWith(`.${request}`)).toBe(true)
+      return published
+    }
+
     /* ------------------------------------------- permissions and questions */
 
     for (const reply of ["once", "always", "reject"] as const) {
@@ -400,16 +411,18 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
         const id = await ctx.open("approval", { permissions: "manual" })
         await ctx.api.prompt(id, "go")
         const [asked] = await events.waitFor((event) => event.type === "permission.v2.asked" && event.data?.sessionID === id)
-        expect(asked?.data).toMatchObject({ sessionID: id, id: request, action: "bash", resources: ["command: rm -rf build"] })
+        const published = String(asked?.data?.id)
+        expect(published === request || published.endsWith(`.${request}`)).toBe(true)
+        expect(asked?.data).toMatchObject({ sessionID: id, action: "bash", resources: ["command: rm -rf build"] })
         expect(await ctx.driver.decision(request)).toBeUndefined()
 
-        await ctx.api.replyPermission(id, request, reply)
+        await ctx.api.replyPermission(id, published, reply)
         await ctx.api.waitForIdle(id)
         expect(await ctx.driver.decision(request)).toEqual({ kind: "permission", reply })
         expect(await ctx.api.transcript(id)).toEqual({ text: "ran it" })
 
         // Answered once: the request is gone, which the engine reads as "nothing is waiting any more".
-        expect(statusOf(await rejection(ctx.api.replyPermission(id, request, "once")))).toBe(404)
+        expect(statusOf(await rejection(ctx.api.replyPermission(id, published, "once")))).toBe(404)
       })
     }
 
@@ -428,17 +441,18 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
       const id = await ctx.open()
       await ctx.api.prompt(id, "go")
       const [asked] = await events.waitFor((event) => event.type === "question.v2.asked" && event.data?.sessionID === id)
+      const published = String(asked?.data?.id)
+      expect(published === request || published.endsWith(`.${request}`)).toBe(true)
       expect(asked?.data).toMatchObject({
         sessionID: id,
-        id: request,
         questions: [{ question: "Which database?", header: "Storage", options: [{ label: "sqlite" }, { label: "postgres" }] }],
       })
 
-      await ctx.api.replyQuestion(id, request, [["sqlite"]])
+      await ctx.api.replyQuestion(id, published, [["sqlite"]])
       await ctx.api.waitForIdle(id)
       expect(await ctx.driver.decision(request)).toEqual({ kind: "question", answers: [["sqlite"]] })
       expect(await ctx.api.transcript(id)).toEqual({ text: "thanks" })
-      expect(statusOf(await rejection(ctx.api.replyQuestion(id, request, [["sqlite"]])))).toBe(404)
+      expect(statusOf(await rejection(ctx.api.replyQuestion(id, published, [["sqlite"]])))).toBe(404)
     })
 
     scenario("a request still waiting is shown again to a stream that attaches later, and not once it is answered", async (ctx) => {
@@ -448,16 +462,17 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
       await ctx.driver.script({ steps: [{ text: "done", ask: { kind: "permission", id: request, action: "bash", resource: "command: ls" } }] })
       const id = await ctx.open("replay", { permissions: "manual" })
       await ctx.api.prompt(id, "go")
-      await first.waitFor((event) => event.type === "permission.v2.asked" && event.data?.id === request)
+      const [shown] = await first.waitFor((event) => event.type === "permission.v2.asked" && String(event.data?.id).endsWith(request))
+      const published = String(shown?.data?.id)
 
       const second = await ctx.listen()
-      const [replayed] = await second.waitFor((event) => event.type === "permission.v2.asked" && event.data?.id === request)
-      expect(replayed?.data).toMatchObject({ sessionID: id, id: request, action: "bash" })
+      const [replayed] = await second.waitFor((event) => event.type === "permission.v2.asked" && event.data?.id === published)
+      expect(replayed?.data).toMatchObject({ sessionID: id, id: published, action: "bash" })
 
-      await ctx.api.replyPermission(id, request, "once")
+      await ctx.api.replyPermission(id, published, "once")
       await ctx.api.waitForIdle(id)
       const third = await ctx.listen()
-      expect(third.events.filter((event) => event.data?.id === request)).toEqual([])
+      expect(third.events.filter((event) => event.data?.id === published)).toEqual([])
     })
 
     scenario("a stream that attaches after events went to nobody is told so, before the requests it is shown again", async (ctx) => {
@@ -469,12 +484,13 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
       await eventually(async () => (await ctx.api.active()).includes(id), "the turn is running with nobody listening")
 
       const late = await ctx.listen()
-      await late.waitFor((event) => event.type === "permission.v2.asked" && event.data?.id === request)
+      const [replayed] = await late.waitFor((event) => event.type === "permission.v2.asked" && String(event.data?.id).endsWith(request))
+      const published = String(replayed?.data?.id)
       const kinds = late.events.map((event) => event.type)
       expect(kinds).toContain("flow.stream.reset")
       expect(kinds.indexOf("flow.stream.reset")).toBeLessThan(kinds.indexOf("permission.v2.asked"))
 
-      await ctx.api.replyPermission(id, request, "once")
+      await ctx.api.replyPermission(id, published, "once")
       await ctx.api.waitForIdle(id)
     })
 
@@ -484,8 +500,8 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
       await ctx.driver.script({ steps: [{ text: "noted", ask: { kind: "question", id: request, question: "Which database?", header: "Storage", options: ["sqlite"] } }] })
       const id = await ctx.open()
       await ctx.api.prompt(id, "go")
-      await events.waitFor((event) => event.type === "question.v2.asked" && event.data?.sessionID === id)
-      await ctx.api.replyQuestion(id, request, [["use duckdb"]])
+      const published = await publicId(events, "question.v2.asked", id, request)
+      await ctx.api.replyQuestion(id, published, [["use duckdb"]])
       await ctx.api.waitForIdle(id)
       expect(await ctx.driver.decision(request)).toEqual({ kind: "question", answers: [["use duckdb"]] })
     })
@@ -496,13 +512,13 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
       await ctx.driver.script({ steps: [{ text: "on my own", ask: { kind: "question", id: request, question: "Which database?", header: "Storage", options: ["sqlite"] } }] })
       const id = await ctx.open()
       await ctx.api.prompt(id, "go")
-      await events.waitFor((event) => event.type === "question.v2.asked" && event.data?.sessionID === id)
-      await ctx.api.rejectQuestion(id, request)
+      const published = await publicId(events, "question.v2.asked", id, request)
+      await ctx.api.rejectQuestion(id, published)
       await ctx.api.waitForIdle(id)
       expect(await ctx.driver.decision(request)).toEqual({ kind: "cancelled" })
       expect(await ctx.api.transcript(id)).toEqual({ text: "on my own" })
-      expect(statusOf(await rejection(ctx.api.rejectQuestion(id, request)))).toBe(404)
-      expect(statusOf(await rejection(ctx.api.replyQuestion(id, request, [["sqlite"]])))).toBe(404)
+      expect(statusOf(await rejection(ctx.api.rejectQuestion(id, published)))).toBe(404)
+      expect(statusOf(await rejection(ctx.api.replyQuestion(id, published, [["sqlite"]])))).toBe(404)
     })
 
     scenario("answers must match the questions one for one, and a refused reply leaves the question open", async (ctx) => {
@@ -511,9 +527,9 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
       await ctx.driver.script({ steps: [{ text: "ok", ask: { kind: "question", id: request, question: "Which database?", header: "Storage", options: ["sqlite"] } }] })
       const id = await ctx.open()
       await ctx.api.prompt(id, "go")
-      await events.waitFor((event) => event.type === "question.v2.asked" && event.data?.sessionID === id)
-      expect(statusOf(await rejection(ctx.api.replyQuestion(id, request, [["sqlite"], ["extra"]])))).toBe(400)
-      await ctx.api.replyQuestion(id, request, [["sqlite"]])
+      const published = await publicId(events, "question.v2.asked", id, request)
+      expect(statusOf(await rejection(ctx.api.replyQuestion(id, published, [["sqlite"], ["extra"]])))).toBe(400)
+      await ctx.api.replyQuestion(id, published, [["sqlite"]])
       await ctx.api.waitForIdle(id)
       expect(await ctx.driver.decision(request)).toEqual({ kind: "question", answers: [["sqlite"]] })
     })
@@ -556,10 +572,10 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
       await ctx.driver.script({ steps: [{ text: "x", ask: { kind: "permission", id: request, action: "bash", resource: "command: ls" } }] })
       const id = await ctx.open("held", { permissions: "manual" })
       await ctx.api.prompt(id, "go")
-      await events.waitFor((event) => event.type === "permission.v2.asked" && event.data?.sessionID === id)
+      const published = await publicId(events, "permission.v2.asked", id, request)
 
       await ctx.api.interrupt(id)
-      expect(statusOf(await rejection(ctx.api.replyPermission(id, request, "once")))).toBe(404)
+      expect(statusOf(await rejection(ctx.api.replyPermission(id, published, "once")))).toBe(404)
       await eventually(async () => (await ctx.driver.decision(request))?.kind === "cancelled", "the agent is told the request was cancelled")
     })
 

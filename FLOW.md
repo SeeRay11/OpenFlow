@@ -686,10 +686,16 @@ authority where this and it disagree.
   backpressure), after `: connected` and before the replayed asks; none otherwise. It then replays every
   still-pending `permission.v2.asked` / `question.v2.asked` (`sessions.pending()`) to every new subscriber. One
   event larger than the whole queue is replaced by a `flow.notice`, and tool-call arguments and raw
-  results are capped (`lib/omp/events.ts`). Dialogs are keyed `sessionID:requestID` (`requestKey` in
-  `src/state.ts`); the engine's `answered` / `asked` sets de-duplicate only while the request is pending
-  and drop the key once the reply is handed back, so a session resumed after a reap, whose request counter
-  restarted, is asked and answered again.
+  results are capped (`lib/omp/events.ts`). Request ids are PUBLIC ids `<epoch>.<ompId>` minted in
+  `lib/omp/ui-requests.ts` (`epoch` = `randomBytes(4).toString("base64url")`, 6 chars, random per omp
+  process; the id is opaque to clients and the host: everything before the first `.` is the epoch and
+  the rest is omp's own id, which may itself contain dots). The reply routes take only the public
+  id and answer 404 `request-not-found` for an earlier incarnation's id or the bare omp id; omp gets its
+  own raw id (`entry.raw`); `asked()` replays carry the same public id. Dialogs are keyed
+  `sessionID:requestID` (`requestKey` in `src/state.ts`), the id treated as opaque, and the engine's
+  `answered` / `asked` sets remember ids for the whole run, so a delayed replay of an answered ask is
+  never shown again, a restarted process (new prefix) is asked normally, and a still-pending ask replayed
+  after a stream reset is shown once.
 - **A project switch is refused while any engine session is open.** `POST /project` answers 409
   `project-busy` while ANY session is live (idle between turns included) or starting, a create is in
   flight (counted from the first line of `create()`, i.e. from `POST /sessions` arriving, body still
