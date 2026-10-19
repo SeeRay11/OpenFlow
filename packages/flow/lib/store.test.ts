@@ -1196,6 +1196,59 @@ describe("custom roles", () => {
   })
 })
 
+/** Declaring a local model server also writes the global config — same isolation. */
+describe("routes: local model servers", () => {
+  let target: string
+  let server: ReturnType<typeof Bun.serve>
+
+  beforeEach(() => {
+    process.env.XDG_CONFIG_HOME = path.join(dir, "xdg")
+    target = path.join(dir, "xdg", "opencode", "opencode.json")
+    server = Bun.serve({ port: 0, fetch: () => Response.json({ data: [{ id: "qwen3" }] }) })
+  })
+
+  afterEach(() => {
+    delete process.env.XDG_CONFIG_HOME
+    server.stop(true)
+  })
+
+  test("declares what the server serves, at $0, and asks for a restart", async () => {
+    const url = `http://localhost:${server.port}/v1`
+    const response = await call("POST", "/flow/api/local", { body: { id: "local-custom", url } })
+    expect(response!.body).toMatchObject({ changed: true, models: ["qwen3"], restart: true })
+    const entry = JSON.parse(await read(target)).providers["local-custom"]
+    expect(entry.api.url).toBe(url)
+    expect(entry.models.qwen3.cost[0]).toMatchObject({ input: 0, output: 0 })
+    const status = (await call("GET", "/flow/api/local"))!.body as any
+    expect(status.runtimes.find((runtime: any) => runtime.id === "local-custom")).toMatchObject({
+      running: true,
+      models: ["qwen3"],
+      declared: ["qwen3"],
+    })
+  })
+
+  test("a server that is not answering is refused, and nothing is written", async () => {
+    const port = server.port
+    server.stop(true)
+    const response = await call("POST", "/flow/api/local", { body: { id: "local-custom", url: `http://localhost:${port}/v1` } })
+    expect(response!.status).toBe(409)
+    expect((response!.body as any).error).toContain("nothing is answering")
+    await expect(read(target)).rejects.toThrow()
+  })
+
+  test("an id outside the fixed list is refused, so no provider or package can be named", async () => {
+    const response = await call("POST", "/flow/api/local", { body: { id: "openrouter", url: "http://localhost:1/v1" } })
+    expect(response!.status).toBe(400)
+  })
+
+  test("removing one takes it out and leaves the rest of the file", async () => {
+    await call("POST", "/flow/api/local", { body: { id: "local-custom", url: `http://localhost:${server.port}/v1` } })
+    const response = await call("DELETE", "/flow/api/local/local-custom")
+    expect(response!.body).toMatchObject({ changed: true })
+    expect(JSON.parse(await read(target)).providers).toEqual({})
+  })
+})
+
 /**
  * The one route that writes *outside* the project: repackaging a provider edits
  * opencode's global config, because that is the only file a run reads (see

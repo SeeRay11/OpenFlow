@@ -6,6 +6,7 @@ import { recallPipeline, rememberPipeline, rememberProject } from "./last-sessio
 import { hasNativePicker, pickFolderNative } from "./native-picker"
 import type { Supervisor } from "./opencode-process"
 import { COMPATIBLE_PROFILES, globalConfigCandidates, repackage, repackaged } from "./repackage"
+import { CUSTOM_LOCAL_ID, LOCAL_RUNTIMES, declare, declared, discover, isLocalProvider, runtimeFor, undeclare } from "./local"
 import { install, installed, uninstall } from "./dispatch-tool"
 import { checkpoint, dropCheckpoints } from "./checkpoint"
 import { dropScratch, openScratch } from "./scratch"
@@ -63,6 +64,10 @@ import { zenModels } from "./zen"
  *                                             already repackages
  *   POST   /flow/api/repackage             -> { providers: [...] } repackages them there, so the
  *                                             runner can dispatch their models
+ *   GET    /flow/api/local                 -> { path, runtimes: [{ id, name, url, running, models,
+ *                                             declared }] } — local model servers and what each lists
+ *   POST   /flow/api/local                 -> { id, url? } declares that server's models as a $0
+ *                                             provider in the global config; DELETE /local/:id removes it
  *   GET    /flow/api/server                -> { managed, running, url, command, pid, ... } — the
  *                                             `opencode serve` this host proxies
  *   POST   /flow/api/server/restart        -> restarts it, when this host owns it (loopback only)
@@ -337,6 +342,25 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
       const ids = asked.filter((id: string) => COMPATIBLE_PROFILES[id])
       if (!ids.length) return { status: 400, body: { error: "no repackageable provider named" } }
       const result = await applyRepackage(ids)
+      if ("error" in result) return { status: 409, body: result }
+      return ok(result)
+    }
+  }
+
+  if (segments[0] === "local") {
+    if (method === "GET" && segments.length === 1) return ok(await localStatus())
+    if (method === "POST" && segments.length === 1) {
+      const body = await request.json().catch(() => ({}))
+      // Only the fixed ids are accepted, and the package is always the
+      // OpenAI-compatible one, so no request can name an npm package to load.
+      const runtime = runtimeFor(String(body?.id ?? ""), body?.url)
+      if (!runtime) return { status: 400, body: { error: "name a local runtime, or give local-custom an http(s) url" } }
+      const result = await applyLocal(runtime)
+      if ("error" in result) return { status: 409, body: result }
+      return ok(result)
+    }
+    if (method === "DELETE" && segments.length === 2 && isLocalProvider(segments[1])) {
+      const result = await removeLocal(segments[1])
       if ("error" in result) return { status: 409, body: result }
       return ok(result)
     }
@@ -1123,6 +1147,64 @@ async function applyRepackage(ids: string[]) {
     await fs.mkdir(path.dirname(config.target), { recursive: true })
     await writeAtomic(config.target, JSON.stringify(result.value, null, 2) + "\n")
     return { path: config.target, changed: result.changed, applied: repackaged(result.value), backup, restart: true }
+  })
+}
+
+/**
+ * Every known local runtime, probed, plus any declared at an address of the
+ * user's own. A runtime that is declared but not running is still listed — its
+ * cards will fail to dispatch, and the panel has to be able to say why.
+ */
+async function localStatus() {
+  const config = await readGlobalConfig()
+  const present = "error" in config ? [] : declared(config.value)
+  const custom = present.find((entry) => entry.id === CUSTOM_LOCAL_ID)
+  const runtimes = [
+    ...LOCAL_RUNTIMES.map((runtime) => ({ ...runtime, url: present.find((entry) => entry.id === runtime.id)?.url ?? runtime.url })),
+    ...(custom ? [{ id: CUSTOM_LOCAL_ID, name: "Local server", url: custom.url as string }] : []),
+  ]
+  const probed = await Promise.all(
+    runtimes.map(async (runtime) => ({
+      ...runtime,
+      ...(await discover(runtime.url)),
+      declared: present.find((entry) => entry.id === runtime.id)?.models,
+    })),
+  )
+  return { path: config.target, runtimes: probed, ...("error" in config ? { error: config.error } : {}) }
+}
+
+/**
+ * Lists what the server serves right now and declares exactly that.
+ *
+ * A server that is not running, or that serves nothing, is refused rather than
+ * written as an empty provider — a provider with no models is one the panel
+ * would show as connected and no card could use.
+ */
+async function applyLocal(runtime: { id: string; name: string; url: string }) {
+  const found = await discover(runtime.url)
+  if (!found.running) return { error: `nothing is answering at ${runtime.url} — start ${runtime.name} first` }
+  if (!found.models.length)
+    return { error: found.error ?? `${runtime.name} at ${runtime.url} lists no models — pull or load one first` }
+  return writeGlobal((value) => declare(value, runtime, found.models), { models: found.models })
+}
+
+async function removeLocal(id: string) {
+  return writeGlobal((value) => undeclare(value, id), {})
+}
+
+/** Rewrites the global config through `edit`, backing it up first. */
+async function writeGlobal(edit: (value: any) => any, extra: Record<string, unknown>) {
+  const config = await readGlobalConfig()
+  if ("error" in config) return { error: config.error, path: config.target }
+  const value = edit(config.value)
+  if (JSON.stringify(value) === JSON.stringify(config.value))
+    return { path: config.target, changed: false, restart: false, ...extra }
+  if (config.comments) return { error: CONFIG_HAS_COMMENTS, path: config.target }
+  return serialize(config.target, async () => {
+    const backup = config.raw === undefined ? undefined : await backupConfig(config.target, config.raw)
+    await fs.mkdir(path.dirname(config.target), { recursive: true })
+    await writeAtomic(config.target, JSON.stringify(value, null, 2) + "\n")
+    return { path: config.target, changed: true, backup, restart: true, ...extra }
   })
 }
 

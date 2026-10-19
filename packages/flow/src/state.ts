@@ -342,6 +342,12 @@ export const actions = {
     setState("pipeline", "dispatches", dispatches)
   },
 
+  /** The run's dollar ceiling. Clamped where it is read (`spendCapOf`), not here. */
+  setMaxSpend(maxSpend: number) {
+    setState("dirty", true)
+    setState("pipeline", "maxSpend", maxSpend)
+  },
+
   /**
    * Turns the gauntlet on or off.
    *

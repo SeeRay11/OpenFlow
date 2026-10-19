@@ -2647,6 +2647,48 @@ describe("gauntlet mode", () => {
     expect(h.dispatched.filter((id) => id === "builder").length).toBe(1)
   })
 
+  test("a pipeline is stopped when it reaches its spend cap, and the cards after it never run", async () => {
+    const h = harness({
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+      steps: {
+        a: [
+          {
+            messageID: "m1",
+            model: "openai/gpt-x",
+            tokens: { input: 4_000_000, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+          },
+        ],
+      },
+    })
+    // $8 of input against a $3 cap, spent by the first card.
+    const log = await h.run({ ...pipeline("a->b"), maxSpend: 3 }).done
+
+    expect(log.capped).toBe(3)
+    expect(log.status).toBe("error")
+    expect(h.dispatched).not.toContain("b")
+  })
+
+  test("the cap is on by default, and a run under it records nothing", async () => {
+    const h = harness({
+      models: ["openai/gpt-x"],
+      prices: { "openai/gpt-x": [{ input: 2, output: 10, cache: { read: 0.5, write: 4 } }] },
+      steps: {
+        a: [
+          {
+            messageID: "m1",
+            model: "openai/gpt-x",
+            tokens: { input: 1_000, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+          },
+        ],
+      },
+    })
+    const log = await h.run(pipeline("a->b")).done
+
+    expect(log.capped).toBeUndefined()
+    expect(log.status).toBe("done")
+  })
+
   test("a model the catalog cannot price stops the run rather than running uncapped", async () => {
     const h = harness({
       behavior: {

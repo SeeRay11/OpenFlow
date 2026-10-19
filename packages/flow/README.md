@@ -321,6 +321,72 @@ served to the browser.
 | `GET /flow/api/zen-models` | model ids opencode zen really serves, or `null` if unreadable |
 | `GET /flow/api/repackage` | which OpenAI-compatible providers the global config already repackages |
 | `POST /flow/api/repackage` | repackage them there (fixed id list only, backed up, restart required) |
+| `GET /flow/api/local` | local model servers, whether each answers, what it serves, what is declared |
+| `POST /flow/api/local` | `{ id, url? }` — declare that server's models at $0 (backed up, restart required) |
+| `DELETE /flow/api/local/:id` | remove a declared local server |
+
+### Using Claude
+
+Claude runs on a card through the paid API, billed per token. There are two
+ways to reach it:
+
+1. **An Anthropic API key** from `console.anthropic.com`. Connect **Anthropic**
+   in the provider panel and paste it. The runner routes `@ai-sdk/anthropic`
+   directly, so nothing else is needed.
+2. **Through OpenRouter.** Connect **OpenRouter**, then **Repackage** it. It
+   bills OpenRouter credits, or — with OpenRouter's BYOK (bring your own key)
+   setting — your own Anthropic key, or an **AWS Bedrock or Google Vertex**
+   key. That last one is how Claude spend comes out of cloud credits: this
+   engine cannot route Bedrock or Vertex on its own, but OpenRouter can.
+
+A Claude Pro or Max **subscription cannot be used**. Anthropic does not allow a
+consumer subscription to drive another application, and OpenRouter's BYOK takes
+API keys only, so routing through it does not change that.
+
+To keep a Claude run cheap: put the strong model where it pays off — the card
+that dispatches, the critic, the synthesizer — and a cheaper one (Haiku,
+Sonnet) on the cards that do the work. Preflight points out the reverse (a
+`weak-seat` warning) and never changes a model itself. The spend panel shows how
+much of the input came from the provider's prompt cache, which Anthropic bills
+at a tenth of the input rate.
+
+### Local models
+
+Ollama, LM Studio, or any server that speaks OpenAI chat (llama.cpp's server,
+vLLM) can run a card for nothing. Start the server and pull or load a model; the
+provider panel's **Local models** group lists what each one serves, and a click
+declares those models in the global config (`lib/local.ts`) and restarts the
+engine. Clicking again after pulling a new model picks it up.
+
+What is written, and why each part is not optional:
+
+- Ids are prefixed `local-` (`local-ollama/qwen3`). The catalog hides a provider
+  with a models.dev id until a key is stored, and `lmstudio` is one.
+- `tools: true`, because an undeclared model has tool calling switched off and
+  a card with no tools cannot read a file.
+- A 32k context limit, because the listing reports none and the engine's
+  default is zero. Raise it on the model in the config file; a later refresh
+  keeps the edit.
+- A **price of zero**, written as a real price row. The model is priced, so
+  spend reads `$0` and a gauntlet's cap still works — the rule that an unpriced
+  model never shows as `$0` is unchanged.
+
+A small local model is weakest in the seat that writes a control block every
+turn (the orchestrator), which is where preflight's router warning fires for the
+same reason. Use one where a card does the work.
+
+### Spend cap and estimate
+
+Every run has a dollar cap, **$5 unless the canvas says otherwise** (`cap:` in
+the runbar; a gauntlet's own cap replaces it). The engine reprices on every step
+and stops the run the moment priced spend reaches it; the log records `capped`
+and the run ends as an error, not as `stopped`, because nobody decided it. A
+model with no published price makes the cap partial, and preflight says so.
+
+Beside it, the runbar shows a rough range before anything is spent
+(`graph/estimate.ts`): card turns counted from the graph, each priced between a
+short turn and a heavy one at list price. The turn count is exact; the turn size
+is a guess, which is why it is a range and the tooltip says what it assumed.
 
 `POST /api/session/{id}/wait` answers `503 Session wait is not available yet` on
 this server build, so idleness is derived from `/api/session/active` plus a

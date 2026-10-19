@@ -1,7 +1,7 @@
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import type { Spend } from "../graph/types"
 import { store, type RunEntry } from "../server/store"
-import { byProvider, costLabel, formatCost, formatTokens, mergeSpend } from "../server/usage"
+import { byProvider, cacheShare, costLabel, formatCost, formatTokens, mergeSpend } from "../server/usage"
 import { state } from "../state"
 import { IconClose } from "./icons"
 
@@ -103,6 +103,14 @@ function Total(props: { label: string; spend?: Spend }) {
       <span class="spend-total-value">{props.spend?.steps ? costLabel(props.spend) : "—"}</span>
       <span class="hint">
         {formatTokens(props.spend ? tokenCount(props.spend) : 0)} tokens · {props.spend?.steps ?? 0} steps
+        <Show when={props.spend && cacheShare(props.spend.tokens)}>
+          {(share) => (
+            <span title="share of input context served from the provider's prompt cache, which is billed at a fraction of the input rate">
+              {" "}
+              · {Math.round(share() * 100)}% cached
+            </span>
+          )}
+        </Show>
       </span>
     </div>
   )

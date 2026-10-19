@@ -130,6 +130,16 @@ export type Pipeline = {
    * an answer that has been judged.
    */
   verify?: Verify
+  /**
+   * USD the whole run may spend before the engine stops it, in every mode.
+   *
+   * Unlike the toggles above, absent does **not** mean off: it means the default
+   * cap. Every mode here spends real money with nobody watching — a swarm is
+   * `agents × rounds + 1` sessions — and a run with no ceiling is how a per-token
+   * bill turns into a surprise. A gauntlet keeps its own `gauntlet.maxSpend`,
+   * which wins there; read only through `spendCapOf`.
+   */
+  maxSpend?: number
 }
 
 /**
@@ -380,6 +390,13 @@ export type RunLog = {
    * user's command to run, not the engine's.
    */
   best?: { round: number; card: string; ref?: string }
+  /**
+   * The spend cap, in USD, that ended this run — present only when it did.
+   *
+   * Recorded because a capped run and a run the user stopped both leave cards
+   * marked `stopped`, and only one of them was somebody's decision.
+   */
+  capped?: number
 }
 
 export function emptyPipeline(name = "untitled"): Pipeline {
@@ -497,6 +514,17 @@ export function isolationOf(pipeline: Pipeline) {
 export function verifyOf(pipeline: Pipeline) {
   if (!pipeline.verify || gauntletOf(pipeline)) return undefined
   return { bar: pipeline.verify.bar?.trim() ?? "" }
+}
+
+/**
+ * The dollar ceiling on this run, in every mode.
+ *
+ * A gauntlet's own cap wins, so one canvas never carries two numbers that both
+ * claim to bound it. Clamped like every other budget, so a hand-edited file
+ * cannot lift it past what the UI can ask for.
+ */
+export function spendCapOf(pipeline: Pipeline) {
+  return gauntletOf(pipeline)?.maxSpend ?? money(pipeline.maxSpend, DEFAULT_MAX_SPEND, MAX_MAX_SPEND)
 }
 
 /**

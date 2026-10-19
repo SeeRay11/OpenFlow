@@ -484,6 +484,55 @@ describe("preflight", () => {
   })
 })
 
+describe("preflight: prices", () => {
+  const cards = (graph: Pipeline, models: Record<string, string>) => {
+    for (const node of graph.nodes) {
+      node.agent.model = models[node.id]
+      node.agent.tools = { read: true, edit: false, bash: false }
+    }
+    return graph
+  }
+  const prices = new Map([
+    ["openai/big", { input: 5, output: 25 }],
+    ["openai/small", { input: 0.5, output: 2 }],
+  ])
+  const ctx = { unlockedModels: new Set(["openai/big", "openai/small", "local-ollama/q"]), prices }
+  const kinds = (graph: Pipeline) => preflight(graph, ctx).warnings.map((problem) => [problem.kind, problem.nodeId])
+
+  test("an orchestrator cheaper than a card it dispatches is pointed out, naming both models", () => {
+    const graph = { ...cards(pipeline("root->coder"), { root: "openai/small", coder: "openai/big" }), mode: "orchestration" as const }
+    expect(kinds(graph)).toEqual([["weak-seat", "root"]])
+    expect(preflight(graph, ctx).warnings[0].message).toContain("openai/big")
+  })
+
+  test("the strong model in the seat and cheap ones in the leaves is the intended shape — silent", () => {
+    const graph = { ...cards(pipeline("root->coder"), { root: "openai/big", coder: "openai/small" }), mode: "orchestration" as const }
+    expect(kinds(graph)).toEqual([])
+  })
+
+  test("a cheap model everywhere is the user's choice — silent", () => {
+    const graph = { ...cards(pipeline("root->coder"), { root: "openai/small", coder: "openai/small" }), mode: "orchestration" as const }
+    expect(kinds(graph)).toEqual([])
+  })
+
+  test("a reviewer only counts as a judging seat when something judges", () => {
+    const plain = cards(pipeline("coder->reviewer"), { coder: "openai/big", reviewer: "openai/small" })
+    expect(kinds(plain)).toEqual([])
+    // Verification raises warnings of its own about this shape; only the seat is under test.
+    expect(kinds({ ...plain, verify: {} }).filter(([kind]) => kind === "weak-seat")).toEqual([["weak-seat", "reviewer"]])
+  })
+
+  test("a model with no published price makes the cap partial, and says so", () => {
+    const graph = cards(pipeline("a->b"), { a: "openai/big", b: "local-ollama/q" })
+    expect(kinds(graph)).toEqual([["unpriced-cap", undefined]])
+  })
+
+  test("no prices passed, no price checks", () => {
+    const graph = cards(pipeline("root->coder"), { root: "openai/small", coder: "openai/big" })
+    expect(preflight({ ...graph, mode: "orchestration" }, { unlockedModels: ctx.unlockedModels }).warnings).toEqual([])
+  })
+})
+
 describe("wouldCycle", () => {
   test("refuses a node connecting to itself", () => {
     expect(wouldCycle(pipeline("a->b"), "a", "a")).toBe(true)

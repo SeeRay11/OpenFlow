@@ -50,6 +50,7 @@ import {
   isolationOf,
   modeOf,
   roundsOf,
+  spendCapOf,
   verifyOf,
 } from "../graph/types"
 import { ancestors, downstream, layer, upstream } from "../graph/validate"
@@ -433,6 +434,7 @@ export function start(
    * already does.
    */
   const verify = verifyOf(pipeline)
+  const cap = spendCapOf(pipeline)
   const verifiers = verify ? pipeline.nodes.filter((node) => isCritic(node)) : []
   // The same shape as the gauntlet check above, and for the same reason: the
   // engine is callable without preflight, and a run that cannot be verified
@@ -561,6 +563,27 @@ export function start(
     record.steps = steps
     patch(id, { usage: spend })
     log.usage = mergeSpend(log.nodes.map((node) => node.usage))
+    enforceCap()
+  }
+
+  /**
+   * Stops the run the moment its priced spend reaches the cap.
+   *
+   * Checked on every repriced step, because a pipeline or swarm has no moment
+   * between turns where an orchestrator could be asked to wrap up — the only
+   * bound that can hold is a hard stop. A gauntlet is left to `exhausted()`,
+   * which asks its orchestrator for an answer at the same number rather than
+   * cutting it off mid-thought. An unpriced model leaves the cap unenforceable;
+   * preflight warns about that before the run, since stopping here would end
+   * every run on such a model on its first step.
+   */
+  function enforceCap() {
+    if (gauntlet || log.capped !== undefined || controller.signal.aborted) return
+    if ((log.usage?.cost ?? 0) < cap) return
+    log.capped = cap
+    hooks.onNotice?.("error", `the run reached its $${cap} spend cap and was stopped`)
+    controller.abort()
+    void Promise.all([...active].map((sessionID) => api.interrupt(sessionID).catch(() => {})))
   }
 
   /**
@@ -2082,7 +2105,11 @@ ${serve.command}`
       // reported the truth about itself, and paying a critic to confirm it is
       // the one verdict nobody needs.
       if (verify && !controller.signal.aborted && !log.nodes.some((node) => node.status === "error")) await verifyRun()
-      log.status = controller.signal.aborted
+      // A cap firing is a bound the run hit, not a decision anybody made, so it
+      // reads as a failure — the same way a gauntlet reports its own cap.
+      log.status = log.capped !== undefined
+        ? "error"
+        : controller.signal.aborted
         ? "stopped"
         : log.nodes.some((node) => node.status === "error")
           ? "error"
