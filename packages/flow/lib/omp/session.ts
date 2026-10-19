@@ -21,6 +21,7 @@ import { createEventMapper, type EventMapper } from "./events"
 import { createHostTools, hostToolsCommand, type HostTools } from "./host-tools"
 import { asNumber, asRecord, asString, createMessageStore, providerError, type MessageStore } from "./messages"
 import { requireBinary } from "./models"
+import { READY_TIMEOUT_MS, withDeadline } from "./ready"
 import type { BuildLaunch, OmpExit, OmpProcess, SpawnOmp } from "./rpc-types"
 import type { CredentialStamp } from "./stamp"
 import { createUiRequests, type UiRequests } from "./ui-requests"
@@ -48,6 +49,10 @@ export type EngineHostDeps = {
   stamp?: CredentialStamp
   /** A live session with no frames, no prompt in flight and no HTTP activity for this long is closed (and stays resumable). Default 30 minutes. */
   idleReapMs?: number
+  /** Most omp processes running (or starting) at once; a create beyond it is a 429. Default 32. */
+  maxLive?: number
+  /** How long a new omp may take to become ready (and to open a saved session) before it is killed. Default 60 s. */
+  readyTimeoutMs?: number
 }
 
 export type SessionHostOptions = {
@@ -88,13 +93,14 @@ const DEFAULT_IDLE_REAP_MS = 30 * 60_000
 const DEFAULT_TICK_MS = 5_000
 const DEFAULT_WAIT_MS = 30 * 60_000
 const ADMISSION_TIMEOUT_MS = 120_000
-const OPEN_TIMEOUT_MS = 60_000
+const DEFAULT_MAX_LIVE = 32
 const ABORT_TIMEOUT_MS = 15_000
 const FILE_INLINE_LIMIT = 200 * 1024
 const TITLE_LIMIT = 80
 /** Dead and idle records kept for reads after the fact. */
 const KEPT_RECORDS = 64
-const MODEL_SHAPE = /^[^/\s]+\/\S+$/
+/** `provider/id`, the provider starting with a letter or digit so the value can never be read as a flag. */
+const MODEL_SHAPE = /^[A-Za-z0-9][^/\s]*\/\S+$/
 
 type CreateRequest = {
   runId: string
@@ -142,6 +148,8 @@ type Session = {
   /** Resumed from disk: its history has not streamed through this host. */
   resumed: boolean
   starting?: Promise<void>
+  /** The process of a start still in flight, so teardown can stop it before it is attached. */
+  spawning?: OmpProcess
   promptCount: number
 }
 
@@ -158,10 +166,6 @@ export function safeSegment(value: string): string {
   const clean = value.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "_").slice(0, 80) || "_"
   if (clean === value) return clean
   return `${clean}-${createHash("sha1").update(value).digest("hex").slice(0, 6)}`
-}
-
-function stateDirFor(root: string, runId: string, nodeId: string): string {
-  return path.join(root, safeSegment(runId), safeSegment(nodeId))
 }
 
 function oneLine(text: string, limit: number): string {
@@ -287,6 +291,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   /** In-flight metadata writes; teardown awaits them so none lands after a directory is removed. */
   const writes = new Set<Promise<void>>()
   const idleReapMs = deps.idleReapMs ?? DEFAULT_IDLE_REAP_MS
+  const maxLive = deps.maxLive ?? DEFAULT_MAX_LIVE
   const env = () => deps.env ?? process.env
 
   function busy(session: Session): boolean {
@@ -296,8 +301,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   function outcome(session: Session): WaitResult | undefined {
     if (!session.last) return { status: "idle", result: "completed" }
     if (!session.last.result || !session.settled) return undefined
-    const { status, error } = session.last.result
-    return { status: "idle", result: status, ...(error ? { error } : {}) }
+    const result = session.last.result
+    return { status: "idle", result: result.status, ...(result.error ? { error: result.error } : {}) }
   }
 
   function settleWaiters(session: Session, forced?: WaitResult) {
@@ -309,8 +314,9 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     }
   }
 
-  function metaOf(session: Session): Meta {
-    return {
+  async function writeMeta(session: Session) {
+    await fs.mkdir(session.stateDir, { recursive: true, mode: 0o700 })
+    const meta: Meta = {
       id: session.id,
       runId: session.request.runId,
       nodeId: session.request.nodeId,
@@ -320,11 +326,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
       created: session.created,
       updated: Date.now(),
     }
-  }
-
-  async function writeMeta(session: Session) {
-    await fs.mkdir(session.stateDir, { recursive: true })
-    await fs.writeFile(path.join(session.stateDir, META_FILE), JSON.stringify(metaOf(session)), { mode: 0o600 })
+    await fs.writeFile(path.join(session.stateDir, META_FILE), JSON.stringify(meta), { mode: 0o600 })
   }
 
   /** Listing and resume metadata only: a failed write costs a fresh session on reuse, never a failed turn. */
@@ -392,8 +394,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     if (session.generation !== generation || session.state === "disposed") return
     session.lastActivity = Date.now()
     if (frame.type === "agent_start") session.settled = false
-    else if (frame.type === "prompt_result") onPromptResult(session, frame)
-    else if (frame.type === "session_settled") session.settled = true
+    if (frame.type === "prompt_result") onPromptResult(session, frame)
+    if (frame.type === "session_settled") session.settled = true
 
     session.store.observe(frame, session.epoch)
     if (!session.ui.handle(frame) && !session.hostTools.handle(frame)) for (const event of session.mapper.map(frame)) options.emit(event)
@@ -417,8 +419,19 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   }
 
   function trimRecords() {
-    const kept = [...sessions.values()].filter((session) => session.state === "lost" || session.state === "idle")
+    const kept = [...sessions.values()].filter((session) => (session.state === "lost" || session.state === "idle") && !session.starting)
     for (const session of kept.slice(0, Math.max(0, kept.length - KEPT_RECORDS))) sessions.delete(session.id)
+  }
+
+  function closed(session: Session): HttpError {
+    return new HttpError(409, `session ${session.id} was closed while it was starting`, "session-closed")
+  }
+
+  /** Every spawn passes here, synchronously, before it starts: processes still starting count, so a burst cannot overshoot the limit. */
+  function admit(session: Session) {
+    const running = [...sessions.values()].filter((other) => other !== session && (other.state === "live" || other.starting !== undefined)).length
+    if (running < maxLive) return
+    throw new HttpError(429, `${running} omp sessions are already running (the limit is ${maxLive}); wait for a card to finish or stop a run, then try again.`, "too-many-sessions")
   }
 
   /**
@@ -427,11 +440,24 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
    * failure closes the process.
    */
   async function start(session: Session, resume: boolean) {
-    const settings = await deps.settings()
-    const binary = await requireBinary(settings, env())
+    admit(session)
+    const generation = session.generation + 1
+    session.generation = generation
+    /** Disposed, released or closed since this start began: whatever it has built is to be torn down, never attached. */
+    const cancelled = () => session.generation !== generation || session.state === "disposed"
+    /** Every await of the start goes through here, so none can attach a process to a session that is gone. */
+    const step = async <T>(work: Promise<T>): Promise<T> => {
+      const value = await work
+      if (cancelled()) throw closed(session)
+      return value
+    }
+    const readyMs = deps.readyTimeoutMs ?? READY_TIMEOUT_MS
+
+    const settings = await step(deps.settings())
+    const binary = await step(requireBinary(settings, env()))
     const request = session.request
     const mode = request.swarm ?? settings.swarm.mode
-    const swarm = await deps.swarm?.launch({ settings, mode, runId: request.runId, nodeId: request.nodeId, stateDir: session.stateDir, env: env() })
+    const swarm = await step(Promise.resolve(deps.swarm?.launch({ settings, mode, runId: request.runId, nodeId: request.nodeId, stateDir: session.stateDir, env: env() })))
     const spec = deps.launch({
       settings,
       binary,
@@ -441,36 +467,39 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
       env: env(),
     })
     const sessionDir = path.join(session.stateDir, SESSION_SUBDIR)
-    await fs.mkdir(sessionDir, { recursive: true })
+    await step(fs.mkdir(sessionDir, { recursive: true, mode: 0o700 }))
 
-    const generation = session.generation + 1
-    session.generation = generation
     session.epoch = randomBytes(2).toString("hex")
     session.swarmMode = swarm?.effective ?? "off"
     const proc = deps.spawn(spec)
+    session.spawning = proc
     const send = (frame: Record<string, unknown>) => proc.send(frame)
     session.mapper = createEventMapper({ sessionID: session.id, epoch: session.epoch, agent: request.card.key, model: request.model })
     session.ui = createUiRequests({ sessionID: session.id, send, emit: options.emit })
     session.hostTools = createHostTools({ send })
     endSwarm(session)
     session.tracker = deps.swarm?.tracker({ mode: session.swarmMode, stateDir: session.stateDir })
-    session.unsubscribe = proc.onFrame((frame) => onFrame(session, generation, frame))
+    const unsubscribe = proc.onFrame((frame) => onFrame(session, generation, frame))
+    session.unsubscribe = unsubscribe
     try {
-      await proc.ready
+      await step(withDeadline(proc, proc.ready, readyMs))
       if (resume) {
-        const opened = asRecord(await proc.command({ type: "open_session", sessionDir }, { timeoutMs: OPEN_TIMEOUT_MS }))
+        const opened = asRecord(await step(withDeadline(proc, proc.command({ type: "open_session", sessionDir }, { timeoutMs: 0 }), readyMs)))
         if (!opened || opened.cancelled === true || opened.resumed !== true) throw notFound(session.id)
       }
-      await proc.command({ type: "set_ask_dialog", enabled: true })
-      await proc.command({ type: "set_event_filter", events: null, messageUpdates: "delta" })
-      if (session.swarmMode !== "off") await proc.command({ type: "set_subagent_subscription", level: "progress" })
-      if (request.card.dispatch) await proc.command(hostToolsCommand())
+      await step(proc.command({ type: "set_ask_dialog", enabled: true }))
+      await step(proc.command({ type: "set_event_filter", events: null, messageUpdates: "delta" }))
+      if (session.swarmMode !== "off") await step(proc.command({ type: "set_subagent_subscription", level: "progress" }))
+      if (request.card.dispatch) await step(proc.command(hostToolsCommand()))
     } catch (error) {
-      session.unsubscribe?.()
+      unsubscribe()
       endSwarm(session)
+      if (session.spawning === proc) session.spawning = undefined
       await proc.close().catch(() => undefined)
+      if (cancelled()) throw closed(session)
       throw error instanceof HttpError ? error : new HttpError(502, startupMessage(error), "omp-start-failed")
     }
+    session.spawning = undefined
     session.proc = proc
     session.state = "live"
     session.resumed = resume
@@ -515,21 +544,26 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
 
   /** Detaches and gracefully stops the process; resolves once it is gone. Called once per process: the handle is cleared first. */
   async function stop(session: Session, state: Session["state"]) {
-    const proc = session.proc
+    // A session that is still starting has no `proc` yet: its spawning process is the one to close.
+    const proc = session.proc ?? session.spawning
     session.state = state
+    // Whatever start is in flight sees the change after its current await and winds itself down.
+    session.generation++
     session.proc = undefined
+    session.spawning = undefined
     session.unsubscribe?.()
     session.unsubscribe = undefined
     session.ui.cancelAll()
     endSwarm(session)
     settleWaiters(session, { status: "missing" })
     await proc?.close().catch(() => undefined)
+    await session.starting?.catch(() => undefined)
     await Promise.all(writes)
   }
 
-  /** Respawns an idle (reaped) session; one flight at a time. */
-  function resume(session: Session): Promise<void> {
-    session.starting ??= start(session, true).finally(() => {
+  /** Spawns the process of an idle, lost or new session; every caller during one start shares its flight. */
+  function begin(session: Session, resume: boolean): Promise<void> {
+    session.starting ??= start(session, resume).finally(() => {
       session.starting = undefined
     })
     return session.starting
@@ -544,7 +578,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   /** The process, resuming a reaped session on the way. */
   async function attach(id: string): Promise<{ session: Session; proc: OmpProcess }> {
     const session = find(id)
-    if (session.state === "idle") await resume(session).catch((error: unknown) => {
+    if (session.state === "idle") await begin(session, true).catch((error: unknown) => {
       if (error instanceof HttpError && error.status === 404) sessions.delete(id)
       throw error
     })
@@ -559,24 +593,31 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     await session.store.loadHistory(session.proc).catch(() => false)
   }
 
-  async function reuse(request: CreateRequest, stateDir: string): Promise<{ id: string }> {
+  /** The session `request.reuse` names: the one in memory, else the one the metadata on disk describes. */
+  async function adopt(request: CreateRequest, stateDir: string): Promise<Session> {
     const id = request.reuse as string
-    const existing = sessions.get(id)
-    if (existing && existing.state === "live") return { id }
-    if (existing && (existing.state === "idle" || existing.state === "lost")) {
-      await resume(existing).catch((error: unknown) => {
-        if (error instanceof HttpError && error.status === 404) sessions.delete(id)
-        throw error
-      })
-      return { id }
-    }
     const meta = await readMeta(stateDir)
     if (!meta || meta.id !== id) throw notFound(id)
+    // A concurrent reuse of the same id may have registered it while the metadata was read: one session, one process.
+    const known = sessions.get(id)
+    if (known) return known
     const session = makeSession(id, request, stateDir)
     session.created = meta.created || session.created
     session.title = meta.title
-    await start(session, true)
     sessions.set(id, session)
+    return session
+  }
+
+  async function reuse(request: CreateRequest, stateDir: string): Promise<{ id: string }> {
+    const id = request.reuse as string
+    const known = sessions.get(id)
+    const session = known ?? (await adopt(request, stateDir))
+    if (session.state === "live") return { id }
+    await begin(session, true).catch((error: unknown) => {
+      // A record this call created, or one omp cannot resume, is not kept.
+      if ((known === undefined || (error instanceof HttpError && error.status === 404)) && sessions.get(id) === session) sessions.delete(id)
+      throw error
+    })
     return { id }
   }
 
@@ -625,19 +666,23 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   return {
     async create(body) {
       const request = await parseCreate(body, deps.project())
-      const stateDir = stateDirFor(deps.stateRoot(), request.runId, request.nodeId)
+      const stateDir = path.join(deps.stateRoot(), safeSegment(request.runId), safeSegment(request.nodeId))
       if (request.reuse) return reuse(request, stateDir)
+      await fs.mkdir(stateDir, { recursive: true, mode: 0o700 })
       // One card, one session at a time: a replaced critic session must not still hold the session directory.
       for (const other of [...sessions.values()]) {
         if (other.request.runId !== request.runId || other.request.nodeId !== request.nodeId) continue
         sessions.delete(other.id)
         await stop(other, "disposed")
       }
+      // Registered before it starts, with no await in between, so releaseRun, dispose and close see it and the limit counts it.
       const session = makeSession(`s_${randomBytes(6).toString("hex")}`, request, stateDir)
-      await fs.mkdir(stateDir, { recursive: true })
-      await start(session, false)
       sessions.set(session.id, session)
-      await writeMeta(session).catch(() => undefined)
+      await begin(session, false).catch((error: unknown) => {
+        if (sessions.get(session.id) === session) sessions.delete(session.id)
+        throw error
+      })
+      if (session.state === "live") await writeMeta(session).catch(() => undefined)
       return { id: session.id }
     },
 
@@ -683,6 +728,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
       session.lastActivity = Date.now()
       const ready = outcome(session)
       if (ready) return Promise.resolve(ready)
+      if (signal?.aborted) return Promise.resolve({ status: "timeout" })
       const timeoutMs = typeof request?.timeoutMs === "number" && request.timeoutMs > 0 ? request.timeoutMs : DEFAULT_WAIT_MS
       const { promise, resolve } = Promise.withResolvers<WaitResult>()
       const waiter: Waiter = {

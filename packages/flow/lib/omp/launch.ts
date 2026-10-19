@@ -72,9 +72,9 @@ export function describeLaunch(input: LaunchInput): { notes: string[] } {
   for (const name of disabled(input.session.card.tools)) {
     if (name === "webfetch") {
       notes.push("webfetch is off but omp reads URLs with its `read` tool, which cannot be separated from file reads; `read` stays enabled")
-    } else if (name !== "skill" && !Object.hasOwn(OMP_TOOLS, name)) {
-      notes.push(`tool toggle "${name}" is off but has no omp equivalent; it stays enabled`)
+      continue
     }
+    if (name !== "skill" && !Object.hasOwn(OMP_TOOLS, name)) notes.push(`tool toggle "${name}" is off but has no omp equivalent; it stays enabled`)
   }
   const mcp = input.session.card.mcp
   if (mcp) {
@@ -87,7 +87,10 @@ export function describeLaunch(input: LaunchInput): { notes: string[] } {
 }
 
 export const buildLaunch: BuildLaunch = (input): LaunchSpec => {
-  const { settings, session, stateDir, swarm } = input
+  const session = input.session
+  const settings = input.settings
+  const swarm = input.swarm
+  const stateDir = input.stateDir
   const auto = session.permissions === "auto"
   const roleFile = path.join(stateDir, "role.md")
   const overlayFile = path.join(stateDir, "overlay.yml")

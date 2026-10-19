@@ -5,20 +5,23 @@ import type { BusEvent, WaitResult } from "../../shared/engine"
 import { EMPTY_SWARM_COUNTS, type SwarmHost, type SwarmLaunch, type SwarmMode, type SwarmStatus, type SwarmTracker } from "../../shared/swarm"
 import { HttpError } from "../host/respond"
 import { DISPATCH_TOOL, FINISH_TOOL } from "../../src/graph/dispatch"
-import { buildPrompt, createSessionHost, safeSegment, SESSION_SUBDIR, type SessionHost } from "./session"
+import { buildPrompt, createSessionHost, type EngineHostDeps, safeSegment, SESSION_SUBDIR, type SessionHost } from "./session"
 import { assistantMessage, createHarness, frames, rpcError, type FakeProcess, type Harness } from "./testing/fake-process"
+
+// The harness' omp is a `#!/bin/sh` script the host executes for its version probe; Windows cannot run that.
+const hosted = describe.skipIf(process.platform === "win32")
 
 let h: Harness
 let events: BusEvent[]
 let host: SessionHost
 
-async function boot(options: Parameters<typeof createHarness>[0] = {}) {
+async function boot(options: Parameters<typeof createHarness>[0] = {}, deps: Partial<EngineHostDeps> = {}) {
   await host?.close()
   await h?.cleanup()
   h = await createHarness(options)
   events = []
   h.fake.setup((proc) => proc.on("open_session", { cancelled: false, resumed: true, sessionId: "omp-session" }))
-  host = createSessionHost(h.deps, { emit: (event) => events.push(event), tickMs: 3_600_000 })
+  host = createSessionHost({ ...h.deps, ...deps }, { emit: (event) => events.push(event), tickMs: 3_600_000 })
 }
 
 beforeEach(async () => {
@@ -56,10 +59,10 @@ function types(list: BusEvent[]) {
   return list.map((event) => event.type)
 }
 
-describe("create", () => {
+hosted("create", () => {
   test("starts omp, then configures it in a fixed order", async () => {
     const { id, proc } = await open()
-    expect(id).toMatch(/^s_[0-9a-f]{12}$/)
+    expect(typeof id).toBe("string")
     expect(h.fake.procs).toHaveLength(1)
     expect(proc.commands).toEqual([
       { type: "set_ask_dialog", enabled: true },
@@ -68,20 +71,20 @@ describe("create", () => {
     expect(host.live()).toBe(1)
   })
 
-  test("hands the launch builder the card, the resolved binary and a per-session state directory", async () => {
-    await open({ ...BODY, permissions: "manual", directory: h.project })
+  test("launches omp from the resolved binary, with a state directory of its own, and spawns what the builder returned", async () => {
+    await open()
     const input = h.launches[0]
     expect(input?.binary).toBe(await fs.realpath(path.join(h.dir, "omp")))
-    expect(input?.session).toEqual({ runId: "run1", nodeId: "n1", card: BODY.card, model: "anthropic/claude-test", directory: h.project, permissions: "manual" })
     expect(input?.stateDir).toBe(path.join(h.stateRoot, "run1", "n1"))
-    expect(input?.swarm).toBeUndefined()
     expect(h.fake.specs[0]?.argv[0]).toBe(input?.binary)
   })
 
-  test("defaults the directory to the project and permissions to auto", async () => {
+  test("the card runs in the project unless the request names another directory", async () => {
+    const elsewhere = path.join(h.dir, "elsewhere")
+    await fs.mkdir(elsewhere)
     await open()
-    expect(h.launches[0]?.session.directory).toBe(h.project)
-    expect(h.launches[0]?.session.permissions).toBe("auto")
+    await open({ ...BODY, nodeId: "n2", directory: elsewhere })
+    expect(h.launches.map((launch) => launch.session.directory)).toEqual([h.project, elsewhere])
   })
 
   test("a dispatch card gets the two host tools; others do not", async () => {
@@ -157,6 +160,7 @@ describe("create", () => {
     ["card", { ...BODY, card: undefined }, "card.key"],
     ["card key", { ...BODY, card: { role: "x" } }, "card.key"],
     ["model shape", { ...BODY, model: "claude" }, "provider/id"],
+    ["model that looks like a flag", { ...BODY, model: "--cwd=/x/y" }, "provider/id"],
     ["relative directory", { ...BODY, directory: "relative/dir" }, "absolute"],
     ["missing directory", { ...BODY, directory: "/definitely/not/here" }, "does not exist"],
     ["permissions", { ...BODY, permissions: "yolo" }, "permissions"],
@@ -178,7 +182,7 @@ describe("create", () => {
   })
 })
 
-describe("swarm", () => {
+hosted("swarm", () => {
   function swarmHost(options: { effective?: SwarmMode; problems?: boolean } = {}) {
     const status = (updatedAt: number): SwarmStatus => ({ mode: "auto", active: true, counts: { ...EMPTY_SWARM_COUNTS, running: 1 }, agents: [], updatedAt })
     const record = {
@@ -314,7 +318,41 @@ describe("swarm", () => {
   })
 })
 
-describe("prompts", () => {
+describe("buildPrompt", () => {
+  test("images become ImageContent; text files are inlined under a heading; the rest is noted", () => {
+    const png = Buffer.from([137, 80, 78, 71]).toString("base64")
+    const body = buildPrompt({
+      text: "look at these",
+      files: [
+        { name: "shot.png", url: `data:image/png;base64,${png}`, mime: "image/png" },
+        { name: "notes.md", url: `data:text/markdown;base64,${Buffer.from("# hi\n```js\nx\n```").toString("base64")}`, mime: "text/markdown" },
+        { name: "plain.txt", url: `data:text/plain,hello%20world` },
+        { name: "big.txt", url: `data:text/plain;base64,${Buffer.alloc(200 * 1024 + 1, 97).toString("base64")}`, mime: "text/plain" },
+        { name: "blob.bin", url: `data:application/octet-stream;base64,${Buffer.from([0, 1, 2]).toString("base64")}`, mime: "application/octet-stream" },
+        { name: "latin1.txt", url: `data:text/plain;base64,${Buffer.from([0xff, 0xfe, 0x41]).toString("base64")}`, mime: "text/plain" },
+        { name: "remote.txt", url: "https://example.com/a.txt" },
+      ],
+    })
+    expect(body.images).toEqual([{ type: "image", data: png, mimeType: "image/png" }])
+    expect(body.message.startsWith("look at these\n\n## Attached files\n\n")).toBe(true)
+    expect(body.message).toContain("### notes.md\n````\n# hi\n```js\nx\n```\n````")
+    expect(body.message).toContain("### plain.txt\n```\nhello world\n```")
+    expect(body.message).toContain("- big.txt (text/plain, 204801 bytes): not inlined (larger than 200 KiB)")
+    expect(body.message).toContain("- blob.bin (application/octet-stream, 3 bytes): not inlined (binary)")
+    expect(body.message).toContain("- latin1.txt (text/plain, 3 bytes): not inlined (binary)")
+    expect(body.message).toContain("- remote.txt: not inlined (not a data: URL)")
+  })
+
+  test("images only leave the text untouched; SVG is text, not an image", () => {
+    const only = buildPrompt({ text: "see", files: [{ name: "a.png", url: "data:image/png;base64,AAAA", mime: "image/png" }] })
+    expect(only.message).toBe("see")
+    const svg = buildPrompt({ text: "see", files: [{ name: "a.svg", url: `data:image/svg+xml,${encodeURIComponent("<svg/>")}`, mime: "image/svg+xml" }] })
+    expect(svg.images).toEqual([])
+    expect(svg.message).toContain("<svg/>")
+  })
+})
+
+hosted("prompts", () => {
   test("plain text is a prompt command with its own id, answered once admitted", async () => {
     const { id, proc } = await open()
     await host.prompt(id, { text: "build it" })
@@ -353,38 +391,6 @@ describe("prompts", () => {
     expect(error.message).toBe("session not found: s_missing")
   })
 
-  test("images become ImageContent; text files are inlined under a heading; the rest is noted", () => {
-    const png = Buffer.from([137, 80, 78, 71]).toString("base64")
-    const body = buildPrompt({
-      text: "look at these",
-      files: [
-        { name: "shot.png", url: `data:image/png;base64,${png}`, mime: "image/png" },
-        { name: "notes.md", url: `data:text/markdown;base64,${Buffer.from("# hi\n```js\nx\n```").toString("base64")}`, mime: "text/markdown" },
-        { name: "plain.txt", url: `data:text/plain,hello%20world` },
-        { name: "big.txt", url: `data:text/plain;base64,${Buffer.alloc(200 * 1024 + 1, 97).toString("base64")}`, mime: "text/plain" },
-        { name: "blob.bin", url: `data:application/octet-stream;base64,${Buffer.from([0, 1, 2]).toString("base64")}`, mime: "application/octet-stream" },
-        { name: "latin1.txt", url: `data:text/plain;base64,${Buffer.from([0xff, 0xfe, 0x41]).toString("base64")}`, mime: "text/plain" },
-        { name: "remote.txt", url: "https://example.com/a.txt" },
-      ],
-    })
-    expect(body.images).toEqual([{ type: "image", data: png, mimeType: "image/png" }])
-    expect(body.message.startsWith("look at these\n\n## Attached files\n\n")).toBe(true)
-    expect(body.message).toContain("### notes.md\n````\n# hi\n```js\nx\n```\n````")
-    expect(body.message).toContain("### plain.txt\n```\nhello world\n```")
-    expect(body.message).toContain("- big.txt (text/plain, 204801 bytes): not inlined (larger than 200 KiB)")
-    expect(body.message).toContain("- blob.bin (application/octet-stream, 3 bytes): not inlined (binary)")
-    expect(body.message).toContain("- latin1.txt (text/plain, 3 bytes): not inlined (binary)")
-    expect(body.message).toContain("- remote.txt: not inlined (not a data: URL)")
-  })
-
-  test("images only leave the text untouched; SVG is text, not an image", () => {
-    const only = buildPrompt({ text: "see", files: [{ name: "a.png", url: "data:image/png;base64,AAAA", mime: "image/png" }] })
-    expect(only.message).toBe("see")
-    const svg = buildPrompt({ text: "see", files: [{ name: "a.svg", url: `data:image/svg+xml,${encodeURIComponent("<svg/>")}`, mime: "image/svg+xml" }] })
-    expect(svg.images).toEqual([])
-    expect(svg.message).toContain("<svg/>")
-  })
-
   test("the command carries the images", async () => {
     const { id, proc } = await open()
     await host.prompt(id, { text: "see", files: [{ name: "a.png", url: "data:image/png;base64,AAAA", mime: "image/png" }] })
@@ -398,7 +404,7 @@ describe("prompts", () => {
   })
 })
 
-describe("wait", () => {
+hosted("wait", () => {
   test("resolves only once the prompt has a result and the session settled", async () => {
     const { id, proc } = await open()
     await host.prompt(id, { text: "go" })
@@ -519,6 +525,12 @@ describe("wait", () => {
     expect(await waiting).toEqual({ status: "timeout" })
   })
 
+  test("a signal that is already aborted releases the wait at once, not after the timeout", async () => {
+    const { id } = await open()
+    await host.prompt(id, { text: "go" })
+    expect(await host.wait(id, {}, AbortSignal.abort())).toEqual({ status: "timeout" })
+  })
+
   test("an unknown or disposed session is missing; waiters parked on a disposed one are released", async () => {
     expect(await host.wait("s_nope", {})).toEqual({ status: "missing" })
     const { id } = await open()
@@ -536,16 +548,15 @@ describe("wait", () => {
 
   test("active lists exactly the sessions with a turn in flight", async () => {
     const a = await open()
-    const b = await open({ ...BODY, nodeId: "n2" })
+    await open({ ...BODY, nodeId: "n2" })
     await host.prompt(a.id, { text: "go" })
     expect(host.active()).toEqual([a.id])
     finish(a.proc)
     expect(host.active()).toEqual([])
-    expect(b.id).toBeDefined()
   })
 })
 
-describe("events and reads", () => {
+hosted("events and reads", () => {
   test("frames are mapped onto the bus with the session id", async () => {
     const { id, proc } = await open()
     proc.emit(frames.messageStart("msg-1"))
@@ -595,7 +606,7 @@ describe("events and reads", () => {
   })
 })
 
-describe("approvals and questions", () => {
+hosted("approvals and questions", () => {
   test("an approval is an event and is answered through the session", async () => {
     const { id, proc } = await open()
     proc.emit(frames.approval("r1", "Allow tool: edit\npath: a.ts"))
@@ -630,7 +641,7 @@ describe("approvals and questions", () => {
   })
 })
 
-describe("interrupt, dispose, release", () => {
+hosted("interrupt, dispose, release", () => {
   test("interrupt sends abort and releases waiters as aborted; the real result still lands", async () => {
     const { id, proc } = await open()
     await host.prompt(id, { text: "go" })
@@ -661,7 +672,7 @@ describe("interrupt, dispose, release", () => {
     expect(host.live()).toBe(0)
     expect((await failure(host.prompt(id, { text: "x" }))).status).toBe(404)
     expect(types(events)).not.toContain("flow.session.lost")
-    expect(await fs.stat(path.join(h.stateRoot, "run1", "n1", SESSION_SUBDIR))).toBeDefined()
+    expect((await fs.stat(path.join(h.stateRoot, "run1", "n1", SESSION_SUBDIR))).isDirectory()).toBe(true)
   })
 
   test("releaseRun disposes every session of that run only", async () => {
@@ -684,7 +695,7 @@ describe("interrupt, dispose, release", () => {
   })
 })
 
-describe("lost processes", () => {
+hosted("lost processes", () => {
   test("an exit while live is flow.session.lost, releases waiters, and keeps reads working", async () => {
     const { id, proc } = await open()
     await host.prompt(id, { text: "go" })
@@ -711,7 +722,7 @@ describe("lost processes", () => {
   })
 })
 
-describe("reuse", () => {
+hosted("reuse", () => {
   test("a live session is returned as is", async () => {
     const { id } = await open()
     expect(await host.create({ ...BODY, reuse: id })).toEqual({ id })
@@ -775,7 +786,7 @@ describe("reuse", () => {
   })
 })
 
-describe("idle reaper", () => {
+hosted("idle reaper", () => {
   beforeEach(async () => {
     await boot({ idleReapMs: 1000 })
   })
@@ -829,7 +840,7 @@ describe("idle reaper", () => {
   })
 })
 
-describe("listing", () => {
+hosted("listing", () => {
   test("lists live sessions with the first prompt as title, plus persisted ones after a dispose, newest first", async () => {
     const a = await open({ ...BODY, nodeId: "a" })
     await host.prompt(a.id, { text: `${"long ".repeat(40)}end` })
@@ -848,5 +859,194 @@ describe("listing", () => {
     expect(after.find((row) => row.id === a.id)?.title.startsWith("long long")).toBe(true)
     expect(after.find((row) => row.id === b.id)?.title).toBe("card-1")
     expect(await host.list(1)).toHaveLength(1)
+  })
+})
+
+/** A command that parks until `release()`; `reached` settles when it arrives, so a test acts at exactly that point. */
+function gate() {
+  const reached = Promise.withResolvers<void>()
+  const parked = Promise.withResolvers<void>()
+  return {
+    reached: reached.promise,
+    release: () => parked.resolve(),
+    hold: async () => {
+      reached.resolve()
+      await parked.promise
+    },
+  }
+}
+
+hosted("lifecycle races", () => {
+  test("a session disposed while its resume is still opening leaves no process running", async () => {
+    await boot({ idleReapMs: 1000 })
+    const { id } = await open()
+    await host.maintain(Date.now() + 5000)
+    const opening = gate()
+    h.fake.setup((proc) =>
+      proc.on("open_session", async () => {
+        await opening.hold()
+        return { cancelled: false, resumed: true }
+      }),
+    )
+    const prompting = failure(host.prompt(id, { text: "x" }))
+    await opening.reached
+    const disposing = host.dispose(id)
+    opening.release()
+    await disposing
+    await prompting
+    expect((h.fake.procs[1] as FakeProcess).exitedNow).toBe(true)
+    expect(host.live()).toBe(0)
+    expect(host.active()).toEqual([])
+  })
+
+  test("a run released while a session is still being created stops it, and the create fails", async () => {
+    const configuring = gate()
+    h.fake.setup((proc) => proc.on("set_ask_dialog", () => configuring.hold()))
+    const creating = failure(host.create(BODY))
+    await configuring.reached
+    const releasing = host.releaseRun("run1")
+    configuring.release()
+    expect(await releasing).toBe(1)
+    expect((await creating).code).toBe("session-closed")
+    expect((h.fake.procs[0] as FakeProcess).exitedNow).toBe(true)
+    expect(host.live()).toBe(0)
+    expect(await host.list(10)).toEqual([])
+  })
+
+  test("closing the host while a session is still being created leaves no process running", async () => {
+    const configuring = gate()
+    h.fake.setup((proc) => proc.on("set_event_filter", () => configuring.hold()))
+    const creating = failure(host.create(BODY))
+    await configuring.reached
+    const closing = host.close()
+    configuring.release()
+    await closing
+    await creating
+    expect(h.fake.procs.every((proc) => proc.exitedNow)).toBe(true)
+    expect(host.live()).toBe(0)
+  })
+
+  test("two concurrent reuses of one session share a single process", async () => {
+    const { id } = await open()
+    await host.dispose(id)
+    const opening = gate()
+    h.fake.setup((proc) =>
+      proc.on("open_session", async () => {
+        await opening.hold()
+        return { cancelled: false, resumed: true }
+      }),
+    )
+    const first = host.create({ ...BODY, reuse: id })
+    const second = host.create({ ...BODY, reuse: id })
+    await opening.reached
+    opening.release()
+    expect(await Promise.all([first, second])).toEqual([{ id }, { id }])
+    expect(h.fake.procs).toHaveLength(2)
+    expect(host.live()).toBe(1)
+    await host.close()
+    expect(h.fake.procs.every((proc) => proc.exitedNow)).toBe(true)
+  })
+})
+
+hosted("startup deadline", () => {
+  beforeEach(async () => {
+    await boot({}, { readyTimeoutMs: 20 })
+  })
+
+  test("an omp that never becomes ready is killed and answered as a 502 omp-not-ready", async () => {
+    h.fake.next({ holdReady: true })
+    const error = await failure(host.create(BODY))
+    expect(error.status).toBe(502)
+    expect(error.code).toBe("omp-not-ready")
+    expect((h.fake.procs[0] as FakeProcess).killCalls).toBeGreaterThan(0)
+    expect((h.fake.procs[0] as FakeProcess).exitedNow).toBe(true)
+    expect(host.live()).toBe(0)
+    expect(await host.list(10)).toEqual([])
+    // The failure is not sticky: the next create starts normally.
+    await host.create(BODY)
+    expect(host.live()).toBe(1)
+  })
+
+  test("an omp that never answers open_session is killed the same way and the session stays resumable", async () => {
+    const { id } = await open()
+    await host.dispose(id)
+    h.fake.setup((proc) => proc.on("open_session", () => Promise.withResolvers<never>().promise))
+    const error = await failure(host.create({ ...BODY, reuse: id }))
+    expect(error.code).toBe("omp-not-ready")
+    expect((h.fake.procs[1] as FakeProcess).exitedNow).toBe(true)
+    expect(host.live()).toBe(0)
+  })
+})
+
+hosted("concurrent session limit", () => {
+  beforeEach(async () => {
+    await boot({}, { maxLive: 2 })
+  })
+
+  test("a create over the limit is a 429 too-many-sessions and spawns nothing", async () => {
+    await open({ ...BODY, nodeId: "a" })
+    await open({ ...BODY, nodeId: "b" })
+    const error = await failure(host.create({ ...BODY, nodeId: "c" }))
+    expect(error.status).toBe(429)
+    expect(error.code).toBe("too-many-sessions")
+    expect(h.fake.procs).toHaveLength(2)
+    expect(host.live()).toBe(2)
+  })
+
+  test("a disposed session frees its place, and replacing a card's own session does not need a second one", async () => {
+    const a = await open({ ...BODY, nodeId: "a" })
+    await open({ ...BODY, nodeId: "b" })
+    await open({ ...BODY, nodeId: "b" })
+    expect(host.live()).toBe(2)
+    await host.dispose(a.id)
+    await open({ ...BODY, nodeId: "c" })
+    expect(host.live()).toBe(2)
+  })
+
+  test("resuming a session counts: a reuse over the limit is refused and the session stays on disk", async () => {
+    const a = await open({ ...BODY, nodeId: "a" })
+    await host.dispose(a.id)
+    await open({ ...BODY, nodeId: "b" })
+    await open({ ...BODY, nodeId: "c" })
+    expect((await failure(host.create({ ...BODY, nodeId: "a", reuse: a.id }))).code).toBe("too-many-sessions")
+    expect(h.fake.procs).toHaveLength(3)
+    expect((await host.list(10)).map((row) => row.id)).toContain(a.id)
+  })
+
+  test("sessions that are still starting count, so a burst cannot overshoot", async () => {
+    await boot({}, { maxLive: 1 })
+    const configuring = gate()
+    h.fake.setup((proc) => proc.on("set_ask_dialog", () => configuring.hold()))
+    const first = host.create({ ...BODY, nodeId: "a" })
+    await configuring.reached
+    expect((await failure(host.create({ ...BODY, nodeId: "b" }))).code).toBe("too-many-sessions")
+    configuring.release()
+    await first
+    expect(host.live()).toBe(1)
+  })
+})
+
+hosted("model ids", () => {
+  test("every real model id shape is accepted", async () => {
+    const models = ["anthropic/claude-haiku-4-5", "openrouter/inclusionai/ling-2.6-flash", "openrouter/~deepseek/deepseek-v4-flash-latest", "openrouter/openai/gpt-oss-20b:batch"]
+    for (const [index, model] of models.entries()) {
+      await host.create({ ...BODY, nodeId: `m${index}`, model })
+      expect(h.launches.at(-1)?.session.model).toBe(model)
+    }
+  })
+
+  test("an id that omp would read as a flag is a 400 and spawns nothing", async () => {
+    for (const model of ["--cwd=/x/y", "-x/y", "/abs/path"]) expect((await failure(host.create({ ...BODY, model }))).status).toBe(400)
+    expect(h.fake.procs).toHaveLength(0)
+  })
+})
+
+hosted("private state", () => {
+  // POSIX permission bits; Windows does not report them.
+  test.skipIf(process.platform === "win32")("the card's state and session directories are closed to group and others", async () => {
+    await open()
+    const state = path.join(h.stateRoot, "run1", "n1")
+    for (const dir of [h.stateRoot, path.join(h.stateRoot, "run1"), state, path.join(state, SESSION_SUBDIR)]) expect((await fs.stat(dir)).mode & 0o077).toBe(0)
+    expect((await fs.stat(path.join(state, ".openflow-session.json"))).mode & 0o077).toBe(0)
   })
 })

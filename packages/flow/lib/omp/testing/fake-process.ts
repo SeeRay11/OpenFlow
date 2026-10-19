@@ -32,6 +32,8 @@ export interface FakeProcess extends OmpProcess {
   on(type: string, data: unknown): void
   /** Exit as if the process died on its own. */
   exit(code?: number | null, stderrTail?: string, signal?: string | null): void
+  /** Let a held `ready` resolve. */
+  release(): void
   /** Commands of one type, in order. */
   of(type: string): Command[]
 }
@@ -43,6 +45,8 @@ export function rpcError(command: string, message: string, code?: string): OmpRp
 export type FakeProcessOptions = {
   /** `ready` rejects with this message (the stderr tail) instead of resolving. */
   readyFails?: string
+  /** `ready` stays pending until `release()` (or the process exits, which rejects it). */
+  holdReady?: boolean
   pid?: number
 }
 
@@ -54,12 +58,17 @@ export function createFakeProcess(options: FakeProcessOptions = {}): FakeProcess
   const gone = Promise.withResolvers<OmpExit>()
   let exitedNow = false
 
-  const ready = options.readyFails === undefined ? Promise.resolve({ protocolVersion: 2 }) : Promise.reject(new Error(options.readyFails))
+  const readyBox = Promise.withResolvers<{ protocolVersion: number }>()
+  const ready = readyBox.promise
   ready.catch(() => undefined)
+  if (options.readyFails !== undefined) readyBox.reject(new Error(options.readyFails))
+  if (options.readyFails === undefined && !options.holdReady) readyBox.resolve({ protocolVersion: 2 })
 
   function exit(code: number | null = 0, stderrTail = "", signal: string | null = null) {
     if (exitedNow) return
     exitedNow = true
+    // As the real process: an exit settles a `ready` that never came.
+    readyBox.reject(new Error("omp exited before it was ready"))
     gone.resolve({ code, signal, stderrTail })
   }
 
@@ -115,6 +124,9 @@ export function createFakeProcess(options: FakeProcessOptions = {}): FakeProcess
 
     of(type) {
       return commands.filter((command) => command.type === type)
+    },
+    release() {
+      readyBox.resolve({ protocolVersion: 2 })
     },
   }
   return proc

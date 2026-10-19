@@ -8,8 +8,8 @@
  *  - writes `ready` first (`supportedProtocolVersions` [1, 2]; [1] with STUB_OMP_V1_ONLY=1);
  *  - `negotiate_protocol` switches oversized stdout frames (over STUB_OMP_MAX_FRAME_BYTES, default
  *    1 MiB) to `rpc_chunk` runs; before negotiation an oversized response is `success:false`;
- *  - answers `get_state` (data carries `requestId`, `argv`, the flags the stub was started with, and
- *    `childPid`), `get_available_models` (STUB_OMP_MODELS models, default 2, each padded with
+ *  - answers `get_state` (data carries `requestId`, `argv`, the flags the stub was started with, `childPid`
+ *    and `env`, the names of the environment variables it received, each mapped to `true`), `get_available_models` (STUB_OMP_MODELS models, default 2, each padded with
  *    STUB_OMP_MODEL_PAD bytes), `set_host_tools`, `set_ask_dialog`, `set_event_filter`,
  *    `set_subagent_subscription`, `set_auto_retry`, `abort`; anything else is
  *    `success:false "Unknown command: <type>"`;
@@ -171,6 +171,8 @@ function handle(frame: Frame) {
         isSettled: playing === undefined,
         argv: process.argv.slice(2),
         childPid: grandchild,
+        // Names only, one boolean each: tests prove which variables reached the child without a value ever leaving it.
+        env: Object.fromEntries(Object.keys(env).map((name) => [name, true])),
       })
       return
     case "get_available_models": {

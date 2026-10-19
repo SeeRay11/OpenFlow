@@ -94,7 +94,7 @@ class RpcProcess implements OmpProcess {
 
     try {
       for (const file of spec.files) {
-        mkdirSync(path.dirname(file.path), { recursive: true })
+        mkdirSync(path.dirname(file.path), { recursive: true, mode: 0o700 })
         writeFileSync(file.path, file.content, { mode: 0o600 })
         // `mode` only applies to files this call creates.
         chmodSync(file.path, 0o600)
@@ -180,7 +180,12 @@ class RpcProcess implements OmpProcess {
       return result
     }
 
-    const id = `c${++this.sequence}`
+    // A caller-chosen id is how the session layer tells a superseded prompt's `prompt_result` from the current one's.
+    const id = typeof command.id === "string" && command.id ? command.id : `c${++this.sequence}`
+    if (this.pending.has(id)) {
+      box.reject(rpcError(name, `command id ${id} is already in flight`, "duplicate-id"))
+      return result
+    }
     const signal = options.signal
     const onAbort = () => this.reject(id, rpcError(name, `${name} aborted`, "aborted"))
     signal?.addEventListener("abort", onAbort, { once: true })

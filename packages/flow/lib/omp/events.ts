@@ -55,15 +55,16 @@ function contentOf(result: unknown): Array<{ type: "text"; text: string }> {
   for (const raw of blocks) {
     const block = asRecord(raw)
     if (block?.type === "text" && asString(block.text)) parts.push({ type: "text", text: clip(block.text as string) })
-    else if (block?.type === "image") parts.push({ type: "text", text: "[image]" })
+    if (block?.type === "image") parts.push({ type: "text", text: "[image]" })
   }
   return parts
 }
 
 const MOUNT_NOTICE = /^xd:\/\/: mounted\b/
 
-function noticeLevel(level: unknown): "info" | "error" {
-  return level === "error" ? "error" : "info"
+/** Text from the child that reaches the browser: control characters stripped, length capped. */
+function clean(text: string): string {
+  return capText(stripControl(text), NOTICE_LIMIT).text
 }
 
 export function createEventMapper(options: EventMapperOptions): EventMapper {
@@ -144,13 +145,16 @@ export function createEventMapper(options: EventMapperOptions): EventMapper {
         textStarted.add(partID)
         textEnded.add(partID)
         out.push(ended(sessionID, "text", partID, asString(block.text) ?? ""))
-      } else if (block?.type === "thinking" && !reasoningEnded.has(partID)) {
+        return
+      }
+      if (block?.type === "thinking" && !reasoningEnded.has(partID)) {
         reasoningEnded.add(partID)
         out.push(ended(sessionID, "reasoning", partID, asString(block.thinking) ?? ""))
-      } else if (block?.type === "toolCall") {
-        const id = asString(block.id)
-        if (id) announce(id, asString(block.name) ?? "tool", out)
+        return
       }
+      if (block?.type !== "toolCall") return
+      const id = asString(block.id)
+      if (id) announce(id, asString(block.name) ?? "tool", out)
     })
     if (message.stopReason === "error")
       out.push({
@@ -285,26 +289,29 @@ export function createEventMapper(options: EventMapperOptions): EventMapper {
           const callID = asString(frame.toolCallId)
           if (!callID) break
           const content = contentOf(frame.result)
-          if (frame.isError === true)
+          if (frame.isError === true) {
             out.push({ type: "session.next.tool.failed", data: { sessionID, callID, error: textOf(content) || "tool failed", result: frame.result } })
-          else out.push({ type: "session.next.tool.success", data: { sessionID, callID, content, ...(content.length ? {} : { result: frame.result }) } })
+            break
+          }
+          out.push({ type: "session.next.tool.success", data: { sessionID, callID, content, ...(content.length ? {} : { result: frame.result }) } })
           break
         }
         case "auto_retry_start": {
           const delay = Math.round((asNumber(frame.delayMs) ?? 0) / 1000)
+          const reason = clean(asString(frame.errorMessage) ?? "unknown error")
           out.push({
             type: "flow.notice",
             data: {
               sessionID,
               level: "info",
-              message: `omp is retrying after a provider error (attempt ${asNumber(frame.attempt) ?? "?"} of ${asNumber(frame.maxAttempts) ?? "?"}, in ${delay}s): ${asString(frame.errorMessage) ?? "unknown error"}`,
+              message: `omp is retrying after a provider error (attempt ${asNumber(frame.attempt) ?? "?"} of ${asNumber(frame.maxAttempts) ?? "?"}, in ${delay}s): ${reason}`,
             },
           })
           break
         }
         case "auto_retry_end": {
           const finalError = asString(frame.finalError)
-          if (frame.success === false && finalError) out.push({ type: "flow.notice", data: { sessionID, level: "error", message: `omp gave up retrying: ${finalError}` } })
+          if (frame.success === false && finalError) out.push({ type: "flow.notice", data: { sessionID, level: "error", message: `omp gave up retrying: ${clean(finalError)}` } })
           break
         }
         case "notice": {
@@ -312,14 +319,17 @@ export function createEventMapper(options: EventMapperOptions): EventMapper {
           const informational = frame.level !== "warning" && frame.level !== "error"
           // omp announces every xd:// device mount at session start: hundreds of internal tool names.
           if (message && !(informational && MOUNT_NOTICE.test(message))) {
-            const text = capText(stripControl(message), NOTICE_LIMIT).text
-            if (text) out.push({ type: "flow.notice", data: { sessionID, level: noticeLevel(frame.level), message: text } })
+            const text = clean(message)
+            if (text) out.push({ type: "flow.notice", data: { sessionID, level: frame.level === "error" ? "error" : "info", message: text } })
           }
           break
         }
-        case "extension_error":
-          out.push({ type: "flow.notice", data: { sessionID, level: "error", message: `omp extension error${asString(frame.event) ? ` (${asString(frame.event)})` : ""}: ${asString(frame.error) ?? "unknown"}` } })
+        case "extension_error": {
+          const event = asString(frame.event)
+          const detail = clean(asString(frame.error) ?? "unknown")
+          out.push({ type: "flow.notice", data: { sessionID, level: "error", message: `omp extension error${event ? ` (${clean(event)})` : ""}: ${detail}` } })
           break
+        }
         case "subagent_lifecycle":
         case "subagent_progress":
         case "subagent_event":

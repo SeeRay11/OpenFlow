@@ -107,6 +107,12 @@ describe("terminalEnv", () => {
     expect(terminalEnv(host)).toEqual({ PATH: "/bin", HOME: "/h", LANG: "C", TERM: "xterm-256color", COLORTERM: "truecolor" })
   })
 
+  test("an API key behind an allowed prefix is still not carried into a shell, while a card keeps it", () => {
+    const host = { PATH: "/bin", PI_API_KEY: "dummy", OMP_X_API_KEY: "dummy", PI_THEME: "dark" }
+    expect(terminalEnv(host)).toEqual({ PATH: "/bin", PI_THEME: "dark", TERM: "xterm-256color", COLORTERM: "truecolor" })
+    expect(filterEnv(host)).toEqual(host)
+  })
+
   test("works for an empty host", () => {
     expect(terminalEnv({})).toEqual({ TERM: "xterm-256color", COLORTERM: "truecolor" })
   })

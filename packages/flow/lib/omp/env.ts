@@ -53,6 +53,8 @@ function inherit(host: NodeJS.ProcessEnv, apiKeys: boolean) {
     const upper = name.toUpperCase()
     if (DENIED_PREFIXES.some((prefix) => upper.startsWith(prefix))) continue
     if (DENIED_SUFFIXES.some((suffix) => upper.endsWith(suffix))) continue
+    // Before any prefix allow: `PI_` and `OMP_` would otherwise carry `PI_API_KEY` into a shell.
+    if (!apiKeys && upper.endsWith("_API_KEY")) continue
     const allowed =
       Object.hasOwn(EXACT, name) ||
       Object.hasOwn(EXACT_ANY_CASE, upper) ||

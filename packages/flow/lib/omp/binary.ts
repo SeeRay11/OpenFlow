@@ -2,6 +2,7 @@ import { execFile } from "node:child_process"
 import { accessSync, constants, realpathSync } from "node:fs"
 import path from "node:path"
 import { MIN_OMP_VERSION, type OmpProblem, type OmpSettings, type OmpStatus } from "../../shared/omp"
+import { filterEnv } from "./env"
 
 /**
  * Finding omp and proving it runs.
@@ -58,9 +59,10 @@ export function resolveBinary(settings: Pick<OmpSettings, "binary">, env: NodeJS
   return undefined
 }
 
+/** The probe runs the user-chosen binary: it gets the same allowlisted environment as a card, never the whole host environment. */
 function readVersion(binary: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
   const { promise, resolve, reject } = Promise.withResolvers<string | undefined>()
-  execFile(binary, ["--version"], { timeout: VERSION_TIMEOUT_MS, env, windowsHide: true }, (error, stdout) => {
+  execFile(binary, ["--version"], { timeout: VERSION_TIMEOUT_MS, env: filterEnv(env), windowsHide: true }, (error, stdout) => {
     if (error) return reject(error)
     resolve(parseVersion(stdout)?.join("."))
   })
@@ -86,7 +88,8 @@ export async function checkOmp(settings: OmpSettings, env: NodeJS.ProcessEnv = p
       message: settings.binary ? `omp was not found at ${settings.binary}.` : "omp is not on PATH.",
       fix: "Install omp (bun add -g @oh-my-pi/pi-coding-agent) or set its binary path in Omp settings.",
     })
-  } else {
+  }
+  if (binary) {
     version = await readVersion(binary, env).catch(() => undefined)
     if (!version) {
       problems.push({
@@ -94,7 +97,8 @@ export async function checkOmp(settings: OmpSettings, env: NodeJS.ProcessEnv = p
         message: `\`${binary} --version\` did not answer.`,
         fix: "Run it in the terminal to see why, or point Omp settings at a working binary.",
       })
-    } else if (!versionAtLeast(version, MIN_OMP_VERSION)) {
+    }
+    if (version && !versionAtLeast(version, MIN_OMP_VERSION)) {
       problems.push({
         code: "version",
         message: `omp ${version} is older than the ${MIN_OMP_VERSION} OpenFlow needs.`,

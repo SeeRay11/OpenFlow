@@ -184,6 +184,21 @@ describe("notices", () => {
     expect(run([{ type: "notice", level: "info", message: "a\u0007b\u001b[31mc" }])[0]?.data?.message).toBe("abc")
   })
 
+  test("provider and extension error text is cleaned like any other notice: no control characters, bounded length", () => {
+    const dirty = `bad\u0007 gateway\u001b[31m ${"x".repeat(1000)}`
+    const messages = run([
+      { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 1000, errorMessage: dirty },
+      { type: "auto_retry_end", success: false, finalError: dirty },
+      { type: "extension_error", event: "tool\u0007_call", error: dirty },
+    ]).map((event) => event.data?.message as string)
+    expect(messages).toHaveLength(3)
+    for (const message of messages) {
+      expect(message).not.toMatch(/[\u0000-\u0008\u000b-\u001f]/)
+      expect(message.length).toBeLessThan(400)
+      expect(message).toContain("bad gateway")
+    }
+  })
+
   test("unknown and presentation frames are ignored", () => {
     expect(run([{ type: "cache_warming_start" }, { type: "queue_update", steering: [], followUp: [] }, { type: "something_new_in_omp_19" }, { type: "extension_ui_request", method: "setStatus", id: "1" }])).toEqual([])
   })

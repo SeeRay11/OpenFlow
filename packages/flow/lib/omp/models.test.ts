@@ -48,7 +48,8 @@ describe("mapping", () => {
   })
 })
 
-describe("catalog", () => {
+// The harness' omp is a `#!/bin/sh` script the catalog executes for its version probe; Windows cannot run that.
+describe.skipIf(process.platform === "win32")("catalog", () => {
   test("reads get_available_models from a throwaway process in a temp directory, then closes it and removes the directory", async () => {
     h.fake.setup((proc) => proc.on("get_available_models", { models: [SONNET, FREE, SONNET] }))
     const models = await catalog().list()
@@ -184,6 +185,18 @@ describe("catalog", () => {
     const error = await catalog().list().catch((caught: unknown) => caught)
     expect((error as HttpError).status).toBe(502)
     expect((error as HttpError).message).toContain("bad profile")
+  })
+
+  test("a process that hangs before ready is killed and answered as 502 omp-not-ready, and the next read is not wedged behind it", async () => {
+    h.fake.next({ holdReady: true })
+    const models = createModelCatalog(h.deps, { readyTimeoutMs: 20 })
+    const error = await models.list().catch((caught: unknown) => caught)
+    expect((error as HttpError).status).toBe(502)
+    expect((error as HttpError).code).toBe("omp-not-ready")
+    expect(h.fake.procs[0]?.exitedNow).toBe(true)
+    h.fake.setup((proc) => proc.on("get_available_models", { models: [SONNET] }))
+    expect(await models.list()).toHaveLength(1)
+    expect(h.fake.procs).toHaveLength(2)
   })
 
   test("an omp that is not installed is a 503 omp-unavailable and spawns nothing", async () => {

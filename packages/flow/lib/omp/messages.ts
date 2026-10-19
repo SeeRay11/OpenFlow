@@ -247,15 +247,18 @@ export function createMessageStore(options: { limit?: number } = {}): MessageSto
           const message = asRecord(raw)
           if (!message) continue
           const index = loaded.length
-          if (message.role === "user") loaded.push({ id: `h${index}-user`, role: "user", texts: [textOf(message.content)], done: true })
-          else if (message.role === "assistant") {
+          if (message.role === "user") {
+            loaded.push({ id: `h${index}-user`, role: "user", texts: [textOf(message.content)], done: true })
+            continue
+          }
+          if (message.role === "assistant") {
             const entry: StoredMessage = { id: `h${index}-${asNumber(message.timestamp) ?? index}`, role: "assistant", texts: [], done: true }
             absorbAssistant(entry, message)
             loaded.push(entry)
-          } else {
-            const toolCallId = asString(message.toolCallId)
-            if (message.role === "toolResult" && toolCallId) attachResult(toolCallId, message.content, message.isError === true)
+            continue
           }
+          const toolCallId = asString(message.toolCallId)
+          if (message.role === "toolResult" && toolCallId) attachResult(toolCallId, message.content, message.isError === true)
         }
         cursor = asString(body?.nextCursor)
         if (!cursor) break

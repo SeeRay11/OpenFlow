@@ -134,7 +134,11 @@ export class ChunkAssembler {
   }
 
   push(frame: OmpFrame): ChunkResult | undefined {
-    const { chunkId, index, count, byteLength, data } = frame
+    const chunkId = frame.chunkId
+    const index = frame.index
+    const count = frame.count
+    const byteLength = frame.byteLength
+    const data = frame.data
     if (
       typeof chunkId !== "string" ||
       typeof data !== "string" ||

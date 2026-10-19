@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { DEFAULT_OMP_SETTINGS } from "../../shared/omp"
@@ -8,6 +8,8 @@ import { resolveBinary } from "./binary"
 import { buildLaunch, describeLaunch, PROBE_MODEL } from "./launch"
 import { spawnOmp } from "./rpc"
 import type { LaunchInput } from "./rpc-types"
+
+const STUB = path.join(import.meta.dir, "testing", "stub-omp.ts")
 
 const STATE = "/state/s1"
 
@@ -127,7 +129,10 @@ describe("buildLaunch: argv", () => {
   // The only place the flag spellings are checked against reality: skipped when omp is not installed.
   const omp = resolveBinary({ binary: "" })
   test.skipIf(!omp)("every flag in argv exists in `omp --help`", () => {
-    const help = Bun.spawnSync([omp as string, "--help"]).stdout.toString()
+    const home = mkdtempSync(path.join(tmpdir(), "omp-launch-help-"))
+    // Nothing of the developer's omp state is read or written: a throwaway HOME and no other variable.
+    const help = Bun.spawnSync([omp as string, "--help"], { env: { PATH: process.env.PATH ?? "", HOME: home } }).stdout.toString()
+    rmSync(home, { recursive: true, force: true })
     const argv = buildLaunch(
       input(
         { binary: omp as string, swarm: swarm() },
@@ -330,6 +335,50 @@ describe("describeLaunch", () => {
   })
 })
 
+describe("the environment of a real child process", () => {
+  const dirs: string[] = []
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  const host = { PATH: process.env.PATH ?? "", HOME: "/home/a", SUBSTRATE_TOKEN: "t1", SWARM_ED25519_KEY: "k1", SOME_TOKEN: "t2", ANTHROPIC_API_KEY: "a1" }
+
+  /** The variable names a child started from the real launch builder and the real spawner actually received (the stub reports names, never values). */
+  async function received(patch: Partial<LaunchInput>): Promise<string[]> {
+    const root = mkdtempSync(path.join(tmpdir(), "omp-launch-env-"))
+    dirs.push(root)
+    const built = buildLaunch({ ...input(), session: { ...input().session, directory: root }, stateDir: path.join(root, "state"), env: host, ...patch })
+    const proc = spawnOmp({ ...built, argv: [process.execPath, STUB, ...built.argv.slice(1)] })
+    try {
+      await proc.ready
+      const state = await proc.command<{ env: Record<string, boolean> }>({ type: "get_state" })
+      return Object.keys(state.env)
+    } finally {
+      proc.kill()
+      await proc.exited
+    }
+  }
+
+  test("host secrets stay behind; the provider key goes through", async () => {
+    const names = await received({})
+    for (const secret of ["SUBSTRATE_TOKEN", "SWARM_ED25519_KEY", "SOME_TOKEN"]) expect(names).not.toContain(secret)
+    expect(names).toContain("ANTHROPIC_API_KEY")
+    expect(names).toContain("OPENFLOW_RUN")
+  })
+
+  test("the swarm signing key reaches a swarm-enabled card and nothing else secret does", async () => {
+    const names = await received({ swarm: swarm() })
+    expect(names).toContain("SWARM_ED25519_KEY")
+    expect(names).toContain("SWARM_DIR")
+    expect(names).not.toContain("SUBSTRATE_TOKEN")
+    expect(names).not.toContain("SOME_TOKEN")
+  })
+
+  test("a swarm that resolved to off does not carry the key", async () => {
+    expect(await received({ swarm: swarm({ effective: "off" }) })).not.toContain("SWARM_ED25519_KEY")
+  })
+})
+
 // The one test that runs the real binary: read-only (get_state, no model call), skipped when omp is absent.
 describe("a real omp honours the launch it is given", () => {
   const omp = resolveBinary({ binary: "" })
@@ -343,14 +392,17 @@ describe("a real omp honours the launch it is given", () => {
     async () => {
       const root = mkdtempSync(path.join(tmpdir(), "omp-launch-test-"))
       dirs.push(root)
+      const home = path.join(root, "home")
+      mkdirSync(home)
       const spec = buildLaunch({
         ...input(),
         binary: omp as string,
-        settings: { ...DEFAULT_OMP_SETTINGS, profile: "" },
+        // A throwaway profile under a throwaway HOME, and only the variables omp needs to run (a dummy provider key, so it starts without logins): nothing of the developer's omp state or PI_/OMP_ settings.
+        settings: { ...DEFAULT_OMP_SETTINGS, profile: "openflow-launch-test" },
         session: { ...input().session, directory: root, card: { key: "k", role: "r", prompt: "LAUNCHTEST-ROLE-MARKER" } },
         stateDir: path.join(root, "state"),
         overlay: { steeringMode: "all", compaction: { enabled: false } },
-        env: process.env,
+        env: { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: root, ANTHROPIC_API_KEY: "not-a-real-key" },
       })
       const proc = spawnOmp(spec)
       try {

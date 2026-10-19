@@ -19,7 +19,7 @@ export type EngineHost = {
 export function createEngineHost(deps: EngineHostDeps): EngineHost {
   const bus = createEventBus()
   const sessions = createSessionHost(deps, { emit: bus.publish })
-  const models = createModelCatalog(deps)
+  const models = createModelCatalog(deps, { readyTimeoutMs: deps.readyTimeoutMs })
   const routes = createRoutes({ settings: deps.settings, env: deps.env, sessions, models, bus })
   return {
     handle: guarded(routes),

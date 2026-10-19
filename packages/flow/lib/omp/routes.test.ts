@@ -4,6 +4,9 @@ import { createEngineHost, type EngineHost } from "./index"
 import { createEventBus } from "./routes"
 import { assistantMessage, createHarness, frames, type FakeProcess, type Harness } from "./testing/fake-process"
 
+// These create sessions through the harness' `#!/bin/sh` omp, which Windows cannot execute.
+const hosted = describe.skipIf(process.platform === "win32")
+
 let h: Harness
 let engine: EngineHost
 
@@ -24,9 +27,10 @@ afterEach(async () => {
 const BODY = { runId: "run1", nodeId: "n1", card: { key: "card-1", role: "Builder" }, model: "anthropic/claude-test" }
 
 async function call(path: string, init: { method?: string; body?: unknown; raw?: string } = {}) {
+  const body = init.raw ?? (init.body === undefined ? undefined : JSON.stringify(init.body))
   const request = new Request(`http://flow.test${path}`, {
-    method: init.method ?? (init.body === undefined && init.raw === undefined ? "GET" : "POST"),
-    ...(init.raw !== undefined ? { body: init.raw } : init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+    method: init.method ?? (body === undefined ? "GET" : "POST"),
+    ...(body === undefined ? {} : { body, headers: { "content-type": "application/json" } }),
   })
   const response = await engine.handle(request)
   if (!response) return undefined
@@ -68,7 +72,7 @@ describe("routing", () => {
   })
 })
 
-describe("bare reads", () => {
+hosted("bare reads", () => {
   test("health", async () => {
     const response = await call(engineRoutes.health)
     expect(response?.status).toBe(200)
@@ -144,7 +148,7 @@ describe("bare reads", () => {
   })
 })
 
-describe("writes", () => {
+hosted("writes", () => {
   test("create answers {id}; a bad body is a 400 EngineError; unavailable omp is a 503", async () => {
     const ok = await create()
     expect(ok.response?.status).toBe(200)
@@ -155,7 +159,7 @@ describe("writes", () => {
     const missing = await createHarness({ binary: false })
     const other = createEngineHost(missing.deps)
     try {
-      const response = await other.handle(new Request(`http://flow.test${engineRoutes.sessions}`, { method: "POST", body: JSON.stringify(BODY) }))
+      const response = await other.handle(new Request(`http://flow.test${engineRoutes.sessions}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(BODY) }))
       expect(response?.status).toBe(503)
       expect(await response?.json()).toMatchObject({ code: "omp-unavailable" })
     } finally {
@@ -313,7 +317,7 @@ describe("event bus", () => {
     bus.close()
   })
 
-  test("end to end over a real socket: events from a session reach an SSE client, and aborting it is clean", async () => {
+  test.skipIf(process.platform === "win32")("end to end over a real socket: events from a session reach an SSE client, and aborting it is clean", async () => {
     const server = Bun.serve({ port: 0, fetch: async (request) => (await engine.handle(request)) ?? new Response("not ours", { status: 404 }) })
     const origin = `http://127.0.0.1:${server.port}`
     const controller = new AbortController()
@@ -323,7 +327,7 @@ describe("event bus", () => {
       expect(stream.headers.get("content-type")).toContain("text/event-stream")
       const reader = stream.body?.getReader() as ReadableStreamDefaultReader<Uint8Array>
 
-      const created = await fetch(`${origin}${engineRoutes.sessions}`, { method: "POST", body: JSON.stringify(BODY) })
+      const created = await fetch(`${origin}${engineRoutes.sessions}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(BODY) })
       const { id } = (await created.json()) as { id: string }
       const proc = h.fake.procs.at(-1) as FakeProcess
       proc.emit(frames.messageStart("msg-1"))

@@ -88,6 +88,9 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
+// Process groups, signals, `sleep` grandchildren and file modes are POSIX; Windows ends the tree with taskkill instead.
+const posix = test.skipIf(process.platform === "win32")
+
 describe("spawnOmp: startup", () => {
   test("ready resolves after the ready frame and a v2 negotiation", async () => {
     const proc = start()
@@ -122,7 +125,7 @@ describe("spawnOmp: startup", () => {
     expect(exit.stderrTail).toContain("ENOENT")
   })
 
-  test("files are written first, parents created, mode 0600", async () => {
+  posix("files are written first, parents created, private to the owner", async () => {
     const dir = scratch()
     const file = path.join(dir, "nested", "deeper", "role.md")
     const existing = path.join(dir, "overlay.yml")
@@ -131,6 +134,7 @@ describe("spawnOmp: startup", () => {
     await proc.ready
     expect(readFileSync(file, "utf8")).toBe("role text")
     expect(statSync(file).mode & 0o777).toBe(0o600)
+    expect(statSync(path.dirname(file)).mode & 0o077).toBe(0)
     expect(readFileSync(existing, "utf8")).toBe("{}")
     expect(statSync(existing).mode & 0o777).toBe(0o600)
   })
@@ -153,14 +157,22 @@ describe("spawnOmp: startup", () => {
 })
 
 describe("spawnOmp: commands", () => {
-  test("ids are c1, c2, ... and the response data comes back", async () => {
+  test("each command gets its own id and the response data comes back", async () => {
     const proc = start()
-    await proc.ready // negotiation used c1
+    await proc.ready
     const first = await proc.command<{ requestId: string; sessionId: string }>({ type: "get_state" })
     const second = await proc.command<{ requestId: string }>({ type: "get_state" })
-    expect(first.requestId).toBe("c2")
     expect(first.sessionId).toBe("stub-session")
-    expect(second.requestId).toBe("c3")
+    expect(first.requestId).not.toBe(second.requestId)
+  })
+
+  test("an id the caller chose is the one omp sees and answers, and one still in flight is refused", async () => {
+    const proc = start()
+    await proc.ready
+    expect((await proc.command<{ requestId: string }>({ type: "get_state", id: "p_7" })).requestId).toBe("p_7")
+    const hung = rejection(proc.command({ type: "stub_hang", id: "twice" }, { timeoutMs: 50 }))
+    expect((await rejection(proc.command({ type: "get_state", id: "twice" }))).rpc.code).toBe("duplicate-id")
+    expect((await hung).rpc.code).toBe("timeout")
   })
 
   test("success:false rejects with rpc info, code included", async () => {
@@ -330,10 +342,10 @@ describe("spawnOmp: frames", () => {
     await proc.ready
     const frames = collect(proc)
     const settled = frameOfType(proc, "session_settled")
-    await proc.command({ type: "prompt", message: "go" })
+    await proc.command({ type: "prompt", id: "p_1", message: "go" })
     await settled
     expect(frames.map((frame) => frame.type)).toEqual(["agent_start", "message_update", "prompt_result", "session_settled"])
-    expect(frames[2]).toMatchObject({ id: "c2", status: "completed" })
+    expect(frames[2]).toMatchObject({ id: "p_1", status: "completed" })
   })
 
   test("a script can wait for the host's answer to an approval request", async () => {
@@ -391,21 +403,21 @@ describe("spawnOmp: shutdown", () => {
     expect((await proc.exited).code).toBe(0)
   })
 
-  test("an omp that ignores EOF is sent SIGTERM", async () => {
+  posix("an omp that ignores EOF is sent SIGTERM", async () => {
     const proc = start({ STUB_OMP_IGNORE_EOF: "1" })
     await proc.ready
     await proc.close({ graceMs: 100, killMs: 3_000 })
     expect(await proc.exited).toMatchObject({ code: null, signal: "SIGTERM" })
   })
 
-  test("an omp that ignores EOF and SIGTERM is sent SIGKILL", async () => {
+  posix("an omp that ignores EOF and SIGTERM is sent SIGKILL", async () => {
     const proc = start({ STUB_OMP_IGNORE_EOF: "1", STUB_OMP_IGNORE_TERM: "1" })
     await proc.ready
     await proc.close({ graceMs: 50, killMs: 100 })
     expect(await proc.exited).toMatchObject({ code: null, signal: "SIGKILL" })
   })
 
-  test("kill SIGKILLs the whole group: the grandchild is gone, and kill is idempotent", async () => {
+  posix("kill SIGKILLs the whole group: the grandchild is gone, and kill is idempotent", async () => {
     const proc = start({ STUB_OMP_SPAWN_CHILD: "1" })
     const announced = frameOfType(proc, "stub_child")
     await proc.ready
@@ -418,7 +430,7 @@ describe("spawnOmp: shutdown", () => {
     expect(await gone(pid)).toBe(true)
   })
 
-  test("a graceful close also sweeps what the process left running", async () => {
+  posix("a graceful close also sweeps what the process left running", async () => {
     const proc = start({ STUB_OMP_SPAWN_CHILD: "1" })
     const announced = frameOfType(proc, "stub_child")
     await proc.ready
@@ -429,7 +441,7 @@ describe("spawnOmp: shutdown", () => {
     expect(await gone(pid)).toBe(true)
   })
 
-  test("a crash leaves no orphan either", async () => {
+  posix("a crash leaves no orphan either", async () => {
     const proc = start({ STUB_OMP_SPAWN_CHILD: "1" })
     const announced = frameOfType(proc, "stub_child")
     await proc.ready

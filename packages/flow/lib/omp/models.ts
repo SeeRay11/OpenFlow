@@ -8,6 +8,7 @@ import { checkOmp, resolveBinary } from "./binary"
 import { PROBE_MODEL } from "./launch"
 import { asArray, asNumber, asRecord, asString } from "./messages"
 import type { BuildLaunch, OmpProcess, SpawnOmp } from "./rpc-types"
+import { READY_TIMEOUT_MS, withDeadline } from "./ready"
 import { readStamp, type CredentialStamp } from "./stamp"
 
 /**
@@ -35,7 +36,7 @@ export interface ModelCatalog {
   reset(): void
 }
 
-export type ModelCatalogOptions = { ttlMs?: number; timeoutMs?: number }
+export type ModelCatalogOptions = { ttlMs?: number; timeoutMs?: number; readyTimeoutMs?: number }
 
 /** Omp's `Model.cost` is USD per million tokens. All four zero means omp quotes nothing: unpriced, never "free". */
 function priceOf(cost: unknown): Price[] | undefined {
@@ -82,6 +83,7 @@ export async function requireBinary(settings: OmpSettings, env: NodeJS.ProcessEn
 export function createModelCatalog(deps: ModelCatalogDeps, options: ModelCatalogOptions = {}): ModelCatalog {
   const ttlMs = options.ttlMs ?? CACHE_MS
   const timeoutMs = options.timeoutMs ?? COMMAND_TIMEOUT_MS
+  const readyMs = options.readyTimeoutMs ?? READY_TIMEOUT_MS
   let cached: { key: string; at: number; models: ModelInfo[] } | undefined
   let flight: { key: string; promise: Promise<ModelInfo[]> } | undefined
 
@@ -100,7 +102,7 @@ export function createModelCatalog(deps: ModelCatalogDeps, options: ModelCatalog
         env,
       })
       proc = deps.spawn(spec)
-      await proc.ready
+      await withDeadline(proc, proc.ready, readyMs)
       const data = asRecord(await proc.command({ type: "get_available_models" }, { timeoutMs }))
       const seen = new Set<string>()
       const models: ModelInfo[] = []
