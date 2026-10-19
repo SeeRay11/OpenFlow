@@ -32,7 +32,6 @@ key-files:
     - packages/flow/lib/terminal/pty-node.ts
     - packages/flow/lib/terminal/ws-bun.ts
     - packages/flow/lib/terminal/ws-node.ts
-    - packages/flow/vite/flow-pty.ts
     - packages/flow/src/ui/omp-settings.tsx
     - packages/flow/src/ui/omp-settings-model.ts
     - packages/flow/src/ui/terminal-dock.tsx
@@ -95,7 +94,7 @@ Phase 6 follow-ups:
 ## Files Created/Modified
 
 - `lib/omp-config/` - `config.ts` (omp listing, set, reset), `settings.ts` (validation, effective sources), `routes.ts`, `status.ts`, `auth.ts` (copy logins), `providers.ts`.
-- `lib/terminal/` - `host.ts`, `policy.ts`, `routes.ts`, PTY backends and WebSocket transports; `vite/flow-pty.ts` mounts the upgrade under Vite.
+- `lib/terminal/` - `host.ts`, `policy.ts`, `routes.ts`, PTY backends and WebSocket transports; `vite/flow-pty.ts` mounted the upgrade under Vite until it was deleted in `b975f932b`.
 - `src/ui/omp-settings*.ts(x)`, `terminal-*.ts(x)`, `src/app.tsx` - dialog, dock and wiring.
 
 ## Decisions Made

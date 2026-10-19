@@ -1,0 +1,48 @@
+{
+  "contract": "1.0.0",
+  "flavor": "core",
+  "milestone": "v1.4.0 — Omp Engine",
+  "phases": [
+    {
+      "number": "1",
+      "name": "Discovery and engine port",
+      "status": "complete"
+    },
+    {
+      "number": "2",
+      "name": "Omp engine adapter",
+      "status": "complete"
+    },
+    {
+      "number": "3",
+      "name": "Prompt uplift",
+      "status": "complete"
+    },
+    {
+      "number": "4",
+      "name": "Substrate shared memory",
+      "status": "complete"
+    },
+    {
+      "number": "5",
+      "name": "Swarm per card",
+      "status": "complete"
+    },
+    {
+      "number": "6",
+      "name": "Omp settings and terminal",
+      "status": "complete"
+    },
+    {
+      "number": "7",
+      "name": "Integration, migration and OpenCode removal",
+      "status": "complete"
+    }
+  ],
+  "next": {
+    "command": "/gsd:new-milestone",
+    "label": "Start a new milestone",
+    "reason": "All phases complete — start a new milestone"
+  },
+  "updated_at": "2026-10-19T18:08:52.588Z"
+}

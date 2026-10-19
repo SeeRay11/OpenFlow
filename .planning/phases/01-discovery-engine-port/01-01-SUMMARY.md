@@ -23,7 +23,6 @@ key-files:
     - packages/flow/shared/swarm.ts
     - packages/flow/shared/omp.ts
     - packages/flow/shared/terminal.ts
-    - packages/flow/shared/clarification.ts
     - packages/flow/lib/omp/rpc-types.ts
     - packages/flow/lib/omp/binary.ts
     - packages/flow/lib/host/respond.ts
@@ -85,7 +84,7 @@ No per-task commits: the milestone ran as direct orchestration. Commits that bel
 
 ## Files Created/Modified
 
-- `packages/flow/shared/*.ts` - engine, uplift, memory, swarm, omp, terminal and clarification wires.
+- `packages/flow/shared/*.ts` - engine, uplift, memory, swarm, omp, terminal and clarification wires (`shared/clarification.ts` was deleted later in `c9d388905`).
 - `packages/flow/lib/omp/rpc-types.ts`, `lib/omp/binary.ts`, `lib/host/respond.ts` - process seam, binary resolver, handler helpers.
 - `packages/flow/src/server/engine-contract.ts`, `src/server/testing/fake-engine.ts` - suite and in-memory engine.
 - `.planning/phases/01-discovery-engine-port/` - CONTEXT and nine discovery reports.

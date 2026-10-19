@@ -3,14 +3,14 @@ phase: 02-omp-engine-adapter
 verified: 2026-10-19T18:03:05Z
 status: passed
 score: 5/5 must-haves verified
-covered_files: [.planning/REQUIREMENTS.md, .planning/ROADMAP.md, .planning/phases/02-omp-engine-adapter/02-01-SUMMARY.md,
+covered_files: [.planning/phases/02-omp-engine-adapter/02-01-SUMMARY.md,
   packages/flow/lib/host/engine-contract.test.ts, packages/flow/lib/host/index.ts, packages/flow/lib/host/node-adapter.ts,
   packages/flow/lib/omp/binary.ts, packages/flow/lib/omp/events.ts, packages/flow/lib/omp/frame.ts, packages/flow/lib/omp/host-tools.ts,
   packages/flow/lib/omp/index.ts, packages/flow/lib/omp/launch.ts, packages/flow/lib/omp/messages.ts, packages/flow/lib/omp/models.ts,
   packages/flow/lib/omp/prune.ts, packages/flow/lib/omp/routes.ts, packages/flow/lib/omp/rpc.ts, packages/flow/lib/omp/session.ts,
   packages/flow/lib/omp/testing/stub-omp.ts, packages/flow/lib/omp/ui-requests.ts, packages/flow/shared/engine.ts,
   packages/flow/src/server/client.ts, packages/flow/src/server/engine-contract.ts, packages/flow/src/server/engine.ts]
-covered_digest: "v1:sha256:82a1a7ec7e4e148b90b4b706b6c3f2798d1aadee3ffe3d8d8cbaac374cecf8fe"
+covered_digest: "v1:sha256:6c100ac54c297a7ca2a53db34f8a8502ce4fa5a55c9acbe3feb86c479f4913bf"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:

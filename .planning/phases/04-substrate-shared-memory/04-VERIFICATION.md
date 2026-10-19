@@ -1,16 +1,16 @@
 ---
 phase: 04-substrate-shared-memory
-verified: 2026-10-19T18:30:00Z
+verified: 2026-10-19T18:06:18Z
 status: passed
 score: 4/4 must-haves verified
-covered_files: [.planning/REQUIREMENTS.md, .planning/ROADMAP.md, packages/flow/lib/substrate/client.ts,
+covered_files: [.planning/phases/04-substrate-shared-memory/04-01-SUMMARY.md, packages/flow/lib/substrate/client.ts,
   packages/flow/lib/substrate/fake-substrate.test-support.ts, packages/flow/lib/substrate/guard.ts,
   packages/flow/lib/substrate/index.ts, packages/flow/lib/substrate/memory.ts, packages/flow/lib/substrate/routes.ts,
   packages/flow/lib/substrate/run-graph.ts, packages/flow/shared/memory.ts, packages/flow/src/server/engine.ts,
   packages/flow/src/server/memory-client.ts, packages/flow/src/server/stages.ts, packages/flow/src/ui/card-stages-model.ts,
   packages/flow/src/ui/card-stages.tsx, packages/flow/src/ui/memory-panel-model.ts, packages/flow/src/ui/memory-panel.tsx,
   packages/flow/src/ui/omp-settings.tsx]
-covered_digest: v1:sha256:df2f0d61fa62e6d9e4adbc83f591f974ba2877dc13c16c07badf37531a9a9e0c
+covered_digest: v1:sha256:3b38449e117fb3f2a7bc5660570486a1dcf1f59f1e8a37f9bf8633b375894aa1
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
@@ -24,7 +24,7 @@ re_verification:
 # Phase 4: Substrate Shared Memory Verification Report
 
 **Phase Goal:** Cards in a run share memory via agent-substrate with governed scopes, redaction and visible status.
-**Verified:** 2026-10-19T18:30:00Z (re-verification against HEAD `9491ea496`)
+**Verified:** 2026-10-19T18:06:18Z (re-verification against HEAD `9491ea496`)
 **Status:** passed
 **Re-verification:** Yes — after commits `b975f932b`, `c9d388905`, `9491ea496`
 
@@ -122,5 +122,5 @@ None — all truths have passing automated tests plus consistent live testimony;
 No gaps. Nothing regressed: the post-report commits touch no Phase 4 file, and all Phase 4 suites pass against the current tree. Phase goal holds: cards share memory via Agent Substrate with project-read/card-write scopes, redaction and injection guards, honest failure states, and visible card/panel UI including inspect (entries) and clear (forget-as-retraction, as far as Substrate supports).
 
 ---
-_Verified: 2026-10-19T18:30:00Z_
+_Verified: 2026-10-19T18:06:18Z_
 _Verifier: Verify4 (gsd-verifier)_
