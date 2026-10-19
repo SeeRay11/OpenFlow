@@ -88,7 +88,7 @@ describe("migratePipeline", () => {
     expect(notes.length).toBeGreaterThan(0)
   })
 
-  test("FlowAgent.name is dropped with a legacy-agent note; an empty name is dropped silently", () => {
+  test("FlowAgent.name and an explicit mcp allowlist are dropped with a legacy-agent note each; an empty name is dropped silently", () => {
     const { pipeline, notes } = migratePipeline(fixture("pipeline-agent-name"))
     expect(agents(pipeline)[0]).toEqual({
       model: "anthropic/claude-sonnet-4-5",
@@ -96,14 +96,16 @@ describe("migratePipeline", () => {
       tools: { read: true, write: true },
     })
     expect("name" in agents(pipeline)[1]).toBe(false)
-    expect(notes).toHaveLength(1)
-    expect(notes[0].kind).toBe("legacy-agent")
-    expect(notes[0].nodeId).toBe("n1")
-    expect(notes[0].message).toContain("agent 'build'")
-    expect(notes[0].message).toContain("OpenCode agent")
+    expect(kinds(notes)).toEqual(["legacy-agent", "legacy-agent"])
+    expect(notes.map((note) => note.nodeId)).toEqual(["n1", "n1"])
+    const named = notes.find((note) => note.message.includes("agent 'build'"))
+    const limited = notes.find((note) => note.message.includes("'github'"))
+    expect(named).toBeDefined()
+    expect(limited).toBeDefined()
+    expect(limited).not.toBe(named)
   })
 
-  test("an old per-card mcp allowlist loads with no note, is dropped, and does not stamp the document", () => {
+  test("an explicit per-card mcp allowlist is dropped with a note naming the card, because dropping it widens access, and stamps the document", () => {
     const raw = {
       id: "p",
       name: "old",
@@ -116,9 +118,28 @@ describe("migratePipeline", () => {
     const before = JSON.stringify(raw)
     const result = migratePipeline(raw)
     expect(JSON.stringify(raw)).toBe(before)
-    expect(result.notes).toEqual([])
+    expect(result.notes.map((note) => [note.kind, note.nodeId])).toEqual([
+      ["legacy-agent", "n1"],
+      ["legacy-agent", "n2"],
+    ])
+    expect(result.notes[0].message).toContain("'a'")
+    expect(result.notes[0].message).toContain("'github'")
+    expect(result.notes[1].message).toContain("'b'")
+    expect(result.notes[1].message).not.toContain("'github'")
     expect(isPipeline(result.pipeline)).toBe(true)
     expect(agents(result.pipeline).map((agent) => "mcp" in agent)).toEqual([false, false])
+    expect(rec(result.pipeline).migratedFromOpencode).toBe(1)
+  })
+
+  test("a card with no mcp list loads silently and does not stamp the document", () => {
+    const raw = {
+      id: "p",
+      name: "old",
+      nodes: [{ id: "n1", role: "a", position: { x: 0, y: 0 }, agent: { prompt: "x", model: "anthropic/claude-sonnet-4-5" } }],
+      edges: [],
+    }
+    const result = migratePipeline(raw)
+    expect(result.notes).toEqual([])
     expect("migratedFromOpencode" in rec(result.pipeline)).toBe(false)
   })
 

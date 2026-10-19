@@ -204,9 +204,13 @@ export function formatModel(model?: ModelRef) {
  * The host launches an Omp process for the card (`input.directory` is its
  * worktree, fixed for the session's life) or, with `input.reuse`, re-attaches to
  * one an earlier run left open.
+ *
+ * `signal` abandons the call: the request is dropped, the host disposes a
+ * session it had not finished starting, and this rejects with the abort error
+ * (not an `HttpError`: there is no answer to describe).
  */
-export async function createSession(input: CreateSession): Promise<{ id: string }> {
-  return call<{ id: string }>(engineRoutes.sessions, { method: "POST", body: input })
+export async function createSession(input: CreateSession, signal?: AbortSignal): Promise<{ id: string }> {
+  return call<{ id: string }>(engineRoutes.sessions, { method: "POST", body: input, signal })
 }
 
 /** One page of history — enough that the sidebar filter has everything to match. */

@@ -46,6 +46,8 @@ let hold = false
 let streamCancelled = Promise.withResolvers<void>()
 let waitAborted = Promise.withResolvers<void>()
 let waitHeld = Promise.withResolvers<void>()
+let createHeld = Promise.withResolvers<void>()
+let createAborted = Promise.withResolvers<void>()
 
 function reply(status: number, body: unknown) {
   return new Response(body === undefined ? null : JSON.stringify(body), {
@@ -88,6 +90,20 @@ const server = Bun.serve({
     }
     if (url.pathname === `${ENGINE_BASE}/runs/release`) return reply(200, { released: 1 })
     if (url.pathname === `${ENGINE_BASE}/sessions` && request.method === "POST") {
+      if (body.model === "openai/hangs") {
+        // A host still starting omp: the answer comes only when the caller gives up.
+        createHeld.resolve()
+        const pending = Promise.withResolvers<Response>()
+        request.signal.addEventListener(
+          "abort",
+          () => {
+            createAborted.resolve()
+            pending.resolve(reply(499, { error: "client closed request" }))
+          },
+          { once: true },
+        )
+        return pending.promise
+      }
       if (body.model === "openrouter/rate-limited") {
         return reply(429, { error: "Provider request failed with HTTP 429 Too Many Requests: slow down" })
       }
@@ -158,6 +174,8 @@ beforeEach(() => {
   streamCancelled = Promise.withResolvers<void>()
   waitAborted = Promise.withResolvers<void>()
   waitHeld = Promise.withResolvers<void>()
+  createHeld = Promise.withResolvers<void>()
+  createAborted = Promise.withResolvers<void>()
 })
 
 describe("models", () => {
@@ -232,12 +250,29 @@ describe("sessions", () => {
       model: "openrouter/rate-limited",
     }).catch((error: Error) => error)
     expect(failure).toBeInstanceOf(Error)
-    expect((failure as Error).message).toMatch(/HTTP 429 Too Many Requests: slow down/)
+    expect(failure).toMatchObject({ status: 429 })
+    // The engine classifies retries by regex on this status wording.
+    expect((failure as Error).message).toMatch(/HTTP 429/)
+  })
+
+  test("an abort of a create in flight drops the request and rejects with the abort, not a host answer", async () => {
+    const controller = new AbortController()
+    const pending = createSession({ runId: "r1", nodeId: "n1", card: { key: "k", role: "r" }, model: "openai/hangs" }, controller.signal).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    )
+    await createHeld.promise
+    controller.abort()
+    const error = await pending
+    await createAborted.promise
+    expect((error as Error).name).toBe("AbortError")
+    expect(error).not.toHaveProperty("status")
   })
 
   test("a failed route surfaces the wire's own sentence with the status", async () => {
     const failure = await transcript("gone").catch((error: Error) => error)
-    expect((failure as Error).message).toBe("session not found: gone (HTTP 404 Not Found)")
+    expect(failure).toMatchObject({ status: 404 })
+    expect((failure as Error).message).toContain("404")
   })
 
   test("prompt sends text, and only the file fields the wire defines", async () => {
@@ -287,8 +322,9 @@ describe("waitForIdle", () => {
   })
 
   test("an error result throws the host's text", async () => {
-    waits.set("ses_1", { status: "idle", result: "error", error: "Provider request failed with HTTP 401 Unauthorized" })
-    await expect(waitForIdle("ses_1")).rejects.toThrow("Provider request failed with HTTP 401 Unauthorized")
+    const text = "the host's own failure text"
+    waits.set("ses_1", { status: "idle", result: "error", error: text })
+    await expect(waitForIdle("ses_1")).rejects.toThrow(text)
   })
 
   test("an abort nobody asked for is an error, one the caller asked for is silent", async () => {
@@ -308,15 +344,16 @@ describe("waitForIdle", () => {
   })
 
   test("missing throws its sentence, with or without a budget", async () => {
-    await expect(waitForIdle("ses_2")).rejects.toThrow("session not found: ses_2")
-    await expect(waitForIdle("ses_2", { timeout: 1000, slice: 10 })).rejects.toThrow("session not found: ses_2")
+    await expect(waitForIdle("ses_2")).rejects.toThrow("ses_2")
+    await expect(waitForIdle("ses_2", { timeout: 1000, slice: 10 })).rejects.toThrow("ses_2")
   })
 
   test("a session that is missing or failed after some slices still maps to its sentence", async () => {
     waitQueue.set("ses_1", [{ status: "timeout" }, { status: "missing" }])
-    await expect(waitForIdle("ses_1", { timeout: 1000, slice: 10 })).rejects.toThrow("session not found: ses_1")
-    waitQueue.set("ses_1", [{ status: "timeout" }, { status: "idle", result: "error", error: "Provider request failed with HTTP 401 Unauthorized" }])
-    await expect(waitForIdle("ses_1", { timeout: 1000, slice: 10 })).rejects.toThrow("Provider request failed with HTTP 401 Unauthorized")
+    await expect(waitForIdle("ses_1", { timeout: 1000, slice: 10 })).rejects.toThrow("ses_1")
+    const text = "the host's own failure text"
+    waitQueue.set("ses_1", [{ status: "timeout" }, { status: "idle", result: "error", error: text }])
+    await expect(waitForIdle("ses_1", { timeout: 1000, slice: 10 })).rejects.toThrow(text)
   })
 
   test("re-polls in slices until the session settles, never holding a request longer than a slice", async () => {

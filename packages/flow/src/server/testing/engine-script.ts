@@ -52,4 +52,16 @@ export interface ContractDriver {
   script(turn: TurnScript): void | Promise<void>
   /** The answer the agent received for request `id`; `undefined` while none has arrived. */
   decision(requestID: string): Promise<Decision | undefined>
+  /**
+   * Holds every `createSession` that reaches the implementation from now on at its startup, before a session exists,
+   * until the returned hold is released. Optional: a leg that cannot hold a start leaves it out and the scenarios that
+   * need it are registered as skipped by name (`ContractOptions.holdsStartup`).
+   */
+  holdStartup?(): StartupHold
+}
+
+/** A held startup: `reached` resolves once a create is waiting at the hold, `release` lets held and later creates go on. */
+export interface StartupHold {
+  reached(): Promise<void>
+  release(): void
 }

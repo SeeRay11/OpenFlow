@@ -12,7 +12,7 @@ import type {
 import type { SwarmStatus } from "../../../shared/swarm"
 import { accepts, describe } from "../client"
 import type { EngineSurface } from "../engine-contract"
-import type { ContractDriver, Decision, PermissionAsk, QuestionAsk, StepScript, ToolScript, TurnScript } from "./engine-script"
+import type { ContractDriver, Decision, PermissionAsk, QuestionAsk, StartupHold, StepScript, ToolScript, TurnScript } from "./engine-script"
 import { DEFAULT_USAGE } from "./engine-script"
 
 /**
@@ -37,6 +37,25 @@ import { DEFAULT_USAGE } from "./engine-script"
  *
  * Every call the engine makes is recorded in `recorded`, successful or not,
  * with the arguments it passed.
+ *
+ * Known, intentional differences from the real host (`lib/omp/`). The contract
+ * suite does not cover them, and none is to be closed here: a test that needs
+ * one of these behaviours belongs to the host's own tests, not to this double.
+ *  - No session cap: the host refuses a 33rd live session, this accepts any number.
+ *  - No startup deadline: a start the host would fail with `omp-not-ready` after
+ *    its deadline never fails here (`driver.holdStartup` holds one open instead).
+ *  - No idle reap and no resume: the host closes a session idle for 30 minutes
+ *    and re-attaches it from disk on `reuse`; here a session lives until disposed.
+ *  - A prompt to a busy session is a 409 here; the host queues it as a follow-up
+ *    and accepts it.
+ *  - A lost session (`driver.lose`) is disposed: every read, `reuse` and `prompt`
+ *    answers 404. The host keeps a `lost` record that reads from memory, resumes
+ *    on `reuse` from disk, and refuses only `prompt`.
+ *  - Create validation covers what the engine can send (ids, card key, model
+ *    shape, permissions mode); the host's `parseCreate` also checks the
+ *    directory (absolute, exists), `card.tools`, `swarm`, `reuse` and the title's type.
+ *  - A given title is whitespace-collapsed only; the host also strips control
+ *    characters and caps its length.
  */
 
 export type FakeEngineOptions = {
@@ -86,6 +105,8 @@ export interface FakeDriver extends ContractDriver {
   live(): string[]
   /** Ends every open event stream as a dropped connection does: `subscribe` rejects with `error`. */
   dropStreams(error?: Error): void
+  /** Holds every create that starts from now on, before its session exists, until the returned hold is released. */
+  holdStartup(): StartupHold
 }
 
 export interface FakeEngine extends EngineSurface {
@@ -101,6 +122,15 @@ const MODEL_SHAPE = /^[A-Za-z0-9][^/\s]*\/\S+$/
 const TITLE_LIMIT = 80
 const WAIT_SLICE_MS = 55_000
 const EPOCH = 1_700_000_000_000
+
+/** Ends the wait at once, with the abort reason, when `signal` aborts first: what a dropped request does to a pending create. */
+function abandonable<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work
+  const aborted = Promise.withResolvers<never>()
+  const onAbort = () => aborted.reject(signal.reason)
+  signal.addEventListener("abort", onAbort, { once: true })
+  return Promise.race([work, aborted.promise]).finally(() => signal.removeEventListener("abort", onAbort))
+}
 
 export const FAKE_MODELS: ModelInfo[] = [
   { providerID: "fake", id: "model-0", name: "Fake 0", capabilities: { input: ["text", "image"] } },
@@ -169,7 +199,14 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
   const subscribers = new Set<{ onEvent(event: BusEvent): void; end: PromiseWithResolvers<void> }>()
   const decisions = new Map<string, Decision>()
   const recorded: Recorded[] = []
-  const state: { clock: number; sequence: number; fallback: TurnScript; closed: boolean } = {
+  const state: {
+    clock: number
+    sequence: number
+    fallback: TurnScript
+    closed: boolean
+    /** The startup `driver.holdStartup` is holding: creates wait on `open` and announce themselves on `reached`. */
+    hold?: { reached: PromiseWithResolvers<void>; open: PromiseWithResolvers<void> }
+  } = {
     clock: EPOCH,
     sequence: 0,
     fallback: { steps: [{ text: options.answer ?? "done" }] },
@@ -272,7 +309,8 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
     })
     if (request.kind === "permission") {
       emit("permission.v2.asked", { id: request.id, sessionID: session.id, action: request.action, resources: [request.resource] })
-    } else {
+    }
+    if (request.kind === "question") {
       emit("question.v2.asked", {
         id: request.id,
         sessionID: session.id,
@@ -424,6 +462,17 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
     hang(sessionID) {
       driver.next(sessionID, { steps: [{ text: "", hang: true }] })
     },
+    holdStartup() {
+      const hold = { reached: Promise.withResolvers<void>(), open: Promise.withResolvers<void>() }
+      state.hold = hold
+      return {
+        reached: () => hold.reached.promise,
+        release() {
+          if (state.hold === hold) state.hold = undefined
+          hold.open.resolve()
+        },
+      }
+    },
     release(sessionID) {
       sessions.get(sessionID)?.run?.release.resolve()
     },
@@ -490,10 +539,16 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
       return subscriber.end.promise
     },
 
-    async createSession(input) {
+    async createSession(input, signal) {
       record("createSession", undefined, input)
       validate(input)
+      signal?.throwIfAborted()
       if (input.reuse) return { id: find(input.reuse).id }
+      const hold = state.hold
+      if (hold) {
+        hold.reached.resolve()
+        await abandonable(hold.open.promise, signal)
+      }
       // One card, one session at a time: the replaced session is gone.
       for (const other of [...sessions.values()]) {
         if (other.input.runId === input.runId && other.input.nodeId === input.nodeId) dispose(other)
@@ -505,6 +560,7 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
         input,
         created,
         updated: created,
+        title: input.title?.replace(/\s+/g, " ").trim() || undefined,
         state: "live",
         steps: [],
         calls: [],

@@ -56,6 +56,12 @@ export type ContractInstance = {
 export type ContractOptions = {
   /** Registers the suite as skipped, e.g. where the stub omp cannot run. */
   skip?: boolean
+  /**
+   * Whether this leg's driver can hold a session's startup (`ContractDriver.holdStartup`). The scenarios that need
+   * it run only where it is true and are registered as skipped, named, where it is not: the fake leg declares it,
+   * the host leg declares it once its stub omp can be held before `ready`.
+   */
+  holdsStartup?: boolean
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -195,6 +201,12 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
         },
         SCENARIO_MS,
       )
+    }
+
+    /** A scenario that needs `driver.holdStartup`: registered as a named skip on a leg that cannot hold a start. */
+    function heldScenario(name: string, body: (ctx: Context) => Promise<void>) {
+      if (options.holdsStartup === true) return scenario(name, body)
+      test.skip(`${name} [skipped: this leg declares no holdsStartup]`, () => undefined)
     }
 
     /* ------------------------------------------------------ catalog, health */
@@ -690,6 +702,50 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
       ]
       for (const request of bad) expect(statusOf(await rejection(ctx.api.createSession(request)))).toBe(400)
       expect((await ctx.api.health()).sessions.live).toBe(before)
+    })
+
+    heldScenario("a create abandoned while its session is still starting rejects with the abort and leaves nothing behind", async (ctx) => {
+      const hold = ctx.driver.holdStartup?.()
+      if (!hold) throw new Error("the leg declared holdsStartup but its driver cannot hold a startup")
+      const before = (await ctx.api.health()).sessions.live
+      try {
+        const controller = new AbortController()
+        const pending = rejection(ctx.api.createSession(ctx.input("abandoned"), controller.signal))
+        await hold.reached()
+        controller.abort()
+        const error = await pending
+        // The abort itself, not a failure the engine could mistake for a down host or a refused create.
+        expect((error as Error).name).toBe("AbortError")
+        expect(statusOf(error)).toBeUndefined()
+      } finally {
+        hold.release()
+      }
+      await eventually(async () => (await ctx.api.health()).sessions.live === before, "the abandoned start is not live")
+      expect((await ctx.api.sessions()).filter((row) => row.agent === "card-abandoned")).toEqual([])
+
+      // Nothing is wedged: the same card opens a session normally afterwards.
+      const id = await ctx.open("abandoned")
+      expect((await ctx.api.health()).sessions.live).toBe(before + 1)
+      expect(await ctx.api.transcript(id)).toEqual({ text: "" })
+    })
+
+    scenario("a create signal that is already aborted never starts a session", async (ctx) => {
+      const before = (await ctx.api.health()).sessions.live
+      const controller = new AbortController()
+      controller.abort()
+      const error = await rejection(ctx.api.createSession(ctx.input("never"), controller.signal))
+      expect((error as Error).name).toBe("AbortError")
+      expect((await ctx.api.health()).sessions.live).toBe(before)
+    })
+
+    scenario("the title given at create is the one the session list shows, before and after the first prompt", async (ctx) => {
+      const title = "Builder · wire the parser"
+      const id = await ctx.open("titled", { title })
+      const listed = async () => (await ctx.api.sessions()).find((row) => row.id === id)?.title
+      expect(await listed()).toBe(title)
+      await ctx.api.prompt(id, "an unrelated first prompt")
+      await ctx.api.waitForIdle(id)
+      expect(await listed()).toBe(title)
     })
 
     scenario("the session list is newest first, carries card and model, and honours the limit", async (ctx) => {

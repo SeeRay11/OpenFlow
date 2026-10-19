@@ -550,7 +550,7 @@ export function start(
   const answered = new Set<string>() // `sessionID:requestID` of permission requests already replied to
   /** How many times each card has been dispatched, so a later answer can be told from the first in memory. */
   const dispatches = new Map<string, number>()
-  const asked = new Set<string>() // question requests already handled
+  const asked = new Set<string>() // `sessionID:requestID` of question requests already handled
   const catalog = new Map<string, ModelInfo>()
   const nodes = new Map(pipeline.nodes.map((node) => [node.id, node] as const))
   const outputs = new Map<string, string>()
@@ -874,8 +874,9 @@ export function start(
    */
   async function inquire(nodeID: string, sessionID: string, data: { id: string; questions?: QuestionInfo[] }) {
     const requestID = data.id
-    if (asked.has(requestID)) return
-    asked.add(requestID)
+    const key = `${sessionID}:${requestID}`
+    if (asked.has(key)) return
+    asked.add(key)
     const questions = data.questions ?? []
     const node = nodes.get(nodeID)
     const headers = questions.map((question) => question.header || question.question)
@@ -1268,14 +1269,14 @@ export function start(
         let text: string
         if (typeof turn === "string") text = [turn, ...appended].join("\n\n")
         else {
-          const task = stripRaw(turn)
-          staged ??= await stage(node, task.sections, task.raw)
+          const parts = stripRaw(turn)
+          staged ??= await stage(node, parts.sections, parts.raw)
           // A stop that landed while uplift or memory was in flight leaves nothing to send.
           if (controller.signal.aborted) throw new StopError()
           text = [
             staged.uplifted
-              ? upliftedPrompt(task.sections, staged.uplifted, appended)
-              : [plainPrompt(task.sections), ...appended].join("\n\n"),
+              ? upliftedPrompt(parts.sections, staged.uplifted, appended)
+              : [plainPrompt(parts.sections), ...appended].join("\n\n"),
             ...(staged.memory ? [staged.memory] : []),
           ].join("\n\n")
         }
@@ -1283,19 +1284,23 @@ export function start(
         // The session is opened only now that the text is settled, so a card
         // whose uplift is cancelled never costs a process.
         if (!sessionID || attach) {
-          const session = await api.createSession({
-            runId: log.id,
-            nodeId: node.id,
-            card: cardSpec(pipeline, node),
-            title: cardTitle(node.role, task),
-            model: node.agent.model,
-            // Fixed for the life of the session, which is why a card keeps the
-            // tree it was first given rather than moving between batches.
-            directory: nodeDir.get(node.id),
-            permissions: policy,
-            swarm: swarmOf(pipeline, node),
-            ...(attach ? { reuse: attach } : {}),
-          })
+          const session = await api.createSession(
+            {
+              runId: log.id,
+              nodeId: node.id,
+              card: cardSpec(pipeline, node),
+              title: cardTitle(node.role, task),
+              model: node.agent.model,
+              // Fixed for the life of the session, which is why a card keeps the
+              // tree it was first given rather than moving between batches.
+              directory: nodeDir.get(node.id),
+              permissions: policy,
+              swarm: swarmOf(pipeline, node),
+              ...(attach ? { reuse: attach } : {}),
+            },
+            // Stop while the host is still starting Omp ends this call at once instead of after its startup deadline.
+            controller.signal,
+          )
           attach = undefined
           sessionID = session.id
           nodeSession.set(node.id, session.id)

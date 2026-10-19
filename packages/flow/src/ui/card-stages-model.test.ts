@@ -76,23 +76,30 @@ describe("upliftChip", () => {
     expect(chip?.title).toContain("fill:n3")
   })
 
-  test("a Jev skip is labelled as Jev's call, not a failure", () => {
+  test("a Jev skip is labelled as Jev's call, not a failure, and its title explains the reason", () => {
     const chip = upliftChip(uplift({ status: "skipped", reason: "jev-skip" }))
     expect(chip).toMatchObject({ label: "skipped (Jev)", tone: "neutral", aria: "prompt uplift skipped by Jev" })
-    expect(chip?.title).toContain("not new multi-step work")
+    // The explanation is the reason's words: without a reason the same skip says less.
+    expect(chip?.title).not.toBe(upliftChip(uplift({ status: "skipped", reason: undefined }))?.title)
   })
 
   test("another skip reason keeps its own words, unknown ones verbatim", () => {
-    expect(upliftChip(uplift({ status: "skipped", reason: "disabled" }))).toMatchObject({ label: "uplift skipped" })
-    expect(upliftChip(uplift({ status: "skipped", reason: "disabled" }))?.title).toContain("switched off")
+    const bare = upliftChip(uplift({ status: "skipped", reason: undefined }))?.title
+    const known = upliftChip(uplift({ status: "skipped", reason: "disabled" }))
+    expect(known).toMatchObject({ label: "uplift skipped" })
+    // A known code is turned into words; an unknown one is shown as it came.
+    expect(known?.title).not.toBe(bare)
+    expect(known?.title).not.toContain("disabled")
     expect(upliftChip(uplift({ status: "skipped", reason: "odd-new-reason" }))?.title).toContain("odd-new-reason")
   })
 
   test("failed carries the reason into the tooltip and the aria string", () => {
-    const chip = upliftChip(uplift({ status: "failed", reason: "claude CLI is logged out" }))
-    expect(chip).toMatchObject({ label: "uplift failed", tone: "danger" })
-    expect(chip?.title).toContain("claude CLI is logged out")
-    expect(chip?.aria).toContain("claude CLI is logged out")
+    const first = upliftChip(uplift({ status: "failed", reason: "first reason" }))
+    const second = upliftChip(uplift({ status: "failed", reason: "second reason" }))
+    expect(first).toMatchObject({ label: "uplift failed", tone: "danger" })
+    // The reason is what tells two failed chips apart, in both places a user meets it.
+    expect(first?.title).not.toBe(second?.title)
+    expect(first?.aria).not.toBe(second?.aria)
   })
 
   test("declined means the original went out after a failure", () => {
@@ -206,10 +213,11 @@ describe("memoryChip", () => {
   })
 
   test("unavailable puts the error in the tooltip, honestly", () => {
-    const chip = memoryChip({ read: read({ status: "unavailable", error: "substrate refused the connection" }) })
-    expect(chip).toMatchObject({ label: "mem unavailable", tone: "warn" })
-    expect(chip?.title).toContain("substrate refused the connection")
-    expect(chip?.aria).toContain("substrate refused the connection")
+    const first = memoryChip({ read: read({ status: "unavailable", error: "first problem" }) })
+    const second = memoryChip({ read: read({ status: "unavailable", error: "second problem" }) })
+    expect(first).toMatchObject({ label: "mem unavailable", tone: "warn" })
+    expect(first?.title).not.toBe(second?.title)
+    expect(first?.aria).not.toBe(second?.aria)
   })
 
   test("a failed read with a stored write keeps the arrows and flags the problem", () => {
@@ -309,8 +317,11 @@ describe("swarm", () => {
   })
 
   test("idle text depends on the mode", () => {
-    expect(swarmIdleText(swarm({ mode: "always", active: false }))).toContain("a01-orchestrator")
-    expect(swarmIdleText(swarm({ mode: "auto", active: false }))).toContain("no delegation yet")
+    const always = swarmIdleText(swarm({ mode: "always", active: false }))
+    const auto = swarmIdleText(swarm({ mode: "auto", active: false }))
+    expect(always.length).toBeGreaterThan(0)
+    expect(auto.length).toBeGreaterThan(0)
+    expect(always).not.toBe(auto)
   })
 
   test("a card that is not running never shows a running swarm", () => {

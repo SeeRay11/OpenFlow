@@ -40,7 +40,8 @@ const PIPELINE_KEYS = [
   MIGRATED,
 ]
 const NODE_KEYS = ["id", "role", "agent", "position"]
-// `mcp` is a retired field: still recognised so an old file loads without a note, then dropped by `migrateAgent`.
+// `mcp` was a per-card MCP allowlist: still recognised so an old file loads without an unknown-field note, then
+// dropped by `migrateAgent`, which reports an explicit allowlist because dropping it widens what the card can reach.
 const AGENT_KEYS = ["model", "prompt", "tools", "mcp", "attachments", "swarm", "uplift"]
 const EDGE_KEYS = ["id", "source", "target"]
 
@@ -174,11 +175,21 @@ function migrateAgent(
   }
 
   // `mcp` was a per-card MCP allowlist; Omp has no per-session MCP selection, so
-  // nothing consumes it. It is known (never reported as unknown) and dropped, so
-  // it is not saved again.
+  // nothing consumes it and it is dropped, so it is not saved again. An absent
+  // list said nothing and is dropped silently; an explicit one (even empty)
+  // restricted the card, and its absence now grants every configured server.
   if (!("name" in agent) && !("mcp" in agent)) return agent
   const next = { ...agent }
   delete next.mcp
+  if (Array.isArray(agent.mcp)) {
+    const listed = agent.mcp.filter((entry): entry is string => typeof entry === "string")
+    const limited = listed.length ? `to ${listed.map((entry) => `'${entry}'`).join(", ")}` : "to none"
+    notes.push({
+      kind: "legacy-agent",
+      nodeId,
+      message: `card ${card} limited its MCP servers ${limited}: Omp cannot limit MCP servers per card, so it now sees every configured server`,
+    })
+  }
   if (!("name" in agent)) return next
   delete next.name
   // An empty or null name meant "server default": nothing was chosen, so

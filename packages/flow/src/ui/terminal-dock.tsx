@@ -1,5 +1,5 @@
 import { Show, createSignal, onCleanup, onMount } from "solid-js"
-import type { FitAddon as GhosttyFit, Ghostty, Terminal as GhosttyTerminal } from "ghostty-web"
+import type { FitAddon, Ghostty, Terminal } from "ghostty-web"
 import { PTY_ROUTES } from "../../shared/terminal"
 import type { PtyKind, PtyTicket } from "../../shared/terminal"
 import { IconClose } from "./icons"
@@ -16,7 +16,7 @@ const MAX_HEIGHT = 0.7
 /** Sessions outlive the dock: closing it detaches, opening it attaches again. */
 const remembered: Partial<Record<PtyKind, string>> = {}
 
-type Emulator = { Terminal: typeof GhosttyTerminal; FitAddon: typeof GhosttyFit; ghostty: Ghostty }
+type Emulator = { Terminal: typeof Terminal; FitAddon: typeof FitAddon; ghostty: Ghostty }
 
 let loading: Promise<Emulator> | undefined
 
@@ -82,7 +82,7 @@ function Dock(props: { kind: PtyKind; onClose(): void; onOpenSettings?(): void }
   let dock!: HTMLElement
   let surface!: HTMLDivElement
   let kindSwitch!: HTMLDivElement
-  let term: GhosttyTerminal | undefined
+  let term: Terminal | undefined
   let socket: WebSocket | undefined
   let retry: number | undefined
   let sizing: number | undefined
@@ -100,7 +100,7 @@ function Dock(props: { kind: PtyKind; onClose(): void; onOpenSettings?(): void }
     socket.send(encodeResize(term.cols, term.rows))
   }
 
-  async function ensureTerminal(): Promise<GhosttyTerminal> {
+  async function ensureTerminal(): Promise<Terminal> {
     if (term) return term
     const emulator = await loadEmulator()
     if (disposed) throw new Error("closed")
@@ -196,7 +196,7 @@ function Dock(props: { kind: PtyKind; onClose(): void; onOpenSettings?(): void }
 
   /** Asks for a ticket (attach when the session is known, create otherwise), then opens the socket with it. */
   async function connect(generation: number, recreateIfGone: boolean) {
-    let terminal: GhosttyTerminal
+    let terminal: Terminal
     try {
       terminal = await ensureTerminal()
     } catch (error) {

@@ -85,6 +85,8 @@ type HarnessOptions = {
   release?: boolean
   /** Holds every `createSession` until it resolves: a session that is still opening. */
   createGate?: Promise<void>
+  /** Makes `createSession` reject with the abort reason as soon as the signal the engine passed aborts, as the client does. */
+  createStopsOnAbort?: boolean
   /** Makes every permission and question reply fail, with this HTTP status when given. */
   replyFails?: { status?: number }
   /** Subset of `models` that accepts image input. */
@@ -164,6 +166,8 @@ function harness(options: HarnessOptions = {}) {
   const worktreeCalls: { open: string[][]; merged: number; cleaned: number } = { open: [], merged: 0, cleaned: 0 }
   /** Everything the engine asked a session to be created with, in order. */
   const creations: CreateSession[] = []
+  /** The abort signal the engine passed with each create, in order. */
+  const createSignals: (AbortSignal | undefined)[] = []
   /** Sessions handed back to the host, in order. */
   const released: string[] = []
   const upliftRequests: UpliftRequest[] = []
@@ -193,9 +197,12 @@ function harness(options: HarnessOptions = {}) {
         signal.addEventListener("abort", () => resolve(), { once: true })
       })
     },
-    async createSession(input: CreateSession) {
+    async createSession(input: CreateSession, signal?: AbortSignal) {
       creations.push(input)
-      await options.createGate
+      createSignals.push(signal)
+      const abandoned = Promise.withResolvers<never>()
+      if (options.createStopsOnAbort) signal?.addEventListener("abort", () => abandoned.reject(signal.reason), { once: true })
+      await Promise.race([options.createGate, abandoned.promise])
       // Re-attaching is not creating: the session was already there.
       const id = input.reuse ?? `s${++created}`
       sessionDirs.set(id, input.directory)
@@ -422,6 +429,7 @@ function harness(options: HarnessOptions = {}) {
     hooks,
     sessionDirs,
     creations,
+    createSignals,
     released,
     upliftRequests,
     rejected,
@@ -789,6 +797,24 @@ describe("stop", () => {
 
     expect(h.dispatched).toEqual([])
     expect(h.released).toEqual(["s1"])
+    expect(log.nodes[0].status).toBe("stopped")
+    expect(log.status).toBe("stopped")
+  })
+
+  test("a stop while the host is still starting the session ends the card at once, without waiting for the host", async () => {
+    const h = harness({ release: true, createGate: new Promise<void>(() => {}), createStopsOnAbort: true })
+    const run = h.run(pipeline("a"))
+    await flush()
+    expect(h.creations).toHaveLength(1)
+    expect(h.createSignals[0]?.aborted).toBe(false)
+
+    await run.stop()
+    const log = await run.done
+
+    expect(h.createSignals[0]?.aborted).toBe(true)
+    expect(h.dispatched).toEqual([])
+    // The host disposes a start it was told to abandon: there is no session for the engine to hand back.
+    expect(h.released).toEqual([])
     expect(log.nodes[0].status).toBe("stopped")
     expect(log.status).toBe("stopped")
   })
@@ -1184,6 +1210,21 @@ describe("questions", () => {
 
     expect(h.questionReplies).toHaveLength(1)
     h.release("a")
+    await run.done
+  })
+
+  test("the same question id asked in two sessions is answered once in each", async () => {
+    const h = harness({ behavior: { a: { hold: true }, b: { hold: true } }, onQuestion: async () => [["postgres"]] })
+    const run = h.run(pipeline("a", "b"))
+    await flush()
+
+    h.question("a", { id: "que-1", questions: [ask] })
+    h.question("b", { id: "que-1", questions: [ask] })
+    await flush()
+
+    expect(h.questionReplies.map((reply) => reply.sessionID).sort()).toEqual([h.sessionOf.get("a")!, h.sessionOf.get("b")!].sort())
+    h.release("a")
+    h.release("b")
     await run.done
   })
 

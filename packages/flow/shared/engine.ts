@@ -220,7 +220,11 @@ export function sessionRoute(id: string, tail = ""): string {
  */
 export interface EngineApi {
   subscribe(onEvent: (event: BusEvent) => void, signal: AbortSignal): Promise<void>
-  createSession(input: CreateSession): Promise<{ id: string }>
+  /**
+   * Starts (or, with `input.reuse`, re-attaches) a session. `signal` abandons a start still in flight: the host disposes
+   * the half-started session and the call rejects with the abort error.
+   */
+  createSession(input: CreateSession, signal?: AbortSignal): Promise<{ id: string }>
   /** Resolves when the prompt is admitted, not when the turn ends. */
   prompt(sessionID: string, text: string, files?: PromptFile[]): Promise<unknown>
   /** Resolves on idle, silently on abort; throws on timeout, on a lost session, and on `aborted`/`error` results. */

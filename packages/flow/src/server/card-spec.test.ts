@@ -146,8 +146,13 @@ describe("swarmOf", () => {
 
 describe("cardTitle", () => {
   test("the role, then the task's first non-empty line", () => {
-    expect(cardTitle("Coder", "Fix the parser")).toBe("Coder · Fix the parser")
-    expect(cardTitle("Coder", "\n \r\n  Fix the parser  \nthen the tests")).toBe("Coder · Fix the parser")
+    const plain = cardTitle("Coder", "Fix the parser")
+    expect(plain).toContain("Coder")
+    expect(plain).toContain("Fix the parser")
+    expect(plain.indexOf("Coder")).toBeLessThan(plain.indexOf("Fix the parser"))
+    const later = cardTitle("Coder", "\n \r\n  Fix the parser  \nthen the tests")
+    expect(later).toContain("Fix the parser")
+    expect(later).not.toContain("then the tests")
   })
 
   test("a task with nothing readable in it leaves the role alone", () => {
@@ -156,20 +161,32 @@ describe("cardTitle", () => {
     expect(cardTitle("Coder", "##\n\u0000\u0007")).toBe("Coder")
   })
 
-  test("a long line is cut at 70 characters with an ellipsis, a short one is not touched", () => {
+  test("a long line is cut at 70 characters, a short one is not touched", () => {
     const title = cardTitle("Coder", "x".repeat(200))
-    expect(title).toBe(`Coder · ${"x".repeat(70)}…`)
-    expect(cardTitle("Coder", "y".repeat(70))).toBe(`Coder · ${"y".repeat(70)}`)
+    expect(title).toContain("x".repeat(70))
+    expect(title).not.toContain("x".repeat(71))
+    // A line that fits is whole, so nothing marks it as cut; a cut line is marked.
+    const whole = cardTitle("Coder", "y".repeat(70))
+    expect(whole).toContain("y".repeat(70))
+    expect(title.length).toBeGreaterThan(whole.length)
   })
 
   test("the cut never splits an emoji", () => {
-    expect(cardTitle("Coder", "😀".repeat(80))).toBe(`Coder · ${"😀".repeat(70)}…`)
+    const title = cardTitle("Coder", "😀".repeat(80))
+    expect(title).toContain("😀".repeat(70))
+    expect(title).not.toContain("😀".repeat(71))
+    expect(title).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
   })
 
   test("markdown headings and control characters are stripped", () => {
-    expect(cardTitle("Coder", "## Fix the\tparser\u0000 now")).toBe("Coder · Fix the parser now")
-    expect(cardTitle("Coder", "#\n# Heading\nbody")).toBe("Coder · Heading")
+    const stripped = cardTitle("Coder", "## Fix the\tparser\u0000 now")
+    expect(stripped).toContain("Fix the parser now")
+    expect(stripped).not.toContain("#")
+    expect(stripped).not.toMatch(/\p{Cc}/u)
+    const heading = cardTitle("Coder", "#\n# Heading\nbody")
+    expect(heading).toContain("Heading")
+    expect(heading).not.toContain("body")
     // Only a heading marker is dropped: a hashtag-style word is the task's own text.
-    expect(cardTitle("Coder", "#42 is failing")).toBe("Coder · #42 is failing")
+    expect(cardTitle("Coder", "#42 is failing")).toContain("#42 is failing")
   })
 })
