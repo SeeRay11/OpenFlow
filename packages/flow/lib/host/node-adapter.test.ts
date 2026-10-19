@@ -16,8 +16,14 @@ afterEach(async () => {
 /** A connect-style chain: the adapter, then a fallthrough that answers 418 and records what it could still read. */
 async function start(handler: HostHandler) {
   const fell: Array<{ url: string; body: string }> = []
+  /** One entry per response, settled when its connection side has closed. */
+  const closed: Array<Promise<void>> = []
   const middleware = nodeMiddleware(handler)
   const server = createServer((req, res) => {
+    const done = Promise.withResolvers<void>()
+    closed.push(done.promise)
+    // Registered before the adapter's own listener, so it is settled only after the adapter has had its say on the same event.
+    res.once("close", () => done.resolve())
     middleware(req, res, () => {
       const chunks: Buffer[] = []
       req.on("data", (chunk: Buffer) => chunks.push(chunk))
@@ -30,7 +36,7 @@ async function start(handler: HostHandler) {
   })
   servers.push(server)
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
-  return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, fell }
+  return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, fell, closed }
 }
 
 describe("request", () => {
@@ -120,6 +126,37 @@ describe("streaming", () => {
     await response.body!.getReader().read()
     controller.abort()
     await Promise.all([aborted.promise, cancelled.promise])
+  })
+
+  test("a client that leaves while the handler is still working aborts the request signal", async () => {
+    const entered = Promise.withResolvers<AbortSignal>()
+    const aborted = Promise.withResolvers<void>()
+    const { base } = await start((request) => {
+      request.signal.addEventListener("abort", () => aborted.resolve())
+      entered.resolve(request.signal)
+      return Promise.withResolvers<Response | undefined>().promise
+    })
+    const controller = new AbortController()
+    const pending = fetch(`${base}/slow`, { method: "POST", body: "{}", signal: controller.signal }).catch(() => undefined)
+    const signal = await entered.promise
+    expect(signal.aborted).toBe(false)
+    controller.abort()
+    await aborted.promise
+    await pending
+    expect(signal.aborted).toBe(true)
+  })
+
+  test("a response that finishes normally never aborts the request signal", async () => {
+    const entered = Promise.withResolvers<AbortSignal>()
+    const { base, closed } = await start(async (request) => {
+      entered.resolve(request.signal)
+      return json(200, { ok: true })
+    })
+    const response = await fetch(`${base}/quick`, { headers: { connection: "close" } })
+    expect(await response.json()).toEqual({ ok: true })
+    // Wait for the server to see the connection go, which is where a wrong `close` listener would abort.
+    await Promise.all(closed)
+    expect((await entered.promise).aborted).toBe(false)
   })
 })
 

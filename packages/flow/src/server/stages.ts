@@ -14,19 +14,25 @@ import { describe } from "./client"
 
 const HOST_FIX = "start it with `bun openflow.ts` (or check the Omp settings) and retry"
 
+/** What an aborted call reports: the caller stopped it, which is not the host being down. */
+const STOPPED = "the call was stopped before the host answered"
+
 /** Resolves the parsed body of a 2xx answer, or throws the sentence the caller should show. */
-async function post<T>(origin: string, path: string, body: unknown): Promise<T> {
+async function post<T>(origin: string, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   let response: Response
   try {
     response = await fetch(`${origin}${path}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
+      signal,
     })
   } catch (error) {
+    if (signal?.aborted) throw new Error(STOPPED)
     throw new Error(`the OpenFlow host did not answer (${describe(error)}): ${HOST_FIX}`)
   }
   const text = await response.text().catch(() => "")
+  if (signal?.aborted) throw new Error(STOPPED)
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
@@ -44,27 +50,27 @@ async function post<T>(origin: string, path: string, body: unknown): Promise<T> 
 
 /** `origin` is empty in the browser, where the page's own origin serves `/flow/api/*`; tests pass a loopback URL. */
 export function createStages(origin = "") {
-  async function uplift(request: UpliftRequest): Promise<UpliftResult> {
+  async function uplift(request: UpliftRequest, signal?: AbortSignal): Promise<UpliftResult> {
     const started = Date.now()
     try {
-      return await post<UpliftResult>(origin, UPLIFT_ROUTE, request)
+      return await post<UpliftResult>(origin, UPLIFT_ROUTE, request, signal)
     } catch (error) {
       return { status: "failed", reason: describe(error), original: request.original, elapsedMs: Date.now() - started }
     }
   }
 
-  async function read(request: MemoryReadRequest): Promise<MemoryReadResult> {
+  async function read(request: MemoryReadRequest, signal?: AbortSignal): Promise<MemoryReadResult> {
     const started = Date.now()
     try {
-      return await post<MemoryReadResult>(origin, MEMORY_ROUTES.read, request)
+      return await post<MemoryReadResult>(origin, MEMORY_ROUTES.read, request, signal)
     } catch (error) {
       return { status: "unavailable", block: "", items: [], scopes: [], error: describe(error), elapsedMs: Date.now() - started }
     }
   }
 
-  async function write(request: MemoryWriteRequest): Promise<MemoryWriteResult> {
+  async function write(request: MemoryWriteRequest, signal?: AbortSignal): Promise<MemoryWriteResult> {
     try {
-      return await post<MemoryWriteResult>(origin, MEMORY_ROUTES.write, request)
+      return await post<MemoryWriteResult>(origin, MEMORY_ROUTES.write, request, signal)
     } catch (error) {
       return { status: "unavailable", error: describe(error) }
     }

@@ -291,15 +291,15 @@ export type EngineDeps = {
    * Prompt Uplift for a card's task turn. Optional so a test double can omit it:
    * absent means every task is sent as written and the card records no uplift.
    */
-  uplift?: (request: UpliftRequest) => Promise<UpliftResult>
+  uplift?: (request: UpliftRequest, signal?: AbortSignal) => Promise<UpliftResult>
   /**
    * Shared memory across the cards of a run (Agent Substrate, host-side).
    * Optional for the same reason; `read` fails open and `write` never blocks a
    * card from finishing.
    */
   memory?: {
-    read(request: MemoryReadRequest): Promise<MemoryReadResult>
-    write(request: MemoryWriteRequest): Promise<MemoryWriteResult>
+    read(request: MemoryReadRequest, signal?: AbortSignal): Promise<MemoryReadResult>
+    write(request: MemoryWriteRequest, signal?: AbortSignal): Promise<MemoryWriteResult>
   }
   saveRun: (log: RunLog) => Promise<unknown>
   /**
@@ -988,13 +988,16 @@ export function start(
       patch(node.id, { uplift: { status: "running", original }, activity: "uplifting prompt" })
       const result = await Promise.race([
         deps
-          .uplift!({
-            runId: log.id,
-            nodeId: node.id,
-            role: node.role,
-            original,
-            ...(nodeDir.has(node.id) ? { cwd: nodeDir.get(node.id) } : {}),
-          })
+          .uplift!(
+            {
+              runId: log.id,
+              nodeId: node.id,
+              role: node.role,
+              original,
+              ...(nodeDir.has(node.id) ? { cwd: nodeDir.get(node.id) } : {}),
+            },
+            controller.signal,
+          )
           .catch(
             (error): UpliftResult => ({
               status: "failed",
@@ -1075,7 +1078,7 @@ export function start(
     patchMemory(node.id, { read: { status: "running", items: [] } })
     const result = await Promise.race([
       deps.memory
-        .read({ runId: log.id, nodeId: node.id, pipeline: pipeline.name, role: node.role, query })
+        .read({ runId: log.id, nodeId: node.id, pipeline: pipeline.name, role: node.role, query }, controller.signal)
         .catch(
           (error): MemoryReadResult => ({
             status: "unavailable",
@@ -1088,7 +1091,7 @@ export function start(
         ),
       stopped.promise,
     ])
-    if (!result) throw new StopError()
+    if (!result || controller.signal.aborted) throw new StopError()
     patchMemory(node.id, {
       read: {
         status: result.status,
@@ -1236,6 +1239,8 @@ export function start(
         else {
           const task = stripRaw(turn)
           staged ??= await stage(node, task.sections, task.raw)
+          // A stop that landed while uplift or memory was in flight leaves nothing to send.
+          if (controller.signal.aborted) throw new StopError()
           text = [
             staged.uplifted
               ? upliftedPrompt(task.sections, staged.uplifted, appended)

@@ -153,3 +153,65 @@ describe("memory write", () => {
     expect((await stages.memory.write(write)).status).toBe("unavailable")
   })
 })
+
+describe("an aborted call", () => {
+  /** A host that never answers; `held` resolves when a request has reached it. */
+  function silent() {
+    const held = Promise.withResolvers<undefined>()
+    const { stages } = host(() => {
+      held.resolve(undefined)
+      return new Response(new ReadableStream({ start() {} }))
+    })
+    return { stages, held: held.promise }
+  }
+
+  test("uplift resolves as a failed result that does not blame the host", async () => {
+    const { stages, held } = silent()
+    const controller = new AbortController()
+    const pending = stages.uplift(uplift, controller.signal)
+    await held
+    controller.abort()
+    const result = await pending
+
+    expect(result.status).toBe("failed")
+    expect(result.original).toBe("fix the bug")
+    expect(result.reason).toContain("stopped")
+    expect(result.reason).not.toContain("did not answer")
+    expect(result.reason).not.toContain("bun openflow.ts")
+  })
+
+  test("memory read resolves as unavailable that does not blame the host", async () => {
+    const { stages, held } = silent()
+    const controller = new AbortController()
+    const pending = stages.memory.read(read, controller.signal)
+    await held
+    controller.abort()
+    const result = await pending
+
+    expect(result.status).toBe("unavailable")
+    expect(result.error).toContain("stopped")
+    expect(result.error).not.toContain("did not answer")
+  })
+
+  test("memory write resolves as unavailable that does not blame the host", async () => {
+    const { stages, held } = silent()
+    const controller = new AbortController()
+    const pending = stages.memory.write(write, controller.signal)
+    await held
+    controller.abort()
+    const result = await pending
+
+    expect(result.status).toBe("unavailable")
+    expect(result.error).toContain("stopped")
+    expect(result.error).not.toContain("did not answer")
+  })
+
+  test("a signal that is already aborted never reaches the host", async () => {
+    const { seen, stages } = host(() => Response.json({ status: "ok", original: "x", elapsedMs: 1 }))
+    const result = await stages.uplift(uplift, AbortSignal.abort())
+
+    expect(result.status).toBe("failed")
+    expect(result.reason).toContain("stopped")
+    expect(seen).toEqual([])
+  })
+})

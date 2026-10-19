@@ -1,6 +1,6 @@
 import type { Server } from "bun"
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import type { BusEvent, ModelInfo, SessionRow, ToolCall, Transcript, WaitResult, WireStep } from "../../shared/engine"
@@ -15,8 +15,10 @@ import { UPLIFT_ROUTE, type UpliftResult } from "../../shared/uplift"
 import { assistantMessage, frames } from "../omp/testing/fake-process"
 import { startFakeSubstrate, type FakeSubstrate } from "../substrate/testing/fake-substrate"
 import { alive, until } from "../uplift/testing/stub-planner"
+import { KILL_GRACE_MS } from "../uplift/planner"
 import { bunWebSocket, type PtySocketData } from "../terminal/ws-bun"
 import { createHost, type Host } from "./index"
+import { stateRoot } from "./paths"
 
 /**
  * The whole host over real HTTP: `createHost` composed from the real modules,
@@ -126,11 +128,12 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-function send(route: string, method: string, body?: unknown, headers: Record<string, string> = {}) {
+function send(route: string, method: string, body?: unknown, headers: Record<string, string> = {}, signal?: AbortSignal) {
   return fetch(`${base}${route}`, {
     method,
     headers: { "content-type": "application/json", ...headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    signal,
   })
 }
 
@@ -406,6 +409,26 @@ describe("uplift", () => {
     expect(((await failed.json()) as UpliftResult).status).toBe("failed")
 
     expect(await get<UpliftResult>(`${UPLIFT_ROUTE}/run-u/a`)).toEqual(result)
+  })
+
+  test("a client that aborts the request kills the planner's process group, and uplift.run sees the abort", async () => {
+    const controller = new AbortController()
+    const pending = send(UPLIFT_ROUTE, "POST", { runId: "run-abort", nodeId: "n1", role: "builder", original: "@hang slow" }, {}, controller.signal)
+    // The stub writes its leader and helper pids once it is running.
+    const pidsFile = path.join(stateRoot(project, { OPENFLOW_STATE_DIR: stateDir }), "uplift", "pids-openflow-run-abort-n1-1.json")
+    await until(() => existsSync(pidsFile))
+    const pids = JSON.parse(readFileSync(pidsFile, "utf8")) as { leader: number; helper: number }
+    expect(await alive(pids.leader)).toBe(true)
+    expect(await alive(pids.helper)).toBe(true)
+
+    controller.abort()
+    await expect(pending).rejects.toThrow()
+    await until(async () => !(await alive(pids.leader)) && !(await alive(pids.helper)), KILL_GRACE_MS)
+
+    // `run` settled because it saw the abort: the stored result says so, and the host is still serving.
+    await until(async () => (await send(`${UPLIFT_ROUTE}/run-abort/n1`, "GET")).status === 200)
+    const stored = (await (await send(`${UPLIFT_ROUTE}/run-abort/n1`, "GET")).json()) as UpliftResult
+    expect(stored).toMatchObject({ status: "failed", reason: "uplift was cancelled before the planner finished" })
   })
 })
 

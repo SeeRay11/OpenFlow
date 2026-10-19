@@ -74,11 +74,11 @@ type HarnessOptions = {
    */
   modelsRefilled?: string[]
   /** Prompt Uplift. Omitted means the engine has none, as a host without the planner would. */
-  uplift?: (request: UpliftRequest) => Promise<UpliftResult> | UpliftResult
+  uplift?: (request: UpliftRequest, signal?: AbortSignal) => Promise<UpliftResult> | UpliftResult
   /** Shared memory. Omitted means the engine has none. */
   memory?: {
-    read?: (request: MemoryReadRequest) => Promise<MemoryReadResult> | MemoryReadResult
-    write?: (request: MemoryWriteRequest) => Promise<MemoryWriteResult> | MemoryWriteResult
+    read?: (request: MemoryReadRequest, signal?: AbortSignal) => Promise<MemoryReadResult> | MemoryReadResult
+    write?: (request: MemoryWriteRequest, signal?: AbortSignal) => Promise<MemoryWriteResult> | MemoryWriteResult
   }
   onUpliftFailure?: (request: UpliftFailureRequest) => Promise<"original" | "retry" | "cancel">
   /** Whether the host lets the engine hand sessions back (`EngineApi.release`). */
@@ -324,25 +324,25 @@ function harness(options: HarnessOptions = {}) {
     },
     ...(options.uplift
       ? {
-          async uplift(request: UpliftRequest) {
+          async uplift(request: UpliftRequest, signal?: AbortSignal) {
             upliftRequests.push(request)
-            return options.uplift!(request)
+            return options.uplift!(request, signal)
           },
         }
       : {}),
     ...(options.memory
       ? {
           memory: {
-            async read(request: MemoryReadRequest) {
+            async read(request: MemoryReadRequest, signal?: AbortSignal) {
               memoryReads.push(request)
               return options.memory!.read
-                ? options.memory!.read(request)
+                ? options.memory!.read(request, signal)
                 : { status: "empty" as const, block: "", items: [], scopes: [], elapsedMs: 0 }
             },
-            async write(request: MemoryWriteRequest) {
+            async write(request: MemoryWriteRequest, signal?: AbortSignal) {
               memoryWrites.push(request)
               return options.memory!.write
-                ? options.memory!.write(request)
+                ? options.memory!.write(request, signal)
                 : { status: "stored" as const, subject: `openflow/${request.nodeId}` }
             },
           },
@@ -3874,6 +3874,56 @@ describe("prompt uplift", () => {
 
     expect(log.nodes[0].status).toBe("stopped")
     expect(h.dispatched).toEqual([])
+  })
+
+  test("stopping the run aborts the uplift in flight, and the prompt is never sent", async () => {
+    let seen: AbortSignal | undefined
+    const h = harness({
+      // What the browser stage does on an abort: the failure shape, not a throw.
+      uplift: (request, signal) =>
+        new Promise<UpliftResult>((resolve) => {
+          seen = signal
+          signal?.addEventListener("abort", () =>
+            resolve({ status: "failed", original: request.original, reason: "the call was stopped", elapsedMs: 1 }),
+          )
+        }),
+      onUpliftFailure: async () => "original",
+    })
+    const run = h.run(pipeline("a"))
+    await flush()
+    expect(seen?.aborted).toBe(false)
+    await run.stop()
+    const log = await run.done
+
+    expect(seen?.aborted).toBe(true)
+    expect(log.nodes[0].status).toBe("stopped")
+    expect(h.dispatched).toEqual([])
+    expect(h.creations).toEqual([])
+    expect(h.promptLog).toEqual([])
+  })
+
+  test("a stop during the memory read aborts it and nothing is sent", async () => {
+    let seen: AbortSignal | undefined
+    const h = harness({
+      memory: {
+        read: (_request, signal) =>
+          new Promise<MemoryReadResult>((resolve) => {
+            seen = signal
+            signal?.addEventListener("abort", () =>
+              resolve({ status: "unavailable", block: "", items: [], scopes: [], error: "the call was stopped", elapsedMs: 1 }),
+            )
+          }),
+      },
+    })
+    const run = h.run(pipeline("a"))
+    await flush()
+    await run.stop()
+    const log = await run.done
+
+    expect(seen?.aborted).toBe(true)
+    expect(log.nodes[0].status).toBe("stopped")
+    expect(h.promptLog).toEqual([])
+    expect(h.creations).toEqual([])
   })
 
   test("protocol turns are never uplifted: a re-dispatch, the dispatch result and the forced answer", async () => {
