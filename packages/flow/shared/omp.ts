@@ -65,7 +65,7 @@ export const DEFAULT_OMP_SETTINGS: OmpSettings = {
   profile: "openflow",
   loadUserExtensions: false,
   manualApproval: "write",
-  maxSessionMinutes: 60,
+  maxSessionMinutes: 480,
   uplift: { enabled: true, timeoutMs: 240_000, hitl: false, root: "" },
   memory: { enabled: true, ttl: "30d", readLimit: 8, repo: "" },
   swarm: { mode: "auto", root: "" },

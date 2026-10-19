@@ -17,6 +17,10 @@
  *  - Closing stdin makes omp finish accepted work, dispose and exit 0.
  */
 
+import type { CardSpec } from "../../shared/engine"
+import type { OmpSettings } from "../../shared/omp"
+import type { SwarmLaunch } from "../../shared/swarm"
+
 /** Any frame that is not a command response: events, `extension_ui_request`, `host_tool_call`, `prompt_result`, `session_settled`, `notice`, ... */
 export type OmpFrame = { type: string; [key: string]: unknown }
 
@@ -75,3 +79,33 @@ export interface OmpProcess {
 
 /** The factory the session layer receives; tests pass a fake. */
 export type SpawnOmp = (spec: LaunchSpec) => OmpProcess
+
+/**
+ * Everything `buildLaunch` (`lib/omp/launch.ts`) needs to turn one card into an
+ * omp command line. The session layer assembles it; the core never reaches
+ * outside it.
+ */
+export type LaunchInput = {
+  settings: OmpSettings
+  /** Absolute resolved omp binary (`resolveBinary`). */
+  binary: string
+  session: {
+    runId: string
+    nodeId: string
+    card: CardSpec
+    /** `provider/id`; absent = omp's configured default. */
+    model?: string
+    /** Absolute, existing working directory. */
+    directory: string
+    permissions: "auto" | "manual"
+  }
+  /** Absolute per-session directory outside the project: role prompt, settings overlay, session files. */
+  stateDir: string
+  swarm?: SwarmLaunch
+  /** Extra settings overlay, deep-merged under the swarm overlay (e.g. MCP server disables). */
+  overlay?: Record<string, unknown>
+  /** The host environment to filter; nothing from it reaches the child unless the allowlist names it. */
+  env: NodeJS.ProcessEnv
+}
+
+export type BuildLaunch = (input: LaunchInput) => LaunchSpec

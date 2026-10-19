@@ -9,6 +9,8 @@
  * mode is `always`.
  */
 
+import type { OmpSettings } from "./omp"
+
 /**
  * - `off`: the extension is not loaded; no hook, no hint, no signing need.
  * - `auto`: the extension is loaded and its own classifier decides.
@@ -95,3 +97,34 @@ export type SwarmStatus = {
 }
 
 export const EMPTY_SWARM_COUNTS: SwarmStatus["counts"] = { queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0 }
+
+/**
+ * Watches one card's swarm. Fed every non-response frame of the card's Omp
+ * process; turns `task` delegations and omp's `subagent_*` frames (enabled
+ * with `set_subagent_subscription`) into `SwarmStatus`. May also fold in the
+ * task store's `live.json` (`swarm.live.v1`) when `poll` is called.
+ */
+export interface SwarmTracker {
+  /** Returns the new status when this frame changed it, else undefined. */
+  observe(frame: { type: string; [key: string]: unknown }): SwarmStatus | undefined
+  snapshot(): SwarmStatus
+  /** Re-read the task store; returns the new status when it changed. */
+  poll?(): Promise<SwarmStatus | undefined>
+  dispose(): void
+}
+
+/** What `lib/omp` receives from `lib/swarm`. Both methods are total: problems come back in `preflight`, never as throws. */
+export interface SwarmHost {
+  launch(input: {
+    settings: OmpSettings
+    mode: SwarmMode
+    runId: string
+    nodeId: string
+    /** Per-session directory (absolute); the task store lives in a `swarm` subdirectory. */
+    stateDir: string
+    env: NodeJS.ProcessEnv
+  }): Promise<SwarmLaunch>
+  tracker(input: { mode: SwarmMode; stateDir: string }): SwarmTracker
+}
+
+export const SWARM_ROUTES = { preflight: "/flow/api/swarm/preflight" } as const
