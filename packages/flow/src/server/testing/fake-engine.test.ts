@@ -111,8 +111,9 @@ describe("fake engine driver", () => {
     await expect(kept).resolves.toBeUndefined()
   })
 
-  test("a reset is sent once per gap, and not to a subscriber that attaches with none", async () => {
-    const engine = createFakeEngine()
+  test("every stream that attaches within the window after a gap is told events were lost, and none after it or without one", async () => {
+    let wall = 1_000
+    const engine = createFakeEngine({ clock: () => wall, gapWindowMs: 60_000 })
     /** Attaches a listener; a dropped stream rejects, which is not what this test is about. */
     const attach = () => {
       const seen: string[] = []
@@ -120,22 +121,28 @@ describe("fake engine driver", () => {
       return seen
     }
 
+    // No gap yet: a healthy subscriber, and a second one, hear nothing.
     expect(attach()).toEqual([])
-    // A healthy second subscriber with nothing missed hears no reset.
     expect(attach()).toEqual([])
 
-    // A dropped client is a gap; the next subscriber is told once, the one after it is not.
+    // A dropped client is a gap: both the next subscribers hear it, not just the first.
     engine.driver.dropStreams(new Error("gone"))
+    wall += 30_000
     expect(attach()).toEqual(["flow.stream.reset"])
-    expect(attach()).toEqual([])
+    expect(attach()).toEqual(["flow.stream.reset"])
 
-    // Events published while nobody is attached are a gap too, with no drop involved.
-    const quiet = createFakeEngine()
-    const id = (await quiet.createSession(input("a"))).id
-    await quiet.prompt(id, "go")
-    await quiet.waitForIdle(id)
+    // Past the window nothing is reported any more.
+    wall += 30_000
+    expect(attach()).toEqual([])
+  })
+
+  test("events published while nobody is attached are a gap, with no drop involved", async () => {
+    const engine = createFakeEngine({ clock: () => 5 })
+    const id = (await engine.createSession(input("a"))).id
+    await engine.prompt(id, "go")
+    await engine.waitForIdle(id)
     const late: string[] = []
-    void quiet.subscribe((event) => void late.push(event.type), new AbortController().signal)
+    void engine.subscribe((event) => void late.push(event.type), new AbortController().signal)
     expect(late).toEqual(["flow.stream.reset"])
   })
 })

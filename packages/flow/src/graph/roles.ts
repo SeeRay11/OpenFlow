@@ -125,22 +125,29 @@ export { customRoles }
  * reload, and every caller has to say so. Silently swallowing this loses a
  * hand-written prompt with the UI still showing it saved.
  */
-function persistCustomRoles(roles: Role[]) {
-  // The store is the durable copy, but it answers asynchronously and every
-  // caller here is synchronous, so its failure is reported through `onSyncError`
-  // rather than the return value. Returning the localStorage result keeps the
-  // immediate answer honest: "this survives a reload on this machine".
-  if (synced)
-    void store
-      .saveRoles(roles)
-      .catch((error) => syncError?.(error instanceof Error ? error.message : String(error)))
-  else syncError?.("this project's roles have not been read yet, so this change stays in this browser tab")
+function persistMirror(roles: Role[]) {
   try {
     localStorage.setItem(CUSTOM_ROLES_KEY, JSON.stringify(roles))
     return true
   } catch {
     return false
   }
+}
+
+function persistCustomRoles(roles: Role[]) {
+  // The store is the durable copy, but it answers asynchronously and every
+  // caller here is synchronous, so its failure is reported through `onSyncError`
+  // rather than the return value. Returning the localStorage result keeps the
+  // immediate answer honest: "this survives a reload on this machine".
+  //
+  // Until the project's own roles have been read, an edit stays in memory only: the
+  // read merges it in and writes it to the project, and the browser's own copy is the
+  // migration source that must not be overwritten by a partial list.
+  if (!synced) return true
+  void store
+    .saveRoles(roles)
+    .catch((error) => syncError?.(error instanceof Error ? error.message : String(error)))
+  return persistMirror(roles)
 }
 
 let syncError: ((reason: string) => void) | undefined
@@ -190,11 +197,18 @@ function writeMigrated() {
  * `mirror` is the browser's own copy, read from storage and never from the live
  * signal, which may be a different project's. Unreadable means do nothing at all.
  */
-export function rolesOnOpen(stored: Role[] | undefined, mirror: Role[], migrated: boolean) {
+export function rolesOnOpen(stored: Role[] | undefined, mirror: Role[], migrated: boolean, local: Role[] = []) {
   if (!stored) return undefined
-  if (stored.length) return { roles: stored, push: false }
-  if (migrated || !mirror.length) return { roles: [] as Role[], push: false }
-  return { roles: mirror, push: true }
+  const migrating = !stored.length && !migrated && mirror.length > 0
+  const base = stored.length ? stored : migrating ? mirror : []
+  // A role made or edited while the file was still being read must survive the read; it is then written to the project too.
+  return { roles: mergeRoles(base, local), push: migrating || local.length > 0 }
+}
+
+/** The project's roles, then the ones made while loading by id; on the same id the local one wins. */
+export function mergeRoles(project: Role[], local: Role[]) {
+  const ids = new Set(local.map((entry) => entry.id))
+  return [...project.filter((entry) => !ids.has(entry.id)), ...local]
 }
 
 /**
@@ -203,19 +217,24 @@ export function rolesOnOpen(stored: Role[] | undefined, mirror: Role[], migrated
  *
  * Called at boot and again on every project switch, before the palette renders —
  * otherwise the palette flashes the built-ins alone. A store that cannot be read
- * leaves the roles empty and unsynced: nothing is written to a project whose
- * roles were never seen.
+ * leaves the roles unsynced: nothing is written to a project whose roles were
+ * never seen, and what the user made meanwhile is kept for the next read.
  */
 export async function hydrateCustomRoles() {
   const stored = await store.roles().catch(() => undefined)
-  const plan = rolesOnOpen(Array.isArray(stored) ? (stored as Role[]) : undefined, loadCustomRoles(), readMigrated())
-  if (!plan) return
+  // Only edits made since `forgetCustomRoles()` are in the signal, so while unsynced it is exactly the local edits.
+  const plan = rolesOnOpen(Array.isArray(stored) ? (stored as Role[]) : undefined, loadCustomRoles(), readMigrated(), synced ? [] : customRoles())
+  if (!plan) {
+    if (customRoles().length) syncError?.("this project's roles could not be read, so the roles you made are kept in this tab until they can")
+    return
+  }
   setCustomRoles(plan.roles)
   synced = true
   if (plan.push) {
     // A role written before the store existed becomes a project file rather than staying one cleared cache away from gone.
     const pushed = await store.saveRoles(plan.roles).then(() => true, () => false)
-    if (!pushed) return
+    if (!pushed) return syncError?.("custom roles were not saved to this project")
+    persistMirror(plan.roles)
   }
   writeMigrated()
 }

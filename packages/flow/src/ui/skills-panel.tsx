@@ -23,7 +23,7 @@ export function SkillsPanel(props: {
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string>()
 
-  type Draft = { original?: string; name: string; description: string; content: string; legacy?: boolean }
+  type Draft = { original?: string; shown?: string; name: string; description: string; content: string; legacy?: boolean }
 
   async function refresh() {
     setSkills(await store.skills().catch(() => []))
@@ -53,6 +53,7 @@ export function SkillsPanel(props: {
         // The folder, not the display name — it is what the API addresses and
         // what `save` deletes if the name changes.
         original: doc.folder ?? entry.name,
+        shown: doc.name ?? entry.name,
         legacy: entry.legacy,
         name: doc.name ?? entry.name,
         description: doc.description ?? "",
@@ -75,11 +76,17 @@ export function SkillsPanel(props: {
     setBusy(true)
     setError(undefined)
     try {
-      const result = await store.saveSkill({
-        name,
-        description: draft.description,
-        content: draft.content,
-      })
+      // New, or renamed: the host refuses (409) a name that already belongs to another skill, and the editor stays open.
+      // The name the skill was opened with is not a rename, even when its folder is named differently.
+      const renaming = !draft.original || (name !== draft.original && name !== draft.shown)
+      const result = await store.saveSkill(
+        {
+          name,
+          description: draft.description,
+          content: draft.content,
+        },
+        renaming,
+      )
       // The server slugs the name into a folder, so a renamed skill lands in a new
       // one. Drop the folder it came from, or the old copy stays on disk and the
       // agent sees two skills with the same body.

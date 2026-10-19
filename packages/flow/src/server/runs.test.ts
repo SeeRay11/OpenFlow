@@ -4,6 +4,7 @@ import {
   abandoned,
   findRun,
   interrupted,
+  offerable,
   RESUME_STALE_MS,
   RUN_DELETE,
   RUN_PRUNE,
@@ -258,5 +259,27 @@ describe("resuming an interrupted run", () => {
     const listed = entry({ id: "run-old", status: closed.status, started: closed.started, updatedAt: closed.updatedAt })
     expect(interrupted([listed], "alpha", at + 60 * 60_000)).toBeUndefined()
     expect(log.status).toBe("running")
+  })
+})
+
+describe("offering a resume from a list that was read a while ago", () => {
+  const stale = (updatedAt: number) => entry({ status: "running", finished: undefined, updatedAt })
+
+  test("a fresh list that says the run went quiet offers it", () => {
+    const now = at + 60 * 60_000
+    expect(offerable([stale(now - RESUME_STALE_MS)], "alpha", now - 10_000, now)?.id).toBe("run-1")
+  })
+
+  test("a list older than the window offers nothing, even when its row looks abandoned by now", () => {
+    // Read when the run was written a moment ago; five minutes on, that row is no longer news.
+    const read = at + 60 * 60_000
+    const row = stale(read - 1_000)
+    expect(interrupted([row], "alpha", read + RESUME_STALE_MS)?.id).toBe("run-1")
+    expect(offerable([row], "alpha", read, read + RESUME_STALE_MS)).toBeUndefined()
+  })
+
+  test("a fresh list that shows the run still being written offers nothing", () => {
+    const now = at + 60 * 60_000
+    expect(offerable([stale(now - 20_000)], "alpha", now - 5_000, now)).toBeUndefined()
   })
 })

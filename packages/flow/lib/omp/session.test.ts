@@ -1752,7 +1752,7 @@ hosted("a resumed session follows the request that resumes it", () => {
     return { elsewhere, other }
   }
 
-  test("a reaped session reused by a new run launches with the new model, permissions and run, and keeps its id, files and directory", async () => {
+  test("a reaped session reused by a new run launches with the new model, permissions, run and directory, and keeps its id and files", async () => {
     const { elsewhere, other } = await directories()
     const { id } = await open({ ...BODY, directory: elsewhere, permissions: "auto" })
     await host.maintain(Date.now() + FAR)
@@ -1760,7 +1760,7 @@ hosted("a resumed session follows the request that resumes it", () => {
 
     await host.create({ ...BODY, runId: "run2", model: "anthropic/claude-other", permissions: "manual", directory: other, reuse: id })
 
-    expect(h.launches.at(-1)?.session).toMatchObject({ runId: "run2", model: "anthropic/claude-other", permissions: "manual", directory: elsewhere })
+    expect(h.launches.at(-1)?.session).toMatchObject({ runId: "run2", model: "anthropic/claude-other", permissions: "manual", directory: other })
     expect(h.launches.at(-1)?.stateDir).toBe(nodeDir("run1"))
     expect((h.fake.procs[1] as FakeProcess).of("open_session")[0]?.sessionDir).toBe(path.join(nodeDir("run1"), SESSION_SUBDIR))
     // The session now belongs to the run that resumed it: that run's release finds it, the old run's does not.
@@ -1780,17 +1780,39 @@ hosted("a resumed session follows the request that resumes it", () => {
     expect(await host.releaseRun("run2")).toBe(1)
   })
 
-  test("a session resumed from its files works in the directory it was launched in, while that directory exists", async () => {
+  test("a session resumed from its files works in the NEW request's directory, with its files where they were; the old directory is named once, only while it exists and differs", async () => {
     const { elsewhere, other } = await directories()
     const { id } = await open({ ...BODY, directory: elsewhere })
     await host.dispose(id)
     await host.create({ ...BODY, runId: "run2", directory: other, reuse: id })
-    expect(h.launches.at(-1)?.session.directory).toBe(elsewhere)
-
-    await host.dispose(id)
-    await fs.rm(elsewhere, { recursive: true })
-    await host.create({ ...BODY, runId: "run3", directory: other, reuse: id })
     expect(h.launches.at(-1)?.session.directory).toBe(other)
+    expect(h.launches.at(-1)?.stateDir).toBe(nodeDir("run1"))
+    await host.prompt(id, { text: "carry on" })
+    const carried = events.filter((event) => event.type === "flow.notice" && String(event.data?.message).includes(elsewhere))
+    expect(carried).toHaveLength(1)
+    expect(String(carried[0]?.data?.message)).toContain("not merged")
+
+    // A second resume of the same session does not repeat it (its start has said it once).
+    await host.dispose(id)
+    events.length = 0
+    await host.create({ ...BODY, runId: "run3", directory: other, reuse: id })
+    await host.prompt(id, { text: "again" })
+    expect(events.filter((event) => event.type === "flow.notice" && String(event.data?.message).includes(elsewhere))).toEqual([])
+  })
+
+  test("no notice when the old directory is gone or is the new one", async () => {
+    const { elsewhere, other } = await directories()
+    const gone = await open({ ...BODY, directory: elsewhere })
+    await host.dispose(gone.id)
+    await fs.rm(elsewhere, { recursive: true })
+    await host.create({ ...BODY, runId: "run2", directory: other, reuse: gone.id })
+    await host.prompt(gone.id, { text: "x" })
+
+    const same = await open({ ...BODY, nodeId: "n2", directory: other })
+    await host.maintain(Date.now() + FAR)
+    await host.create({ ...BODY, nodeId: "n2", runId: "run3", directory: other, reuse: same.id })
+    await host.prompt(same.id, { text: "x" })
+    expect(events.filter((event) => event.type === "flow.notice" && String(event.data?.message).includes("not merged"))).toEqual([])
   })
 })
 
@@ -1889,22 +1911,21 @@ hosted("session files and project capture", () => {
     expect(h.launches[0]?.stateDir).toBe(path.join(rootOf(h.project), "run1", "n1"))
   })
 
-  test("an idle live session does not hold the project, a turn in flight does and is named, and a reaped session never does", async () => {
+  test("every live session holds the project, idle between turns included, and is named; a reaped or disposed one does not", async () => {
     expect(host.working()).toBe(false)
     const { id, proc } = await open()
-    expect(host.live()).toBe(1)
-    expect(host.working()).toBe(false)
-    expect(host.holders()).toEqual([])
-
-    await host.prompt(id, { text: "go" })
     expect(host.working()).toBe(true)
     expect(host.holders()).toEqual([id])
+
+    await host.prompt(id, { text: "go" })
     finish(proc)
-    expect(host.working()).toBe(false)
+    expect(host.working()).toBe(true)
+    expect(host.holders()).toEqual([id])
 
     await host.maintain(Date.now() + 24 * 60 * 60_000)
     expect(host.live()).toBe(0)
     expect(host.working()).toBe(false)
+    expect(host.holders()).toEqual([])
     await host.prompt(id, { text: "wake up" })
     expect(host.working()).toBe(true)
     await host.dispose(id)
@@ -1912,14 +1933,38 @@ hosted("session files and project capture", () => {
     expect(host.holders()).toEqual([])
   })
 
-  test("a session waiting on a dialog holds the project even with no turn in flight", async () => {
+  test("a session waiting on a dialog is among the holders", async () => {
     const { id, proc } = await open({ ...BODY, permissions: "manual" })
     await host.prompt(id, { text: "go" })
     proc.emit(frames.approval("r1", "Allow tool: bash\ncommand: ls"))
-    finish(proc)
-    expect(host.working()).toBe(true)
     expect(host.holders()).toEqual([id])
     host.replyPermission(id, "r1", "once")
+    finish(proc)
+    expect(host.holders()).toEqual([id])
+  })
+
+  test("a create is counted from its first line: while its request is still being parsed the project is already held, and nobody is named", async () => {
+    const parsing = gate()
+    const real = fs.stat as (...args: unknown[]) => Promise<unknown>
+    const spy = spyOn(fs, "stat").mockImplementation((async (...args: unknown[]) => {
+      if (String(args[0]) === h.project) await parsing.hold()
+      return real(...args)
+    }) as never)
+    try {
+      const creating = host.create(BODY)
+      await parsing.reached
+      expect(host.working()).toBe(true)
+      expect(host.holders()).toEqual([])
+      parsing.release()
+      await creating
+    } finally {
+      spy.mockRestore()
+    }
+    expect(host.working()).toBe(true)
+  })
+
+  test("a create that fails while parsing releases the count", async () => {
+    expect((await failure(host.create({ ...BODY, permissions: "yolo" }))).status).toBe(400)
     expect(host.working()).toBe(false)
   })
 
@@ -2075,6 +2120,8 @@ hosted("transient sessions", () => {
 
     await host.dispose(id)
     expect(await fs.stat(nodeDir("run1")).then(() => true, () => false)).toBe(false)
+    // The run directory this create made goes with it.
+    expect(await fs.stat(path.dirname(nodeDir("run1"))).then(() => true, () => false)).toBe(false)
     expect(await host.list(10)).toEqual([])
     expect((await failure(host.prompt(id, { text: "again" }))).status).toBe(404)
     expect((await failure(host.create({ ...BODY, runId: "run2", reuse: id }))).status).toBe(404)

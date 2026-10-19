@@ -109,12 +109,13 @@ export const store = {
   deletePipeline: (name: string) => request(`/pipelines/${encodeURIComponent(name)}`, { method: "DELETE" }),
   /** MCP servers of the OpenFlow Omp profile. */
   mcpServers: () => request<McpServer[]>("/mcp"),
-  saveMcpServer: (server: McpServer) =>
+  /** `create` asks the host to refuse (409 `name-taken`) when the name already belongs to a server instead of overwriting it. */
+  saveMcpServer: (server: McpServer, create = false) =>
     request<{ name: string; path: string; backup?: string; unchanged?: boolean }>(
       `/mcp/${encodeURIComponent(server.name)}`,
       {
         method: "PUT",
-        body: JSON.stringify(server),
+        body: JSON.stringify(create ? { ...server, create: true } : server),
       },
     ),
   deleteMcpServer: (name: string) => removal<{ name: string; removed: boolean }>(`/mcp/${encodeURIComponent(name)}`),
@@ -124,8 +125,11 @@ export const store = {
    */
   skills: () => request<SkillEntry[]>("/skills"),
   skill: (name: string) => request<SkillDoc>(`/skills/${encodeURIComponent(name)}`),
-  saveSkill: (skill: { name: string; description?: string; content: string }) =>
-    request<SkillSave>(`/skills/${encodeURIComponent(skill.name)}`, { method: "PUT", body: JSON.stringify(skill) }),
+  saveSkill: (skill: { name: string; description?: string; content: string }, create = false) =>
+    request<SkillSave>(`/skills/${encodeURIComponent(skill.name)}`, {
+      method: "PUT",
+      body: JSON.stringify(create ? { ...skill, create: true } : skill),
+    }),
   deleteSkill: (name: string) => removal<{ name: string; removed: boolean }>(`/skills/${encodeURIComponent(name)}`),
   /**
    * A git worktree per card, so a batch of cards cannot overwrite each other.

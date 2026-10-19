@@ -69,6 +69,7 @@ import { applyEvent, createActivity, persistable } from "./activity"
 import * as api from "./client"
 import { cardSpec, cardTitle, swarmOf, toolMap } from "./card-spec"
 import { createStages } from "./stages"
+import { superseded } from "./runs"
 import { store, type WorktreeRef } from "./store"
 import { mergeSpend, summarize, type PricedModel } from "./usage"
 
@@ -161,6 +162,11 @@ export type RunOptions = {
    * killed at minute 25 still leaves what it had on disk.
    */
   checkpointEvery?: number
+  /**
+   * The interrupted log this run takes over. It is written as `stopped` (and named
+   * `resumedBy` this run) only after this run's own log reached disk.
+   */
+  supersedes?: RunLog
   /**
    * How often the run log is rewritten while nothing else changes it, in
    * milliseconds. The write stamps `updatedAt`, which is what tells a second tab
@@ -709,7 +715,7 @@ export function start(
   }
 
   let checkpointTimer: ReturnType<typeof setTimeout> | undefined
-  let writes: Promise<unknown> = Promise.resolve()
+  let writes: Promise<boolean> = Promise.resolve(true)
   /** The last write failed, and the user has been told. */
   let saveFailing = false
 
@@ -737,12 +743,13 @@ export function start(
       deps.saveRun(log).then(
         () => {
           saveFailing = false
+          return true
         },
         (error) => {
           // The heartbeat writes every 30 s: a disk that stays full is said once, and again only after a write got through.
-          if (saveFailing) return
+          if (!saveFailing) hooks.onNotice?.("error", `run log not saved: ${api.describe(error)}`)
           saveFailing = true
-          hooks.onNotice?.("error", `run log not saved: ${api.describe(error)}`)
+          return false
         },
       ),
     )
@@ -2432,6 +2439,18 @@ export function start(
 
   const done = (async () => {
     try {
+      // A resumed run records itself before anything slow: the carried session ids
+      // are in the log, so a page closed from here on still leaves something to resume.
+      // Only then is the interrupted log closed, and only if this write got through —
+      // a failed one leaves the old log resumable.
+      if (options.supersedes) {
+        for (const id of carried) entry(id).sessionID = nodeSession.get(id)
+        if (await save()) {
+          await deps
+            .saveRun(superseded(options.supersedes, log.id))
+            .catch((error) => hooks.onNotice?.("error", `the interrupted run's log was not closed: ${api.describe(error)}`))
+        }
+      }
       // One catalog read serves both jobs: rejecting a model the server does
       // not offer, and knowing which attachments each model can actually read.
       const models = await api.models().catch(() => undefined)

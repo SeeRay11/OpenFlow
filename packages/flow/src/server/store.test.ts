@@ -84,6 +84,20 @@ describe("store routes of the Omp profile", () => {
     expect(removed.request).toMatchObject({ method: "DELETE", path: "/flow/api/mcp/docs" })
   })
 
+  test("an edit overwrites by default; a new or renamed entry asks the host to refuse a name already taken", async () => {
+    respond = () => Response.json({ name: "docs", path: "mcp.json" })
+    const server = { name: "docs", type: "remote", enabled: true, url: "https://mcp.example/sse" } as const
+    const edit = await last(store.saveMcpServer(server))
+    expect("create" in JSON.parse(edit.request.body)).toBe(false)
+    const fresh = await last(store.saveMcpServer(server, true))
+    expect(JSON.parse(fresh.request.body)).toMatchObject({ create: true, url: "https://mcp.example/sse" })
+
+    respond = () => Response.json({ name: "notes", path: "SKILL.md" })
+    const skill = { name: "notes", description: "d", content: "c" }
+    expect("create" in JSON.parse((await last(store.saveSkill(skill))).request.body)).toBe(false)
+    expect(JSON.parse((await last(store.saveSkill(skill, true))).request.body)).toMatchObject({ create: true, name: "notes" })
+  })
+
   test("a skill listing keeps the legacy flag the host puts on old entries", async () => {
     respond = () =>
       Response.json([

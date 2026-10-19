@@ -191,8 +191,12 @@ file layout, and login/model behavior are documented there rather than re-derive
   run-log write stamps `updatedAt` and a 30 s heartbeat
   (`DEFAULT_HEARTBEAT_EVERY`) keeps it moving, so a run another tab is writing is never offered; a
   failing save raises the "run log not saved" notice once and re-arms after a save succeeds
-  (`saveFailing`), not every 30 s. Starting the resumed run writes the old log `stopped` with
-  `resumedBy` (`superseded()`). **The carried session id must be written to the
+  (`saveFailing`), not every 30 s. The tick (and the tab becoming visible) re-reads the run list, only
+  while idle with no folder picker open and the tab visible, and `offerable()` never offers Resume from
+  a list older than the 5-minute window (`runsReadAt`). A resumed run writes its OWN log first
+  (carrying the session ids, before the model-catalog wait) and only then writes the old log `stopped`
+  with `resumedBy` (`superseded()`); if the first write fails the interrupted log stays resumable and
+  the notice appears. **The carried session id must be written to the
   run log** (`patch(node.id, { sessionID })`), because the create path that normally writes it
   is skipped — without it a resumed run reports cards with no session while they answer in one,
   and the *next* interruption has nothing left to carry.
@@ -583,9 +587,13 @@ authority where this and it disagree.
   `POST /runs/prune` is a different thing: it removes only `.openflow/runs` logs.
 - **Resume finds a session by id across the whole state root.** `lib/omp/session.ts` scans the
   newest 2,000 run directories by mtime and, of those, the newest 4,000 card directories, and adopts
-  the session from its original directory; the new run id is kept for new work. The NEW request
-  applies (model, permissions, swarm, tools, run; a live process keeps its launch settings until it is
-  next resumed), and `.openflow-session.json` stores the saved
+  the session; only its FILES stay in their original state directory, the new run id is kept for new
+  work. The NEW request applies (model, permissions, swarm, tools, run and working directory: the
+  engine decides where a resumed card works). If the previously recorded directory still exists and
+  differs, one notice at the first accepted prompt says the work done there was not merged, with the
+  path (`session.carried`). A live process keeps its launch settings and directory until it is next
+  resumed; a restart/trimmed-record revive resumes in the saved directory and gets no notice.
+  `.openflow-session.json` stores the saved
   create request (`request`) so a disk-only session resumes as launched. Using a session touches its
   run directory's mtime (at most once a second per run) so recent use ranks newest. A carried session
   the host cannot find makes the engine clear its attach and start the card fresh, once.
@@ -595,9 +603,10 @@ authority where this and it disagree.
   longer holds, and only for a session of the CURRENT project (`inProject`: its state directory is under
   the current state root; another project's sessions are not listed and are 404 by id until that project
   is current again); `final`, `steps` and `calls` answer 404 once it is released (`find()` throws for a
-  disposed session). `CreateSession.transient: true` (boolean, else 400; not with `reuse`) writes
-  neither file, is never listed or resumable, and has its state directory removed on dispose; the
-  browser's model test sends it. A session with no
+  disposed session). `CreateSession.transient: true` (boolean, else 400; with `reuse` also 400) writes
+  neither file, is never listed or resumable, and its node directory (plus the run directory when this
+  create made it and it is empty) is removed on dispose, release, failed start, exit or idle reap; the
+  browser's model test sends it, and `FakeEngine` behaves the same. A session with no
   readable history is not listed. The table keeps at most 64 idle or lost records (`KEPT_RECORDS`),
   dropping the least recently active, never one with a turn in flight or a dialog waiting; `prompt`
   on a session with no record resumes it from its files; a session disposed on purpose is 404.
@@ -609,20 +618,22 @@ authority where this and it disagree.
   `dispose` kills their process groups and waits, capped at 10 s. Start-up notices (tool-toggle
   notes, swarm degradation) are emitted when the first prompt is accepted, once, and not on a resume.
 - **The event stream survives a drop.** The browser re-subscribes by itself while a run is active
-  (`keepSubscribed` in `src/server/stream.ts`, 250 ms doubling to 8 s). After a dropped client the
-  host sends `{"type":"flow.stream.reset"}` once per gap (events published while nobody was attached, or
-  a client dropped for backpressure; a subscriber with no gap gets none), then replays every
+  (`keepSubscribed` in `src/server/stream.ts`, 250 ms doubling to 8 s). After a gap the
+  host sends `{"type":"flow.stream.reset"}` to EVERY subscriber that attaches within 60 s after a gap
+  (`GAP_WINDOW_MS` in `lib/omp/routes.ts`: events published to nobody, or a client dropped for
+  backpressure), after `: connected` and before the replayed asks; none otherwise. It then replays every
   still-pending `permission.v2.asked` / `question.v2.asked` (`sessions.pending()`) to every new subscriber. One
   event larger than the whole queue is replaced by a `flow.notice`, and tool-call arguments and raw
   results are capped (`lib/omp/events.ts`). Dialogs are keyed `sessionID:requestID` (`requestKey` in
   `src/state.ts`).
-- **A project switch is refused while engine work is live.** `POST /project` answers 409
-  `project-busy` only while a session is starting, a create is in flight, a turn is running or a
-  dialog is pending, or an uplift planner runs (`projectLocked` = `engine.working() ||
-  uplift.active()`); an idle live session no longer holds the project, and the lock is re-checked
-  right before the switch is applied. The body carries `sessions` (ids from `engine.holders()`; empty
-  when only a planner or a create holds it). The UI (`switchFreeing` in `src/server/project.ts`)
-  asks "N running card(s)… Stop them and switch?" when ids are named and on yes deletes each and
+- **A project switch is refused while any engine session is open.** `POST /project` answers 409
+  `project-busy` while ANY session is live (idle between turns included) or starting, a create is in
+  flight (counted from the first line of `create()`), or an uplift planner runs (`projectLocked` =
+  `engine.working() || uplift.active()`); reaped, lost and disposed sessions do not count, and the lock
+  is re-checked right before the switch is applied. The body carries `sessions` (`engine.holders()`:
+  every live or starting id; empty when only a planner or a create holds it). The UI
+  (`switchFreeing` in `src/server/project.ts`) asks "N open card session(s) in the current project. Stop
+  them and switch?" when ids are named and on yes deletes each and
   retries once; with none it shows the host's sentence. The picker and the Runs menu are disabled while
   a run is active, Run and Resume while the picker is open, and the page re-checks before asking the
   host and switches the host back if it moved first. The page hands the project it read at run start
@@ -631,7 +642,10 @@ authority where this and it disagree.
   browser, and the host records the spawn project on each PTY (`PtyInfo.project`): a ticket or attach
   from another project is 409 `project-mismatch`, nothing is killed. Terminal cleanup sweeps the whole
   process group, SIGHUP then SIGKILL after the grace, even when the leader already exited. Custom
-  roles are per project (`.openflow/roles.json`); the old browser copy is migrated once per browser
+  roles are per project (`.openflow/roles.json`); a role created while they load is merged in when the
+  read finishes (project roles first, local win on the same id, `mergeRoles`) and then saved, and if the
+  read fails nothing is written to the project and a notice says the change stays in the tab; an edit
+  made before the read does not overwrite the browser copy that is the migration source. The old browser copy is migrated once per browser
   (`openflow.customRolesMigrated.v1`) and nothing is written to a project's file before it was read.
 - **Memory records are scoped and bounded.** Forget cutoffs in `<state>/memory-ignore.json` are keyed
   `<scope>|<prefix>` (for example `repo:acme/widgets|openflow/demo/`); a legacy key (starts with
@@ -646,9 +660,12 @@ authority where this and it disagree.
   names the app invents are slugged. A name is one safe segment, and an MCP name a usable JSON key (not
   empty, not `__proto__`, no control characters, at most 128). Saving a server disabled removes it from
   `enabledServers`; deleting removes it from both lists; DELETE of a missing name is 404
-  `{ removed: false }`, which the UI's `removal()` treats as a result. Creating a NEW server or skill
-  whose slugged name already exists as a different entry is 409 `{ code: "name-taken" }` and changes
-  nothing; the PUT answer's `name` is the stored key.
+  `{ removed: false }`, which the UI's `removal()` treats as a result. `PUT` accepts an add-only
+  boolean `create` (non-boolean is 400, never written to `mcp.json` or `SKILL.md`): with `create: true`
+  an exact key/folder that exists, or a colliding slug, is 409 `{ code: "name-taken" }` and nothing
+  is written; without it the save edits in place. The panels send `create: true` for New and when the
+  typed name differs from the entry being edited, and keep the editor open on a 409. The PUT answer's
+  `name` is the stored key.
 - **A blank model cannot run, and the app is what says so.** `preflight` blocks `no-model` ("pick a
   model for this node"); the default model only applies to cards added afterwards, and the canvas
   shows `no model`. The host does not refuse a model-less session: `buildLaunch` omits `--model`

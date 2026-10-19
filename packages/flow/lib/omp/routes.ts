@@ -28,11 +28,16 @@ const PROMPT_BODY_LIMIT = 64 * 1024 * 1024
 const DEFAULT_LIST_LIMIT = 100
 const MAX_LIMIT = 1000
 
+/** A subscriber attaching this long after a gap in the stream is still told it may have missed events. */
+const GAP_WINDOW_MS = 60_000
+
 /* --------------------------------------------------------------------- bus */
 
 export type EventBusOptions = {
   pingMs?: number
   maxQueueBytes?: number
+  /** The clock the gap window is measured by. Default `Date.now`. */
+  now?: () => number
   /** Events a subscriber missed that must not be lost (the dialogs still waiting for an answer): sent to each new subscriber, and only to it, when it attaches. */
   replay?(): BusEvent[]
 }
@@ -51,10 +56,11 @@ export function createEventBus(options: EventBusOptions = {}): EventBus {
   const encoder = new TextEncoder()
   const pingMs = options.pingMs ?? PING_MS
   const maxQueueBytes = options.maxQueueBytes ?? MAX_QUEUE_BYTES
+  const now = options.now ?? Date.now
   const clients = new Set<ReadableStreamDefaultController<Uint8Array>>()
   let pinger: ReturnType<typeof setInterval> | undefined
-  /** Events went out that no subscriber received (none was attached, or one was dropped for falling behind): the next subscriber is told once, then the gap is closed. */
-  let missed = false
+  /** When events last went out that a subscriber did not receive (none was attached, or one was dropped for falling behind); subscribers attaching within `GAP_WINDOW_MS` of it are told. */
+  let gapAt: number | undefined
   /** Set by `close()`: a client attaching later gets a closed stream, never a registration and a ping timer on a host that is gone. */
   let closed = false
 
@@ -76,12 +82,12 @@ export function createEventBus(options: EventBusOptions = {}): EventBus {
       try {
         controller.enqueue(chunk)
       } catch {
-        missed = true
+        gapAt = now()
         drop(controller)
         continue
       }
       if (controller.desiredSize !== null && controller.desiredSize < 0) {
-        missed = true
+        gapAt = now()
         drop(controller)
       }
     }
@@ -90,7 +96,7 @@ export function createEventBus(options: EventBusOptions = {}): EventBus {
   return {
     publish(event) {
       if (!clients.size) {
-        missed = true
+        gapAt = now()
         return
       }
       let chunk = encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
@@ -112,10 +118,8 @@ export function createEventBus(options: EventBusOptions = {}): EventBus {
             clients.add(controller)
             // Flushes the headers: a fetch does not resolve until the first byte.
             controller.enqueue(encoder.encode(": connected\n\n"))
-            if (missed) {
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "flow.stream.reset" })}\n\n`))
-              missed = false
-            }
+            // Every subscriber attaching within the window after a gap is told, not only the first: two tabs reconnecting after one drop both need to resynchronise.
+            if (gapAt !== undefined && now() - gapAt <= GAP_WINDOW_MS) controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "flow.stream.reset" })}\n\n`))
             for (const event of options.replay?.() ?? []) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`))
             pinger ??= setInterval(() => send(encoder.encode(": ping\n\n")), pingMs)
             pinger.unref?.()

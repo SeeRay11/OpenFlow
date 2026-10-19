@@ -5,7 +5,7 @@ export const PROJECT_BUSY = "a run is in progress — stop it or wait for it to 
 
 /** The question put to the user when the host names cards still holding the project (left by a closed tab, say). */
 export function lockQuestion(sessions: string[]) {
-  return `${sessions.length} running card(s) in the current project. Stop them and switch?`
+  return `${sessions.length} open card session(s) in the current project. Stop them and switch?`
 }
 
 /**

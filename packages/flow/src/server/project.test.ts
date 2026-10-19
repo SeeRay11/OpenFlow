@@ -8,7 +8,7 @@ const busy = (sessions: string[]) => new ProjectBusyError("a run is still active
 describe("a refused project switch", () => {
   test("with cards named, the user is asked how many", () => {
     expect(onLock(busy(["s1", "s2"]))).toEqual({ action: "ask", sessions: ["s1", "s2"], question: lockQuestion(["s1", "s2"]) })
-    expect(lockQuestion(["s1", "s2"])).toContain("2 running card(s)")
+    expect(lockQuestion(["s1", "s2"])).toContain("2 open card session(s)")
   })
 
   test("with none named, only the host's sentence is shown", () => {

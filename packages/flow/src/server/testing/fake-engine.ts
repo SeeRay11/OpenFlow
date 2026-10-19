@@ -58,6 +58,9 @@ import { DEFAULT_USAGE } from "./engine-script"
  *    characters and caps its length.
  */
 
+/** How long after a gap every stream that attaches hears `flow.stream.reset`. */
+export const DEFAULT_GAP_WINDOW_MS = 60_000
+
 export type FakeEngineOptions = {
   /** The catalog `models()` answers. Default: two text-and-image models. */
   models?: ModelInfo[]
@@ -65,6 +68,10 @@ export type FakeEngineOptions = {
   answer?: string
   /** `health().omp.version`. */
   version?: string
+  /** The wall clock the stream-gap window is judged on. Default `Date.now`; a test moves its own. */
+  clock?: () => number
+  /** How long after a gap a new stream is told events were lost. Default 60 s, as on the host. */
+  gapWindowMs?: number
 }
 
 export type Recorded = { method: string; sessionID?: string; args: unknown[] }
@@ -193,6 +200,8 @@ type Session = {
 
 export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
   const catalog = options.models ?? FAKE_MODELS
+  const wall = options.clock ?? Date.now
+  const gapWindow = options.gapWindowMs ?? DEFAULT_GAP_WINDOW_MS
   const sessions = new Map<string, Session>()
   /** Disposed sessions, kept as the host keeps them on disk: listed as history, readable nowhere else. */
   const history = new Map<string, Session>()
@@ -204,8 +213,8 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
     sequence: number
     fallback: TurnScript
     closed: boolean
-    /** Events were published while nobody was attached, or a stream was dropped, since a subscriber last attached. */
-    gap: boolean
+    /** When events last went to nobody, or a stream was dropped. */
+    gapAt: number | undefined
     /** The startup `driver.holdStartup` is holding: creates wait on `open` and announce themselves on `reached`. */
     hold?: { reached: PromiseWithResolvers<void>; open: PromiseWithResolvers<void> }
   } = {
@@ -213,7 +222,7 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
     sequence: 0,
     fallback: { steps: [{ text: options.answer ?? "done" }] },
     closed: false,
-    gap: false,
+    gapAt: undefined,
   }
 
   /** Logical time: every reading is later than the last, so ordering never depends on how fast a test runs. */
@@ -228,7 +237,7 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
     const session = typeof sessionID === "string" ? sessions.get(sessionID) : undefined
     if (session) session.updated = now()
     const event: BusEvent = { type, data }
-    if (!subscribers.size) state.gap = true
+    if (!subscribers.size) state.gapAt = wall()
     for (const subscriber of [...subscribers]) {
       try {
         subscriber.onEvent(event)
@@ -284,7 +293,7 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
     session.queue = []
     settle(session, { status: "missing" })
     sessions.delete(session.id)
-    history.set(session.id, session)
+    if (!session.input.transient) history.set(session.id, session)
   }
 
   function modelOf(session: Session) {
@@ -442,6 +451,8 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
     if (typeof input.card?.key !== "string" || !input.card.key) throw new FakeHttpError("card.key must be a non-empty string", 400)
     if (input.model !== undefined && !MODEL_SHAPE.test(input.model)) throw new FakeHttpError("model must look like provider/id", 400)
     if (input.permissions !== undefined && input.permissions !== "auto" && input.permissions !== "manual") throw new FakeHttpError('permissions must be "auto" or "manual"', 400)
+    if (input.transient !== undefined && typeof input.transient !== "boolean") throw new FakeHttpError("transient must be a boolean", 400)
+    if (input.transient === true && input.reuse !== undefined) throw new FakeHttpError("a transient session cannot be reused", 400)
   }
 
   const driver: FakeDriver = {
@@ -506,7 +517,7 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
       return [...sessions.keys()]
     },
     dropStreams(error = new Error("the event stream was dropped")) {
-      state.gap = true
+      state.gapAt = wall()
       for (const subscriber of [...subscribers]) {
         subscribers.delete(subscriber)
         subscriber.end.reject(error)
@@ -536,11 +547,8 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
       if (signal.aborted || state.closed) return
       const subscriber = { onEvent, end: Promise.withResolvers<void>() }
       subscribers.add(subscriber)
-      // What the host does: a subscriber that attaches after a gap (events published while nobody was attached, or a client dropped) is told once that events were lost; one with no gap gets none. Requests still waiting are replayed to every new subscriber.
-      if (state.gap) {
-        state.gap = false
-        onEvent({ type: "flow.stream.reset" })
-      }
+      // What the host does: every subscriber that attaches within the window after a gap (events published to nobody, or a client dropped) is told that events were lost, ahead of the replayed requests.
+      if (state.gapAt !== undefined && wall() - state.gapAt < gapWindow) onEvent({ type: "flow.stream.reset" })
       for (const session of sessions.values()) for (const entry of session.open.values()) onEvent(entry.asked)
       signal.addEventListener(
         "abort",
@@ -704,7 +712,10 @@ export function createFakeEngine(options: FakeEngineOptions = {}): FakeEngine {
 
     async sessions(limit = 200) {
       record("sessions", undefined, limit)
-      const rows = [...sessions.values(), ...[...history.values()].filter((session) => !sessions.has(session.id))].map(rowOf)
+      // A transient session is never listed, live or not: nothing of it is kept.
+      const rows = [...sessions.values(), ...[...history.values()].filter((session) => !sessions.has(session.id))]
+        .filter((session) => !session.input.transient)
+        .map(rowOf)
       return rows.sort((a, b) => b.updated - a.updated).slice(0, limit)
     },
 

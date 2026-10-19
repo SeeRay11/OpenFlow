@@ -16,11 +16,11 @@ export type EngineHost = {
   /** Sessions with a process attached right now. */
   live(): number
   /**
-   * True while work is bound to the project it was started in: a create in flight, or a session that is starting, running a turn or waiting on a dialog.
-   * Idle live sessions (no turn, no dialog) and reaped ones hold nothing and do not count.
+   * True while work is bound to the project it was started in: a create in flight (from its first line), or any session that is starting or live, idle ones included.
+   * Reaped, lost and disposed sessions hold nothing and do not count.
    */
   working(): boolean
-  /** Ids of the sessions behind `working()`: starting, turn in flight, dialog waiting. */
+  /** Ids of every session behind `working()`: starting, or live (running, idle between turns, waiting on a dialog). */
   holders(): string[]
   /** Forgets the cached model catalog: the profile's logins changed. */
   resetModels(): void

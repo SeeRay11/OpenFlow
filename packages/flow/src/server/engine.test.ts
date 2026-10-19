@@ -89,6 +89,8 @@ type HarnessOptions = {
   cleanupThrows?: boolean
   /** Holds every `createSession` until it resolves: a session that is still opening. */
   createGate?: Promise<void>
+  /** Holds the model catalog read until it resolves: a host that is still enumerating its models. */
+  modelsGate?: Promise<void>
   /** Makes `createSession` reject with the abort reason as soon as the signal the engine passed aborts, as the client does. */
   createStopsOnAbort?: boolean
   /** Makes every permission and question reply fail, with this HTTP status when given. */
@@ -296,6 +298,7 @@ function harness(options: HarnessOptions = {}) {
         }
       : {}),
     async models() {
+      await options.modelsGate
       const list = catalogReads++ && options.modelsRefilled ? options.modelsRefilled : (options.models ?? [])
       return list.map((value) => {
         const index = value.indexOf("/")
@@ -1291,6 +1294,64 @@ describe("run log", () => {
 
     h.release("a")
     await run.done
+  })
+
+  describe("a resumed run takes over an interrupted log", () => {
+    const interrupted = (): RunLog => ({
+      id: "run-old",
+      pipeline: "test",
+      pipelineID: "test-pipeline",
+      input: "go",
+      status: "running",
+      started: 1,
+      updatedAt: 2,
+      nodes: [{ id: "a", role: "a", status: "running", sessionID: "ses-old" }],
+    })
+
+    test("the old log is untouched until the replacement is saved, and that happens before the catalog answers", async () => {
+      const catalog = Promise.withResolvers<void>()
+      const disk = Promise.withResolvers<void>()
+      const h = harness({ modelsGate: catalog.promise, behavior: { a: { hold: true } } })
+      const written: RunLog[] = []
+      h.deps.saveRun = async (log) => {
+        // The replacement's write is slow: nothing may close the old log while it is in flight.
+        if (log.id !== "run-old") await disk.promise
+        written.push(structuredClone(log))
+      }
+      const run = h.run(pipeline("a"), "go", { sessions: { a: "ses-old" }, supersedes: interrupted(), heartbeatEvery: 10_000_000 })
+      await flush()
+      expect(written).toEqual([])
+
+      disk.resolve()
+      await flush()
+      // The catalog has still not answered, yet the replacement is on disk, carrying its session, and only then the old one is closed.
+      expect(written.map((entry) => entry.id)).toEqual([run.log.id, "run-old"])
+      expect(written[0].nodes[0].sessionID).toBe("ses-old")
+      expect(written[0].status).toBe("running")
+      expect(written[1]).toMatchObject({ status: "stopped", resumedBy: run.log.id })
+
+      catalog.resolve()
+      h.release("a")
+      await run.done
+    })
+
+    test("when the replacement cannot be saved the old log stays resumable, and the failure is reported", async () => {
+      const h = harness({ behavior: { a: { hold: true } } })
+      const written: string[] = []
+      h.deps.saveRun = async (log) => {
+        written.push(log.id)
+        if (log.id !== "run-old") throw new Error("disk full")
+      }
+      const run = h.run(pipeline("a"), "go", { sessions: { a: "ses-old" }, supersedes: interrupted(), heartbeatEvery: 10_000_000 })
+      await flush()
+
+      expect(written).not.toContain("run-old")
+      expect(h.notices.some((notice) => notice.kind === "error" && notice.text.includes("disk full"))).toBe(true)
+
+      h.release("a")
+      await run.done
+      expect(written).not.toContain("run-old")
+    })
   })
 
   test("every write stamps updatedAt, and a quiet run keeps writing on its heartbeat", async () => {

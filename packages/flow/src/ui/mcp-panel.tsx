@@ -98,7 +98,8 @@ export function McpPanel(props: {
     setBusy(true)
     setError(undefined)
     try {
-      const result = await store.saveMcpServer(server)
+      // A new server, or an edit that changes the name, must not land on a server that already has that name: the host answers 409 and the editor stays open.
+      const result = await store.saveMcpServer(server, !draft.original || draft.original !== name)
       // A rename leaves the old key behind, exactly as a renamed skill leaves
       // its folder: the write is an upsert under the new name, nothing else.
       let renamed = ""

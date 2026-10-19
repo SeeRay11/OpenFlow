@@ -460,11 +460,22 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
       expect(third.events.filter((event) => event.data?.id === request)).toEqual([])
     })
 
-    scenario("a healthy stream that attaches while another is attached is not told events were lost", async (ctx) => {
-      // The reset marks a gap (events published while nobody was attached, or a client dropped); a subscriber with no gap gets none.
-      await ctx.listen()
-      const second = await ctx.listen()
-      expect(second.events.filter((event) => event.type === "flow.stream.reset")).toEqual([])
+    scenario("a stream that attaches after events went to nobody is told so, before the requests it is shown again", async (ctx) => {
+      // Events published while nobody is attached are a gap: the next stream hears `flow.stream.reset`, and only then the asks still waiting.
+      const request = `${ctx.run}-gap`
+      await ctx.driver.script({ steps: [{ text: "done", ask: { kind: "permission", id: request, action: "bash", resource: "command: ls" } }] })
+      const id = await ctx.open("gap", { permissions: "manual" })
+      await ctx.api.prompt(id, "go")
+      await eventually(async () => (await ctx.api.active()).includes(id), "the turn is running with nobody listening")
+
+      const late = await ctx.listen()
+      await late.waitFor((event) => event.type === "permission.v2.asked" && event.data?.id === request)
+      const kinds = late.events.map((event) => event.type)
+      expect(kinds).toContain("flow.stream.reset")
+      expect(kinds.indexOf("flow.stream.reset")).toBeLessThan(kinds.indexOf("permission.v2.asked"))
+
+      await ctx.api.replyPermission(id, request, "once")
+      await ctx.api.waitForIdle(id)
     })
 
     scenario("a free-text answer to a question is carried back as typed", async (ctx) => {
@@ -771,6 +782,18 @@ export function defineEngineContract(label: string, factory: () => Promise<Contr
       await ctx.api.prompt(id, "an unrelated first prompt")
       await ctx.api.waitForIdle(id)
       expect(await listed()).toBe(title)
+    })
+
+    scenario("a transient session is never listed and leaves no readable history once released", async (ctx) => {
+      const id = await ctx.open("probe", { transient: true })
+      await ctx.api.prompt(id, "Reply with the single word ok.")
+      await ctx.api.waitForIdle(id)
+      expect((await ctx.api.transcript(id)).text).toBeTruthy()
+      expect((await ctx.api.sessions()).map((row) => row.id)).not.toContain(id)
+
+      await ctx.api.release(id)
+      expect(statusOf(await rejection(ctx.api.transcript(id)))).toBe(404)
+      expect((await ctx.api.sessions()).map((row) => row.id)).not.toContain(id)
     })
 
     scenario("the session list is newest first, carries card and model, and honours the limit", async (ctx) => {

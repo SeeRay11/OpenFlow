@@ -537,6 +537,38 @@ describe("skills", () => {
     expect((await call("PUT", "/flow/api/skills/a-b", { body: skill }))!.status).toBe(200)
   })
 
+  test("create refuses an exact name that already exists, and without it the same save is an edit", async () => {
+    await call("PUT", "/flow/api/skills/a", { body: { ...skill, content: "first" } })
+    await call("PUT", "/flow/api/skills/c", { body: { ...skill, content: "keep me" } })
+    const before = await read(path.join(skillsDir(), "c", "SKILL.md"))
+
+    // Renaming `a` to `c` is a create under the new name.
+    const clash = await call("PUT", "/flow/api/skills/c", { body: { ...skill, content: "from a", create: true } })
+    expect(clash!.status).toBe(409)
+    expect(clash!.body).toMatchObject({ code: "name-taken", error: expect.stringContaining('"c"') })
+    expect(await read(path.join(skillsDir(), "c", "SKILL.md"))).toBe(before)
+    expect((await fs.readdir(skillsDir())).sort()).toEqual(["a", "c"])
+
+    const mixed = await call("PUT", `/flow/api/skills/${encodeURIComponent("C")}`, { body: { ...skill, create: true } })
+    expect(mixed!.status).toBe(409)
+
+    // A free name is created, and `create` never reaches the file.
+    const fresh = await call("PUT", "/flow/api/skills/d", { body: { ...skill, create: true } })
+    expect(fresh!.status).toBe(200)
+    expect(await read(path.join(skillsDir(), "d", "SKILL.md"))).not.toContain("create")
+
+    // Without `create` an existing name is still edited in place; create:false is the same.
+    expect((await call("PUT", "/flow/api/skills/c", { body: { ...skill, content: "edited" } }))!.status).toBe(200)
+    expect((await call("PUT", "/flow/api/skills/c", { body: { ...skill, content: "edited again", create: false } }))!.status).toBe(200)
+    expect(await read(path.join(skillsDir(), "c", "SKILL.md"))).toContain("edited again")
+  })
+
+  test("a create that is not a boolean is a 400 and writes nothing", async () => {
+    const response = await call("PUT", "/flow/api/skills/x", { body: { ...skill, create: "yes" } })
+    expect(response!.status).toBe(400)
+    await expect(fs.readdir(skillsDir())).rejects.toThrow()
+  })
+
   test("keeps a traversing name inside the skills directory", async () => {
     const result = await call("PUT", `/flow/api/skills/${encodeURIComponent("../../evil")}`, { body: skill })
     expect((result!.body as any).path).toBe(path.join(skillsDir(), "evil", "SKILL.md"))
@@ -970,6 +1002,42 @@ describe("mcp servers", () => {
     // `constructor` is on every object's prototype but is no server.
     expect((await call("DELETE", "/mcp/constructor"))!.status).toBe(404)
     expect(Object.keys((await config()).mcpServers)).toEqual(["real"])
+  })
+
+  test("create refuses an exact name that already exists and leaves the config and its backup byte-identical", async () => {
+    await fs.mkdir(profile, { recursive: true })
+    const original = JSON.stringify({ mcpServers: { a: { command: "one" }, c: { command: "keep" } } })
+    await fs.writeFile(configPath(), original)
+    // First rewrite creates the pre-OpenFlow backup.
+    await call("PUT", "/mcp/a", { body: { type: "local", command: ["one", "--x"] } })
+    const before = await read(configPath())
+    expect(await read(`${configPath()}.bak`)).toBe(original)
+
+    // Renaming `a` to `c` is a create under the new name.
+    const clash = await call("PUT", "/mcp/c", { body: { type: "local", command: ["from-a"], create: true } })
+    expect(clash!.status).toBe(409)
+    expect(clash!.body).toMatchObject({ code: "name-taken", error: expect.stringContaining('"c"') })
+    expect(await read(configPath())).toBe(before)
+    expect(await read(`${configPath()}.bak`)).toBe(original)
+
+    // Without `create`, or with false, it is the edit it always was.
+    expect((await call("PUT", "/mcp/c", { body: { type: "local", command: ["edited"] } }))!.status).toBe(200)
+    expect((await call("PUT", "/mcp/c", { body: { type: "local", command: ["edited2"], create: false } }))!.status).toBe(200)
+    expect((await config()).mcpServers.c.command).toBe("edited2")
+    expect(await read(`${configPath()}.bak`)).toBe(original)
+
+    // A free name is created with create:true, and the flag is not stored.
+    const fresh = await call("PUT", "/mcp/d", { body: { type: "local", command: ["new"], create: true } })
+    expect(fresh!.status).toBe(200)
+    expect((await config()).mcpServers.d).not.toHaveProperty("create")
+  })
+
+  test("create also refuses a name that slugs onto an existing server, and a non-boolean create is a 400", async () => {
+    await call("PUT", "/mcp/a-b", { body: { type: "local", command: ["one"] } })
+    const before = await read(configPath())
+    expect((await call("PUT", `/mcp/${encodeURIComponent("a.b")}`, { body: { type: "local", command: ["two"], create: true } }))!.status).toBe(409)
+    expect((await call("PUT", "/mcp/z", { body: { type: "local", command: ["two"], create: 1 } }))!.status).toBe(400)
+    expect(await read(configPath())).toBe(before)
   })
 
   test("a new name that slugs onto a different existing server is refused and changes nothing", async () => {

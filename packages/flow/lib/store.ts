@@ -253,8 +253,11 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
           if (result.removed) return ok(result)
           return { status: 404, body: { ...result, error: `mcp server "${name}" not found: nothing was removed` } }
         }
-        const saved = await writeMcpServer(file, name, await request.json())
-        if ("taken" in saved) return nameTaken(`mcp server "${saved.taken}" already exists and "${name}" would overwrite it: pick another name, or edit "${saved.taken}"`)
+        const form = await request.json()
+        const flag = asRecord(form)?.create
+        if (flag !== undefined && typeof flag !== "boolean") return { status: 400, body: { error: "create must be true or false" } }
+        const saved = await writeMcpServer(file, name, form, flag === true)
+        if ("taken" in saved) return nameTaken(`mcp server "${saved.taken}" already exists: pick another name, or edit "${saved.taken}" instead`)
         return ok(saved)
       } catch (error) {
         return { status: 400, body: { error: error instanceof Error ? error.message : String(error) } }
@@ -276,9 +279,12 @@ export async function handleFlow(paths: FlowPaths, request: FlowRequest): Promis
     if (method === "PUT") {
       const profile = await request.profileDir?.()
       if (!profile) return noProfile()
-      const folder = await skillFolder(path.join(profile, "skills"), raw)
-      if ("taken" in folder) return nameTaken(`skill "${folder.taken}" already exists and "${raw}" would overwrite it: pick another name, or edit "${folder.taken}"`)
-      return ok(await writeSkill(profile, folder.name, await request.json()))
+      const form = await request.json()
+      const flag = asRecord(form)?.create
+      if (flag !== undefined && typeof flag !== "boolean") return { status: 400, body: { error: "create must be true or false" } }
+      const folder = await skillFolder(path.join(profile, "skills"), raw, flag === true)
+      if ("taken" in folder) return nameTaken(`skill "${folder.taken}" already exists: pick another name, or edit "${folder.taken}" instead`)
+      return ok(await writeSkill(profile, folder.name, form))
     }
     if (method === "GET" || method === "DELETE") {
       if (!isSafeSegment(raw)) return { status: 400, body: { error: `invalid skill name "${raw}": use a single folder name` } }
@@ -691,17 +697,19 @@ function isSafeSegment(value: string) {
 /**
  * The folder a skill save lands in: the exact name when that folder already
  * exists (so `MySkill` is edited in place), otherwise the slug of a new name.
+ * With `create`, a folder that already exists under the exact name or the slug
+ * is refused instead, so a new or renamed skill never replaces another.
  */
-async function skillFolder(root: string, raw: string): Promise<{ name: string } | { taken: string }> {
+async function skillFolder(root: string, raw: string, create: boolean): Promise<{ name: string } | { taken: string }> {
   const exists = async (name: string) =>
     fs.lstat(path.join(root, name)).then(
       () => true,
       () => false,
     )
-  if (isSafeSegment(raw) && (await exists(raw))) return { name: raw }
+  if (isSafeSegment(raw) && (await exists(raw))) return create ? { taken: raw } : { name: raw }
   const name = slug(raw)
   // A new name that slugs onto a different existing folder would overwrite somebody else's skill.
-  if (name !== raw && (await exists(name))) return { taken: name }
+  if ((create || name !== raw) && (await exists(name))) return { taken: name }
   return { name }
 }
 
@@ -825,14 +833,15 @@ async function readMcpFile(file: string): Promise<{ value: Record<string, any>; 
  * Saving an enabled server also lifts it off `disabledServers`, which would
  * otherwise keep it off whatever its own `enabled` says.
  */
-async function writeMcpServer(file: string, requested: string, body: unknown) {
+async function writeMcpServer(file: string, requested: string, body: unknown, create: boolean) {
   return serialize(file, async () => {
     const config = await readMcpFile(file)
     const servers = (config.value.mcpServers ?? {}) as Record<string, Record<string, unknown> | undefined>
     // An existing key is edited in place; only a new name is slugged.
-    const name = Object.hasOwn(servers, requested) ? requested : mcpName(requested)
-    // A new name that slugs onto a different existing server would silently overwrite that one.
-    if (!Object.hasOwn(servers, requested) && Object.hasOwn(servers, name) && name !== requested.trim()) return { taken: name }
+    const exact = Object.hasOwn(servers, requested)
+    const name = exact ? requested : mcpName(requested)
+    // A new name that slugs onto a different existing server would silently overwrite that one; with `create`, so would an exact match.
+    if (create ? Object.hasOwn(servers, name) : !exact && Object.hasOwn(servers, name) && name !== requested.trim()) return { taken: name }
     const current = Object.hasOwn(servers, name) ? servers[name] : undefined
     const entry = buildMcpEntry(body, current)
     const disabled = stringList(config.value.disabledServers)

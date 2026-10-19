@@ -33,11 +33,11 @@ export type Host = {
   /** The omp profile's config directory (where `mcp.json` and skills live), once omp has reported it. */
   profileDir(): Promise<string | undefined>
   /**
-   * True while the host has work bound to the project it started in: a create in flight, an engine session starting, running a turn or waiting on a dialog, or a planner
-   * running. `POST /project` refuses to switch while it is true (the store's `projectLocked`). Idle live sessions and reaped ones do not count.
+   * True while the host has work bound to the project it started in: a create in flight, any engine session starting or live (idle between turns included), or a planner
+   * running. `POST /project` refuses to switch while it is true (the store's `projectLocked`). Reaped, lost and disposed sessions do not count.
    */
   projectLocked(): boolean
-  /** Ids of the engine sessions that hold the lock (starting, turn in flight, dialog waiting): what the user can stop. Empty when only a planner or a create in flight holds it. */
+  /** Ids of every engine session that holds the lock (starting, running, idle, dialog waiting): what the user can stop to switch. Empty when only a planner or a create in flight holds it. */
   projectHolders(): string[]
   /** Closes every omp process, planner, probe and shell, and refuses new work. Idempotent. */
   dispose(): Promise<void>

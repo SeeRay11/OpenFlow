@@ -248,19 +248,23 @@ worktree, and the uplift planner's working directory, stay in that project even
 if the page is switched. Run and Resume are disabled while the picker is open, and
 the page checks again that no run is active before it asks the host to switch (if
 the host moved first, the page switches it back). `POST /flow/api/project` answers
-409 `project-busy` only while engine work is live: a session starting, a create in
-flight, a turn running, a dialog waiting, or an uplift planner running. It checks
-again right before applying the switch. An idle session (turn finished, waiting
-for its next prompt or the 30-minute reap) does not hold the project. The 409
-body carries `sessions`, the ids of the cards holding it (empty when only a planner
-or a create does). With ids, the page asks "N running card(s) in the current
-project. Stop them and switch?" and, on yes, deletes each session and retries once;
-with none it shows only the host's sentence. Terminals belong to a project too (see
+409 `project-busy` while any engine session is live (an idle one between turns
+included) or starting, a session create is in flight, or an uplift planner is
+running. Reaped, lost and disposed sessions do not count. It checks again right
+before applying the switch. The 409 body carries `sessions`, the ids of every live
+or starting session (empty when only a planner or a create holds it). With ids,
+the page asks "N open card session(s) in the current project. Stop them and
+switch?" and, on yes, deletes each session and retries once; with none it shows
+only the host's sentence. Terminals belong to a project too (see
 [Terminal](#terminal)), and so do custom roles: opening a project replaces the
-roles with that project's own `.openflow/roles.json`. Roles saved in this
+roles with that project's own `.openflow/roles.json`. A role created while the
+project's roles are still loading is merged into them when the read finishes
+(project roles first, yours after; yours win on the same id) and then saved to the
+project. If the project's roles cannot be read, nothing is written to the project
+and a notice says the change stays in the tab. Roles saved in this
 browser before that are copied once per browser (`openflow.customRolesMigrated.v1`),
-and nothing is written to a project's `roles.json` before it has been read
-successfully.
+an edit made before the read does not overwrite that browser copy, and nothing is
+written to a project's `roles.json` before it has been read successfully.
 
 ## Omp engine and requirements
 
@@ -366,11 +370,15 @@ disposed on purpose answers 404.
 
 **Resume.** A card carried over from an earlier run is found by its session id
 across every run directory of the state root (the newest 2,000 run directories,
-then the newest 4,000 card directories) and re-attached from the directory it was
-first launched in; the new run id is kept for new work. The new request applies:
-model, permissions, swarm mode, tool toggles and run follow the run that is asking
-now. A process that is already live keeps the settings it was launched with until
-it is next resumed.
+then the newest 4,000 card directories) and re-attached; only its session files
+stay in their original state directory. The new run id is kept for new work. The
+new request applies: model, permissions, swarm mode, tool toggles, run and working
+directory follow the run that is asking now, and the engine decides where a
+resumed card works. If the directory it was using before still exists and is
+different, one notice at the first accepted prompt says the work done there before
+the interruption was not merged, with the path. A process that is already live
+keeps the settings and directory it was launched with until it is next resumed; a
+session revived after a restart resumes in its saved directory and gets no notice.
 Using a session touches its run directory (at most once a second), so recently
 used runs rank newest. If the host cannot find the session (pruned, or deleted),
 the card starts fresh, once.
@@ -391,8 +399,10 @@ browser waits on a turn in slices of
 **Event stream.** While a run is active the browser reconnects to
 `/flow/api/engine/events` by itself, waiting 250 ms and doubling up to 8 s. When
 events went out while nobody was attached, or a client was dropped for falling
-behind, the next subscriber gets `{"type":"flow.stream.reset"}` once; a subscriber
-that attaches with no gap gets none. Every new subscriber is then sent each
+behind, every subscriber that attaches within 60 seconds after that gap gets
+`{"type":"flow.stream.reset"}` (after the connection comment and before the
+replayed dialogs); outside that window it gets none. Every new subscriber is then
+sent each
 permission and question that is still waiting, so an
 open dialog survives a reconnect. A single event larger than the whole queue is
 replaced by a notice, and tool-call arguments and raw results are capped. Start-up
@@ -936,14 +946,18 @@ with nothing alive to write `done`, `error` or `stopped` — while the sessions
 themselves are still held by the host and still addressable. A live run is guarded by
 `beforeunload`, and whatever gets past that is recoverable: the newest run log for
 this pipeline still marked `running`, whose `updatedAt` is more than five minutes
-old, is one the page abandoned, and **Resume** appears beside Run. The offer is
-re-evaluated every 30 seconds, so a run abandoned a few minutes ago shows Resume
-without another refresh. Every write of a
+old, is one the page abandoned, and **Resume** appears beside Run. Every 30 seconds,
+and when the tab becomes visible again, the page re-reads the run list (only while
+idle, with no folder picker open and the tab visible), so a run abandoned a few
+minutes ago shows Resume without another refresh, and Resume is never offered from
+a list older than the five-minute window. Every write of a
 run log stamps `updatedAt`, and a 30-second heartbeat keeps it fresh through a long
 quiet turn, so a run another tab is still writing is not offered. A run log that
 cannot be saved raises the "run log not saved" notice once, and again only after a
-save has got through. Starting the
-resumed run marks the old log `stopped` with `resumedBy`.
+save has got through. A resumed run writes its own log first, carrying the session
+ids and before the model-catalog wait, and only then marks the interrupted log
+`stopped` with `resumedBy` naming the new run. If that write fails, the interrupted
+run stays resumable and the notice appears.
 
 Resuming splits that run log in two. Cards that finished keep their answers and
 never run again — reopening a finished card's session only bills. Cards that were
@@ -1149,9 +1163,14 @@ names the app makes up itself are slugged. A name must be one safe path segment 
 separator, no `..`, no NUL, not hidden); an MCP server name must also be a usable
 JSON key (not empty, not `__proto__`, no control characters, at most 128
 characters). Saving a server as disabled removes it from `enabledServers`, and
-deleting one removes it from both `enabledServers` and `disabledServers`. Creating
-a new server or skill whose slugged name already belongs to a different entry
-answers 409 `{ "code": "name-taken" }` and changes nothing; the answer to a save
+deleting one removes it from both `enabledServers` and `disabledServers`.
+`PUT /mcp/{name}` and `PUT /skills/{name}` accept an add-only boolean `create`
+(a non-boolean is 400, and it is never written to `mcp.json` or `SKILL.md`). With
+`create: true`, an exact name that already exists, or a slug that collides with
+one, answers 409 `{ "code": "name-taken" }` and writes nothing; without it the
+save edits in place. The panels send `create: true` for New and when the typed
+name differs from the entry being edited, and keep the editor open with the
+host's sentence on a 409. The answer to a save
 carries the name actually stored, and the app shows that name. Deleting a name that
 does not exist answers 404 `{ "removed": false }`, which the app treats as a
 result rather than a failure, so renaming an entry still works.
@@ -1177,8 +1196,10 @@ sessions the host holds for the current project, newest first, with a search box
 over them. Click one to read its turns; `←` goes back to the list. Sessions are per
 project: those of another project are not listed and answer 404 by id until that
 project is current again. A session created with `transient: true` (the model test)
-is never listed, writes no session or turns file, cannot be resumed, and has its
-state directory removed when it ends.
+is never listed, writes no session or turns file, and cannot be resumed (combining
+`transient` with `reuse` is 400). Its node directory, and the run directory when
+that create made it and it is empty, is removed when it ends: on dispose, release,
+a failed start, exit or idle reap.
 
 These are not a history OpenFlow keeps separately. Every node is one omp session,
 its files are under `omp/<project>/<run>/<card>/` in the state directory, and

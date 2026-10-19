@@ -31,7 +31,7 @@ import { availableModels, providerRows, type ProviderRow } from "./server/provid
 import { setAvailableModels } from "./graph/default-model"
 import { forgetCustomRoles, hydrateCustomRoles, onRolesSyncError } from "./graph/roles"
 import { latest } from "./server/latest"
-import { abandoned, findRun, interrupted, PRUNE_DAYS, RUN_DELETE, RUN_PRUNE, runMenuOptions, superseded } from "./server/runs"
+import { abandoned, findRun, offerable, PRUNE_DAYS, RUN_DELETE, RUN_PRUNE, runMenuOptions } from "./server/runs"
 import { store, type PipelineEntry, type RunEntry } from "./server/store"
 import { PROJECT_BUSY, switchFreeing } from "./server/project"
 import { actions, requestKey, state } from "./state"
@@ -274,6 +274,9 @@ export function App() {
   const probes = latest()
   const listings = latest()
   const openings = latest()
+  const runReads = latest()
+  /** When the run list on screen was read: a list older than the staleness window offers no Resume. */
+  const [runsReadAt, setRunsReadAt] = createSignal(0)
   /** The clock the Resume offer is judged against: an abandoned run turns resumable by itself as it ticks. */
   const [resumeNow, setResumeNow] = createSignal(Date.now())
   /** A folder is being chosen: the host may move to another project at any moment, so no run may start. */
@@ -426,11 +429,17 @@ export function App() {
     // minute, and it stops mattering the moment a run finishes.
     const clock = setInterval(() => state.running && setTick(Date.now()), CLOCK_INTERVAL)
     // A run abandoned minutes ago becomes resumable on its own: the staleness rule needs a clock that moves.
-    const resumeClock = setInterval(() => setResumeNow(Date.now()), RESUME_CLOCK_INTERVAL)
+    const resumeClock = setInterval(() => {
+      setResumeNow(Date.now())
+      // Judged on a fresh list, never on the snapshot from boot: another tab may still be writing the run it shows as quiet.
+      if (!document.hidden && !state.running && !folderOpen()) void refreshRuns()
+    }, RESUME_CLOCK_INTERVAL)
     // Coming back to a tab that sat hidden for an hour should not wait out the
     // interval before admitting the host died meanwhile.
     const onVisibility = () => {
-      if (!document.hidden) void probe()
+      if (document.hidden) return
+      void probe()
+      if (!state.running) void refreshRuns()
     }
     // Ctrl+` toggles the terminal. A field elsewhere on the page keeps the key
     // (it may be typing a backtick); the dock itself never gets here, because it
@@ -615,16 +624,27 @@ export function App() {
     setModelsLoaded(true)
   }
 
+  /** The newest run list read wins; `at` says when it was read, which is what the Resume offer is judged on. */
+  async function refreshRuns() {
+    const current = runReads.begin()
+    const recorded = await store.runs().catch(() => [])
+    if (!current()) return
+    setRuns(recorded)
+    setRunsReadAt(Date.now())
+  }
+
   async function refresh() {
     // Called from boot, save, a project switch and the end of every run: the newest read owns the lists.
     const current = listings.begin()
+    const runsCurrent = runReads.begin()
     const [entries, recorded] = await Promise.all([
       store.pipelines().catch(() => []),
       store.runs().catch(() => []),
     ])
-    if (current()) {
-      setPipelines(entries)
+    if (current()) setPipelines(entries)
+    if (runsCurrent()) {
       setRuns(recorded)
+      setRunsReadAt(Date.now())
     }
     return entries
   }
@@ -898,13 +918,9 @@ export function App() {
           attachments: [...state.attachments],
           resume,
           sessions,
+          supersedes,
         },
       )
-      // The resumed run carries on from the interrupted one, so that log stops being offered for resuming.
-      if (supersedes)
-        void store
-          .saveRun(superseded(supersedes, current.log.id))
-          .catch((error) => notice("error", `the interrupted run's log was not closed: ${api.describe(error)}`))
       const log = await current.done
       // Whoever asked for this is not necessarily here — a gauntlet is bounded
       // in hours, and the ending worth knowing about is exactly the one the
@@ -1412,7 +1428,7 @@ export function App() {
             <IconPlay />
             Run
           </button>
-          <Show when={state.running || folderOpen() ? undefined : interrupted(runs(), state.pipeline.name, resumeNow())}>
+          <Show when={state.running || folderOpen() ? undefined : offerable(runs(), state.pipeline.name, runsReadAt(), resumeNow())}>
             {(entry) => (
               <button
                 class="btn"

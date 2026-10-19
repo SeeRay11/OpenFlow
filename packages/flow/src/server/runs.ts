@@ -185,6 +185,19 @@ export function interrupted(entries: RunEntry[], pipeline: string, now = Date.no
 }
 
 /**
+ * The run to offer for resuming, judged on a list that was read recently.
+ *
+ * `interrupted` only knows what the list says: a snapshot older than the staleness
+ * window cannot tell a run another tab stopped writing from one it is still writing,
+ * so it offers nothing. The page re-reads the list on a tick, which keeps the snapshot
+ * younger than the window whenever the tab is visible and idle.
+ */
+export function offerable(entries: RunEntry[], pipeline: string, fetchedAt: number, now = Date.now()) {
+  if (now - fetchedAt >= RESUME_STALE_MS) return undefined
+  return interrupted(entries, pipeline, now)
+}
+
+/**
  * The old log of a resumed run, closed: the new run carries on from it, so it is
  * no longer interrupted and must not be offered for resuming again. Cards it left
  * working are marked stopped, as the engine does at the end of a run of its own.

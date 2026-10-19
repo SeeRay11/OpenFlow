@@ -101,9 +101,9 @@ export interface SessionHost {
   active(): string[]
   list(limit: number): Promise<SessionRow[]>
   live(): number
-  /** True while work is bound to the project it started in: a create in flight, or a session starting, with a turn in flight or with a dialog waiting. An idle live session (no turn, no dialog) does not count: it can be left or reaped. */
+  /** True while work is bound to the project it started in: a create in flight (from its first line), or any session starting or live, idle ones included. Reaped, lost and disposed sessions do not count. */
   working(): boolean
-  /** Ids of the sessions behind `working()` (starting, turn in flight, dialog waiting); empty when only a create in flight holds it. */
+  /** Ids of every engine session behind `working()`: starting, or live (running, idle between turns, or waiting on a dialog); empty when only a create in flight holds it. */
   holders(): string[]
   /** The `permission.v2.asked` and `question.v2.asked` events of every dialog still waiting for an answer, as first raised: replayed to an event stream that attaches later. */
   pending(): BusEvent[]
@@ -224,8 +224,14 @@ type Session = {
   held: BusEvent[]
   /** The latest metadata write: writes of one session are chained so an older snapshot never lands after a newer one. */
   saving?: Promise<void>
+  /** The directory a resumed session did its earlier work in, from its saved request, until its resume reads it. */
+  previousDirectory?: string
+  /** An earlier working directory that still exists and differs from the new one: the next start says so once. */
+  carried?: string
   /** This host created the state directory for a transient session: it is removed when the session ends. */
   scratch?: boolean
+  /** This host also created the run directory above a transient session's state directory. */
+  scratchRun?: boolean
 }
 
 function bad(message: string): HttpError {
@@ -386,6 +392,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   const env = () => deps.env ?? process.env
   /** Set by `close()`: from then on nothing starts, whichever await a create or a resume is parked in. */
   let closing = false
+  /** Creates in flight, counted from their first line (before the request is parsed), so `working()` covers a create for its whole life. */
+  let creating = 0
 
   function busy(session: Session): boolean {
     return session.last !== undefined && !(session.last.result && session.settled)
@@ -704,6 +712,10 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     // The browser learns the session id from the create response, after this returns, and drops a notice for an id it does not know: the
     // notices wait for the first accepted prompt. A resumed start has said the card's notes already; they are about the card, not the process.
     const notices = resume ? [] : describeLaunch(input).notes.map((note) => capText(stripControl(note), NOTICE_LIMIT).text)
+    if (resume && session.carried) {
+      notices.push(`This card resumed after an interruption. Work it did before then, in ${session.carried}, was not merged into this run.`)
+      session.carried = undefined
+    }
     if (swarm && mode !== "off" && swarm.effective === "off" && swarm.preflight.problems.length)
       notices.push(`swarm is off for this card: ${swarm.preflight.problems.map((problem) => (problem.fix ? `${problem.message} ${problem.fix}` : problem.message)).join(" ")}`)
     for (const message of notices)
@@ -773,6 +785,10 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     if (!session.scratch) return
     session.scratch = false
     await fs.rm(session.stateDir, { recursive: true, force: true }).catch(() => undefined)
+    if (!session.scratchRun) return
+    session.scratchRun = false
+    // The run directory this create made, once it is empty: never recursive, so a sibling card's files (or a session another create put there since) keep it.
+    await fs.rmdir(path.dirname(session.stateDir)).catch(() => undefined)
   }
 
   /** Spawns the process of an idle, lost or new session; every caller during one start shares its flight. */
@@ -839,9 +855,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     const found = await locate(id, stateDir)
     if (!found) throw notFound(id)
     const base = (await readTurns(found.dir)) ?? []
-    // The directory the session was launched in, when it is still there: its history names that directory's files. Else the new request's.
+    // The directory the session's earlier work was done in, from its saved request: only a notice about it is kept, the process starts where the new request says.
     const original = asString(found.meta.request?.directory)
-    const directory = original && (await fs.stat(original).then((stat) => stat.isDirectory(), () => false)) ? original : request.directory
     // Read again right before registering: the run may have been pruned while the history was read.
     const meta = await readMeta(found.dir)
     if (!meta || meta.id !== id) throw notFound(id)
@@ -851,7 +866,8 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     const known = sessions.get(id)
     if (known) return known
     if (prunes.has(path.basename(path.dirname(found.dir)))) throw notFound(id)
-    const session = makeSession(id, { ...request, directory }, found.dir)
+    const session = makeSession(id, request, found.dir)
+    session.previousDirectory = original
     session.home = { runId: meta.runId || request.runId, nodeId: meta.nodeId || request.nodeId }
     session.created = meta.created || session.created
     session.title = meta.title
@@ -890,10 +906,15 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     const known = held && inProject(held) ? held : undefined
     const session = known ?? (await adopt(request, stateDir))
     void touchRun(session.stateDir)
-    // Resumed for this request, not the one it was first created with: its model, permissions, swarm mode, tools and run follow the new body (and `releaseRun` and `holds` match the new run).
-    // What stays is the session's own: its id, its state directory and the directory it works in. A live process keeps the settings it was launched with until it is next resumed.
-    session.request = { ...request, directory: session.request.directory }
+    // The directory the session's earlier work was done in: the one it was last launched with, or the one its saved request names.
+    const previous = known ? known.request.directory : session.previousDirectory
+    // A live process keeps the settings (and the working directory) it was launched with until it is next resumed.
     if (session.state === "live") return { id }
+    // Resumed for this request, not the one it was first created with: its model, permissions, swarm mode, tools, run and working directory follow the new body (and `releaseRun` and `holds`
+    // match the new run). The engine decides where a resumed card works; only the session's own files stay where they were (its id and state directory).
+    session.request = request
+    session.previousDirectory = undefined
+    if (previous && previous !== request.directory && (await fs.stat(previous).then((stat) => stat.isDirectory(), () => false))) session.carried = previous
     await beginFor(session, true, signal).catch((error: unknown) => {
       // A record this call created, or one omp cannot resume, is not kept.
       if ((known === undefined || (error instanceof HttpError && error.status === 404)) && sessions.get(id) === session) sessions.delete(id)
@@ -984,13 +1005,16 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
   async function launch(request: CreateRequest, stateDir: string, signal?: AbortSignal): Promise<{ id: string }> {
     if (request.reuse) return reuse(request, stateDir, signal)
     const existed = request.transient ? await fs.stat(stateDir).then(() => true, () => false) : true
+    const runExisted = request.transient ? await fs.stat(path.dirname(stateDir)).then(() => true, () => false) : true
     await fs.mkdir(stateDir, { recursive: true, mode: 0o700 })
     if (closing) throw hostClosed()
     // One card, one session at a time: a replaced critic session must not still hold the session directory.
     let inherited = false
+    let inheritedRun = false
     for (const other of [...sessions.values()]) {
       if (other.request.runId !== request.runId || other.request.nodeId !== request.nodeId) continue
       inherited ||= other.scratch === true
+      inheritedRun ||= other.scratchRun === true
       sessions.delete(other.id)
       await stop(other, "disposed")
     }
@@ -998,6 +1022,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     // Registered before it starts, with no await in between, so releaseRun, dispose and close see it and the limit counts it.
     const session = makeSession(`s_${randomBytes(6).toString("hex")}`, request, stateDir)
     session.scratch = request.transient === true && (!existed || inherited)
+    session.scratchRun = request.transient === true && (!runExisted || inheritedRun)
     sessions.set(session.id, session)
     await beginFor(session, false, signal).catch(async (error: unknown) => {
       if (sessions.get(session.id) === session) sessions.delete(session.id)
@@ -1008,9 +1033,9 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     return { id: session.id }
   }
 
-  /** Sessions that pin the project: starting, or live with a turn in flight or a dialog waiting for an answer. */
+  /** Every engine session that pins the project: starting, or live (running a turn, waiting on a dialog or idle between turns). */
   function holders(): string[] {
-    return [...sessions.values()].filter((session) => session.starting !== undefined || (session.state === "live" && (busy(session) || session.ui.pending() > 0))).map((session) => session.id)
+    return [...sessions.values()].filter((session) => session.starting !== undefined || session.state === "live").map((session) => session.id)
   }
 
   function holds(runDir: string): boolean {
@@ -1023,24 +1048,30 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
 
   return {
     async create(body, signal) {
-      if (closing) throw hostClosed()
-      // One project and one state root for the whole create: the canvas can switch folders while it awaits, and a card's directory and its state belong to the same one.
-      const project = deps.project()
-      const root = deps.stateRoot()
-      const request = await parseCreate(body, project)
-      if (closing) throw hostClosed()
-      const runDir = safeSegment(request.runId)
-      // A prune removing this run's directory finishes first: this create starts fresh, never into files being deleted.
-      while (prunes.has(runDir)) await prunes.get(runDir)?.promise
-      if (closing) throw hostClosed()
-      signal?.throwIfAborted()
-      claims.set(runDir, (claims.get(runDir) ?? 0) + 1)
+      // Counted from the very first line, before any await: parsing and the wait for a prune are part of the create, and a project switch must not slip in between.
+      creating++
       try {
-        return await launch(request, path.join(root, runDir, safeSegment(request.nodeId)), signal)
+        if (closing) throw hostClosed()
+        // One project and one state root for the whole create: the canvas can switch folders while it awaits, and a card's directory and its state belong to the same one.
+        const project = deps.project()
+        const root = deps.stateRoot()
+        const request = await parseCreate(body, project)
+        if (closing) throw hostClosed()
+        const runDir = safeSegment(request.runId)
+        // A prune removing this run's directory finishes first: this create starts fresh, never into files being deleted.
+        while (prunes.has(runDir)) await prunes.get(runDir)?.promise
+        if (closing) throw hostClosed()
+        signal?.throwIfAborted()
+        claims.set(runDir, (claims.get(runDir) ?? 0) + 1)
+        try {
+          return await launch(request, path.join(root, runDir, safeSegment(request.nodeId)), signal)
+        } finally {
+          const left = (claims.get(runDir) ?? 1) - 1
+          if (left > 0) claims.set(runDir, left)
+          if (left === 0) claims.delete(runDir)
+        }
       } finally {
-        const left = (claims.get(runDir) ?? 1) - 1
-        if (left > 0) claims.set(runDir, left)
-        if (left === 0) claims.delete(runDir)
+        creating--
       }
     },
 
@@ -1218,7 +1249,7 @@ export function createSessionHost(deps: EngineHostDeps, options: SessionHostOpti
     },
 
     working() {
-      return claims.size > 0 || holders().length > 0
+      return creating > 0 || holders().length > 0
     },
 
     holders,
