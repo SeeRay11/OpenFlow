@@ -1,18 +1,15 @@
 ---
 phase: 07-integration-migration-removal
-verified: 2026-10-19T18:02:47Z
+verified: 2026-10-20T03:20:11Z
 status: passed
 score: 4/5 must-haves verified (5th is QA-03 pending-audit by the orchestrator)
 covered_files: [".github/workflows/openflow.yml", ".planning/phases/07-integration-migration-removal/07-01-SUMMARY.md", ".planning/phases/07-integration-migration-removal/07-INTEGRATION.md", ".planning/phases/07-integration-migration-removal/07-PARITY.md", "FLOW.md", "openflow.ps1", "openflow.sh", "openflow.ts", "packages/flow/CHANGELOG.md", "packages/flow/README.md", "packages/flow/lib/host/gate.ts", "packages/flow/scripts/check-no-opencode.ts", "packages/flow/server-app.ts", "packages/flow/server.ts", "packages/flow/src/graph/migrate.test.ts", "packages/flow/src/graph/migrate.ts", "packages/flow/vite.config.ts", "packages/flow/vite/flow-store.ts"]
-covered_digest: "v3:sha256:c234172a28135e9088be687a87adb866995a48e62f0057d071f1498fcf07d0a4"
+covered_digest: "v3:sha256:d2dd1828f75675296d54db8827d7d3efa690ccd36dd6e6d038ae315d3912170d"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
   previous_status: passed
-  previous_score: 4/5
-  previous_verified: 2026-10-19T00:00:00Z
-  previous_commit: 2daf46d9f
-  current_commit: 9491ea496
+  previous_score: 4/5 must-haves verified (5th is QA-03 pending-audit by the orchestrator)
   gaps_closed: []
   gaps_remaining: []
   regressions: []
@@ -23,9 +20,9 @@ pending_audit:
 # Phase 7: Integration, Migration and OpenCode Removal — Verification Report
 
 **Phase Goal:** Everything is wired end to end, persisted data migrates, OpenCode is removed from fork-owned code, and the milestone passes audit.
-**Verified:** 2026-10-19T18:02:47Z against branch `omp-engine` at HEAD `9491ea496`
+**Verified:** 2026-10-20T03:20:11Z
 **Status:** passed (QA-03 recorded as pending-audit — the orchestrator runs it after this report)
-**Re-verification:** Yes — after orchestrator-reported tree changes (`b975f932b` gate hardening + dev-host shutdown, `c9d388905` tool-toggle notices + `releaseRun` + planner `engine` row removal, `9491ea496` final gate/shutdown docs, plus `2c8837392` planning summaries). Previous report at `2daf46d9f` was `passed`; no regressions found.
+**Re-verification:** Yes — refreshed 2026-10-20T03:20:11Z at HEAD f3abfa721 after commits 65e9ff976, 107ee8106, af91baa84; full packages/flow suite 2896 pass / 0 fail and tsgo --noEmit clean at HEAD; diffs reviewed as additive (Autonogrammer identity, new agentos/harness modules, branding); no regressions in covered behavior.
 
 ## Goal Achievement
 

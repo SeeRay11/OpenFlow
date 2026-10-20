@@ -1,6 +1,6 @@
 ---
 phase: 05-swarm-per-card
-verified: 2026-10-19T18:02:16Z
+verified: 2026-10-20T03:20:11Z
 status: passed
 score: 4/4 must-haves verified
 covered_files:
@@ -17,15 +17,22 @@ covered_files:
   - packages/flow/src/canvas/node-card.tsx
   - packages/flow/src/server/engine.ts
   - packages/flow/src/ui/card-stages-model.ts
-covered_digest: "v3:sha256:392375bebf4d30aac2278f49d23ae3a732c1d9bfc0d6f7d8690905b3d44334ee"
+covered_digest: "v3:sha256:71c7276dfa435fd43f917057701f259c5ddcbfeb9b99759b5db58d8c4b33b7e0"
+re_verification:
+  previous_status: passed
+  previous_score: 4/4 must-haves verified
+  gaps_closed: []
+  gaps_remaining: []
+  regressions: []
+
 ---
 
 # Phase 5: Swarm per card Verification Report
 
 **Phase Goal:** Each card's omp session runs with the agent-swarm omp extension, with swarm progress reflected in card status.
-**Verified:** 2026-10-19T18:02:16Z
+**Verified:** 2026-10-20T03:20:11Z
 **Status:** passed
-**Re-verification:** Yes — after commits b975f932b, c9d388905, 9491ea496 (HEAD 9491ea496). No PLAN.md exists; must-haves derived from ROADMAP.md Phase 5 success criteria + REQUIREMENTS.md SWM-01..SWM-03 as amended 2026-10-19. `lib/swarm/*` and `shared/swarm.ts` are byte-identical since the initial report; the only diffs in covered files are the launch-input refactor + tool-toggle notices (`session.ts`), the uplift `engine` row + `releaseRun` nested finally (`engine.ts`), and one uplift fact row (`card-stages-model.ts`) — none touches swarm logic. All must-haves re-checked; nothing regressed.
+**Re-verification:** Yes — refreshed 2026-10-20T03:20:11Z at HEAD f3abfa721 after commits 65e9ff976, 107ee8106, af91baa84; full packages/flow suite 2896 pass / 0 fail and tsgo --noEmit clean at HEAD; diffs reviewed as additive (Autonogrammer identity, new agentos/harness modules, branding); no regressions in covered behavior.
 
 ## Goal Achievement
 

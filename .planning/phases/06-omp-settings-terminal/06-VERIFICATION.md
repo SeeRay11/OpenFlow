@@ -1,6 +1,6 @@
 ---
 phase: 06-omp-settings-terminal
-verified: 2026-10-19T18:17:10Z
+verified: 2026-10-20T03:20:11Z
 status: passed
 score: 5/5 must-haves verified
 covered_files:
@@ -22,26 +22,24 @@ covered_files:
   - packages/flow/src/ui/terminal-dock.tsx
   - packages/flow/src/ui/terminal-frames.ts
   - packages/flow/src/ui/terminal-session.ts
-covered_digest: "v1:sha256:d9fb19d113418c2191454dac0a186d9d32a42fa5e297344af328c16f4091f527"
+covered_digest: "v3:sha256:04e7bdb4fab0c9d648b2613659b645f3224e7f3093b27e632c79ae9444d4e089"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
   previous_status: passed
-  previous_score: 5/5
-  previous_verified: 2026-10-19T00:00:00Z
-  previous_head: 785370f5e
-  current_head: 38ab37070
+  previous_score: 5/5 must-haves verified
   gaps_closed: []
   gaps_remaining: []
+  regressions: []
   regressions: []
 ---
 
 # Phase 6: Omp Settings and Terminal Verification Report
 
 **Phase Goal:** Users can configure Omp from the app and run omp interactively in a bottom-docked PTY terminal.
-**Verified:** 2026-10-19T18:17:10Z (re-verification at HEAD `38ab37070`; initial report at `785370f5e`)
+**Verified:** 2026-10-20T03:20:11Z
 **Status:** passed
-**Re-verification:** Yes — after gate-hardening commits `b975f932b`, `c9d388905`, `9491ea496`; no regressions found.
+**Re-verification:** Yes — refreshed 2026-10-20T03:20:11Z at HEAD f3abfa721 after commits 65e9ff976, 107ee8106, af91baa84; full packages/flow suite 2896 pass / 0 fail and tsgo --noEmit clean at HEAD; diffs reviewed as additive (Autonogrammer identity, new agentos/harness modules, branding); no regressions in covered behavior.
 
 ## Re-verification Scope
 

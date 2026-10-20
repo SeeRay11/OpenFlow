@@ -1,6 +1,6 @@
 ---
 phase: 03-prompt-uplift
-verified: 2026-10-19T18:02:12Z
+verified: 2026-10-20T03:20:11Z
 status: passed
 score: 4/4 must-haves verified
 covered_files:
@@ -17,23 +17,24 @@ covered_files:
   - packages/flow/src/ui/card-stages.tsx
   - packages/flow/src/ui/inspector.tsx
   - packages/flow/src/ui/uplift-dialog.tsx
-covered_digest: "v3:sha256:def7bd0a1186b4d964e148c19484b86511f9cf5d1b2380af8dd550b138ce084e"
+covered_digest: "v3:sha256:ccb53177bf3628b74bed2d3021d8f134902891c59121a23a840898fb87608334"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
   previous_status: passed
-  previous_score: 4/4
+  previous_score: 4/4 must-haves verified
   gaps_closed: []
   gaps_remaining: []
+  regressions: []
   regressions: []
 ---
 
 # Phase 3: Prompt uplift Verification Report
 
 **Phase Goal:** Every card prompt is uplifted by the claude-ultrathink planner, including Jev decisions, with both prompts persisted and inspectable.
-**Verified:** 2026-10-19T18:02:12Z
+**Verified:** 2026-10-20T03:20:11Z
 **Status:** passed
-**Re-verification:** Yes — re-run against HEAD `9491ea496` after post-report commits `b975f932b`, `c9d388905`, `9491ea496`.
+**Re-verification:** Yes — refreshed 2026-10-20T03:20:11Z at HEAD f3abfa721 after commits 65e9ff976, 107ee8106, af91baa84; full packages/flow suite 2896 pass / 0 fail and tsgo --noEmit clean at HEAD; diffs reviewed as additive (Autonogrammer identity, new agentos/harness modules, branding); no regressions in covered behavior.
 
 ## Re-verification scope
 

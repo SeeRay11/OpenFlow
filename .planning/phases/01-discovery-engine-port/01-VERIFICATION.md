@@ -1,26 +1,27 @@
 ---
 phase: 01-discovery-engine-port
-verified: 2026-10-19T18:02:19Z
+verified: 2026-10-20T03:18:28Z
 status: passed
 score: 4/4 must-haves verified
 covered_files: [".planning/phases/01-discovery-engine-port/01-01-SUMMARY.md", ".planning/phases/01-discovery-engine-port/01-CONTEXT.md", ".planning/phases/01-discovery-engine-port/discovery/01-engine-contract.md", ".planning/phases/01-discovery-engine-port/discovery/02-host-store.md", ".planning/phases/01-discovery-engine-port/discovery/03-ui-coupling.md", ".planning/phases/01-discovery-engine-port/discovery/04-omp-rpc-cli.md", ".planning/phases/01-discovery-engine-port/discovery/05-omp-extensions-mcp.md", ".planning/phases/01-discovery-engine-port/discovery/06-ultrathink-planner.md", ".planning/phases/01-discovery-engine-port/discovery/07-substrate-api.md", ".planning/phases/01-discovery-engine-port/discovery/08-swarm-omp-ext.md", ".planning/phases/01-discovery-engine-port/discovery/09-terminal-pty.md", "packages/flow/lib/host/engine-contract.test.ts", "packages/flow/lib/host/respond.ts", "packages/flow/lib/omp/binary.ts", "packages/flow/lib/omp/rpc-types.ts", "packages/flow/shared/engine.ts", "packages/flow/shared/memory.ts", "packages/flow/shared/omp.ts", "packages/flow/shared/swarm.ts", "packages/flow/shared/terminal.ts", "packages/flow/shared/uplift.ts", "packages/flow/src/server/client.ts", "packages/flow/src/server/engine-contract.test.ts", "packages/flow/src/server/engine-contract.ts", "packages/flow/src/server/engine.ts", "packages/flow/src/server/testing/engine-script.ts", "packages/flow/src/server/testing/fake-engine.test.ts", "packages/flow/src/server/testing/fake-engine.ts"]
-covered_digest: "v1:sha256:b941c5711e92fab3c46e49729f0f83ffc39f0ff3d0c363a903865da213c2c10c"
+covered_digest: "v3:sha256:afe6270b1bcf88d8b7644f9a382cdfad77f4a8195fb3a7c098d536eb2a96896b"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
   previous_status: passed
-  previous_score: 4/4
+  previous_score: 4/4 must-haves verified
   gaps_closed: []
   gaps_remaining: []
+  regressions: []
   regressions: []
 ---
 
 # Phase 1: Discovery and engine port Verification Report
 
 **Phase Goal:** An evidence-based CONTEXT exists and UI, engine and cards depend on an `EngineApi` port (with contract suite and `FakeEngine`) rather than on omp/substrate/swarm internals.
-**Verified:** 2026-10-19T18:02:19Z
+**Verified:** 2026-10-20T03:18:28Z
 **Status:** passed
-**Re-verification:** Yes — after post-report commits `b975f932b`, `c9d388905`, `9491ea496` (HEAD); no regressions found.
+**Re-verification:** Yes — refreshed 2026-10-20T03:18:28Z at HEAD f3abfa721 after commits 65e9ff976, 107ee8106, af91baa84; full packages/flow suite 2896 pass / 0 fail and tsgo --noEmit clean at HEAD; diffs reviewed as additive (Autonogrammer identity, new agentos/harness modules, branding); no regressions in covered behavior.
 
 Note: this milestone was executed by direct orchestration, so the phase has no PLAN.md. Must-haves are derived from `.planning/ROADMAP.md` Phase 1 success criteria plus requirements ENG-01 and ENG-02. All verification is against code, tests and commits, not narrative.
 

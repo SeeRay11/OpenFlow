@@ -1,6 +1,6 @@
 ---
 phase: 02-omp-engine-adapter
-verified: 2026-10-19T18:03:05Z
+verified: 2026-10-20T03:19:33Z
 status: passed
 score: 5/5 must-haves verified
 covered_files: [.planning/phases/02-omp-engine-adapter/02-01-SUMMARY.md,
@@ -10,26 +10,24 @@ covered_files: [.planning/phases/02-omp-engine-adapter/02-01-SUMMARY.md,
   packages/flow/lib/omp/prune.ts, packages/flow/lib/omp/routes.ts, packages/flow/lib/omp/rpc.ts, packages/flow/lib/omp/session.ts,
   packages/flow/lib/omp/testing/stub-omp.ts, packages/flow/lib/omp/ui-requests.ts, packages/flow/shared/engine.ts,
   packages/flow/src/server/client.ts, packages/flow/src/server/engine-contract.ts, packages/flow/src/server/engine.ts]
-covered_digest: "v1:sha256:6c100ac54c297a7ca2a53db34f8a8502ce4fa5a55c9acbe3feb86c479f4913bf"
+covered_digest: "v3:sha256:a62b81ee2a5b20cae05cf4830593648f779ac42523fa2eea2e30068888aa660d"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
-  previous_verified: 2026-10-19T00:00:00Z
-  reason: "Source files changed after the first report (b975f932b, c9d388905, 9491ea496); HEAD 9491ea496"
-  changes_reviewed:
-    - "shared/engine.ts: EngineApi gains optional releaseRun(runId) (whole-run release); engine-contract.ts drops the now-redundant explicit surface member"
-    - "src/server/engine.ts: run finally releases held sessions one by one AND calls api.releaseRun for what the engine never learned of (engine.ts:2487)"
-    - "lib/omp/session.ts: fresh (non-resume) starts emit describeLaunch tool-toggle notes as capped flow.notice events"
-    - "lib/host/node-adapter.ts: gate hardening (credential-smuggling Host refusal, empty-Host for HTTP/1.0, shared requestUrl for the vite store route)"
+  previous_status: passed
+  previous_score: 5/5 must-haves verified
+  gaps_closed: []
+  gaps_remaining: []
+  regressions: []
   regressions: []
 ---
 
 # Phase 2: Omp Engine Adapter Verification Report
 
 **Phase Goal:** Cards can run on a host-side `omp --mode rpc` session behind the port, with streaming, cancel, permissions, questions, usage and transcript parity.
-**Verified:** 2026-10-19T18:03:05Z
+**Verified:** 2026-10-20T03:19:33Z
 **Status:** passed
-**Re-verification:** Yes — re-run against HEAD `9491ea496` after post-report commits; no regressions, `status: passed` retained.
+**Re-verification:** Yes — refreshed 2026-10-20T03:19:33Z at HEAD f3abfa721 after commits 65e9ff976, 107ee8106, af91baa84; full packages/flow suite 2896 pass / 0 fail and tsgo --noEmit clean at HEAD; diffs reviewed as additive (Autonogrammer identity, new agentos/harness modules, branding); no regressions in covered behavior.
 
 ## Goal Achievement
 
