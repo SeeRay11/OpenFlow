@@ -19,7 +19,20 @@ export type AgentOsFactory = {
 
 type Live = { vm: AgentOsVm; volume: string; error?: string; phase: AgentOsCardView["phase"] }
 
-export function createVolumes(options: { env?: NodeJS.ProcessEnv; factory: AgentOsFactory }) {
+/** Lifecycle over the card volumes the routes expose. One instance per host. */
+export type VolumeManager = {
+  view(cardId: string): AgentOsCardView
+  list(): AgentOsCardView[]
+  start(cardId: string): Promise<AgentOsCardView>
+  stop(cardId: string): Promise<AgentOsCardView>
+  restart(cardId: string): Promise<AgentOsCardView>
+  destroy(cardId: string, confirm: boolean): Promise<AgentOsCardView>
+  writeFile(cardId: string, file: string, data: string): Promise<void>
+  readFile(cardId: string, file: string): Promise<string>
+  dispose(): Promise<void>
+}
+
+export function createVolumes(options: { env?: NodeJS.ProcessEnv; factory: AgentOsFactory }): VolumeManager {
   const env = options.env ?? process.env
   const live = new Map<string, Live>()
 
@@ -104,13 +117,15 @@ export function createVolumes(options: { env?: NodeJS.ProcessEnv; factory: Agent
   }
 }
 
+// Dynamic import on purpose: @rivet-dev/agentos-core is an optional runtime
+// dependency (native sidecar, absent in most environments). A static import
+// would crash every host startup where it is not installed. Types come from
+// the ambient declaration in ./agentos-core.d.ts.
 export async function loadAgentOsFactory(): Promise<AgentOsFactory> {
   try {
-    const imported = (await import("@rivet-dev/agentos-core")) as {
-      AgentOs?: { create(options: AgentOsCreateOptions): Promise<AgentOsVm> }
-    }
-    if (!imported.AgentOs) throw new Error("AgentOs.create is not exported")
-    return { create: (spec) => imported.AgentOs!.create(spec) }
+    const { AgentOs } = await import("@rivet-dev/agentos-core")
+    if (!AgentOs) throw new Error("AgentOs.create is not exported")
+    return { create: (options) => AgentOs.create(options) }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     throw new Error(

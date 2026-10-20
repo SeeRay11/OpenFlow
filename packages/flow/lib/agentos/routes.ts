@@ -1,10 +1,8 @@
 import { AGENTOS_ROUTES, type AgentOsCardView } from "../../shared/agentos"
 import { guarded, HttpError, json, readJson, type HostHandler } from "../host/respond"
-import { createVolumes, loadAgentOsFactory, type AgentOsFactory } from "./volumes"
+import { createVolumes, loadAgentOsFactory, type AgentOsFactory, type VolumeManager } from "./volumes"
 
-type Volumes = ReturnType<typeof createVolumes>
-
-export function agentOsRoutes(volumes: Volumes): HostHandler {
+export function agentOsRoutes(volumes: VolumeManager): HostHandler {
   return guarded(async (request) => {
     const url = new URL(request.url)
     if (url.pathname === AGENTOS_ROUTES.list) {
