@@ -1,6 +1,9 @@
-# OpenFlow
+# Autonogrammer
 
-**OpenFlow is a visual builder for multi-agent AI workflows.** Drag role cards
+![Autonogrammer](packages/flow/public/brand/banner.svg)
+
+
+**Autonogrammer is an Omp agent harness for multi-agent workflows.** Drag role cards
 onto a canvas, wire a pipeline (planner → architect → coder), save it, and run it
 with real parallel agents.
 

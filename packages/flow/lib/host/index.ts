@@ -5,6 +5,8 @@ import { buildLaunch } from "../omp/launch"
 import { spawnOmp } from "../omp/rpc"
 import { createSubstrate } from "../substrate"
 import { createSwarmHost } from "../swarm"
+import { createAgentOsModule } from "../agentos/routes"
+import { createHarnessModule } from "../harness/routes"
 import { createTerminal, type TerminalModule } from "../terminal"
 import { createUplift } from "../uplift"
 import { createGate } from "./gate"
@@ -64,6 +66,8 @@ export function createHost(options: HostOptions): Host {
   omp.loginsChanged(engine.resetModels)
   const uplift = createUplift({ project, stateRoot: root, settings, env })
   const substrate = createSubstrate({ project, settings, env })
+  const agentos = createAgentOsModule({ env })
+  const harness = createHarnessModule({ env })
   const terminal = createTerminal({
     project,
     env,
@@ -79,7 +83,7 @@ export function createHost(options: HostOptions): Host {
     },
   })
 
-  const modules = [terminal.handle, omp.handle, engine.handle, uplift.handle, substrate.handle, swarm.handle]
+  const modules = [terminal.handle, omp.handle, engine.handle, uplift.handle, substrate.handle, swarm.handle, agentos.handle, harness.handle]
   let disposed: Promise<void> | undefined
 
   return {
@@ -98,7 +102,7 @@ export function createHost(options: HostOptions): Host {
     projectLocked: () => engine.working() || uplift.active(),
     projectHolders: engine.holders,
     dispose() {
-      disposed ??= Promise.all([engine.dispose(), uplift.dispose(), substrate.dispose(), terminal.dispose(), omp.dispose(), swarm.dispose(), life.dispose()]).then(() => undefined)
+      disposed ??= Promise.all([engine.dispose(), uplift.dispose(), substrate.dispose(), terminal.dispose(), omp.dispose(), swarm.dispose(), agentos.dispose(), harness.dispose(), life.dispose()]).then(() => undefined)
       return disposed
     },
   }

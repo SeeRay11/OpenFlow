@@ -1,8 +1,9 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "openflow",
-  "description": "OpenFlow — a visual builder for multi-agent AI workflows, built on the opencode engine",
+  "description": "Autonogrammer — an Omp agent harness for branched workflows, built as a desktop, web, and headless app",
   "private": true,
+  "license": "LicenseRef-AGL-3.0",
   "type": "module",
   "packageManager": "bun@1.3.14",
   "scripts": {

@@ -1,22 +1,176 @@
-MIT License
+SPDX-License-Identifier: LicenseRef-AGL-3.0
 
-Copyright (c) 2025 opencode (upstream — https://github.com/anomalyco/opencode)
-Copyright (c) 2026 OpenFlow contributors (fork — https://github.com/SeeRay11/openflow)
+Autonogrammer General License
+Version 3.0 — 22 August 2026
+(“AGL-3.0”)
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Copyright (c) 2026 swcstudiospace / Spectrum Web Co
+Legal entity: Spectrum Web Co LLC
+Brand: @swcstudio
+GitHub organisation: https://github.com/swcstudiospace
+Studio: https://www.swcstudio.space/
+Product covered by this copy: Autonogrammer
+Contact: ovesheng@spectrumweb.co
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+This license governs the Autonogrammer source, documentation, and associated
+materials in this repository (the “Work”). Trademarks including
+“Autonogrammer”, “Autonogrammer”, “Autonogrammer General License”,
+“Spectrum Web Co”, “Spectrum Web Co LLC”, and “@swcstudio” remain the
+exclusive property of Spectrum Web Co LLC and are not licensed except
+as required to describe the origin of the Work.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+--------------------------------------------------------------------
+1. Definitions
+--------------------------------------------------------------------
+
+“Licensor” means Spectrum Web Co LLC.
+
+“You” means an individual or Legal Entity exercising rights under this
+license.
+
+“Source” means the preferred form for making modifications, including
+software, documentation, migrations, and configuration templates.
+
+“Object” means any compiled, bundled, minified, or otherwise
+transformed form of the Source.
+
+“Network Use” means making the Work, or a modified version of it,
+available to third parties over a network so that they interact with
+it remotely (including a hosted Autonogrammer, a white-label control plane,
+or an API that exposes Autonogrammer behaviour).
+
+“Commercial Hosting” means Network Use offered as a product or paid
+service to parties who are not Your employees or contractors working
+solely for You.
+
+--------------------------------------------------------------------
+2. Grant of copyright license
+--------------------------------------------------------------------
+
+Subject to the terms of this license, Licensor grants You a
+worldwide, royalty-free, non-exclusive, revocable copyright license
+to:
+
+  (a) use, copy, and privately modify the Work for Your own internal
+      internal studio, agency, or evaluation;
+  (b) run the Work on infrastructure You control for those internal
+      purposes;
+  (c) distribute Source and Object copies of the Work, or of
+      modifications You make, provided every copy includes this
+      license, the copyright notice, and a prominent change notice
+      for modified files;
+  (d) study the Source and produce documentation that describes it.
+
+This grant does not include trademark rights, patent rights beyond
+those necessarily infringed by using the unmodified Work as shipped
+by Licensor, or any right to use Licensor’s marks in a way that
+suggests endorsement.
+
+--------------------------------------------------------------------
+3. Source-available and Network Use
+--------------------------------------------------------------------
+
+The Work is source-available under AGL-3.0.
+
+If You engage in Network Use of a modified version of the Work, You
+must, at no charge, offer the complete corresponding Source of that
+modified version to every user who can interact with it, under
+AGL-3.0, via a written offer valid for at least three years or a
+public repository that remains available while the service is
+offered.
+
+Commercial Hosting of Autonogrammer — including offering a competing
+hosted control plane, Social Machine brokerage, or multi-tenant
+clipping OS derived from this Work — requires a separate written
+commercial license from Spectrum Web Co LLC. Contact
+ovesheng@spectrumweb.co. Evaluation, a single internal studio, and
+contributing improvements back to Licensor are not Commercial
+Hosting.
+
+--------------------------------------------------------------------
+4. Conditions
+--------------------------------------------------------------------
+
+You must:
+
+  (a) retain this license and all copyright, patent, and attribution
+      notices in every Source copy You distribute;
+  (b) mark modified files with the date and a brief description of
+      the change;
+  (c) not remove or obscure the “Autonogrammer” product identity in a
+      distributed build in a way that implies the build is an
+      official Spectrum Web Co release, unless Licensor has named
+      You a distributor;
+  (d) not use the Work to store or process secrets in git, client
+      transcripts, Linear tickets, or learning / knowledge stores
+      (the product forbids this operationally; this license does not
+      waive that rule).
+
+--------------------------------------------------------------------
+5. Contributions
+--------------------------------------------------------------------
+
+Unless You state otherwise in writing, any contribution intentionally
+submitted to Licensor for inclusion in the Work is licensed to
+Licensor under AGL-3.0, without additional terms. Licensor may
+relicense contributions as part of official Autonogrammer distributions,
+including commercial licenses Licensor issues under Section 3.
+
+--------------------------------------------------------------------
+6. Termination
+--------------------------------------------------------------------
+
+If You breach this license, rights granted to You terminate
+automatically. If You cure the breach within thirty (30) days of
+notice from Licensor, Your license is reinstated unless Licensor
+notifies You otherwise. Sections 7 and 8 survive termination.
+
+--------------------------------------------------------------------
+7. Disclaimer of warranty
+--------------------------------------------------------------------
+
+THE WORK IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND
+NON-INFRINGEMENT. YOU ASSUME ALL RISK ARISING FROM USE OF THE WORK,
+INCLUDING SOCIAL MACHINE, PUBLISHER, AND PAYMENT INTEGRATIONS.
+
+--------------------------------------------------------------------
+8. Limitation of liability
+--------------------------------------------------------------------
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, LICENSOR AND ITS
+CONTRIBUTORS ARE NOT LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL,
+CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS, DATA,
+GOODWILL, OR BUSINESS, ARISING FROM THIS LICENSE OR USE OF THE WORK,
+EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. LICENSOR’S TOTAL
+LIABILITY UNDER THIS LICENSE SHALL NOT EXCEED THE AMOUNT YOU PAID
+LICENSOR FOR THE WORK IN THE TWELVE MONTHS BEFORE THE CLAIM, OR ONE
+HUNDRED US DOLLARS (USD $100) IF YOU PAID NOTHING.
+
+--------------------------------------------------------------------
+9. Third-party components
+--------------------------------------------------------------------
+
+The Work depends on third-party packages (React, TanStack, Better
+Auth, and others) under their own licenses, typically MIT or
+Apache-2.0. Those licenses are unchanged by AGL-3.0. You must comply
+with them when You redistribute Object form.
+
+--------------------------------------------------------------------
+10. Entire agreement
+--------------------------------------------------------------------
+
+This license is the entire agreement between You and Licensor
+concerning the Work, unless You have a signed commercial agreement
+that expressly supersedes it. If a court finds any provision
+unenforceable, the remaining provisions continue in effect.
+
+END OF TERMS
+
+How to apply AGL-3.0 to a file:
+
+  Copyright (c) 2026 swcstudiospace / Spectrum Web Co
+  SPDX-License-Identifier: LicenseRef-AGL-3.0
+  Licensed under the Autonogrammer General License, Version 3.0.
+  See the LICENSE file in the repository root.

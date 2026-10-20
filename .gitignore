@@ -57,3 +57,6 @@ FlappyBird/
 !.openflow/generated/feature-build.opencode.json
 !.openflow/generated/orchestrated-build.opencode.json
 
+# Autonogrammer card volumes and harness secrets (outside the repo by default)
+.autonogrammer/
+secrets.json

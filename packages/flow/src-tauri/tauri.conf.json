@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Autonogrammer",
+  "version": "1.5.0",
+  "identifier": "space.swcstudio.autonogrammer",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://127.0.0.1:5174",
+    "beforeDevCommand": "bun run dev",
+    "beforeBuildCommand": "bun run build"
+  },
+  "app": {
+    "windows": [
+      { "title": "Autonogrammer", "width": 1200, "height": 800 }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": false,
+    "targets": ["deb", "app", "msi", "nsis"],
+    "icon": []
+  }
+}

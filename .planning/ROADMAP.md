@@ -1,8 +1,8 @@
-# Roadmap: OpenFlow
+# Roadmap: Autonogrammer
 
 ## Milestones
 
-- 🚧 **v1.4.0 Omp Engine** - Phases 1-7 (in progress)
+- ✅ **v1.4.0 Omp Engine** - Phases 1-7 (complete 2026-10-19; verified in packages/flow)
 
 ## Overview
 

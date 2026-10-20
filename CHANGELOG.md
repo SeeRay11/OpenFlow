@@ -1,0 +1,273 @@
+# Changelog
+
+All notable changes to Autonogrammer are recorded here. The product lives in `packages/flow`;
+the rest of the repo is a vendored engine fork and is not covered by this file.
+
+## [1.5.0] - 2026-10-20
+
+- Rename the product from OpenFlow to Autonogrammer. Omp stays the engine.
+- License the project under the Autonogrammer General License 3.0 (LicenseRef-AGL-3.0) for swcstudiospace / Spectrum Web Co. The terms are the org's AGL-3.0 text with this product named on the cover. This is not the GNU AGPL.
+- Add a light emerald-on-white theme and a charcoal-and-emerald dark theme. Display type is Anybody and body type is DM Sans, both SIL OFL, with system-ui fallback. Terminal text stays monospace.
+- Document pipeline fan-out: one card output can connect to two or more cards. Join behavior is the existing layer barrier (a layer finishes before the next starts). There is no new barrier.
+- Add a per-card Rivet AgentOS volume at `$AUTONOGRAMMER_DATA_DIR/agentos/<cardId>.sqlite` (`sqlite_file` + `chunked_sqlite`). A missing AgentOS package fails that card only.
+- Show gsd-core version and health. Plugin config rejects secret fields. MCP and model credentials go to an uncommitted secret file, not pipeline JSON.
+- Add a Tauri 2 desktop config scaffold. Web remains the Vite build. Headless Linux stays `bun packages/flow/server.ts` with no window. Android and iOS projects are not generated on this host.
+
+## [1.4.0] - 2026-10-19
+
+- Run cards on Omp instead of OpenCode. Every card session is its own
+  `omp --mode rpc-ui` process under an isolated `openflow` profile, with its own
+  tool toggles, approval mode and environment allowlist. omp 18.12.2 or newer is now
+  required, on `PATH` or at a path set in the app.
+- Add Prompt Uplift to every task card: claude-ultrathink rewrites the card's own
+  task into a spec before it runs, and Jev leaves a clear task alone. A failed
+  uplift stops the card and asks — run with the original prompt, retry, or cancel —
+  instead of sending anything silently. It can be turned off for every card, for one
+  task with a `raw:` prefix, or for one card in a saved pipeline.
+- Add shared memory through Agent Substrate: a card reads the project's memory
+  before it runs and writes its outcome when it finishes. Memory has a retention
+  setting, a repository override, and a Forget that retracts entries (Substrate
+  cannot delete). A card never receives a Substrate token, and the host sends it
+  only to https, loopback, or the address `SUBSTRATE_URL` names. A sub-agent
+  dispatched more than once writes one entry per dispatch, and 0 *Most memories per
+  card* skips the read.
+- Add Agent Swarm to cards: off, auto or always, with a preflight that degrades a
+  card to off and says why, and a status line on the card once it delegates. A card
+  whose swarm is on receives the signing key by value in its environment, where its
+  shell can read it; `SWARM_ED25519_KEY_FILE` passes only a path.
+- Add the Omp settings dialog: status and problems, how cards are started, shared
+  memory, and omp's own options. **Copy logins from your default profile** brings
+  existing logins into the OpenFlow profile; secrets are only ever entered in the
+  terminal or the environment.
+- Add a terminal dock (``Ctrl+` ``): omp or your shell in the project folder, gated
+  to loopback and off under `FLOW_ALLOW_REMOTE=1`.
+- Move MCP servers and skills into the omp profile. Omp has no per-session MCP
+  selection, so every card sees every server in the profile's `mcp.json` and in the
+  MCP files of its working directory. The per-card checkboxes are gone, and a saved
+  pipeline's `agent.mcp` is dropped silently when it loads.
+- Serve the orchestrator's `openflow_dispatch` and `openflow_finish` as omp host
+  tools, with the fenced block kept as the fallback.
+- Store hedged memory output as a todo: Substrate quarantines hedged text written
+  as a fact, so the host sends it once more as a todo and the card says so. Secret
+  and personal-data quarantines are not retried.
+- Prune old run state: about 15 seconds after the host starts, run directories
+  under `omp/` that nothing has written to for 30 days are deleted, and their
+  sessions leave the Sessions list. Runs the host holds are never touched.
+- Title sessions `<role> · <first line of the card's task>`.
+- Add a shared 40-scenario contract suite for the engine port, run against an
+  in-memory fake and against the real client and host.
+- Gate every request under `/flow` on both hosts, in any letter case and with a
+  trailing dot (`/FLOW/API/x`, `/flow/api./x`): a loopback `Host` (a malformed,
+  missing or credentialed one is refused), a same-origin `Origin` and
+  `Sec-Fetch-Site`, and `application/json` bodies. A refusal is a 403
+  (`forbidden-host`, `forbidden-origin`, `forbidden-content-type`). A request path
+  with `.`/`..`/`%2e` segments, a backslash, NUL or `;` is refused with 400
+  `forbidden-path`. This stops another web page, or a DNS-rebound name, from
+  starting agents through your browser; curl and scripts are unaffected. The dev
+  server sends no CORS headers, and the standalone server never returns a stack
+  page (a failure is a 500 `internal error`).
+- Limit omp sessions: at most 32 at once. At the cap the least recently used idle
+  session is closed to make room; only when all 32 are busy does the create fail
+  (409 `too-many-sessions`). A 60 second
+  startup deadline (502 `omp-not-ready`), and a Stop or dispose while a session is
+  starting leaves no process behind and never sends the prompt; Stop during a hanging
+  omp start ends at once.
+- Close every omp session and terminal on Ctrl+C or SIGTERM of the Vite dev server,
+  and release a run's sessions as a whole when it ends, so a lost create response
+  cannot strand one.
+- Tell a card with `webfetch` off that omp cannot enforce it, show the planner
+  engine in the inspector's uplift section, and remove the planner clarifying
+  questions setting (an old settings file that still has it loads fine).
+- Launch a gauntlet's critics and root orchestrator with the edit tools denied; the
+  shell stays available.
+- Keep the mode of `mcp.json` when MCP servers are saved (0600 for a new file), and
+  write its `.bak` 0600.
+- Refresh the model catalog and provider list when the profile's logins change, so
+  a `/login` in the terminal shows up without a restart.
+- Never follow a Substrate redirect, so the token cannot be forwarded.
+- Leave a note naming the card when an older pipeline's explicit `agent.mcp` list is
+  dropped on load.
+- Say plainly that every `*_API_KEY` in OpenFlow's environment reaches cards.
+- Reconnect the event stream by itself while a run is active. After a drop the host
+  sends `flow.stream.reset` and replays the permissions and questions still
+  waiting, to the new subscriber only, so an open dialog survives. Dialogs are keyed
+  by session and public request id.
+- Resume a card's session from any run directory of the state root, as it was
+  launched, with the new run's model, permissions, swarm and tool toggles. A session
+  the host cannot find starts the card fresh, once.
+- Keep readable history for finished sessions (`.openflow-turns.json`, last 200
+  turns) and list only sessions whose history can be opened. Session records are
+  written atomically with mode 0600.
+- Treat host shutdown as a closed gate: a create or resume answers 409
+  `session-closed` (a create with a bad or oversized body during shutdown gets that
+  failure or the 409), a terminal create 409 `disposed`, and the catalog, provider and
+  `omp config`/`omp auth` runs 503 `host-closed`. Every probe and CLI run is killed
+  with its process group on dispose.
+- Refuse to switch project while any engine session is live (idle ones included)
+  or starting, a create is in flight or a planner runs (409 `project-busy`) and
+  name the sessions holding it, so the page can offer to stop them and retry once.
+  Keep a run in the project it started in, and
+  scope terminals, custom roles and the Sessions list to the project (409
+  `project-mismatch` for a terminal from another project; another project's sessions
+  answer 404), and sweep a terminal's whole process group on close.
+- Let a session be created `transient`: the model test leaves no session files, is
+  never listed or resumed, and its directories are removed when it ends.
+- Record the isolated worktrees a run opens in its log (`isolation`, informational),
+  saved with `await` right after they are opened. Resume never merges, removes or
+  releases them: it raises one error notice listing (at most 20 of) the isolated
+  copies that may hold work not merged into the project, with `git -C "<dir>"
+  status` and `git diff` commands to check them, and tells a carried card that
+  edits it made before the interruption may still be only in the old copy, to check
+  the project files before relying on them. Run logs are treated as untrusted
+  input, with the same trust model as the pipelines in the project: unsafe
+  `isolation` paths and branches are ignored, strings are flattened and capped, a
+  log with a mismatched id, an oversized output or session id, or no `nodes` is
+  refused or ignored, and a log timestamped more than five minutes in the future
+  ranks below every plausible one when the run to offer is chosen.
+- Resume a card in the directory the new run assigns. A live session working
+  elsewhere is relaunched there, and for a log that recorded no trees a notice says
+  the earlier directory's work may not have been merged, with a command to inspect
+  it only when the path is safe to paste into a shell. Overlapping resumes of one
+  session are served one at a time. Only the session files stay where they were.
+- Answer a session create whose body has not arrived within 10 seconds with 408
+  `request-timeout`, and stop counting it against project switching.
+- Prune skips runs whose log is still `running` and removes the uplift planner's
+  results and session records older than 30 days.
+- Scope Forget to the repository (a key from before scoping matches every
+  repository), bound each part of a memory subject and end a long or cleaned name in
+  a stable hash so differently spelled names never share a namespace, and keep a
+  corrupt `memory-ignore.json` aside instead of failing.
+- Address existing MCP server and skill names exactly as written, drop a disabled or
+  deleted server from `enabledServers`/`disabledServers`, answer 404 when deleting
+  a name that does not exist, and refuse a new name or a move to a different folder
+  that would overwrite another entry (409 `name-taken`, requested with `create:
+  true`). A rename that keeps the same folder saves in place; for MCP, letter case
+  is part of the key.
+- Stamp every run-log write with `updatedAt` and keep it fresh with a heartbeat, so
+  Resume is offered only for a run abandoned for more than five minutes (the run
+  list is re-read every 30 seconds while idle). A resumed run writes its own log
+  before it closes the interrupted one, and closes it, and releases the sessions of
+  finished cards, only after the model check passes: an unknown model ends the new
+  run at once and leaves the old run resumable with its sessions untouched. A failed
+  first write leaves the old run resumable until a later write succeeds. A carried
+  session the host reports lost starts as a fresh card, and the Resume button is
+  disabled until the run has started. A failing log save raises its notice once, not
+  every heartbeat.
+- Give a session that is still live when its card is resumed in the same directory
+  to the resuming run, so releasing the new run disposes it and releasing the old
+  run no longer does.
+- Send `flow.stream.reset` to every event-stream subscriber that attaches within
+  60 seconds of a gap in the stream.
+- Merge a role created while a project's roles are still loading into them, load the
+  project's unsynced edits as soon as the project is known, and write nothing to the
+  project when its roles cannot be read.
+- Count a session create as engine work from the moment its request arrives, so a
+  project switch cannot land while its body is still being read.
+- Edit a skill by its folder name unless it is renamed, and claim a new skill's
+  folder atomically so concurrent creates of one name yield one success.
+- Treat a card as briefed only once the host accepted the prompt that carried its
+  briefing, so a card whose first prompt was refused through every retry gets the
+  full briefing and the run attachments again when it is re-dispatched, and re-send
+  the scratch-directory note to a replacement session.
+- Publish every permission and question request under a public id
+  `<epoch>.<ompId>` (epoch random per omp process): reply routes accept only that
+  id and answer 404 `request-not-found` for an earlier process's id or the bare omp
+  id, and the engine remembers an id for the run after a successful reply or a 404
+  so a delayed replay is never shown again, while a reply that fails before
+  reaching the host releases it so the host's replay reopens the dialog; a restarted
+  process is asked normally.
+- Keep a role deleted while the project's roles are still being read deleted, and
+  save a legacy skill under its own name as a plain migration (any other name that
+  is taken is refused with 409 `name-taken`).
+- Block a card with no model at preflight (the app blocks it; the host would launch
+  omp without `--model`) and send
+  attachments to no card whose model the catalog does not list.
+- Open pipelines and run logs saved by the earlier build: model ids stay as written
+  and are flagged when omp cannot run them, agent names are dropped with a note, and
+  sessions from the earlier build are read-only. The shipped templates no longer pin
+  a model.
+- Add `bun run check:no-opencode`, which fails when a fork-owned file still mentions
+  the removed engine outside a short, reasoned allowlist. CI runs it.
+- Remove the OpenCode engine and everything that served it: `opencode serve`
+  startup and management, the restart button, the api keys and provider panels,
+  repackaging, the zen model list, key import from the CLI, merging agents into
+  `opencode.json`, the launcher flags `-s`/`--server-port` and `-m`/`--manage`, the
+  variables `OPENCODE_SERVER_URL`, `FLOW_MANAGE_SERVER`, `OPENCODE_SERVE_COMMAND`,
+  `OPENCODE_AUTH_CONTENT` and `FLOW_PROXY_TIMEOUT`, the `/api`, `/global`, `/event`
+  and `/mcp` proxy, and the `/flow/api` routes `cli-keys`, `repackage`, `zen-models`,
+  `dispatch-tool` and `server`.
+
+## [1.3.0] - 2026-10-18
+
+- Add the post-run coach: a dismissable strip under the runbar that reads a finished
+  run's own record and says how far to trust it — a pass from a critic that ran no
+  command against a command-shaped bar, an orchestrator that never dispatched, and
+  cards whose tool calls were rejected. Deterministic, no model, at most three findings.
+- Record on the run log whether a critic's judging turn made a shell call that
+  succeeded.
+- Stop throwing away a critic's verdict for writing into the run's scratch directory,
+  the place it was told to put its output.
+- Clear a card's earlier error when a later dispatch of it succeeds.
+
+## [1.2.2] - 2026-09-07
+
+- Add the eval corpus: six fixed canvases run the same way each release, a scorer
+  that reads run logs into a scorecard, and the first recorded baseline.
+- Gauntlet and every long run: commit the working tree after each round under a
+  ref, record what each round produced, and measure stalling off that record
+  rather than off the task text.
+- Survive a provider blip mid-run, and announce when a run ends on a channel the
+  user turned on.
+- Count the lines each card changed, measured off git rather than asked of the
+  card.
+- A card is done when it did the work, not when it stopped talking.
+- Give every card in a batch its own working copy when the canvas asks for it.
+- Warn when a dispatching card runs on a routed model.
+- Make the Runs menu usable: legible rows, delete, prune, search.
+- Select many cards at once on the canvas; the plain canvas drag pans again.
+- Stop blaming a stale engine for a project that is not a git repository — offer
+  `git init` instead.
+- Track only the shipped templates under `.openflow`.
+
+## [1.2.1] - 2026-09-01
+
+- Keep swarm and orchestration cards out of each other's files: a batch is refused
+  before it runs when two assignments declare the same path, and a post-batch
+  collision report tells the orchestrator when cards wrote over each other.
+- Warn about swarm peers with nothing to disagree about, and about peers that can
+  write files.
+- Pick up a run the browser tab abandoned instead of starting it over.
+- Gauntlet: survive rate limits, count what they cost, and refuse to certify
+  unjudged work.
+
+## [1.2.0] - 2026-08-29
+
+- Run a canvas as a swarm: parallel peers debate over rounds, and a synthesizer
+  card writes the verdict.
+- Run a canvas as an orchestration: an orchestrator dispatches work to child cards,
+  recursively, bounded by the tree you draw.
+
+## [1.1.2] - 2026-08-29
+
+- Brief every card on the pipeline it runs in.
+- Repackage OpenAI-compatible providers from the panel.
+
+## [1.1.1] - 2026-08-24
+
+- Maintenance release.
+
+## [1.1.0] - 2026-08-21
+
+- Run flow's CI checks on GitHub-hosted runners.
+
+## [1.0.0] - 2026-08-17
+
+- First release.
+
+[1.2.2]: https://github.com/SeeRay11/OpenFlow/releases/tag/v1.2.2
+[1.2.1]: https://github.com/SeeRay11/OpenFlow/releases/tag/v1.2.1
+[1.2.0]: https://github.com/SeeRay11/OpenFlow/releases/tag/v1.2.0
+[1.1.2]: https://github.com/SeeRay11/OpenFlow/releases/tag/v1.1.2
+[1.1.1]: https://github.com/SeeRay11/OpenFlow/releases/tag/v1.1.1
+[1.1.0]: https://github.com/SeeRay11/OpenFlow/releases/tag/v1.1.0
+[1.0.0]: https://github.com/SeeRay11/OpenFlow/releases/tag/v1.0.0

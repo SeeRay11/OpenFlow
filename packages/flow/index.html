@@ -5,7 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#161616" />
-    <title>OpenFlow</title>
+    <title>Autonogrammer</title>
+    <link rel="icon" href="/brand/logo-dark.svg" />
+    <script>
+      (() => {
+        const key = "autonogrammer-theme"
+        let stored = null
+        try { stored = localStorage.getItem(key) } catch {}
+        const theme = stored === "light" || stored === "dark" ? stored : (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
+        document.documentElement.dataset.colorScheme = theme
+        document.documentElement.style.colorScheme = theme
+        const meta = document.querySelector('meta[name="theme-color"]')
+        if (meta) meta.setAttribute("content", theme === "light" ? "#ffffff" : "#1c2421")
+      })()
+    </script>
     <link rel="preload" href="/fonts/Inter.ttf" as="font" type="font/ttf" crossorigin />
   </head>
   <body>

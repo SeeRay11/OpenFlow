@@ -1,7 +1,17 @@
 # Changelog
 
-All notable changes to OpenFlow are recorded here. OpenFlow lives in `packages/flow`;
-the rest of the repo is a vendored OpenCode fork and is not covered by this file.
+All notable changes to Autonogrammer are recorded here. The product lives in `packages/flow`;
+the rest of the repo is a vendored engine fork and is not covered by this file.
+
+## [1.5.0] - 2026-10-20
+
+- Rename the product from OpenFlow to Autonogrammer. Omp stays the engine.
+- License the project under the Autonogrammer General License 3.0 (LicenseRef-AGL-3.0) for swcstudiospace / Spectrum Web Co. The terms are the org's AGL-3.0 text with this product named on the cover. This is not the GNU AGPL.
+- Add a light emerald-on-white theme and a charcoal-and-emerald dark theme. Display type is Anybody and body type is DM Sans, both SIL OFL, with system-ui fallback. Terminal text stays monospace.
+- Document pipeline fan-out: one card output can connect to two or more cards. Join behavior is the existing layer barrier (a layer finishes before the next starts). There is no new barrier.
+- Add a per-card Rivet AgentOS volume at `$AUTONOGRAMMER_DATA_DIR/agentos/<cardId>.sqlite` (`sqlite_file` + `chunked_sqlite`). A missing AgentOS package fails that card only.
+- Show gsd-core version and health. Plugin config rejects secret fields. MCP and model credentials go to an uncommitted secret file, not pipeline JSON.
+- Add a Tauri 2 desktop config scaffold. Web remains the Vite build. Headless Linux stays `bun packages/flow/server.ts` with no window. Android and iOS projects are not generated on this host.
 
 ## [1.4.0] - 2026-10-19
 

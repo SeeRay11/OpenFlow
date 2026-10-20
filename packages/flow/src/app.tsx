@@ -1,6 +1,7 @@
 import type { PtyKind } from "../shared/terminal"
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js"
 import { Canvas } from "./canvas/canvas"
+import { HarnessStrip } from "./ui/harness-strip"
 import {
   depthOf,
   dispatchesOf,
@@ -40,7 +41,6 @@ import {
   IconClose,
   IconCoin,
   IconExport,
-  IconFlow,
   IconFolder,
   IconHistory,
   IconImport,
@@ -144,7 +144,7 @@ const CLOCK_INTERVAL = 10_000
 /** How often the Resume offer is re-judged. Half the heartbeat that keeps a live run's log fresh. */
 const RESUME_CLOCK_INTERVAL = 30_000
 
-const HOST_DOWN = "cannot reach the OpenFlow host — start it with `bun openflow.ts`, then reload this page"
+const HOST_DOWN = "cannot reach the Autonogrammer host — start it with `bun openflow.ts` (headless, no window) or the Tauri shell, then reload this page"
 const OMP_MISSING = "omp is not available — install it, or set its path in the Omp settings"
 
 /** What a probe found: all well, the host does not answer, or the host answers and omp cannot run. */
@@ -719,7 +719,7 @@ export function App() {
    */
   async function importPipeline(file: File) {
     const opened = readPipeline(parseJson(await file.text()))
-    if (!opened) return actions.notice("error", "Not a valid OpenFlow pipeline")
+    if (!opened) return actions.notice("error", "Not a valid Autonogrammer pipeline")
     if (!confirmReplace()) return
     actions.load(opened.pipeline)
     // Loading clears `dirty`, but an imported graph is not on disk here yet —
@@ -1114,9 +1114,10 @@ export function App() {
     <div class="app">
       <header class="titlebar">
         <span class="titlebar-brand">
-          <IconFlow />
-          OpenFlow
+          <img class="brand-mark" src="/brand/logo-dark.svg" alt="" width="22" height="22" />
+          Autonogrammer
         </span>
+        <HarnessStrip />
         <span class="titlebar-sep" aria-hidden="true" />
         <input
           class="titlebar-name"

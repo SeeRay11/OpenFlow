@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" role="img" aria-label="Autonogrammer">
+  <rect width="1200" height="320" fill="#1c2421"/>
+  <rect x="0" y="0" width="16" height="320" fill="#047857"/>
+  <g transform="translate(72 96)">
+    <rect width="128" height="128" rx="28" fill="#ffffff"/>
+    <circle cx="36" cy="64" r="11" fill="#047857"/>
+    <circle cx="92" cy="32" r="11" fill="#047857"/>
+    <circle cx="92" cy="96" r="11" fill="#047857"/>
+    <path d="M47 64H68M68 64L81 36.4M68 64L81 91.6" fill="none" stroke="#047857" stroke-width="6" stroke-linecap="round"/>
+  </g>
+  <text x="232" y="156" fill="#f4f7f5" font-family="Anybody, ui-sans-serif, system-ui, sans-serif" font-size="64" font-weight="700">Autonogrammer</text>
+  <text x="232" y="206" fill="#a7f3d0" font-family="DM Sans, ui-sans-serif, system-ui, sans-serif" font-size="24">Omp harness for branched agent workflows</text>
+</svg>

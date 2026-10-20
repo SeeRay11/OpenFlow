@@ -11,6 +11,7 @@ export function Canvas() {
   let surface!: HTMLDivElement
   const [view, setView] = createSignal<View>({ x: 60, y: 60, k: 1 })
   const [linking, setLinking] = createSignal<{ source: string; to: Point } | undefined>()
+  const [armed, setArmed] = createSignal<string | undefined>()
   /** Live marquee rectangle, in client pixels — see `startMarquee`. */
   const [marquee, setMarquee] = createSignal<{ x: number; y: number; w: number; h: number } | undefined>()
 
@@ -174,6 +175,24 @@ export function Canvas() {
       actions.undo()
       return
     }
+    if (event.key === "l" && !event.ctrlKey && !event.metaKey && !event.altKey && state.selection.length === 1) {
+      event.preventDefault()
+      setArmed(state.selection[0])
+      actions.notice("info", "link armed — focus the next card and press Enter. One card can link to more than one next card.")
+      return
+    }
+    if (event.key === "Enter" && armed()) {
+      const source = armed()
+      const target = state.selection.at(-1)
+      if (source && target && target !== source) {
+        event.preventDefault()
+        const linked = actions.connect(source, target)
+        if (linked) actions.notice("info", "linked. Press L again to branch to another card.")
+        setArmed(undefined)
+      }
+      return
+    }
+    if (event.key === "Escape") setArmed(undefined)
     if (event.key !== "Delete" && event.key !== "Backspace") return
     if (state.selection.length) actions.removeSelected()
   }
@@ -290,8 +309,8 @@ export function Canvas() {
           `pointer-events: none` or it would swallow drops and panning. */}
       <Show when={!state.pipeline.nodes.length}>
         <div class="canvas-empty">
-          <div>no nodes yet</div>
-          <div class="dim">drag a role card from the palette</div>
+          <div>No cards yet</div>
+          <div class="dim">A card is an Omp session plus an AgentOS sandbox. Drag a role from the palette. Press L, then Enter on the next card, to connect. One output can branch to two cards.</div>
         </div>
       </Show>
     </div>

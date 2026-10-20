@@ -1,0 +1,152 @@
+/*
+ * Autonogrammer visual system.
+ * Display: Anybody (SIL OFL, public/fonts/OFL-Anybody.txt).
+ * Body and controls: DM Sans (SIL OFL, public/fonts/OFL-DMSans.txt).
+ * Fallback: ui-sans-serif, system-ui. Terminal output stays on the monospace stack.
+ * Greptile's marketing site (https://www.greptile.com/design, 2026-10-20) names
+ * Anybody, DM Sans, and Space Mono. Space Mono is not used for body or terminal.
+ */
+
+@font-face {
+  font-family: "Anybody";
+  src: url("/fonts/Anybody-latin.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DM Sans";
+  src: url("/fonts/DMSans-latin.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --ag-emerald: #047857;
+  --ag-emerald-deep: #065f46;
+  --ag-emerald-soft: #d1fae5;
+  --ag-white: #ffffff;
+  --ag-ink: #14221c;
+  --ag-charcoal: #1c2421;
+  --ag-charcoal-raised: #24302c;
+  --ag-offwhite: #f4f7f5;
+  --v2-font-family-sans: "DM Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --v2-font-family-display: "Anybody", "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --v2-font-family-mono: ui-monospace, "JetBrainsMono Nerd Font Mono", "SF Mono", Menlo, Consolas, monospace;
+  --v2-grey-1100: var(--ag-charcoal);
+  --v2-grey-1200: #141a18;
+  --v2-grey-1000: var(--ag-charcoal-raised);
+  --v2-background-bg-accent: var(--ag-emerald);
+  --v2-text-text-base: var(--ag-offwhite);
+  --v2-text-text-accent: var(--ag-emerald-soft);
+  --v2-icon-icon-accent: var(--ag-emerald-soft);
+  --v2-border-border-focus: var(--ag-emerald-soft);
+  --v2-state-fg-success: var(--ag-emerald-soft);
+}
+
+[data-color-scheme="light"] {
+  --v2-background-bg-base: var(--ag-white);
+  --v2-background-bg-deep: #f4f7f5;
+  --v2-background-bg-layer-01: #ffffff;
+  --v2-background-bg-layer-02: #f4f7f5;
+  --v2-background-bg-accent: var(--ag-emerald);
+  --v2-text-text-base: var(--ag-ink);
+  --v2-text-text-muted: #3f5348;
+  --v2-text-text-accent: var(--ag-emerald-deep);
+  --v2-icon-icon-accent: var(--ag-emerald-deep);
+  --v2-border-border-base: #c5d5cc;
+  --v2-border-border-focus: var(--ag-emerald-deep);
+  --v2-state-fg-success: var(--ag-emerald-deep);
+}
+
+.titlebar-brand,
+.canvas-empty,
+.harness-strip {
+  font-family: var(--v2-font-family-display);
+}
+
+.brand-mark {
+  display: block;
+  width: 22px;
+  height: 22px;
+}
+
+.harness-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 8px;
+  font-family: var(--v2-font-family-sans);
+  font-size: 12px;
+}
+
+.harness-health[data-health="ok"] {
+  color: var(--v2-text-text-accent);
+}
+
+.node-handle {
+  display: none;
+  margin-right: 8px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.node-sandbox {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.node-next {
+  display: none;
+  margin-top: 8px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ag-emerald-deep);
+  outline-offset: 2px;
+}
+
+@media (max-width: 720px) {
+  .viewport {
+    transform: none !important;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .edges {
+    display: none;
+  }
+
+  .node {
+    position: relative !important;
+    left: auto !important;
+    top: auto !important;
+    width: 100% !important;
+  }
+
+  .node-handle,
+  .node-next {
+    display: block;
+  }
+
+  .canvas-hud {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .node,
+  .edge-line,
+  .viewport,
+  .badge {
+    transition: none !important;
+    animation: none !important;
+  }
+}

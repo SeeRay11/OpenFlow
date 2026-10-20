@@ -1,9 +1,11 @@
-import { Show } from "solid-js"
+import { createSignal, For, Show } from "solid-js"
+import { AGENTOS_ROUTES, type AgentOsCardView } from "../../shared/agentos"
 import { diffLabel, diffTitle } from "../graph/diff"
 import { roleColor } from "../graph/roles"
 import type { FlowNode, NodeStatus } from "../graph/types"
 import { actions, runtimeOf, state } from "../state"
 import { MemoryChip, SwarmLine, UpliftChip } from "../ui/card-stages"
+import { statusLabel } from "../ui/status-label"
 import { NODE_WIDTH } from "./geometry"
 
 /** One line explaining what a card's status word means, for the badge tooltip. */
@@ -27,6 +29,37 @@ export function NodeCard(props: {
 }) {
   const runtime = () => runtimeOf(props.node.id)
   const selected = () => state.selection.includes(props.node.id)
+  const [sandbox, setSandbox] = createSignal<AgentOsCardView | undefined>()
+  const [sandboxError, setSandboxError] = createSignal<string | undefined>()
+  const nextCards = () =>
+    state.pipeline.edges
+      .filter((edge) => edge.source === props.node.id)
+      .flatMap((edge) => {
+        const found = state.pipeline.nodes.find((node) => node.id === edge.target)
+        return found ? [found] : []
+      })
+
+  async function sandboxAction(action: "start" | "stop" | "restart" | "destroy") {
+    if (action === "destroy" && !window.confirm("Delete this card's AgentOS volume? Its files are removed. This does not delete the card.")) return
+    setSandboxError(undefined)
+    try {
+      const response = await fetch(`${AGENTOS_ROUTES.cards}/${encodeURIComponent(props.node.id)}/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(action === "destroy" ? { confirm: true } : {}),
+      })
+      const body = (await response.json()) as AgentOsCardView & { error?: string }
+      if (!response.ok && body.phase !== "failed") {
+        setSandboxError(body.error || `AgentOS ${action} failed`)
+        return
+      }
+      setSandbox(body)
+      if (body.phase === "failed") setSandboxError(body.error || "AgentOS failed to boot")
+    } catch (error) {
+      setSandboxError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   /** A card is worth expanding once it has a session — live or finished. */
   const hasActivity = () => !!runtime().events?.length || !!runtime().sessionID
   const expanded = () => state.expanded === props.node.id
@@ -87,9 +120,10 @@ export function NodeCard(props: {
         title="drag to move this card"
         onPointerDown={(event) => props.onDragStart(event, props.node.id)}
       >
+        <span class="node-handle" aria-hidden="true">drag</span>
         <span class="node-role">{props.node.role}</span>
         <span class="badge" data-status={runtime().status} title={statusHelp(runtime().status)}>
-          {runtime().status}
+          {statusLabel(runtime().status)}
         </span>
         {/* Only ever rendered on a card whose lines were actually measured: a
             project that is not a repository shows nothing here, because "no
@@ -118,6 +152,20 @@ export function NodeCard(props: {
         <Show when={runtime().activity}>
           <div class="node-line accent">{runtime().activity}</div>
         </Show>
+        <div class="node-meta">omp {runtime().sessionID || "no session yet"}</div>
+        <div class="node-meta">AgentOS {sandbox()?.mounted ? "mounted" : sandbox()?.phase || "not mounted"}</div>
+        <Show when={sandboxError()}>
+          <div class="node-error">{sandboxError()}</div>
+        </Show>
+        <div class="node-sandbox" onPointerDown={(event) => event.stopPropagation()}>
+          <button type="button" class="btn btn-ghost" onClick={() => void sandboxAction("start")}>start sandbox</button>
+          <button type="button" class="btn btn-ghost" onClick={() => void sandboxAction("stop")}>stop</button>
+          <button type="button" class="btn btn-ghost" onClick={() => void sandboxAction("restart")}>restart</button>
+          <button type="button" class="btn btn-ghost" onClick={() => void sandboxAction("destroy")}>destroy</button>
+        </div>
+        <div class="node-next">
+          <For each={nextCards()}>{(next) => <div>next: {next.role}</div>}</For>
+        </div>
         <SwarmLine swarm={runtime().swarm} status={runtime().status} />
         <Show when={runtime().error}>
           <div class="node-error">{runtime().error}</div>

@@ -1,4 +1,7 @@
-# OpenFlow
+# Autonogrammer
+
+![Autonogrammer](public/brand/banner.svg)
+
 
 Visual builder for multi-agent workflows. Drag role cards onto a canvas, wire a
 pipeline (planner → architect → coder), save it, and run it with real parallel
@@ -17,12 +20,12 @@ rewritten into a spec before it runs), [shared memory](#shared-memory-with-agent
 [Omp settings](#omp-settings) configure all of it from the app, and a
 [terminal](#terminal) opens in the bottom dock.
 
-OpenFlow is its own project, shipped as a fork of an upstream agent codebase whose
-engine it no longer runs. Everything OpenFlow-specific lives in this package. No
+Autonogrammer is its own project, shipped as a fork of an upstream agent codebase whose
+engine it no longer runs. Everything Autonogrammer-specific lives in this package. No
 other package in the repo is modified, so upstream merges stay clean. It is not
 published to npm — it is an app, run it from the repo.
 
-> OpenFlow is an independent fork. It is not affiliated with, sponsored by, or
+> Autonogrammer is an independent fork. It is not affiliated with, sponsored by, or
 > endorsed by the team behind the upstream project.
 
 The plan it was built from, and the original build brief, are kept in
@@ -32,10 +35,10 @@ authority where any of them disagree.
 
 ## Community
 
-Questions, workflows, and feedback: [r/OpenFlowAI](https://www.reddit.com/r/OpenFlowAI/).
+Questions, workflows, and feedback: [r/AutonogrammerAI](https://www.reddit.com/r/AutonogrammerAI/).
 
 Changelog: [CHANGELOG.md](CHANGELOG.md), tagged on the
-[releases page](https://github.com/SeeRay11/OpenFlow/releases).
+[releases page](https://github.com/SeeRay11/Autonogrammer/releases).
 
 ## Install
 
@@ -43,8 +46,8 @@ Changelog: [CHANGELOG.md](CHANGELOG.md), tagged on the
 [Omp](#omp-engine-and-requirements) 18.12.2 or newer on your `PATH`.
 
 ```bash
-git clone https://github.com/SeeRay11/OpenFlow.git
-cd OpenFlow
+git clone https://github.com/SeeRay11/Autonogrammer.git
+cd Autonogrammer
 bun install
 ```
 
@@ -82,7 +85,7 @@ confirm the owner first if you run something else there.
 
 ## Run it
 
-OpenFlow is one process: the canvas. Its host starts Omp itself, one `omp` per
+Autonogrammer is one process: the canvas. Its host starts Omp itself, one `omp` per
 card session. The launcher at the repo root checks which omp it will find,
 starts the canvas, and opens the browser:
 
@@ -153,7 +156,7 @@ run `build` yourself; that is what the launcher's `-Built` uses.
 `/flow/api` writes pipelines and run logs into the project, starts omp processes
 that can edit that project and run commands in it, and nothing authenticates the
 caller. On loopback that is you talking to your own machine; on a real interface
-it is remote code execution in whatever repository OpenFlow is pointed at.
+it is remote code execution in whatever repository Autonogrammer is pointed at.
 
 Both hosts refuse to serve anything but loopback unless `FLOW_ALLOW_REMOTE=1`
 says otherwise — `bun start` exits, and `vite --host` fails to start rather than
@@ -197,7 +200,7 @@ are read by the canvas host unless the table says otherwise:
 | Variable | Default | Meaning |
 |---|---|---|
 | `OPENFLOW_PROJECT` | last used, else repo root | project the agents work in, and where `.openflow/` is written |
-| `OPENFLOW_STATE_DIR` | `~/.openflow` | where OpenFlow keeps its own state: the remembered folder and pipeline, `omp-settings.json`, `memory-ignore.json`, and every card's session files |
+| `OPENFLOW_STATE_DIR` | `~/.openflow` | where Autonogrammer keeps its own state: the remembered folder and pipeline, `omp-settings.json`, `memory-ignore.json`, and every card's session files |
 | `FLOW_PORT` | `5174` | port for `bun start` (dev server is fixed at 5174) |
 | `FLOW_HOST` | `127.0.0.1` | interface for `bun start` |
 | `FLOW_ALLOW_REMOTE` | unset | exactly `1` allows a non-loopback bind, for both hosts, and turns the terminal off — `true` and `yes` do not count |
@@ -219,13 +222,13 @@ comes from.
 ### Where it picks up
 
 A full stop and relaunch reopens the folder you were last working in **and the
-pipeline you had open in it**, rather than the OpenFlow repo and a blank canvas.
+pipeline you had open in it**, rather than the Autonogrammer repo and a blank canvas.
 
 The pipeline is remembered per project — a name only means anything inside the
 folder whose `.openflow/pipelines` holds it — and is recorded when you open or
 save one. It rides back on `GET /flow/api/context`, so restoring costs no extra
 round trip, and it is only reopened if the store still lists it: a pipeline
-deleted or renamed outside OpenFlow leaves a blank canvas rather than an error
+deleted or renamed outside Autonogrammer leaves a blank canvas rather than an error
 on every launch.
 
 Folder precedence at boot (`lib/last-session.ts`):
@@ -236,7 +239,7 @@ Folder precedence at boot (`lib/last-session.ts`):
 2. **the remembered folder**, if it still exists. One that has been moved or
    deleted is dropped, because booting into a missing path fails every
    `/flow/api` route and reads as a broken app rather than a missing folder.
-3. **the OpenFlow repo itself.**
+3. **the Autonogrammer repo itself.**
 
 Both are recorded host-side in `~/.openflow/state.json` — outside any project,
 since they describe the app rather than the repo, and a user might commit or
@@ -283,7 +286,7 @@ written to a project's `roles.json` before it has been read successfully.
 
 Cards run on Omp, the Oh-My-Pi coding agent. The canvas host starts one
 `omp --mode rpc-ui` process per card session and drives it over omp's RPC
-protocol. OpenFlow has no agent loop of its own: a card has omp's tools, omp's
+protocol. Autonogrammer has no agent loop of its own: a card has omp's tools, omp's
 model providers, and — when you turn them on — omp's extensions.
 
 **Requirements**
@@ -292,7 +295,7 @@ model providers, and — when you turn them on — omp's extensions.
   the absolute path set as **Binary** in [Omp settings](#omp-settings). Install it
   with `bun add -g @oh-my-pi/pi-coding-agent`, update it with `omp update`. The
   host runs `omp --version` to check, and caches the answer for 30 seconds.
-- **A login** in the OpenFlow profile — see [First run](#first-run).
+- **A login** in the Autonogrammer profile — see [First run](#first-run).
 - Optional, each only for its own feature: the `claude` CLI logged in and a
   claude-ultrathink checkout for Prompt Uplift; a reachable Agent Substrate and
   its token for shared memory; an agent-swarm checkout, `python3` with
@@ -303,7 +306,7 @@ model providers, and — when you turn them on — omp's extensions.
 
 - **A separate profile.** Cards, the model catalog and the terminal run under the
   omp profile `openflow` (`--profile`): its own logins, config, MCP servers,
-  skills and sessions. OpenFlow never reads or rewrites your default profile. The
+  skills and sessions. Autonogrammer never reads or rewrites your default profile. The
   one exception is the **Copy logins** button, which copies logins out of it when
   you ask.
 - **`--no-extensions`.** Cards do not load the extensions and plugins installed
@@ -317,7 +320,7 @@ model providers, and — when you turn them on — omp's extensions.
   dropped. The one exception is the Agent Swarm signing key, passed through by
   name to a card whose swarm is on. Its value is then in that card's environment
   (see [Agent Swarm](#agent-swarm-in-cards)). **Every `*_API_KEY` variable in the
-  environment OpenFlow runs in reaches every card**, because omp needs the
+  environment Autonogrammer runs in reaches every card**, because omp needs the
   provider's key. Keep unrelated service keys out of that environment, or leave
   provider keys out of it and use the profile's stored logins (**Copy logins**).
 - **No double planning.** Every card gets `ULTRATHINK_UPLIFT=0` and
@@ -336,12 +339,12 @@ profile has no credentials.* For the last one there are two ways out:
 
 - **Copy logins from your default profile.** If you already use omp, this button
   — shown on the Status tab beside that problem — asks for confirmation, then
-  copies the API keys and logins stored in your default profile into the OpenFlow
+  copies the API keys and logins stored in your default profile into the Autonogrammer
   profile. Nothing is removed from the default profile. The logins pass between
   the two omp commands in memory only: they are never put in a file, a log or an
   answer to the browser.
 - **`/login` in the terminal.** Open the [terminal](#terminal) with `` Ctrl+` ``, keep
-  the `omp` tab, and type `/login`. That omp runs under the OpenFlow profile, so
+  the `omp` tab, and type `/login`. That omp runs under the Autonogrammer profile, so
   the login lands there.
   The first time a new isolated profile opens omp in the terminal, omp runs its
   own setup wizard; press `Ctrl+C` to skip it.
@@ -476,8 +479,8 @@ dev and built cannot drift into two different stores.
 
 ## Models and logins
 
-Omp holds the provider logins; OpenFlow stores none. The model menu is the
-catalog omp reports for the OpenFlow profile (the host asks omp once and caches
+Omp holds the provider logins; Autonogrammer stores none. The model menu is the
+catalog omp reports for the Autonogrammer profile (the host asks omp once and caches
 the answer for ten minutes; the cache, and the provider list's, is dropped when
 the profile's `agent.db` changes, so a `/login` in the terminal shows up without a
 restart), grouped by provider and searchable. A provider
@@ -523,7 +526,7 @@ being missing offers the same dialog. It has four tabs:
   **Forget this pipeline's memory**. Open the dialog from a pipeline to browse or
   forget its entries.
 - **Omp options** — omp's own configuration, read and written through
-  `omp config list|get|set|reset` against the OpenFlow profile, so omp validates
+  `omp config list|get|set|reset` against the Autonogrammer profile, so omp validates
   every value. It is searchable by key, description or category and grouped by
   omp's own headings. Booleans, numbers, choices and strings are edited in place;
   lists and maps are shown read-only with an **Open terminal** button; a
@@ -699,7 +702,7 @@ cards against each other.
 
 The mode is the *Swarm* setting in Omp settings → Cards. A saved pipeline can
 override it: `swarm` on a card's `agent`, or `defaultSwarm` on the pipeline; there
-is no control for either in the canvas yet. OpenFlow never uses the extension's
+is no control for either in the canvas yet. Autonogrammer never uses the extension's
 `/swarm` command, which writes `.claude/swarm-state.json` and appends to
 `.planning/STATE.md` in the working directory.
 
@@ -727,7 +730,7 @@ inside the card's own omp process, so a card whose swarm is on receives
 its shell tool can read it. Cards without swarm never receive it. To keep the
 value out of the environment, use `SWARM_ED25519_KEY_FILE`: only the path is
 passed, and the file stays readable to your user. In either case the value is
-never put in a command line, a file OpenFlow writes, or `omp-settings.json`.
+never put in a command line, a file Autonogrammer writes, or `omp-settings.json`.
 
 **The status chip.** Once a card delegates, or its swarm degrades, a line appears
 on the card — `swarm 2 running · 1 done`, with a pill per specialist and its last
@@ -743,7 +746,7 @@ The terminal button in the titlebar, or `` Ctrl+` ``, opens a terminal in a dock
 the bottom of the window. It runs in the project folder, and you switch between
 two kinds:
 
-- **`omp`** — omp itself, under the OpenFlow profile. This is where you `/login`,
+- **`omp`** — omp itself, under the Autonogrammer profile. This is where you `/login`,
   run `omp` commands, and edit the lists and maps that Omp options shows
   read-only.
 - **`shell`** — your login shell (`$SHELL` when it is listed in `/etc/shells`,
@@ -805,7 +808,7 @@ next starts.
 
 A card is an ordinary omp session and knows nothing about the graph it
 sits in, so `pipelineBriefing()` in `src/graph/prompt.ts` prepends a map to every
-prompt: what OpenFlow is, every card in the pipeline with its execution layer and
+prompt: what Autonogrammer is, every card in the pipeline with its execution layer and
 its wiring (`role (id) · receives: … · feeds: …`), which one the card is, and who
 reads its output next. Cards are named by the same `role (id)` label the
 `# Upstream output` headers use, so one card can refer to another by name and be
@@ -1225,7 +1228,7 @@ catalog does not list is sent no files, since nothing can show it accepts them.
 
 ## MCP servers and skills
 
-MCP servers and skills live in the OpenFlow omp profile, not in the project: the
+MCP servers and skills live in the Autonogrammer omp profile, not in the project: the
 profile's `mcp.json` and `skills/` directory, under the config directory the
 Status tab of Omp settings shows (`omp config path`). The profile is isolated, so
 servers and skills in your default profile do not carry over; add them here. Omp
@@ -1239,10 +1242,10 @@ The **plug** button in the titlebar manages the MCP servers. Both kinds are
 covered: **local** (a command this machine runs, with environment variables and
 an optional working directory) and **remote** (an http/sse url with headers). The
 panel lists and rewrites the profile's `mcp.json`, so the omp CLI and TUI under
-that profile see exactly the same set — OpenFlow owns no parallel config. Entries
+that profile see exactly the same set — Autonogrammer owns no parallel config. Entries
 the form does not own are kept as they were. The file keeps its existing mode (a
 new one is created 0600), and `mcp.json.bak` (mode 0600) holds the file as
-it was before OpenFlow first rewrote it (written once, never overwritten). Omp
+it was before Autonogrammer first rewrote it (written once, never overwritten). Omp
 connects to the servers itself when a card's session starts, so there is no live
 status to show: a saved change applies to the next card session, not to one
 already running.
@@ -1316,10 +1319,10 @@ is never listed, writes no session or turns file, and cannot be resumed (combini
 that create made it and it is empty, is removed when it ends: on dispose, release,
 a failed start, exit or idle reap.
 
-These are not a history OpenFlow keeps separately. Every node is one omp session,
+These are not a history Autonogrammer keeps separately. Every node is one omp session,
 its files are under `omp/<project>/<run>/<card>/` in the state directory, and
 this reads them back through `GET /flow/api/engine/sessions`. Only sessions
-OpenFlow's cards started are listed; what you run in the terminal is not. Nothing
+Autonogrammer's cards started are listed; what you run in the terminal is not. Nothing
 in the panel writes: it lists and it reads.
 
 The column is closed by default and remembered per browser, because a 240px
@@ -1366,7 +1369,7 @@ for the same reason.
 | You see | Cause | Do |
 |---|---|---|
 | a banner says *omp is not available*, or the Status tab says *omp is not on PATH* | omp is not installed, or not where the setting points | `bun add -g @oh-my-pi/pi-coding-agent`, or set **Binary** in Omp settings |
-| *omp X is older than the 18.12.2 OpenFlow needs* | an old omp | `omp update`, then run again |
+| *omp X is older than the 18.12.2 Autonogrammer needs* | an old omp | `omp update`, then run again |
 | *`omp --version` did not answer* | the binary starts but fails | run it in the terminal to see why, or point **Binary** at a working one |
 | *The openflow profile has no credentials*, and an empty model menu | the profile has no login | **Copy logins from your default profile**, or `/login` in the terminal |
 | *None of the profile's authenticated providers can serve models* | the logins are there but the providers are not available | `/login` for an available provider in the terminal |
@@ -1398,5 +1401,5 @@ last published 2022, three versions, built for Solid 1.5.
 - click a node to edit role, model, agent, prompt and tools, and to read its
   sent prompt and output
 - the model field is a searchable menu of the models omp reports, grouped by
-  provider, `↑`/`↓`, `Enter`, `Esc` — it lists nothing until the OpenFlow profile
+  provider, `↑`/`↓`, `Enter`, `Esc` — it lists nothing until the Autonogrammer profile
   has a login, and its last row, **Manage models in Omp settings**, opens the dialog

@@ -5,7 +5,7 @@
   "description": "OpenFlow — visual builder for multi-agent workflows",
   "private": true,
   "type": "module",
-  "license": "MIT",
+  "license": "LicenseRef-AGL-3.0",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
