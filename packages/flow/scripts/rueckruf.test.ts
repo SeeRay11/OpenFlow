@@ -174,6 +174,70 @@ describe("T-04 Rückruf an den Dienst (Fake)", () => {
   })
 })
 
+/**
+ * T-05 (Abnahme 23.10.2026, Befund 7): Im Live-Test hatte die fremde Sitzung
+ * gar keinen Ledger-Eintrag — „fremd 0" bewies damit nichts. Hier hat die
+ * FREMDE Sitzung eigene Einträge im selben Zeitfenster. Jede Lage wird gegen
+ * die echte Zuordnung UND gegen zwei absichtlich falsche gefahren: Der Test
+ * taugt nur, wenn die falschen an ihm scheitern (Gegenprobe).
+ */
+describe("T-05 fremde Sitzung mit eigenem Eintrag im selben Zeitfenster", () => {
+  const ts = (ms: number) => new Date(START + ms).toISOString()
+  // Mutant 1: Zuordnung NUR über die pid — host.session und aufruf_id ignoriert.
+  const nurPid = (e: any[], r: any) => {
+    const t = e.filter((x) => x?.event === "fabrik_log" && x?.pid === r?.host?.pid)
+    return t.length ? { session_id: t[t.length - 1].session_id } : null
+  }
+  // Mutant 2: der jüngste fabrik_log im Zeitfenster, egal welche pid.
+  const juengster = (e: any[], _r: any) => {
+    const t = e.filter((x) => x?.event === "fabrik_log")
+    return t.length ? { session_id: t[t.length - 1].session_id } : null
+  }
+
+  // Lage 1: Ziel ses_A (aufruf_id call_A, pid 4711); ses_FREMD startet 30 s
+  // später einen eigenen Run (aufruf_id call_B, pid 5822) — jüngster Eintrag.
+  const lage1 = () => [
+    { event: "fabrik_run", session_id: "ses_A", aufruf_id: "call_A", ts: ts(0) },
+    { event: "fabrik_log", session_id: "ses_A", log: "/tmp/a.log", pid: 4711, ts: ts(1000) },
+    { event: "fabrik_run", session_id: "ses_FREMD", aufruf_id: "call_B", ts: ts(30_000) },
+    { event: "fabrik_log", session_id: "ses_FREMD", log: "/tmp/b.log", pid: 5822, aufruf_id: "call_B", ts: ts(31_000) },
+  ]
+  // Lage 2: dieselbe pid (wiederverwendet), aber der Eintrag trägt eine FREMDE
+  // aufruf_id und die Sitzung des Runs widerspricht ihm.
+  const lage2 = () => [{ event: "fabrik_log", session_id: "ses_FREMD", log: "/tmp/b.log", pid: 4711, aufruf_id: "call_FREMD", ts: ts(5000) }]
+  const run2 = () => run({ pid: 4711, aufruf_id: "call_A", session: "ses_A" }, "run-T05b")
+
+  it("Lage 1: aufruf_id und pid ordnen beide der Zielsitzung zu", () => {
+    expect(zuordnung(lage1(), run({ pid: 4711, aufruf_id: "call_A" }))?.session_id).toBe("ses_A")
+    expect(zuordnung(lage1(), run({ pid: 4711 }))?.session_id).toBe("ses_A")
+  })
+  it("Lage 1 Gegenprobe: „jüngster Eintrag“ trifft die fremde Sitzung", () => {
+    expect(juengster(lage1(), run({ pid: 4711 }))?.session_id).toBe("ses_FREMD")
+  })
+  it("Lage 2: gleiche pid, fremde aufruf_id + widersprechende host.session → keine Zuordnung", () => {
+    expect(zuordnung(lage2(), run2())).toBeNull()
+  })
+  it("Lage 2 Gegenprobe: „nur über pid“ trifft die fremde Sitzung", () => {
+    expect(nurPid(lage2(), run2())?.session_id).toBe("ses_FREMD")
+  })
+
+  it("end-to-end Lage 1: genau ein Post, an ses_A, die fremde Sitzung bekommt 0", async () => {
+    for (const z of lage1()) appendFileSync(ledger, JSON.stringify(z) + "\n")
+    expect((await rueckruf(meldung(run({ pid: 4711, aufruf_id: "call_A" }, "run-T05a")), { env: env() })).status).toBe("gesendet")
+    expect((await rueckruf(meldung(run({ pid: 4711 }, "run-T05p")), { env: env() })).status).toBe("gesendet")
+    expect(posts.map((p) => p.path)).toEqual(["/api/session/ses_A/synthetic", "/api/session/ses_A/synthetic"])
+    expect(ledgerZeilen().filter((z) => z.event === "rueckruf").map((z) => z.session_id)).toEqual(["ses_A", "ses_A"])
+  })
+
+  it("end-to-end Lage 2: kein Post, endgültig „keine Zuordnung“", async () => {
+    for (const z of lage2()) appendFileSync(ledger, JSON.stringify(z) + "\n")
+    const r = await rueckruf(meldung(run2()), { env: env() })
+    expect(r.status).toBe("keine_zuordnung")
+    expect(posts).toHaveLength(0)
+    expect(ledgerZeilen().filter((z) => z.event === "rueckruf")).toHaveLength(0)
+  })
+})
+
 describe("T-04 über of-reap (Subprozess)", () => {
   const REAP = join(import.meta.dir, "of-reap.ts")
   const cps: string[] = []

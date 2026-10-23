@@ -12,7 +12,7 @@ import { join } from "node:path"
 import { AUFGABEN, bewerteLauf } from "./bench"
 import { abnahmeTitel, kontrollwerteImSchluss } from "./live"
 import { CODE_A, CODE_B, bewerteWecken } from "./wecken"
-import { auswertungAutoResume, auswertungAutonomie, auswertungOpencode, dharmaAusAe, dharmaAusD1, fensterAus } from "./woche"
+import { auswertungAutoResume, auswertungAutonomie, auswertungOpencode, dharmaAusAe, d1Kopfzeile, dharmaAusD1, fensterAus } from "./woche"
 
 const F = fensterAus("2026-10-16", "2026-10-17")
 const T = F.von + 3_600_000
@@ -132,6 +132,37 @@ describe("dharma-Auswertung (reine Rechnung)", () => {
     ])
     expect(r).toMatchObject({ anfragen: 3, failover: 1, ttfb_gemessen: 2 })
     expect(r.je_anbieter[0]).toMatchObject({ anbieter: "zai", n: 2, ttfb_p50: 300, versuch_gt1: 1 })
+  })
+  it("D1: ttfb == total in ALLEN Zeilen → „nicht getrennt erfasst (Altdaten)“, keine TTFB-Quantile", () => {
+    const r = dharmaAusD1([
+      { provider: "zai", versuch: 1, ttfb_ms: 900, total_ms: 900 },
+      { provider: "zai", versuch: 1, ttfb_ms: 1200, total_ms: 1200 },
+      { provider: "go", versuch: 1, ttfb_ms: 40, total_ms: 40 },
+    ])
+    expect(r.ttfb_status).toBe("nicht_getrennt")
+    expect(r.je_anbieter[0]).toMatchObject({ ttfb_n: 0, ttfb_p50: null, ttfb_p90: null, total_p50: 1200 })
+    const k = d1Kopfzeile(r)
+    expect(k).toContain("TTFB nicht getrennt erfasst (Altdaten")
+    expect(k).not.toContain("TTFB gemessen")
+    expect(k).toContain("TTFT nicht erfasst")
+  })
+  it("D1: Gegenprobe — EINE getrennte Zeile genügt, TTFT aus ttft_ms getrennt ausgewiesen", () => {
+    const r = dharmaAusD1([
+      { provider: "zai", versuch: 1, ttfb_ms: 900, total_ms: 900, ttft_ms: null },
+      { provider: "zai", versuch: 1, ttfb_ms: 150, total_ms: 1200, ttft_ms: 400 },
+    ])
+    expect(r.ttfb_status).toBe("teilweise")
+    expect(r.ttfb_getrennt).toBe(1)
+    expect(r.ttft_gemessen).toBe(1)
+    // TTFB-Quantile nur über die getrennte Zeile (150), nicht die Altzeile (900)
+    expect(r.je_anbieter[0]).toMatchObject({ ttfb_n: 1, ttfb_p50: 150, ttft_p50: 400 })
+    const k = d1Kopfzeile(r)
+    expect(k).toContain("TTFB getrennt erfasst nur in 1 von 2 Zeilen")
+    expect(k).toContain("TTFT (erstes Token) gemessen 1")
+    const voll = dharmaAusD1([{ provider: "zai", versuch: 1, ttfb_ms: 150, total_ms: 1200, ttft_ms: 400 }])
+    expect(voll.ttfb_status).toBe("getrennt")
+    expect(d1Kopfzeile(voll)).toContain("TTFB getrennt gemessen 1 von 1")
+    expect(d1Kopfzeile(voll)).not.toContain("Altdaten")
   })
 })
 

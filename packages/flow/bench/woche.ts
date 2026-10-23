@@ -321,28 +321,68 @@ export function dharmaAusAe(zeilen: { anbieter: string; ausgang: string; n: numb
   return { anfragen: n, fehlversuche: fehl, fehlversuche_pct: prozent(fehl, n, 2), je_anbieter: jeAnbieter }
 }
 
-export function dharmaAusD1(rows: { provider: string; versuch: number | null; ttfb_ms: number | null; total_ms: number | null }[]) {
-  const g = new Map<string, typeof rows>()
+type D1Zeile = { provider: string; versuch: number | null; ttfb_ms: number | null; total_ms: number | null; ttft_ms?: number | null }
+
+/**
+ * D1 request_log. TTFB ist nur dann eine eigene Messung, wenn sie sich von der
+ * Gesamtdauer unterscheidet: Vor dharma 0.7.0 schrieb der Strom-Weg
+ * ttfb_ms = total_ms (Abnahme 23.10.2026, Befund D) — „TTFB gemessen N" hätte
+ * dann N Gesamtdauern als TTFB ausgegeben. Eine Zeile mit ttfb == total (auf
+ * die Millisekunde) trägt keine eigene TTFB; die TTFB-Quantile rechnen deshalb
+ * NUR über Zeilen mit ttfb != total, und `ttfb_n` sagt, über wie viele.
+ * Status: `nicht_getrennt` (keine solche Zeile) · `teilweise` · `getrennt`.
+ * Gemessen 16.–23.10.2026: 16 von 16 540 Zeilen getrennt — ohne diese Regel
+ * stünden 16 524 Gesamtdauern als TTFB-p50 in der Tabelle.
+ * `ttft_ms` (erstes Token, dharma ≥ 0.7.0) wird getrennt gezählt.
+ */
+export function dharmaAusD1(rows: D1Zeile[]) {
+  const g = new Map<string, D1Zeile[]>()
   for (const r of rows) g.set(r.provider, [...(g.get(r.provider) ?? []), r])
-  const zahlen = (a: (number | null)[]) => a.filter((x): x is number => typeof x === "number")
+  const zahlen = (a: (number | null | undefined)[]) => a.filter((x): x is number => typeof x === "number")
   const failover = rows.filter((r) => (r.versuch ?? 1) > 1).length
+  const beide = rows.filter((r) => typeof r.ttfb_ms === "number" && typeof r.total_ms === "number")
+  const getrennt = beide.filter((r) => r.ttfb_ms !== r.total_ms).length
+  const ttfb_status: "getrennt" | "teilweise" | "nicht_getrennt" | "keine" =
+    beide.length === 0 ? "keine" : getrennt === 0 ? "nicht_getrennt" : getrennt < beide.length ? "teilweise" : "getrennt"
+  const eigeneTtfb = (a: D1Zeile[]) => zahlen(a.filter((r) => typeof r.ttfb_ms === "number" && r.ttfb_ms !== r.total_ms).map((r) => r.ttfb_ms))
+  const ttfbQ = (a: D1Zeile[], q: number) => quantil(eigeneTtfb(a), q)
   return {
     anfragen: rows.length,
     failover,
     failover_pct: prozent(failover, rows.length, 2),
     ttfb_gemessen: zahlen(rows.map((r) => r.ttfb_ms)).length,
+    ttfb_status,
+    ttfb_getrennt: getrennt,
+    ttft_gemessen: zahlen(rows.map((r) => r.ttft_ms)).length,
     je_anbieter: [...g.entries()]
       .sort((a, b) => b[1].length - a[1].length)
       .map(([anbieter, a]) => ({
         anbieter,
         n: a.length,
-        ttfb_p50: quantil(zahlen(a.map((r) => r.ttfb_ms)), 0.5),
-        ttfb_p90: quantil(zahlen(a.map((r) => r.ttfb_ms)), 0.9),
+        ttfb_n: eigeneTtfb(a).length,
+        ttfb_p50: ttfbQ(a, 0.5),
+        ttfb_p90: ttfbQ(a, 0.9),
+        ttft_p50: quantil(zahlen(a.map((r) => r.ttft_ms)), 0.5),
+        ttft_p90: quantil(zahlen(a.map((r) => r.ttft_ms)), 0.9),
         total_p50: quantil(zahlen(a.map((r) => r.total_ms)), 0.5),
         total_p90: quantil(zahlen(a.map((r) => r.total_ms)), 0.9),
         versuch_gt1: a.filter((r) => (r.versuch ?? 1) > 1).length,
       })),
   }
+}
+
+/** Die D1-Kopfzeile des Berichts — TTFB und TTFT ehrlich getrennt. */
+export function d1Kopfzeile(d1: ReturnType<typeof dharmaAusD1>): string {
+  const ttfb =
+    d1.ttfb_status === "nicht_getrennt"
+      ? `TTFB nicht getrennt erfasst (Altdaten: ttfb_ms = total_ms in allen ${d1.ttfb_gemessen} Zeilen)`
+      : d1.ttfb_status === "keine"
+        ? "TTFB nicht erfasst"
+        : d1.ttfb_status === "teilweise"
+          ? `TTFB getrennt erfasst nur in ${d1.ttfb_getrennt} von ${d1.ttfb_gemessen} Zeilen (übrige Altdaten: ttfb_ms = total_ms; TTFB-Quantile nur über die getrennten)`
+          : `TTFB getrennt gemessen ${d1.ttfb_getrennt} von ${d1.ttfb_gemessen}`
+  const ttft = d1.ttft_gemessen > 0 ? `TTFT (erstes Token) gemessen ${d1.ttft_gemessen}` : "TTFT nicht erfasst (Spalte ttft_ms leer oder fehlt, dharma < 0.7.0)"
+  return `D1: ${d1.anfragen} Anfragen, Failover (versuch > 1) ${d1.failover} (${d1.failover_pct} %; Ziel < 5 %), ${ttfb}, ${ttft}`
 }
 
 async function auswertungDharma(f: Fenster) {
@@ -371,13 +411,17 @@ async function auswertungDharma(f: Fenster) {
     const liste = JSON.parse(await cf(token, `/accounts/${konto}/d1/database?name=dharma-log`)).result as { uuid: string; name: string }[]
     const db = liste.find((d) => d.name === "dharma-log")
     if (!db) throw new Error("D1 dharma-log nicht gefunden")
-    const t = await cf(token, `/accounts/${konto}/d1/database/${db.uuid}/query`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        sql: "SELECT provider, versuch, ttfb_ms, total_ms FROM request_log WHERE ts >= ? AND ts < ?",
-        params: [f.vonTag, f.bisTag],
-      }),
+    const frage = (spalten: string) =>
+      cf(token, `/accounts/${konto}/d1/database/${db.uuid}/query`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sql: `SELECT ${spalten} FROM request_log WHERE ts >= ? AND ts < ?`, params: [f.vonTag, f.bisTag] }),
+      })
+    // ttft_ms gibt es erst ab dharma 0.7.0; eine ältere Tabelle ohne die
+    // Spalte darf die ganze Auswertung nicht auf UNGEPRÜFT kippen.
+    const t = await frage("provider, versuch, ttfb_ms, total_ms, ttft_ms").catch((e: Error) => {
+      if (/no such column/i.test(e.message)) return frage("provider, versuch, ttfb_ms, total_ms")
+      throw e
     })
     return { status: "gemessen", ...dharmaAusD1(JSON.parse(t).result[0].results) }
   })().catch((e: Error) => ({ status: "UNGEPRÜFT", grund: e.message }))
@@ -453,9 +497,9 @@ async function main() {
   const d1 = dharma.d1 as any
   if (d1.status !== "gemessen") console.log(`D1: ${statusZeile(d1)}`)
   else {
-    console.log(`D1: ${d1.anfragen} Anfragen, Failover (versuch > 1) ${d1.failover} (${d1.failover_pct} %; Ziel < 5 %), TTFB gemessen ${d1.ttfb_gemessen}`)
-    console.log("| Anbieter | n | TTFB p50 | TTFB p90 | gesamt p50 | gesamt p90 | versuch>1 |\n|---|---|---|---|---|---|---|")
-    for (const x of d1.je_anbieter) console.log(`| ${x.anbieter} | ${x.n} | ${x.ttfb_p50 ?? "-"} | ${x.ttfb_p90 ?? "-"} | ${x.total_p50 ?? "-"} | ${x.total_p90 ?? "-"} | ${x.versuch_gt1} |`)
+    console.log(d1Kopfzeile(d1))
+    console.log("| Anbieter | n | TTFB n | TTFB p50 | TTFB p90 | TTFT p50 | TTFT p90 | gesamt p50 | gesamt p90 | versuch>1 |\n|---|---|---|---|---|---|---|---|---|---|")
+    for (const x of d1.je_anbieter) console.log(`| ${x.anbieter} | ${x.n} | ${x.ttfb_n} | ${x.ttfb_p50 ?? "-"} | ${x.ttfb_p90 ?? "-"} | ${x.ttft_p50 ?? "-"} | ${x.ttft_p90 ?? "-"} | ${x.total_p50 ?? "-"} | ${x.total_p90 ?? "-"} | ${x.versuch_gt1} |`)
   }
 }
 

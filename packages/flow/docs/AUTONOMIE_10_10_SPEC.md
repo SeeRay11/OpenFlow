@@ -1,6 +1,6 @@
 # Autonomie 10/10 in opencode + OpenFlow + dharma — Plan v1.0
 
-**Datum:** 23.10.2026 · **Status:** W2 umgesetzt (Fabrik robust, PR gegen `dev`) · W0 gemessen (Hauptfaden) · W1, W3–W5 offen
+**Datum:** 23.10.2026 · **Status:** W0 bestanden (18/18) · W1, W2, W3 umgesetzt · W4 gemessen · W5 (Messwoche 24.–30.10.) offen · **unabhängige Abnahme 23.10.2026: 2/10** (Feld-Nachweis UNGEPRÜFT) — Einzelheiten im Abschnitt „Stand nach der Abnahme“ am Ende
 
 Quelle: freigegebener Plan v1.0 vom 23.10.2026, unverändert übernommen; ergänzt sind die Messwerte aus W2.1 (Abschnitt „W2 — Messung und Umsetzung" am Ende) und Korrekturen, wo die Messung eine Annahme verschoben hat.
 
@@ -131,6 +131,7 @@ Grenzen: Secrets bleiben in der Konfiguration und in `service.json` mit Rechten 
 ### W3 Hauptfaden über dharma (Inhalt)
 - `agents.build.model = dharma/power`, bleibt so.
 - `steps`: build 200, general/worker 60, explore 40. Begründung: unbegrenzt plus Schleife wäre der teuerste Fehlerfall. Die Zahlen werden nach W4 angepasst.
+  - **Umgesetzt mit begründeter Abweichung** (Commit `1b6f657` in `~/.config/opencode`): siehe „Stand nach der Abnahme“, W3 — build ohne Schrittgrenze, die übrigen Werte aus der gemessenen Verteilung statt der Schätzung oben.
 - Guard: Liegt die TUI-Wahl außerhalb von `dharma/*`, kommt ein sichtbarer Hinweis, keine Blockade.
 - Die Arbeit läuft bei der Flatrate, Geldpfad unverändert: zai-pay steht weiter zuletzt.
 
@@ -267,4 +268,74 @@ Skripte der Messung: `reap-analyse.ts`, `resume-zeit.ts`, `log-mtime.ts` (im Job
 | W2.4 Rückruf | `of-rueckruf.ts`: bei Reap und bei Runs ohne Ende nach 45 min `POST 127.0.0.1:<port>/api/session/<id>/synthetic` (Basic `opencode`, Passwort aus `service.json`, nie geloggt). Zuordnung nur über EINEN Ledger-Eintrag (`host.aufruf_id` → fabrik_log/fabrik_run; sonst `host.pid` → fabrik_log im Zeitfenster); Widerspruch → kein Post. Marker `event:"rueckruf"`; Fehlschlag → `rueckruf_fehlgeschlagen` mit Grund, höchstens 3 Versuche; Testlauf ohne `OPENFLOW_LEDGER` → aus. headless-run trägt `host.aufruf_id`/`host.session` aus der Umgebung (ein Resume erbt sie). | `rueckruf.test.ts` (T-04, Fake-Dienst) |
 | W2.5 Projekt | headless-run lädt Pipelines über den Canvas, also aus dessen aktivem Projekt (`OPENFLOW_PROJECT` > `state.json` > Repo). Gemessen 23.10.: state.json → mcp-workers, laufender Canvas mit `OPENFLOW_PROJECT=flow-lab` (aus openflow-autostart.sh) → `/flow/api/context` = flow-lab, Pipeline 200. Jetzt: fehlt die Pipeline im aktiven Projekt → Exit 2 mit Projekt und Ausweg; fremdes Projekt → Warnung (Runs dort sieht kein Reaper). | `lebendig.test.ts` (W2.5) |
 
-Offen aus W2: T-05 (Post gegen den echten Dienst :49374) — Dienst lief zur Umsetzung nicht, ungeprüft. `fabrik_log` trägt noch keine `aufruf_id` (Plugin `fabrik-gate.ts` im Konfig-Repo); die Zuordnung läuft bis dahin über `host.aufruf_id`↔`fabrik_run` bzw. `pid`↔`fabrik_log`.
+Offen aus W2 (Stand der Umsetzung; **überholt** — T-05 und B5 sind live gelaufen, siehe „Stand nach der Abnahme“): T-05 (Post gegen den echten Dienst :49374) — Dienst lief zur Umsetzung nicht, ungeprüft. `fabrik_log` trägt noch keine `aufruf_id` (Plugin `fabrik-gate.ts` im Konfig-Repo); die Zuordnung läuft bis dahin über `host.aufruf_id`↔`fabrik_run` bzw. `pid`↔`fabrik_log`.
+
+## Stand nach der Abnahme (23.10.2026)
+
+**Unabhängige Abnahme 23.10.2026: 2/10.** Grund: Der Feld-Nachweis ist UNGEPRÜFT — alle Pakete sind gebaut und einzeln gemessen, aber noch keine Woche Normalbetrieb lief über den neuen Stand. Die Note ändert erst W5. Die Befunde der Abnahme sind unten je Paket nachgezogen (Befund 7: T-05-Gegenprobe; Befund 10: diese Doku).
+
+| Paket | Stand | Beleg |
+|---|---|---|
+| W0 Spike | **bestanden 18/18** (Wecken je Weg und Modell, n=3) | `bench/wecken.ts` |
+| W1 Anweisungen | **umgesetzt** | `~/.config/opencode` Commits `1ce5caa` (Hintergrund als Standard, Fabrik als Hintergrund-Shell mit `--wait`), `1ca15b2` (Live-Befund, s. u.) |
+| W2 Fabrik robust | **umgesetzt** | Abschnitt „W2 umgesetzt“ oben |
+| W3 Hauptfaden über dharma | **umgesetzt mit begründeter Abweichung** | `~/.config/opencode` Commit `1b6f657` |
+| W4 Benchmark | **gemessen** | unten |
+| W5 Messwoche | **offen**: 24.–30.10.2026 | `bun bench/woche.ts --von 2026-10-24 --bis 2026-10-30` |
+
+### W1 — Live-Befund
+
+Ein Kind-Subagent meldet sein **erstes** Turn-Ende als fertig. Startet er selbst etwas im Hintergrund und beendet seinen Turn mit „warte auf …“, kommt bei der Eltern-Sitzung eine halbe Lieferung als „completed“ an. Deshalb gilt: Hintergrund **nur im Hauptfaden**, Subagenten arbeiten synchron. Der Guard setzt das durch (Commit `1ca15b2`).
+
+### W3 — Schrittgrenzen: Abweichung vom Plan, mit Begründung
+
+Der Plan schätzte build 200, general/worker 60, explore 40 und verlangte zugleich (Red Team (b)) Werte aus der gemessenen Verteilung, p99 × 2. Gemessen wurde über die Woche 09.–23.10. (opencode.db, Schritte je Sitzung):
+
+| Agent | Grenze | Herleitung |
+|---|---|---|
+| build | **keine** | p99 = 933 Schritte je Sitzung, verteilt über mehrere Turns. Eine Grenze würde genau die langen autonomen Läufe abwürgen, um die es in diesem Plan geht. |
+| explore | 80 | p99 × 2 |
+| general | 60 | p99 × 2 |
+| reviewer | 60 | p99 × 2 |
+| abnahme | 110 | p99 × 2 (p99 52) |
+| worker-dev | 20 (Projektwert, unverändert) | **offener Befund:** 20 liegt auf dem Median, die Grenze greift also bei etwa jeder zweiten Sitzung |
+
+Der Hinweis bei einer TUI-Modellwahl außerhalb von `dharma/*` ist umgesetzt (sichtbar, keine Blockade).
+
+### W4 — Ergebnisse (Benchmark B1–B5, 23.10.2026)
+
+| Kandidat | Ergebnis |
+|---|---|
+| dharma/power | **8/9 korrekt**, 0 sleep/Abfrage-Aufrufe, 0 Nutzereingriffe, Hintergrund-Anteil am Fan-out ≈ 73 % (nach `bench.ts` nachgerechnet) |
+| zai/glm-5.3 | 3/3, **n = 1** je Aufgabe — trägt keinen Vergleich |
+| dharma/brain | 0/3 — ein Planer, kein Ausführer; für `build` ungeeignet |
+
+Ziel aus §6 W4 war ≥ 80 % Hintergrund-Anteil. Mit ≈ 73 % liegt dharma/power über der Kill-Schwelle von 60 % (§8), aber unter dem Ziel.
+
+### Live-Abnahmen
+
+| Prüfung | Ergebnis |
+|---|---|
+| W1 live | 9 von 9 Werten |
+| B3 (Fabrik-Run mit Rückruf) | PASS, Rückkehr in die Sitzung nach 1388 s |
+| T-05 (Reaper-Post gegen den echten Dienst :49374) | gesendet, Wiederholung → `schon_gemeldet`, fremde Sitzung 0 Posts. **Einschränkung (Abnahme, Befund 7):** Die fremde Sitzung hatte im Live-Test gar keinen Ledger-Eintrag, „0“ bewies damit nichts. Nachgezogen in `rueckruf.test.ts` (T-05): Die fremde Sitzung hat eigene Einträge im selben Zeitfenster. Die Lagen werden gegen zwei absichtlich falsche Zuordnungen gefahren („nur über pid“, „jüngster Eintrag“), und beide scheitern daran. |
+| B5 (echter Reap mit Rückruf) | siehe unten |
+
+**B5 live (23.10.2026, 21:21–21:30 UTC).** Sitzung `ses_e955d28bfffew6Us0FRnnyRzCv` („abnahme-live B5“, flow-lab, Agent build) wurde per API angelegt. Gestartet wurde `of-run.sh smoke-orch` detached, mit `OPENFLOW_SESSION` und `OPENFLOW_AUFRUF_ID=b5-20261023T212117Z`. Der passende `fabrik_run`-Eintrag ist von Hand geschrieben, so wie fabrik-gate ihn schreibt, weil der Start ohne das Plugin lief. Die Zuordnung braucht `aufruf_id`↔`fabrik_run`, und das `fabrik_log` des Plugins trägt keine `aufruf_id`. Run `run-2026-10-23T21-21-17-391Z-ecc827`, headless-run PID 10145, wurde unmittelbar nach dem Start mit SIGKILL beendet. Danach:
+- Der of-loop-Cron um 21:30:01 räumte ihn ab: `zombie — Prozess tot, checkpoint seit 9 min stumm (Grace 5 min)`, `gereapt: 1`. Der Cron um 21:25 griff noch nicht, weil die Grace von 5 min noch nicht abgelaufen war.
+- Ledger: genau **eine** `rueckruf`-Zeile für diesen Run (`zuordnung: aufruf_id`, `http: 200`). In der Sitzung steht die synthetic-Nachricht „[OpenFlow] Fabrik-Run … (smoke-orch) wurde abgeräumt …“. 24 ms danach startete ein Assistant-Turn. Keine andere Sitzung bekam eine `[OpenFlow]`-Nachricht (opencode.db, ab 21:20 UTC).
+- **Befund:** Der geweckte Turn lief auf `opencode-go/kimi-k3.1-pro` statt auf `build = dharma/power` und endete mit 401 `api_key_expired`. Die Sitzung hatte keine einzige Nutzer-Nachricht. Am 23.10. ist das der einzige opencode-go-Turn in opencode.db; alle 19 build-Turns mit Nutzer-Nachricht liefen auf dharma/power. Die Ursache ist UNGEPRÜFT. Hypothese: Das Modell eines Weck-Turns hängt an der letzten Nutzer-Nachricht, ohne sie greift der Dienst-Standard. Das ist für echte Starts aus einer Sitzung unerheblich, für API-angelegte Sitzungen nicht. Nebenbei belegt: Der opencode-go-Schlüssel ist abgelaufen (§11).
+
+### Feld-Ausgangswerte 16.–23.10.2026 (vor W1–W3)
+
+| Kennzahl | Wert |
+|---|---|
+| Hauptfäden | 11 |
+| Fan-outs | 54, davon 2 im Hintergrund = **3,7 %** |
+| Warte-Abfragen (sleep/poll) | 56 |
+| Modellfehler | 0,21 % |
+| Tool-Fehler | 1,74 % |
+| dharma-Anteil | 59,2 % |
+| Fabrik-PASS | 80 % |
+
+Das sind die Vergleichswerte für W5. Die Messwoche läuft vom 24. bis 30.10.2026, danach `bun bench/woche.ts --von 2026-10-24 --bis 2026-10-30` und eine unabhängige `abnahme` (§10). `woche.ts` weist TTFB seit dem 23.10. als „nicht getrennt erfasst (Altdaten)“ aus, wenn `ttfb_ms = total_ms` in allen Zeilen steht (vor dharma 0.7.0), und als „nur in N von M Zeilen getrennt“, wenn es nur einige sind. Die TTFB-Quantile rechnen dann nur über die getrennten Zeilen. Gemessen für 16.–23.10.: 16 von 16 540 Zeilen getrennt, TTFT in 373 Zeilen. TTFT (`ttft_ms`, ab dharma 0.7.0) erscheint als eigene Spalte.

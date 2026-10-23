@@ -110,6 +110,8 @@ ergeben sich alle fünf Werte exakt (213 · 5222 · 62,85 % · 10 · 7039/116).
 - Die Fabrik-Zahlen kommen aus `scripts/of-scorecard.ts --json`; gezählt werden
   Runs, deren `started` im Fenster liegt.
 - B3 (Fabrik-Run mit Rückruf) und B5 (vom Reaper abgeräumter Lauf) aus §6 W4
-  sind noch nicht gebaut.
+  sind live abgenommen (23.10.2026), nicht als Skript in `bench/`: B3 PASS mit
+  Rückkehr nach 1388 s, B5 echter Reap mit genau einem Rückruf. Belege in
+  `docs/AUTONOMIE_10_10_SPEC.md`, Abschnitt „Stand nach der Abnahme“.
 - Alle Messungen laufen über opencode 2.1.4 (`/api/session`). Ändert ein Update
   die API, ist `wecken.ts` der Regressionstest (Spec §8, Kill-Kriterium).
