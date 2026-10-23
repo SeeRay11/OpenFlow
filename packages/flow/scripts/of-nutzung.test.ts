@@ -90,7 +90,7 @@ describe("of-nutzung — Gate-Ledger", () => {
       { ts: ts(0), event: "task", entscheidung: "GRAUZONE", task: "g-ohne-grund" }, // Regelverstoß
       { ts: ts(2), event: "task", entscheidung: "FABRIK", grund: "z", task: "FABRIK-Empfehlung ohne Folgen" }, // ABWEICHUNG (Tag ohne fabrik_run)
       { ts: ts(0), event: "task", entscheidung: "FABRIK", grund: "z", task: "gefolgt" },
-      { ts: ts(0), event: "fabrik_run", command: "…" },
+      { ts: ts(0), event: "fabrik_run", command: "bash of-run.sh auto-orchestrator x" },
       { ts: ts(10), event: "task", entscheidung: "FABRIK", grund: "alt", task: "außerhalb Fenster" },
     ]
     writeFileSync(c.ledger, entries.map((e) => JSON.stringify(e)).join("\n") + "\n")
@@ -117,7 +117,7 @@ describe("of-nutzung — Gate-Ledger", () => {
   test("Hebel 14: fabrik_run mit monitoring:true zählt NICHT in fabrikRun, nur in fabrikRunMonitoring", async () => {
     const c = newCase()
     const entries = [
-      { ts: ts(1), event: "fabrik_run", command: "echter Fabrik-Run" },
+      { ts: ts(1), event: "fabrik_run", command: "bash of-run.sh auto-orchestrator echter-Fabrik-Run" },
       { ts: ts(1), event: "fabrik_run", command: "Monitoring-Sonde", monitoring: true },
     ]
     writeFileSync(c.ledger, entries.map((e) => JSON.stringify(e)).join("\n") + "\n")
@@ -136,7 +136,7 @@ describe("of-nutzung — Gate-Ledger", () => {
     const c = newCase()
     const entries = [
       { ts: ts(1), event: "task", entscheidung: "FABRIK", grund: "z", gate_id: "gate-42", task: "spät gefolgt" },
-      { ts: ts(2), event: "fabrik_run", task_ref: "gate-42", command: "…" },
+      { ts: ts(2), event: "fabrik_run", task_ref: "gate-42", command: "bash of-run.sh auto-orchestrator x" },
     ]
     writeFileSync(c.ledger, entries.map((e) => JSON.stringify(e)).join("\n") + "\n")
     writeFileSync(c.log, "timestamp=2020-01-01T00:00:00.000Z level=INFO message=leer\n")
@@ -153,7 +153,7 @@ describe("of-nutzung — Gate-Ledger", () => {
     const c = newCase()
     const entries = [
       { ts: ts(0), event: "task", entscheidung: "FABRIK", grund: "z", gate_id: "gate-1", task: "falsch verknüpft" },
-      { ts: ts(0), event: "fabrik_run", task_ref: "gate-999", command: "…" },
+      { ts: ts(0), event: "fabrik_run", task_ref: "gate-999", command: "bash of-run.sh auto-orchestrator x" },
     ]
     writeFileSync(c.ledger, entries.map((e) => JSON.stringify(e)).join("\n") + "\n")
     writeFileSync(c.log, "timestamp=2020-01-01T00:00:00.000Z level=INFO message=leer\n")

@@ -14,9 +14,16 @@ const TAG = 24 * 3_600_000
 const NOW = Date.parse("2026-10-17T12:00:00Z")
 const iso = (ms: number) => new Date(ms).toISOString()
 
-const kandidat = (ts: number) => ({ event: "user_prompt", entscheidung: "FABRIK", ts: iso(ts) })
+// Seit 23.10.2026 (Defekt 2) löst of-regeltreue.ts auf: ein Kandidat ist eine
+// ZUGESTELLTE Empfehlung (injiziert:true), befolgt wird er in DERSELBEN
+// Session binnen 30 min. Die Helfer tragen deshalb Session und Zustellung;
+// die Erwartungen der Fälle T1–T4 bleiben unverändert.
+const kandidat = (ts: number) => ({ event: "user_prompt", entscheidung: "FABRIK", injiziert: true, session_id: "s", ts: iso(ts) })
 const taskFanout = (ts: number) => ({ event: "task", entscheidung: "FABRIK", ts: iso(ts) })
-const run = (ts: number, monitoring = false) => ({ event: "fabrik_run", ts: iso(ts), ...(monitoring ? { monitoring: true } : {}) })
+const run = (ts: number, monitoring = false) => ({
+  event: "fabrik_run", session_id: "s", command: monitoring ? "bash of-run.sh --scorecard" : "bash of-run.sh auto-orchestrator x", ts: iso(ts),
+  ...(monitoring ? { monitoring: true } : {}),
+})
 
 describe("computeI3 (O6: 7-Tage-Fenster, user_prompt-Kandidaten, non-monitoring-Runs)", () => {
   test("T1: 3 Kandidaten + 2 passende non-monitoring-Runs → Quote 2/3, kein Alert", () => {

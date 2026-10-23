@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtempSync, readFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { istFabrikEngine, verschachtelterStart, vorfahrenAus } from "./fabrik-guard"
 
@@ -53,8 +55,11 @@ describe("fabrik-guard", () => {
 
 describe("of-run.sh mit Riegel", () => {
   const script = join(import.meta.dir, "../scripts/of-run.sh")
+  // Seit Defekt 5 (23.10.2026) schreibt of-run.sh einen abgebrochenen Start ins
+  // Ledger — Tests nie ins echte (~/.openflow/gate-ledger.jsonl).
+  const ledger = join(mkdtempSync(join(tmpdir(), "fabrik-guard-")), "ledger.jsonl")
   const run = (args: string[], env: Record<string, string>) =>
-    Bun.spawnSync(["bash", script, ...args], { env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe" })
+    Bun.spawnSync(["bash", script, ...args], { env: { ...process.env, OPENFLOW_LEDGER: ledger, ...env }, stdout: "pipe", stderr: "pipe" })
 
   test("Start aus einer Karte: Exit 3, Meldung, kein Run gestartet", () => {
     const r = run(["guard-test-gibt-es-nicht", "x"], { OPENFLOW_ENGINE: "1" })
@@ -62,10 +67,14 @@ describe("of-run.sh mit Riegel", () => {
     expect(r.stderr.toString()).toContain("verschachtelter Fabrik-Start aus Karte abgelehnt")
     expect(r.stdout.toString()).not.toContain("PID=")
     expect(r.stdout.toString()).not.toContain("LOG=")
+    expect(readFileSync(ledger, "utf8")).toContain('"event":"fabrik_start_fehlgeschlagen"')
   })
 
   test("Monitoring bleibt aus einer Karte erlaubt (--reap --dry-run)", () => {
-    const r = run(["--reap", "--dry-run"], { OPENFLOW_ENGINE: "1" })
+    // eigenes, leeres runs-Verzeichnis: ohne lief der Test nur auf einem Rechner
+    // mit ~/workspace/flow-lab (CI: of-reap „runs-dir fehlt", Exit 2)
+    const runs = mkdtempSync(join(tmpdir(), "fabrik-guard-runs-"))
+    const r = run(["--reap", "--dry-run", "--runs-dir", runs], { OPENFLOW_ENGINE: "1" })
     expect(r.exitCode).toBe(0)
     expect(r.stderr.toString()).not.toContain("abgelehnt")
   })

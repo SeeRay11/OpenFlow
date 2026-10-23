@@ -189,11 +189,11 @@ function checkInvariants(): Alert[] {
       }).filter(Boolean) as any[]
       const i3 = computeI3(entries, Date.now())
       if (i3.alert) {
-        const zusatz = i3.fanouts > 0 ? ` + ${i3.fanouts} Stufe-1-Fan-out-Signale (task|FABRIK) nicht gezählt` : ""
+        const zusatz = i3.fanouts > 0 ? ` (${i3.fanouts} task|FABRIK im Fenster)` : ""
         alerts.push({
           ts: new Date().toISOString(),
           invariante: "I3-regeltreue",
-          wert: `${i3.matches}/${i3.kandidaten} Fabrik-Runs zu user_prompt-FABRIK-Kandidaten (7 Tage)${zusatz}`,
+          wert: `${i3.matches}/${i3.kandidaten} (${i3.quote} %) aufgelöste FABRIK-Empfehlungen befolgt oder begründet (7 Tage)${zusatz}`,
           schwelle: ">=50% ab n>=3",
         })
       }

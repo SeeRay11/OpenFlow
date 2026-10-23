@@ -10,6 +10,9 @@
  *   - letzterTick   — letzte Loop-Aktivität: Herzschlag vor State-Datei (O4/O5)
  */
 
+import { echteStarts } from "./of-fabrik-aufruf.ts"
+import { loeseAuf, quoteFuer } from "./of-regeltreue.ts"
+
 export const I3_FENSTER_MS = 7 * 24 * 3_600_000
 export const BESTAETIGUNG_MS = 24 * 3_600_000
 export const GAP_SCHWELLE_MIN = 15
@@ -17,15 +20,16 @@ export const GAP_SCHWELLE_MIN = 15
 /**
  * computeI3 — Regeltreue-Messung (O6, korrigiert am 17.10.2026).
  *
- * Definition:
- *   Kandidaten     = Ledger-Einträge event=user_prompt UND entscheidung=FABRIK
- *                    im 7-Tage-Fenster (ts >= now - 7d). Das sind echte
- *                    Nutzer-Aufträge, denen ein Fabrik-Run empfohlen wurde.
- *   Fabrik-Aufrufe = fabrik_run OHNE monitoring:true im Fenster, die strikt
- *                    NACH einem Kandidaten liegen. Matching gierig: der
- *                    früheste noch freie Run nach dem Kandidaten; ein Run
- *                    matcht höchstens einen Kandidaten.
- *   Quote          = matches / kandidaten; Alert ab kandidaten >= 3 und
+ * Definition (seit 23.10.2026, Defekt 2 — of-regeltreue.ts):
+ *   Kandidaten     = ZUGESTELLTE FABRIK-Empfehlungen (user_prompt UND task mit
+ *                    injiziert=true) im 7-Tage-Fenster, deren 30-min-Frist
+ *                    abgelaufen ist (aufgelöst). Nie zugestellte task-Zeilen
+ *                    (bis 23.10. alle) zählen nicht — niemand hat sie gesehen.
+ *   Treffer        = befolgt (Fabrik-Start ODER subagent-Aufruf derselben
+ *                    Session/Kind-Session) ODER begründet abgewichen
+ *                    (event=abweichung). Belege 1:1 verbraucht.
+ *   Fabrik-Aufrufe = echte Starts im Fenster (of-fabrik-aufruf.ts), Kontext.
+ *   Quote          = Treffer / Kandidaten; Alert ab Kandidaten >= 3 und
  *                    Quote < 50 %.
  *
  * Forensik 16.10.2026 (gate-ledger.jsonl + of-loop-state.jsonl:5452-5464):
@@ -39,9 +43,8 @@ export const GAP_SCHWELLE_MIN = 15
  *   Runs) wurden nicht gezählt. Das GESAMTE Ledger ohne Fenster bestrafte
  *   zudem für lange zurückliegende, bereits erklärte Abweichungen.
  *
- * task|FABRIK-Einträge werden als fanouts mitgezählt und im Alert-Text als
- * Kontext gemeldet („+ N Stufe-1-Fan-out-Signale nicht gezählt"), fließen
- * aber NICHT in die Quote.
+ * task|FABRIK-Einträge zählen seit dem 23.10. als Kandidaten, sobald sie
+ * zugestellt sind (Defekt 1); `fanouts` bleibt ihre Gesamtzahl als Kontext.
  */
 export interface I3Ergebnis {
   kandidaten: number
@@ -50,6 +53,8 @@ export interface I3Ergebnis {
   fanouts: number
   bewertet: boolean
   alert: boolean
+  /** Regeltreue-Quote in % (null ohne aufgelöste Empfehlung) */
+  quote: number | null
 }
 
 function tsMs(e: any): number | null {
@@ -61,43 +66,30 @@ export function computeI3(entries: any[], now: number): I3Ergebnis {
   const fensterStart = now - I3_FENSTER_MS
   const imFenster = (t: number) => t >= fensterStart && t <= now
 
-  // (a) Kandidaten: echte Nutzer-Aufträge mit FABRIK-Empfehlung im Fenster
-  const kandidaten = entries
-    .filter((e) => e?.event === "user_prompt" && e?.entscheidung === "FABRIK")
+  // Defekt 2 (23.10.2026): Kandidaten und Treffer kommen aus der EINEN
+  // Auflösung (of-regeltreue.ts) — zugestellte FABRIK-Empfehlungen (user_prompt
+  // UND task) im Fenster, deren 30-min-Frist abgelaufen ist; Treffer =
+  // befolgt (Stufe 1/2) oder begründet abgewichen. Vorher: jeder Run irgendwo
+  // nach irgendeiner Empfehlung, ohne Session-Bezug und ohne Begründung.
+  const auf = loeseAuf(entries, now).filter((a) => imFenster(a.ms))
+  const q = quoteFuer("7 Tage", auf)
+
+  // Defekt 3: nur echte Starts (of-fabrik-aufruf.ts).
+  const runs = echteStarts(entries)
     .map((e) => tsMs(e))
     .filter((t): t is number => t !== null && imFenster(t))
-    .sort((a, b) => a - b)
 
-  // (b) Fabrik-Aufrufe: non-monitoring-Runs im Fenster (monitoring:true sind
-  //     --loop-check/ls/--scorecard-Selbstbeobachtung, keine echten Runs)
-  const runs = entries
-    .filter((e) => e?.event === "fabrik_run" && e?.monitoring !== true)
-    .map((e) => tsMs(e))
-    .filter((t): t is number => t !== null && imFenster(t))
-    .sort((a, b) => a - b)
-
-  // Greedy-Matching: erster freier Run strikt NACH dem Kandidaten; ein Run
-  // matcht max. einen Kandidaten (j++ verbraucht ihn)
-  let matches = 0
-  let j = 0
-  for (const k of kandidaten) {
-    while (j < runs.length && runs[j] <= k) j++
-    if (j < runs.length) {
-      matches++
-      j++
-    }
-  }
-
-  // Fan-out-Signale (REGEL-4-Stufe 1): Kontext, nicht Quote-Grundlage
+  // Fan-out-Signale (task|FABRIK): Kontext für den Alert-Text
   const fanouts = entries.filter((e) => {
     if (e?.event !== "task" || e?.entscheidung !== "FABRIK") return false
     const t = tsMs(e)
     return t !== null && imFenster(t)
   }).length
 
-  const bewertet = kandidaten.length >= 3
-  const alert = bewertet && matches / kandidaten.length < 0.5
-  return { kandidaten: kandidaten.length, fabrikAufrufe: runs.length, matches, fanouts, bewertet, alert }
+  const matches = q.befolgt_fabrik + q.befolgt_subagent + q.begruendet
+  const bewertet = q.aufgeloest >= 3
+  const alert = bewertet && matches / q.aufgeloest < 0.5
+  return { kandidaten: q.aufgeloest, fabrikAufrufe: runs.length, matches, fanouts, bewertet, alert, quote: q.quote }
 }
 
 /**

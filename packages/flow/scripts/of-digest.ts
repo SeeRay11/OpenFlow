@@ -26,6 +26,8 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { echteStarts } from "./of-fabrik-aufruf.ts"
+import { loeseAuf, quoteText, regeltreueJeFenster } from "./of-regeltreue.ts"
 
 const FENSTER_TAGE = 7
 const DAY_MS = 24 * 3_600_000
@@ -62,8 +64,10 @@ export function buildFabrikDigest(entries: unknown[], now: Date): DigestEintrag 
   const kandidaten = imFenster
     .filter((x) => x.e?.event === "task" && (x.e?.entscheidung === "FABRIK" || x.e?.entscheidung === "GRAUZONE"))
     .sort((a, b) => (a.ts as number) - (b.ts as number))
+  // Defekt 3: nur echte Starts — Monitoring-Sonden und zitierte Aufrufe decken nichts ab.
+  const starts = new Set(echteStarts(imFenster.map((x) => x.e)))
   const runs = imFenster
-    .filter((x) => x.e?.event === "fabrik_run")
+    .filter((x) => starts.has(x.e))
     .map((x) => x.ts as number)
     .sort((a, b) => a - b)
 
@@ -116,6 +120,14 @@ export function runDailyDigest(dir: string, ledgerPath: string, now: Date): Dige
     })
   }
   const eintrag = buildFabrikDigest(entries, now)
+  // Defekt 2 (23.10.2026): Regeltreue als Quote je Fenster + Ausgang jeder
+  // nicht befolgten Empfehlung im 7-Tage-Fenster (of-regeltreue.ts).
+  const auf = loeseAuf(entries.filter(Boolean) as any[], now.getTime())
+  const rt = regeltreueJeFenster(auf, now.getTime())
+  const woche = rt.find((q) => q.name === "7 Tage")!
+  const ausgaenge = auf
+    .filter((a) => now.getTime() - a.ms <= FENSTER_TAGE * DAY_MS && a.status !== "befolgt_fabrik" && a.status !== "befolgt_subagent")
+    .map((a) => `- ${a.ts.slice(0, 16)} ${a.event} ${a.session_id ?? "ohne Session"}: ${a.status}${a.grund ? ` — ${a.grund}` : ""} (${a.task})`)
   mkdirSync(dir, { recursive: true })
   const datei = join(dir, `digest-${tag}.md`)
   const inhalt = [
@@ -127,6 +139,12 @@ export function runDailyDigest(dir: string, ledgerPath: string, now: Date): Dige
     "",
     `Summe: ${eintrag.summe} ohne Run (FABRIK: ${eintrag.fabrikOhneRun}, GRAUZONE: ${eintrag.grauzoneOhneRun})`,
     "",
+    "## Regeltreue (Quote = befolgt oder begründet / aufgelöste zugestellte FABRIK-Empfehlungen)",
+    "",
+    ...rt.map((q) => `- ${q.name}: ${quoteText(q)} — Fabrik ${q.befolgt_fabrik}, Stufe 1 ${q.befolgt_subagent}, begründet ${q.begruendet}, ohne Begründung ${q.ohne_begruendung}, offen ${q.offen}, nie zugestellt ${q.nicht_zugestellt}`),
+    "",
+    ...(ausgaenge.length ? ["Nicht befolgt (7 Tage):", ...ausgaenge] : ["Keine unbefolgte FABRIK-Empfehlung im Fenster."]),
+    "",
   ].join("\n")
   const tmp = `${datei}.tmp`
   writeFileSync(tmp, inhalt)
@@ -134,6 +152,6 @@ export function runDailyDigest(dir: string, ledgerPath: string, now: Date): Dige
   renameSync(tmp, datei)
   const zeile =
     `of-loop DIGEST ${tag}: ${eintrag.fabrikOhneRun} FABRIK- und ${eintrag.grauzoneOhneRun} GRAUZONE-Empfehlung(en) ohne Fabrik-Run` +
-    ` (${FENSTER_TAGE}-Tage-Fenster, Summe ${eintrag.summe}) — ${datei}`
+    ` (${FENSTER_TAGE}-Tage-Fenster, Summe ${eintrag.summe}) · Regeltreue 7 Tage: ${quoteText(woche)} — ${datei}`
   return { tag, datei, zeile, eintrag }
 }

@@ -41,6 +41,8 @@
  *   bun of-gate.ts classify --llm [--text "<task>"] # kombiniert: Grauzone → LLM-Urteiler (K2e)
  *   bun of-gate.ts log <entscheidung> "<task>" "<grund>" [--event task|fabrik_run]
  *                                              [--task-ref <gate_id>] [--monitoring]
+ *   bun of-gate.ts abweichung "<grund>"            # begründete Abweichung vom Pflichtweg
+ *                                              (Session aus $OPENFLOW_SESSION, setzt das Plugin)
  *
  * Ausgabe classify: eine JSON-Zeile
  *   {entscheidung, signale, prefix, grund, auftrag: {verb, objekt, einheiten} | null, injizieren,
@@ -1121,6 +1123,13 @@ export const LLM_MAX_TOKENS = 64
 // (Plugin-Aufruf 6,5 s). Triviale Prompts kostet das nichts — die K2f-
 // Vorfilter fragen das LLM dort gar nicht.
 export const LLM_TIMEOUT_MS = 6000
+// Defekt 4 (23.10.2026): 12 von 88 Urteilen (13,6 %) liefen in die Frist; kein
+// Erfolg dauerte je länger als 4489 ms — die Anfrage HÄNGT, eine längere Frist
+// rettet nichts. Nach LLM_HEDGE_MS ohne Antwort startet EIN paralleler zweiter
+// Versuch, das erste gültige Urteil gewinnt, die Gesamtfrist bleibt 6000 ms.
+// Zielwerte und Rechnung: gate-llm-budget.test.ts (≤ 5 % Timeouts, ≤ 35 %
+// Zusatzaufrufe; 2500 ms brächte 53 % Zusatzaufrufe, 3500 ms 7,3 % Timeouts).
+export const LLM_HEDGE_MS = 3000
 const LLM_KEYFILE = join(homedir(), ".config/opencode/.secrets/dharma.key")
 const USER_AGENT = "openflow-of-gate/K2e (+fabrik-gate)"
 
@@ -1128,10 +1137,12 @@ export type LlmOpts = {
   /** Für Tests: gemocktes fetch. */
   fetch?: typeof fetch
   timeoutMs?: number
+  /** Ab hier ohne Antwort: ein paralleler zweiter Versuch (Defekt 4). */
+  hedgeMs?: number
   /** Pfad der Schlüsseldatei — der Schlüssel selbst ist nie Argument. */
   keyFile?: string
 }
-export type LlmDetail = { urteil: boolean | null; ms: number; fehler: string | null }
+export type LlmDetail = { urteil: boolean | null; ms: number; fehler: string | null; versuche: number }
 
 /**
  * Antworttext → JA/NEIN/null. dharma hängt eine Fußzeile `⎯⎯ modell · stufe ·
@@ -1151,18 +1162,8 @@ export function parseLlmAntwort(roh: unknown): boolean | null {
   return null
 }
 
-/** Wie urteileMitLlm, aber mit Dauer und Fehlergrund (für Ledger/Messung). */
-export async function urteileMitLlmDetail(text: string, opts: LlmOpts = {}): Promise<LlmDetail> {
-  const t0 = performance.now()
-  const fertig = (urteil: boolean | null, fehler: string | null): LlmDetail => ({ urteil, ms: Math.round(performance.now() - t0), fehler })
-  let key: string
-  try {
-    key = readFileSync(opts.keyFile ?? LLM_KEYFILE, "utf8").trim()
-  } catch {
-    return fertig(null, "schluessel_fehlt")
-  }
-  if (!key) return fertig(null, "schluessel_fehlt")
-  const f = opts.fetch ?? fetch
+/** Ein Versuch: Urteil oder Fehlergrund. Abbruch über das gemeinsame Signal. */
+async function einVersuch(f: typeof fetch, key: string, text: string, signal: AbortSignal): Promise<{ urteil: boolean | null; fehler: string | null }> {
   try {
     const res = await f(LLM_URL, {
       method: "POST",
@@ -1178,18 +1179,74 @@ export async function urteileMitLlmDetail(text: string, opts: LlmOpts = {}): Pro
         reasoning_effort: "none",
         messages: [{ role: "user", content: LLM_PROMPT + text }],
       }),
-      signal: AbortSignal.timeout(opts.timeoutMs ?? LLM_TIMEOUT_MS),
+      signal,
     })
-    if (!res.ok) return fertig(null, `http_${res.status}`)
+    if (!res.ok) return { urteil: null, fehler: `http_${res.status}` }
     const j: any = await res.json()
     const inhalt = j?.choices?.[0]?.message?.content
-    if (typeof inhalt !== "string" || !inhalt.trim()) return fertig(null, "leer")
+    if (typeof inhalt !== "string" || !inhalt.trim()) return { urteil: null, fehler: "leer" }
     const u = parseLlmAntwort(inhalt)
-    return fertig(u, u === null ? "unklar" : null)
+    return { urteil: u, fehler: u === null ? "unklar" : null }
   } catch (e: any) {
     const name = String(e?.name ?? "")
-    return fertig(null, name === "TimeoutError" || name === "AbortError" ? "timeout" : "netz")
+    return { urteil: null, fehler: name === "TimeoutError" || name === "AbortError" ? "timeout" : "netz" }
   }
+}
+
+/**
+ * Wie urteileMitLlm, aber mit Dauer, Fehlergrund und Zahl der Versuche (für
+ * Ledger/Messung). Hedge (Defekt 4): ohne gültiges Urteil nach `hedgeMs` läuft
+ * ein zweiter Versuch parallel; das erste gültige Urteil gewinnt und bricht den
+ * anderen ab. Ohne gültiges Urteil bis `timeoutMs` → fehler "timeout"; liefern
+ * beide vorher ein Nicht-Urteil, gilt der Grund des letzten.
+ */
+export async function urteileMitLlmDetail(text: string, opts: LlmOpts = {}): Promise<LlmDetail> {
+  const t0 = performance.now()
+  const frist = opts.timeoutMs ?? LLM_TIMEOUT_MS
+  const hedge = opts.hedgeMs ?? LLM_HEDGE_MS
+  let versuche = 0
+  const fertig = (urteil: boolean | null, fehler: string | null): LlmDetail => ({ urteil, ms: Math.round(performance.now() - t0), fehler, versuche })
+  let key: string
+  try {
+    key = readFileSync(opts.keyFile ?? LLM_KEYFILE, "utf8").trim()
+  } catch {
+    return fertig(null, "schluessel_fehlt")
+  }
+  if (!key) return fertig(null, "schluessel_fehlt")
+  const f = opts.fetch ?? fetch
+  const ctl = new AbortController()
+  return await new Promise<LlmDetail>((resolve) => {
+    let erledigt = false
+    let laufend = 0
+    let letzterFehler: string | null = null
+    const timer: ReturnType<typeof setTimeout>[] = []
+    const ende = (urteil: boolean | null, fehler: string | null) => {
+      if (erledigt) return
+      erledigt = true
+      for (const t of timer) clearTimeout(t)
+      ctl.abort()
+      resolve(fertig(urteil, fehler))
+    }
+    const starte = () => {
+      if (erledigt) return
+      versuche++
+      laufend++
+      void einVersuch(f, key, text, ctl.signal).then((r) => {
+        laufend--
+        if (r.urteil !== null) return ende(r.urteil, null)
+        letzterFehler = r.fehler
+        // Nicht-Urteil: auf den anderen warten bzw. den Hedge vorziehen.
+        if (laufend === 0 && versuche >= 2) return ende(null, letzterFehler)
+        if (laufend === 0 && versuche < 2) {
+          if (performance.now() - t0 < frist) starte()
+          else ende(null, letzterFehler)
+        }
+      })
+    }
+    timer.push(setTimeout(() => ende(null, "timeout"), frist))
+    if (hedge < frist) timer.push(setTimeout(() => { if (!erledigt && versuche < 2) starte() }, hedge))
+    starte()
+  })
 }
 
 /** Neutraler LLM-Urteiler: true = JA (Fabrik), false = NEIN, null = kein Hinweis. */
@@ -1297,8 +1354,22 @@ export async function entscheide(textRaw: string, opts: LlmOpts = {}) {
       llm: true,
       llm_ms: d.ms,
       llm_fehler: null,
+      llm_versuche: d.versuche,
     }
-  return { ...v, quelle: (d.urteil === null ? "keine" : "llm") as Quelle, llm: d.urteil, llm_ms: d.ms, llm_fehler: d.fehler }
+  if (d.urteil === false) return { ...v, quelle: "llm" as Quelle, llm: false, llm_ms: d.ms, llm_fehler: null, llm_versuche: d.versuche }
+  // Defekt 4: kein Urteil → das deterministische Verdikt (Wortregel-Grauzone,
+  // injizieren:false) mit Grund — im Ledger als rueckfall sichtbar statt nur
+  // als llm_fehler neben einem Verdikt, das nach LLM-Ergebnis aussieht.
+  return {
+    ...v,
+    quelle: "keine" as Quelle,
+    llm: null,
+    llm_ms: d.ms,
+    llm_fehler: d.fehler,
+    llm_versuche: d.versuche,
+    rueckfall: "deterministisch" as const,
+    rueckfall_grund: `llm_${d.fehler ?? "unbekannt"}`,
+  }
 }
 
 if (import.meta.main) {
@@ -1334,8 +1405,30 @@ if (import.meta.main) {
     process.exit(0)
   }
 
+  if (cmd === "abweichung") {
+    // Defekt 2 (23.10.2026): Begründung einer Abweichung vom Pflichtweg — EIN
+    // Schreiber (dieses Skript). Die Session setzt das fabrik-gate-Plugin als
+    // OPENFLOW_SESSION vor den Befehl; ohne Plugin bleibt sie null (die Zeile
+    // ist dann sichtbar, aber keiner Empfehlung zuzuordnen).
+    const grund = argv.slice(1).join(" ").trim()
+    if (!grund) {
+      console.error('usage: bun of-gate.ts abweichung "<Begründung: Nein-Fall Geldpfad/Deploy/Rückfrage/Einzelschritt/enge Rückkopplung …>"')
+      process.exit(2)
+    }
+    const entry = {
+      ts: new Date().toISOString(),
+      event: "abweichung",
+      session_id: process.env.OPENFLOW_SESSION || null,
+      grund: grund.slice(0, 240),
+    }
+    mkdirSync(dirname(LEDGER), { recursive: true })
+    appendFileSync(LEDGER, JSON.stringify(entry) + "\n")
+    console.log(JSON.stringify(entry))
+    process.exit(0)
+  }
+
   console.error(
-    "usage: bun of-gate.ts classify [--text <task>] | log <entscheidung> <task> <grund> [--event task|fabrik_run] [--task-ref <gate_id>] [--monitoring]",
+    "usage: bun of-gate.ts classify [--text <task>] | log <entscheidung> <task> <grund> [--event task|fabrik_run] [--task-ref <gate_id>] [--monitoring] | abweichung <grund>",
   )
   process.exit(2)
 }

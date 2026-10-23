@@ -30,6 +30,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
+import { echteStarts, fabrikRunArt } from "./of-fabrik-aufruf.ts"
 
 // Selbst-Beobachtungsfilter: das live-Log wird während des Laufs weiter
 // geschrieben — alles ab jetzt gehört der laufenden Sitzung, nicht der
@@ -89,8 +90,10 @@ const inWindow = (e: Any) => days.includes(dayOf(e))
 const tasks = ledgerEntries.filter((e) => e?.event === "task" && inWindow(e))
 // Hebel 14 (10.10.2026): Monitoring-Sonden (Signatur monitoring:true) zählen
 // getrennt von echten Fabrik-Runs. Legacy-Einträge ohne das Feld sind real.
-const fabrikRuns = ledgerEntries.filter((e) => e?.event === "fabrik_run" && inWindow(e) && e?.monitoring !== true)
-const fabrikRunsMonitoring = ledgerEntries.filter((e) => e?.event === "fabrik_run" && inWindow(e) && e?.monitoring === true)
+// Defekt 3 (23.10.2026): „real" heißt echter Start (of-fabrik-aufruf.ts) —
+// ein Heredoc-Zitat oder `--loop-check;` ohne Flag zählte vorher als real.
+const fabrikRuns = echteStarts(ledgerEntries).filter(inWindow)
+const fabrikRunsMonitoring = ledgerEntries.filter((e) => fabrikRunArt(e) === "monitoring" && inWindow(e))
 
 const ledgerRows = days.map((d) => {
   const t = tasks.filter((e) => dayOf(e) === d)

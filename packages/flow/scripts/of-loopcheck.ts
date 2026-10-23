@@ -101,8 +101,8 @@ if (existsSync(LEDGER)) {
   facts.fabrikMatches = i3.matches
   facts.fabrikFanouts = i3.fanouts
   if (i3.alert) {
-    const zusatz = i3.fanouts > 0 ? ` + ${i3.fanouts} Stufe-1-Fan-out-Signale (task|FABRIK) nicht gezählt` : ""
-    problems.push(`I3-regeltreue: ${i3.matches}/${i3.kandidaten} — FABRIK-Empfehlungen ohne Folgen${zusatz}`)
+    const zusatz = i3.fanouts > 0 ? ` (${i3.fanouts} task|FABRIK im Fenster)` : ""
+    problems.push(`I3-regeltreue: ${i3.matches}/${i3.kandidaten} (${i3.quote} %) — aufgelöste FABRIK-Empfehlungen befolgt oder begründet${zusatz}`)
   }
 }
 

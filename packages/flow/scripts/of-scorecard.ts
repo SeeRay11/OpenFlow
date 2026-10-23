@@ -23,6 +23,8 @@
 import { readdirSync, readFileSync, existsSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { homedir } from "node:os"
+import { echteStarts } from "./of-fabrik-aufruf.ts"
+import { loeseAuf, quoteText, regeltreueJeFenster } from "./of-regeltreue.ts"
 
 const argv = process.argv.slice(2)
 const flag = (name: string, fallback?: string) => {
@@ -137,7 +139,9 @@ if (existsSync(LEDGER)) {
     }
   }).filter(Boolean) as any[]
   const tasks = entries.filter((e) => e.event === "task")
-  const fabrikRuns = entries.filter((e) => e.event === "fabrik_run")
+  // Defekt 3 (23.10.2026): nur ECHTE Starts. Vorher jede fabrik_run-Zeile —
+  // auch Monitoring-Sonden und ein of-run.sh im Heredoc-Rumpf (9 statt 4).
+  const fabrikRuns = echteStarts(entries)
   const fabrikKandidaten = tasks.filter((e) => e.entscheidung === "FABRIK")
   // Regeltreue (13.10.2026): Fan-out gilt als ABGEDECKT, wenn die Session
   // STUFE 1 (`subagent`-Tool, REGEL 1) ODER STUFE 2 (of-run.sh, REGEL 4)
@@ -209,7 +213,28 @@ if (existsSync(LEDGER)) {
       }
     })
     .sort((a, b) => b.hinweise - a.hinweise)
+  // Defekt 2 (23.10.2026): jede FABRIK-Empfehlung aufgelöst (of-regeltreue.ts),
+  // Regeltreue als QUOTE je Fenster statt absoluter Zahlen.
+  const regeltreue = regeltreueJeFenster(loeseAuf(entries, Date.now()), Date.now())
+  // Defekt 4 (23.10.2026): Gate-LLM messbar — Timeout-Anteil der LLM-Urteile
+  // je Fenster (Ziel ≤ 5 %, Basis 16.–23.10.: 12/88 = 13,6 %), dazu
+  // deterministische Rückfälle und Zweitversuche (Hedge, Ziel ≤ 35 %).
+  const jetzt = Date.now()
+  const gateLlm = [["24 h", 864e5], ["7 Tage", 7 * 864e5], ["gesamt", Infinity]].map(([name, ms]) => {
+    const u = userPrompts.filter((e) => (e.llm === true || e.llm === false || !!e.llm_fehler) && jetzt - Date.parse(e.ts) <= (ms as number))
+    const timeouts = u.filter((e) => e.llm_fehler === "timeout").length
+    return {
+      name,
+      urteile: u.length,
+      timeouts,
+      timeoutQuote: u.length ? +((timeouts / u.length) * 100).toFixed(1) : null,
+      rueckfaelle: u.filter((e) => e.rueckfall === "deterministisch").length,
+      zweitversuche: u.filter((e) => (e.llm_versuche ?? 1) >= 2).length,
+    }
+  })
   ledger = {
+    regeltreue,
+    gateLlm,
     eintraege: entries.length,
     taskBewertungen: tasks.length,
     subagentNutzung,
@@ -271,6 +296,20 @@ if (JSON_OUT) {
     console.log(`## Regeltreue (Ledger ${LEDGER})`)
     console.log(`| Kennzahl | Wert |`)
     console.log(`|---|---|`)
+    for (const q of ledger.regeltreue) {
+      console.log(`| Regeltreue ${q.name} | ${quoteText(q)} |`)
+    }
+    {
+      const g = ledger.regeltreue[ledger.regeltreue.length - 1]
+      console.log(
+        `| davon (gesamt) | Fabrik ${g.befolgt_fabrik} · Stufe 1 ${g.befolgt_subagent} · begründet ${g.begruendet} · ohne Begründung ${g.ohne_begruendung} · offen ${g.offen} · nie zugestellt ${g.nicht_zugestellt} · nur-Fabrik-Quote ${g.fabrikQuote !== null ? g.fabrikQuote + " %" : "–"} |`,
+      )
+    }
+    for (const g of ledger.gateLlm) {
+      console.log(
+        `| Gate-LLM-Timeouts ${g.name} | ${g.timeoutQuote !== null ? `${g.timeouts}/${g.urteile} (${g.timeoutQuote} %)` : "keine LLM-Urteile"} — Rückfälle ${g.rueckfaelle}, Zweitversuche ${g.zweitversuche} |`,
+      )
+    }
     console.log(`| Task-Bewertungen | ${ledger.taskBewertungen} |`)
     console.log(`| Subagent-Nutzung (Stufe 1, quelle=subagent) | ${ledger.subagentNutzung} |`)
     console.log(`| Fan-out-Kandidaten (FABRIK bewertet) | ${ledger.fanoutKandidaten} |`)
