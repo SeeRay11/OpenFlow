@@ -1,6 +1,6 @@
 # Autonomie 10/10 in opencode + OpenFlow + dharma — Plan v1.0
 
-**Datum:** 23.10.2026 · **Status:** W0 bestanden (18/18) · W1, W2, W3 umgesetzt · W4 gemessen · W5 (Messwoche 24.–30.10.) offen · **unabhängige Abnahme 23.10.2026: 2/10** (Feld-Nachweis UNGEPRÜFT) — Einzelheiten im Abschnitt „Stand nach der Abnahme“ am Ende
+**Datum:** 23.10.2026 · **Status:** W0 bestanden (18/18) · W1, W2, W3 umgesetzt · W4 gemessen · W5 (Messwoche 24.–30.10.) offen · **unabhängige Abnahme 23.10.2026: 2/10, Runde 2: 2/10** (Feld-Nachweis UNGEPRÜFT; ohne ihn wäre dharma mit 5 das schwächste Glied) — Einzelheiten im Abschnitt „Stand nach der Abnahme“ am Ende
 
 Quelle: freigegebener Plan v1.0 vom 23.10.2026, unverändert übernommen; ergänzt sind die Messwerte aus W2.1 (Abschnitt „W2 — Messung und Umsetzung" am Ende) und Korrekturen, wo die Messung eine Annahme verschoben hat.
 
@@ -324,7 +324,7 @@ Ziel aus §6 W4 war ≥ 80 % Hintergrund-Anteil. Mit ≈ 73 % liegt dharma/power
 **B5 live (23.10.2026, 21:21–21:30 UTC).** Sitzung `ses_e955d28bfffew6Us0FRnnyRzCv` („abnahme-live B5“, flow-lab, Agent build) wurde per API angelegt. Gestartet wurde `of-run.sh smoke-orch` detached, mit `OPENFLOW_SESSION` und `OPENFLOW_AUFRUF_ID=b5-20261023T212117Z`. Der passende `fabrik_run`-Eintrag ist von Hand geschrieben, so wie fabrik-gate ihn schreibt, weil der Start ohne das Plugin lief. Die Zuordnung braucht `aufruf_id`↔`fabrik_run`, und das `fabrik_log` des Plugins trägt keine `aufruf_id`. Run `run-2026-10-23T21-21-17-391Z-ecc827`, headless-run PID 10145, wurde unmittelbar nach dem Start mit SIGKILL beendet. Danach:
 - Der of-loop-Cron um 21:30:01 räumte ihn ab: `zombie — Prozess tot, checkpoint seit 9 min stumm (Grace 5 min)`, `gereapt: 1`. Der Cron um 21:25 griff noch nicht, weil die Grace von 5 min noch nicht abgelaufen war.
 - Ledger: genau **eine** `rueckruf`-Zeile für diesen Run (`zuordnung: aufruf_id`, `http: 200`). In der Sitzung steht die synthetic-Nachricht „[OpenFlow] Fabrik-Run … (smoke-orch) wurde abgeräumt …“. 24 ms danach startete ein Assistant-Turn. Keine andere Sitzung bekam eine `[OpenFlow]`-Nachricht (opencode.db, ab 21:20 UTC).
-- **Befund:** Der geweckte Turn lief auf `opencode-go/kimi-k3.1-pro` statt auf `build = dharma/power` und endete mit 401 `api_key_expired`. Die Sitzung hatte keine einzige Nutzer-Nachricht. Am 23.10. ist das der einzige opencode-go-Turn in opencode.db; alle 19 build-Turns mit Nutzer-Nachricht liefen auf dharma/power. Die Ursache ist UNGEPRÜFT. Hypothese: Das Modell eines Weck-Turns hängt an der letzten Nutzer-Nachricht, ohne sie greift der Dienst-Standard. Das ist für echte Starts aus einer Sitzung unerheblich, für API-angelegte Sitzungen nicht. Nebenbei belegt: Der opencode-go-Schlüssel ist abgelaufen (§11).
+- **Befund:** Der geweckte Turn lief auf `opencode-go/kimi-k3.1-pro` statt auf `build = dharma/power` und endete mit 401 `api_key_expired`. **Ursache belegt (Nachmessung 23.10., 21:49–21:51 UTC):** Die Hypothese „Modell hängt an der letzten Nutzer-Nachricht" ist widerlegt. Um 21:29:49 löste ein Merge nach `~/.config/opencode` im laufenden Dienst einen Hot-Reload aus, der mit `failed to reload plugins (TypeError: o is not a function)` scheiterte (run `7189a39a`). Danach kannte der Dienst dharma nicht mehr (`Model unavailable: dharma/power`) und fiel still auf opencode-go zurück. Messung je drei Weck-Turns ohne Nutzer-Nachricht (flow-lab, mcp-workers, flow-lab mit gesetztem dharma/power): vor dem Neustart 2× opencode-go 401 und 1× `provider.no-route`, nach dem Neustart 3/3 dharma/power `succeeded`. Abhilfe: Watchdog-Prüfung c) RELOAD in `~/.config/opencode/scripts/opencode-watchdog.sh` (Commits `2519bfb`, `8ca50a3`). Ein Reload-Fehler mit der run-Kennung des laufenden Dienstes führt zum Neustart (eigene Sperre 5 min). DRAIN zählt seit `8ca50a3` ebenfalls nur Fehler des laufenden Prozesses; vorher löste er um 22:20 einen zweiten, unnötigen Neustart aus (Abnahme R2, Befund 1). Live gegriffen hat der RELOAD-Neustart noch nicht, belegt ist er nur im Test (7 Fälle, Gegenprobe gegen `2519bfb` 3 rot). Nebenbei belegt: Der opencode-go-Schlüssel ist abgelaufen (§11).
 
 ### Feld-Ausgangswerte 16.–23.10.2026 (vor W1–W3)
 
@@ -339,3 +339,24 @@ Ziel aus §6 W4 war ≥ 80 % Hintergrund-Anteil. Mit ≈ 73 % liegt dharma/power
 | Fabrik-PASS | 80 % |
 
 Das sind die Vergleichswerte für W5. Die Messwoche läuft vom 24. bis 30.10.2026, danach `bun bench/woche.ts --von 2026-10-24 --bis 2026-10-30` und eine unabhängige `abnahme` (§10). `woche.ts` weist TTFB seit dem 23.10. als „nicht getrennt erfasst (Altdaten)“ aus, wenn `ttfb_ms = total_ms` in allen Zeilen steht (vor dharma 0.7.0), und als „nur in N von M Zeilen getrennt“, wenn es nur einige sind. Die TTFB-Quantile rechnen dann nur über die getrennten Zeilen. Gemessen für 16.–23.10.: 16 von 16 540 Zeilen getrennt, TTFT in 373 Zeilen. TTFT (`ttft_ms`, ab dharma 0.7.0) erscheint als eigene Spalte.
+
+### Abnahme Runde 2 (23.10.2026, 21:58–22:22 UTC)
+
+Gesamtnote **2/10**. Die schwächste Dimension ist der Feld-Nachweis (seit dem Deploy nur abnahme-live-Sitzungen). Die Dimensionen R1 → R2: Hintergrund-Orchestrierung 7 → 8, Rückkanal 8 → 8, Fabrik 7 → 7, dharma 5 → 5, Tests 8 → 7, Feld 2 → 2, Doku 6 → 6.
+
+- **Behauptung (a) erfüllt:** Ein fehlgeschlagener Hot-Reload kostet den Dienst dharma; nach dem Neustart läuft er wieder auf dharma.
+- **Behauptung (b) erfüllt (n=1):** Der Guard stellt background in der Kind-Sitzung live auf synchron. Log: `HINTERGRUND→SYNCHRON in Kind-Sitzung … session=ses_e953d77c…`. Der Hauptfaden erhielt den vollständigen Kind-Bericht beim ersten Fertig-Signal.
+- **Behoben nach R2:**
+  - Befund 1: DRAIN an die run-Kennung gebunden.
+  - Befund 2: RELOAD-Sperre 5 min statt 30 min.
+  - Befund 5: lokaler mcp-workers-Checkout auf origin/main gezogen (dharma 0.8.0).
+  - Befund 6: diese Doku.
+  - Befund 7: Guard-Log meldet die richtige Einstufungsquelle (`~/.config/opencode` `8ca50a3`, plugins-shared 1379/0).
+- **Offen, Code:**
+  - Befund 4: dharma seit 0.8.0 13,8 % Fehlversuche bei n=65 (zai glm-4.6 502/Status 0, yolo 502). Seit 0.8.0 werden auch Zeitlimits und 429/5xx gezählt, die vorher unsichtbar waren. Der Wert ist also erst jetzt ehrlich und braucht eine Ursachenanalyse je Anbieter.
+  - Befund 8: Reap mit einem `fabrik_run`, den das Plugin selbst schreibt.
+- **Offen, Betreiber:**
+  - opencode-go: Schlüssel abgelaufen, still als Rückfall genutzt. Neu ausstellen, deaktivieren oder kündigen.
+  - `CANARY_WEBHOOK_URL`: Ziel festlegen.
+  - `/metrics.json` ist ohne Anmeldung lesbar: öffentlich lassen oder schützen.
+- **Bis 10/10:** Messwoche 24.–30.10. mit den Zielen aus §10, Auswertung `bun bench/woche.ts --von 2026-10-24 --bis 2026-10-30`, danach eine unabhängige Abnahme.
