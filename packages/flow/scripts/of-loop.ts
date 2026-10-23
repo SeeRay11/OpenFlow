@@ -2,7 +2,10 @@
  * of-loop — der Selbstheilungs-Zyklus der Fabrik (Dauerbetrieb).
  *
  * Ein Zyklus (Aufruf durch systemd-Timer alle 5 min oder manuell):
- *   1. REAP: Zombies bergen (Checkpoint stumm > 10 min).
+ *   1. REAP: Zombies bergen — Regel und Schwellen in of-lebendig.ts (eine
+ *      Quelle für of-loop und of-run.sh; Prozess tot → nach Grace, Prozess
+ *      lebt → erst nach Karten-Timeout + Puffer). Dabei meldet of-reap jeden
+ *      Reap und jeden Run ohne Ende nach 45 min der Start-Sitzung (W2.4).
  *   2. MESSen: Scorecard-Logik über alle Runs.
  *   3. HEILEN: Regel in of-heilung.ts — nur der URSPRUNG einer Familie
  *      (Ursprung + Resumes + Auto-Retries), höchstens HEIL_MAX (2) Heilungen
@@ -44,21 +47,26 @@
  */
 
 import { readdirSync, readFileSync, existsSync, writeFileSync, statSync, renameSync, appendFileSync } from "node:fs"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { spawn } from "node:child_process"
 import { runDailyDigest } from "./of-digest.ts"
 import { planeHeilung, HEIL_MAX, SERIE_GLEICH, type RunLog } from "./of-heilung.ts"
 import { computeI3, dedupAlerts, gapLueckeMin, letzterTick, type AlertLike, type AlertDedupEintrag } from "./of-loop-logik.ts"
+import { reapUrteil } from "./of-lebendig.ts"
+import { letzteAktivitaet, pidStatus } from "./of-lauf.ts"
 
 const argv = process.argv.slice(2)
 const flag = (name: string, fallback?: string) => {
   const i = argv.indexOf(name)
   return i >= 0 ? argv[i + 1] : fallback
 }
-const RUNS_DIR = flag("--runs-dir", join(homedir(), "workspace/flow-lab/.openflow/runs"))
+const RUNS_DIR = flag("--runs-dir", process.env.OPENFLOW_RUNS_DIR || join(homedir(), "workspace/flow-lab/.openflow/runs"))!
 const MAX_AGE_H = Number(flag("--max-age-h", "24"))
-const REAP_MIN = Number(flag("--reap-min-age-min", "10"))
+// Keine eigene Reap-Schwelle mehr (W2.1): hier stand 10 min, in of-run.sh 15,
+// das Karten-Timeout ist 30 — der Reaper erschoss lebende Karten. Die Schwelle
+// steht in of-lebendig.ts; --reap-min-age-min bleibt nur als Hand-Override.
+const REAP_OVERRIDE = flag("--reap-min-age-min")
 const PIPELINES = (flag("--pipelines", "auto-orchestrator,feature-build") ?? "").split(",").map((s) => s.trim()).filter(Boolean)
 const INTERVAL = argv.includes("--interval") ? Number(flag("--interval", "300")) : 0
 const STATE_DIR = flag("--state-dir", "/tmp")
@@ -83,13 +91,17 @@ const DRY_RUN = argv.includes("--dry-run")
 const DIGEST_DIR = flag("--digest-dir", join(homedir(), ".openflow"))
 const DIGEST_LEDGER = flag("--ledger", process.env.OPENFLOW_LEDGER ?? join(DIGEST_DIR, "gate-ledger.jsonl"))
 
-const ROOT = join(homedir(), "workspace/OpenFlow")
+// Aus der eigenen Lage, nicht fest ~/workspace/OpenFlow: sonst fährt ein
+// Worktree (oder ein Test) den Reaper des Haupt-Checkouts.
+const ROOT = resolve(import.meta.dir, "../../..")
 const OF_RUN = join(ROOT, "packages/flow/scripts/of-run.sh")
 
 function reap(): number {
   const before = readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json")).length
   // process.execPath: der eigene Interpreter — cron-Umgebungen haben kein bun im PATH.
-  const out = Bun.spawnSync([process.execPath, join(ROOT, "packages/flow/scripts/of-reap.ts"), "--runs-dir", RUNS_DIR, "--min-age-min", String(REAP_MIN)], {
+  const args = [process.execPath, join(ROOT, "packages/flow/scripts/of-reap.ts"), "--runs-dir", RUNS_DIR]
+  if (REAP_OVERRIDE) args.push("--min-age-min", REAP_OVERRIDE)
+  const out = Bun.spawnSync(args, {
     stdout: "pipe", stderr: "pipe",
   })
   const text = new TextDecoder().decode(out.stdout)
@@ -155,14 +167,24 @@ function checkInvariants(): Alert[] {
     }).filter(Boolean)
   } catch { return alerts }
 
-  // I1 — Zombies: Nach dem Reap darf kein running-Run mit stummem Checkpoint
-  // bleiben ( Reaper versagt oder Schwelle falsch ).
+  // I1 — Zombies: Nach dem Reap darf kein running-Run bleiben, den die
+  // Reap-Regel abräumen würde (Reaper versagt). Dieselbe Regel wie of-reap
+  // (of-lebendig.ts) — eine lebende, nur stille Karte ist KEIN Alarm.
   for (const log of logs) {
     if (log?.status !== "running") continue
     const ck = `/tmp/openflow-checkpoint-${log.id}.json`
     if (!existsSync(ck)) continue // frischer Run ohne ersten Patch
-    if (now - statSync(ck).mtimeMs > REAP_MIN * 60_000) {
-      alerts.push({ ts: new Date().toISOString(), invariante: "I1-zombies", wert: `${log.id} stumm seit ${Math.round((now - statSync(ck).mtimeMs) / 60000)} min`, schwelle: `${REAP_MIN} min` })
+    const mtime = statSync(ck).mtimeMs
+    const urteil = reapUrteil({
+      jetzt: now,
+      started: typeof log.started === "number" ? log.started : 0,
+      letzteAktivitaet: Math.max(mtime, letzteAktivitaet(log)),
+      hatCheckpoint: true,
+      pid: pidStatus(log?.host?.pid),
+      minAgeMin: REAP_OVERRIDE ? Number(REAP_OVERRIDE) : undefined,
+    })
+    if (urteil.reapen) {
+      alerts.push({ ts: new Date().toISOString(), invariante: "I1-zombies", wert: `${log.id} ${urteil.grund}`, schwelle: "of-lebendig.ts reapUrteil" })
     }
   }
 

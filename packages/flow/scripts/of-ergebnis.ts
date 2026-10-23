@@ -19,6 +19,7 @@
  * stdout und stderr die Reihenfolge im Log umdrehen kann.
  */
 
+import { writeFileSync } from "node:fs"
 import { recordedTurns, type RecordedTurn } from "../src/server/turn-hash"
 
 export interface Scorecard {
@@ -152,4 +153,150 @@ export function bericht(log: any, scorecard: Scorecard, io: { out: (s: string) =
   }
   io.err(`run ${log.id}: ${log.status} — verdict ${scorecard.verdict} (${scorecard.attempts} Versuch(e), ${scorecard.outputWords} Wörter Output)`)
   io.out(checkpointZeile(log.id))
+}
+
+// ---------------------------------------------------------------------------
+// W2.2 (Plan „Autonomie 10/10", A10, 23.10.2026): JEDES Ende läuft durch
+// einen Abschlusspunkt. Vorher hatte headless-run keinen Signal-Handler — ein
+// Reap (SIGTERM), Strg-C (SIGINT) oder ein geschlossenes Terminal (SIGHUP)
+// beendete ihn ohne Verdict, ohne Bericht, ohne etwas Lesbares für die
+// aufrufende Sitzung. Jetzt schreibt jedes Ende — regulär oder per Signal —
+// Checkpoint + `ergebnis.md` und nennt den Pfad als letzte stdout-Zeile.
+
+/** Obergrenze der ergebnis.md (Byte, UTF-8). */
+export const ERGEBNIS_MAX_BYTES = 25 * 1024
+
+/** Die ergebnis.md liegt neben dem Checkpoint und teilt seinen Stamm. */
+export const ergebnisPfad = (id: string, dir = "/tmp") => `${dir}/openflow-checkpoint-${id}.ergebnis.md`
+export const checkpointPfad = (id: string, dir = "/tmp") => `${dir}/openflow-checkpoint-${id}.json`
+
+/** Exit-Code je Signal (128 + Signalnummer, wie die Shell ihn meldet). */
+export const SIGNAL_EXIT = { SIGTERM: 143, SIGINT: 130, SIGHUP: 129 } as const
+export type AbbruchSignal = keyof typeof SIGNAL_EXIT
+
+/** Kürzt auf höchstens `max` Byte UTF-8, ohne ein Zeichen zu zerschneiden. */
+function aufBytes(text: string, max: number): string {
+  const buf = Buffer.from(text, "utf8")
+  if (buf.length <= max) return text
+  let end = max
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--
+  return buf.subarray(0, end).toString("utf8")
+}
+
+/** Markdown: Kopf, Scorecard, Karten-Outputs — höchstens `max` Byte, gekürzt mit Hinweis. */
+export function ergebnisMarkdown(log: any, scorecard: Scorecard, max = ERGEBNIS_MAX_BYTES, dir = "/tmp"): string {
+  const teile: string[] = [
+    `# Ergebnis ${log.id}`,
+    "",
+    `- Pipeline: ${log.pipeline ?? "?"}`,
+    `- Verdict: ${scorecard.verdict} (Status ${log.status}, ${scorecard.attempts} Versuch(e), ${scorecard.outputWords} Wörter)`,
+    ...(log.error ? [`- Fehler: ${String(log.error)}`] : []),
+    `- Checkpoint: ${checkpointPfad(log.id, dir)}`,
+    "",
+    "## Scorecard",
+    "",
+    "```json",
+    JSON.stringify(scorecard, null, 2),
+    "```",
+  ]
+  for (const node of log.nodes ?? []) {
+    teile.push("", `## ${node.id} — ${node.status}${node.reused ? " (übernommen)" : ""}`, "")
+    if (typeof node.output === "string" && node.output) teile.push(node.output)
+    else if (node.error) teile.push(`Fehler: ${String(node.error)}`)
+    else teile.push("(kein Output)")
+  }
+  const voll = teile.join("\n") + "\n"
+  const gesamt = Buffer.byteLength(voll, "utf8")
+  if (gesamt <= max) return voll
+  const hinweis = `\n\n… gekürzt: ${max} von ${gesamt} Byte — vollständig im Checkpoint ${checkpointPfad(log.id, dir)}\n`
+  return aufBytes(voll, max - Buffer.byteLength(hinweis, "utf8")) + hinweis
+}
+
+/** Kopie eines abgebrochenen Laufs: Run und alle noch offenen Karten `stopped`. */
+export function gestoppt(log: any, signal: string, jetzt = Date.now()): any {
+  const offen = new Set(["running", "queued", "idle"])
+  return {
+    ...log,
+    status: log?.status === "running" || log?.status === undefined ? "stopped" : log.status,
+    error: log?.error ?? `abgebrochen: ${signal}`,
+    finished: typeof log?.finished === "number" ? log.finished : jetzt,
+    stoppedBySignal: { signal, at: new Date(jetzt).toISOString() },
+    nodes: (log?.nodes ?? []).map((n: any) => (offen.has(n?.status) ? { ...n, status: "stopped" } : n)),
+  }
+}
+
+/**
+ * Der eine Abschluss: Checkpoint + ergebnis.md schreiben (synchron — ein
+ * SIGKILL danach verliert nichts mehr), Bericht drucken, dann `verdict:` und
+ * `ergebnis: <pfad>` als LETZTE stdout-Zeile. Gibt den ergebnis-Pfad zurück.
+ */
+export function abschliessen(
+  log: any,
+  scorecard: Scorecard,
+  io: { out: (s: string) => void; err: (s: string) => void },
+  dir = "/tmp",
+): string {
+  try {
+    writeFileSync(checkpointPfad(log.id, dir), JSON.stringify({ ...log, scorecard }, null, 2))
+  } catch (error) {
+    io.err(`checkpoint nicht geschrieben: ${String(error)}`)
+  }
+  const pfad = ergebnisPfad(log.id, dir)
+  try {
+    writeFileSync(pfad, ergebnisMarkdown(log, scorecard, ERGEBNIS_MAX_BYTES, dir))
+  } catch (error) {
+    io.err(`ergebnis.md nicht geschrieben: ${String(error)}`)
+  }
+  bericht(log, scorecard, io)
+  io.out(`verdict: ${scorecard.verdict} · run ${log.id} · ${log.status} · ${scorecard.outputWords} Wörter`)
+  io.out(`ergebnis: ${pfad}`)
+  return pfad
+}
+
+export interface LaufStand {
+  log: any
+  attempts: number
+  predecessors: string[]
+  startedMs: number
+}
+
+/**
+ * Handler für SIGTERM/SIGINT/SIGHUP. `stand()` liefert den aktuellen Lauf
+ * (oder `undefined` vor dem ersten Checkpoint); `nachher` erledigt
+ * Best-effort-Arbeit (Store-PUT, Sessions stoppen) mit Zeitlimit. Ein zweites
+ * Signal während des Abschlusses wird ignoriert; nach `limitMs` endet der
+ * Prozess in jedem Fall.
+ */
+export function installiereSignalAbschluss(opts: {
+  stand: () => LaufStand | undefined
+  dir?: string
+  nachher?: (log: any) => Promise<unknown>
+  limitMs?: number
+  proc?: { on: (sig: string, fn: () => void) => unknown; exit: (code: number) => never | void }
+  io?: { out: (s: string) => void; err: (s: string) => void }
+}) {
+  const proc = opts.proc ?? process
+  const io = opts.io ?? { out: (s: string) => console.log(s), err: (s: string) => console.error(s) }
+  const limit = opts.limitMs ?? 4_000
+  let laeuft = false
+  for (const sig of Object.keys(SIGNAL_EXIT) as AbbruchSignal[]) {
+    proc.on(sig, () => {
+      if (laeuft) return
+      laeuft = true
+      const code = SIGNAL_EXIT[sig]
+      const stand = opts.stand()
+      if (!stand?.log?.id) {
+        io.err(`headless-run: abgebrochen (${sig}) vor dem ersten Checkpoint — kein Run-Log, nichts zu sichern`)
+        proc.exit(code)
+        return
+      }
+      const log = gestoppt(stand.log, sig)
+      const scorecard = buildScorecard(log, stand.attempts, stand.predecessors, stand.startedMs)
+      log.scorecard = scorecard
+      io.err(`headless-run: ${sig} — Run ${log.id} wird als stopped abgeschlossen`)
+      abschliessen(log, scorecard, io, opts.dir)
+      const zeit = new Promise((r) => setTimeout(r, limit))
+      void Promise.race([Promise.resolve(opts.nachher?.(log)).catch(() => undefined), zeit]).finally(() => proc.exit(code))
+    })
+  }
 }

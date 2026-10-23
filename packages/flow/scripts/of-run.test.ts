@@ -154,3 +154,80 @@ describe("Defekt 5 — früher Abbruch vor dem Log wird sichtbar", () => {
     expect(r.ledger).toHaveLength(0)
   })
 })
+
+/**
+ * T-03 (Plan „Autonomie 10/10", A9) + Zusatz W0: `--wait` gibt den Exit-Code
+ * des Runs zurück (vorher `|| true` → immer 0) und schreibt eine
+ * Zusammenfassung auf stdout — denn opencode liefert die stdout eines
+ * Hintergrund-Shellbefehls als Fertig-Meldung an die Eltern-Sitzung (Spike W0,
+ * 18/18). Vorher stand dort nur `LOG=<pfad>`: die Meldung trug kein Ergebnis.
+ *
+ * Der Fake-headless-run schreibt, was der echte am Ende schreibt (verdict:,
+ * checkpoint:, ergebnis:) und eine echte ergebnis.md.
+ */
+describe("T-03 of-run.sh --wait: Exit-Code und Zusammenfassung", () => {
+  function fakeLauf(rc: number, verdict: string | null, ergebnisText: string | null) {
+    const ziel = mkdtempSync(join(tmpdir(), "of-run-wait-erg-"))
+    dirs.push(ziel)
+    const cp = join(ziel, "openflow-checkpoint-run-W.json")
+    const erg = join(ziel, "openflow-checkpoint-run-W.ergebnis.md")
+    if (ergebnisText !== null) writeFileSync(erg, ergebnisText)
+    const zeilen = verdict === null
+      ? [`echo "[boss] running" >&2`]
+      : [
+          `echo "=== boss ==="`,
+          `echo "Modelltext mit eigener Zeile:"`,
+          `echo "ergebnis: /tmp/FALSCH.md"`,
+          `echo "checkpoint: ${cp}"`,
+          `echo "verdict: ${verdict} · run run-W"`,
+          ...(ergebnisText !== null ? [`echo "ergebnis: ${erg}"`] : []),
+        ]
+    return { skript: `case "$*" in *headless-run.ts*) ${zeilen.join("; ")}; exit ${rc};; esac; exit 0`, cp, erg }
+  }
+  const zeilen = (s: string) => s.trimEnd().split("\n")
+
+  test("PASS: Exit 0, LOG= zuerst, Verdict, Anfang der ergebnis.md, ergebnis: als letzte Zeile", async () => {
+    const f = fakeLauf(0, "PASS", "# Ergebnis run-W\n\nDer Bericht steht hier.\n")
+    const r = await laufMit(f.skript, ["--wait", "auto-orchestrator", "aufgabe"])
+    expect(r.exitCode).toBe(0)
+    const z = zeilen(r.stdout)
+    expect(z[0]).toMatch(/^LOG=.+\.log$/)
+    expect(r.stdout).toContain("verdict: PASS")
+    expect(r.stdout).toContain("Der Bericht steht hier.")
+    expect(r.stdout).toContain(`checkpoint: ${f.cp}`)
+    expect(z[z.length - 1]).toBe(`ergebnis: ${f.erg}`)
+  })
+
+  test("FAIL: Exit = Exit des Runs (1), Verdict FAIL", async () => {
+    const f = fakeLauf(1, "FAIL", "# Ergebnis run-W\n\nKarte boss: error\n")
+    const r = await laufMit(f.skript, ["--wait", "auto-orchestrator", "aufgabe"])
+    expect(r.exitCode).toBe(1)
+    expect(r.stdout).toContain("verdict: FAIL")
+    expect(r.stdout).toContain("exit: 1")
+    expect(zeilen(r.stdout).at(-1)).toBe(`ergebnis: ${f.erg}`)
+  })
+
+  test("lange ergebnis.md: Auszug ~3000 Zeichen, gekürzt mit Hinweis", async () => {
+    const lang = "# Ergebnis\n" + "x".repeat(10_000) + "\nENDE-MARKE\n"
+    const f = fakeLauf(0, "PASS", lang)
+    const r = await laufMit(f.skript, ["--wait", "auto-orchestrator", "aufgabe"])
+    expect(r.stdout).toContain("gekürzt: 3000 von")
+    expect(r.stdout).not.toContain("ENDE-MARKE")
+    expect(r.stdout.length).toBeLessThan(4_500)
+  })
+
+  test("Lauf stirbt ohne Abschluss (SIGKILL-artig, Exit 137): Exit 137, Verdict UNBEKANNT, Log-Ende", async () => {
+    const f = fakeLauf(137, null, null)
+    const r = await laufMit(f.skript, ["--wait", "auto-orchestrator", "aufgabe"])
+    expect(r.exitCode).toBe(137)
+    expect(r.stdout).toContain("verdict: UNBEKANNT")
+    expect(r.stdout).toContain("[boss] running")
+  })
+
+  test("Kontrollwert: detached bleibt bei PID=/LOG= und Exit 0", async () => {
+    const r = await laufMit(`exit 0`, ["auto-orchestrator", "aufgabe"])
+    expect(r.exitCode).toBe(0)
+    expect(r.stdout).toContain("PID=")
+    expect(r.stdout).not.toContain("verdict:")
+  })
+})

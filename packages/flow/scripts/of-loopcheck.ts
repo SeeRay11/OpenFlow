@@ -21,6 +21,8 @@ import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
 import { computeI3, letzterTick } from "./of-loop-logik.ts"
+import { reapUrteil } from "./of-lebendig.ts"
+import { letzteAktivitaet, pidStatus } from "./of-lauf.ts"
 
 const argv = process.argv.slice(2)
 const MAX_TICK_MIN = Number(argv.includes("--max-tick-min") ? argv[argv.indexOf("--max-tick-min") + 1] : "12")
@@ -71,7 +73,9 @@ if (existsSync(ALERTS)) {
   }
 }
 
-// 4 — Zombies: running-Runs mit stummem Checkpoint (> 15 min)
+// 4 — Zombies: running-Runs, die der Reaper hätte abräumen müssen. Dieselbe
+//     Regel wie of-reap/of-loop (of-lebendig.ts) — hier stand eine dritte
+//     Zahl (15 min), die eine lebende, nur stille Karte als Zombie meldete.
 let zombies = 0
 if (existsSync(RUNS_DIR)) {
   for (const f of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json"))) {
@@ -79,8 +83,15 @@ if (existsSync(RUNS_DIR)) {
     try { log = JSON.parse(readFileSync(join(RUNS_DIR, f), "utf8")) } catch { continue }
     if (log?.status !== "running") continue
     const ck = `/tmp/openflow-checkpoint-${log.id}.json`
-    if (existsSync(ck) && Date.now() - statSync(ck).mtimeMs > 15 * 60_000) zombies++
-    else if (!existsSync(ck) && Date.now() - (log.started ?? 0) > 5 * 60_000) zombies++
+    const hatCheckpoint = existsSync(ck)
+    const urteil = reapUrteil({
+      jetzt: Date.now(),
+      started: typeof log.started === "number" ? log.started : 0,
+      letzteAktivitaet: Math.max(hatCheckpoint ? statSync(ck).mtimeMs : 0, letzteAktivitaet(log)),
+      hatCheckpoint,
+      pid: pidStatus(log?.host?.pid),
+    })
+    if (urteil.reapen) zombies++
   }
 }
 facts.zombies = zombies

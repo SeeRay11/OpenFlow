@@ -24,7 +24,10 @@
  *      the run shows up in the canvas's Runs menu like any other
  *
  * Exit code 0 only when the run log ends "done". Node outputs print to stdout,
- * everything else goes to stderr.
+ * everything else goes to stderr. Every end — regular or by SIGTERM/SIGINT/
+ * SIGHUP (a reap, Ctrl-C, a closed terminal) — writes the checkpoint and an
+ * `ergebnis.md` beside it; the LAST stdout line is `ergebnis: <path>`
+ * (W2.2, 23.10.2026: before, a signal ended the run with nothing to read).
  */
 
 ;(globalThis as unknown as { window: unknown }).window = {
@@ -32,8 +35,8 @@
 }
 
 import { herkunft } from "./of-heilung"
-import { vorgaengerStoppen } from "./of-lauf"
-import { bericht, buildScorecard, seedFrom, turnsFrom, uebernahme, uebernimm, vorgaenger } from "./of-ergebnis"
+import { fabrikProjekt, projektPruefung, vorgaengerStoppen } from "./of-lauf"
+import { abschliessen, buildScorecard, installiereSignalAbschluss, seedFrom, turnsFrom, uebernahme, uebernimm, vorgaenger } from "./of-ergebnis"
 import { start } from "../src/server/engine"
 import type { RecordedTurn } from "../src/server/turn-hash"
 import * as api from "../src/server/client"
@@ -58,6 +61,32 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   if (typeof input === "string" && input.startsWith("/")) input = origin + input
   return realFetch(input, init)
 }) as typeof fetch
+
+// Der Lauf-Stand, den der Signal-Handler sichert. Oben deklariert und vor dem
+// ersten await installiert: ein Signal während des Ladens der Pipeline endet
+// mit eigener Meldung und Exit-Code statt stillem Tod (W2.2).
+const stand: { log: any; attempts: number; predecessors: string[]; startedMs: number; run?: { stop: () => Promise<void> } } = {
+  log: undefined,
+  attempts: 0,
+  predecessors: [],
+  startedMs: Date.now(),
+}
+installiereSignalAbschluss({
+  stand: () => (stand.log ? { log: stand.log, attempts: Math.max(1, stand.attempts), predecessors: stand.predecessors, startedMs: stand.startedMs } : undefined),
+  // Best effort, mit Zeitlimit im Handler: Sessions der Engine anhalten (sonst
+  // arbeitet opencode an verwaisten Karten weiter) und den Store nachziehen.
+  nachher: async (log) => {
+    await Promise.allSettled([
+      stand.run?.stop(),
+      fetch(`${process.env.OPENFLOW_ORIGIN ?? "http://127.0.0.1:5174"}/flow/api/runs/${encodeURIComponent(log.id)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(log),
+        signal: AbortSignal.timeout(3_000),
+      }),
+    ])
+  },
+})
 
 // bun exits on an unhandled rejection by default; a run that dies mid-run
 // loses its log with it. The engine callbacks already catch their own errors,
@@ -117,7 +146,18 @@ async function flow<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
-const pipeline = await flow<unknown>(`pipelines/${encodeURIComponent(name)}`)
+// W2.5: Pipelines kommen aus dem AKTIVEN Canvas-Projekt. Vor dem Laden
+// gemessen, wohin der Canvas zeigt — eine fehlende Pipeline nennt das Projekt
+// und den Ausweg, ein fremdes Projekt wird gewarnt (Runs dort sieht kein Reaper).
+const kontext = await flow<{ project?: string }>("context").catch(() => undefined)
+const pipelineAntwort = await fetch(`${origin}/flow/api/pipelines/${encodeURIComponent(name)}`)
+const pruefung = projektPruefung({ aktiv: kontext?.project, erwartet: fabrikProjekt(), pipeline: name, pipelineDa: pipelineAntwort.ok })
+if (pruefung.fehler) {
+  console.error(`headless-run: ${pruefung.fehler} (HTTP ${pipelineAntwort.status})`)
+  process.exit(2)
+}
+if (pruefung.warnung) console.error(`headless-run: WARNUNG ${pruefung.warnung}`)
+const pipeline = (await pipelineAntwort.json()) as unknown
 if (!isPipeline(pipeline)) throw new Error(`"${name}" did not load as a pipeline`)
 
 const servers = await flow<Array<{ name: string }>>("mcp")
@@ -168,8 +208,14 @@ async function schliesseVorgaenger(nachfolgerId: string) {
   console.error(`Vorgänger ${resumeCheckpoint.id}: running → stopped (fortgesetzt als ${nachfolgerId})`)
 }
 
+const aufrufer = {
+  aufruf_id: process.env.OPENFLOW_AUFRUF_ID || resumeLog?.host?.aufruf_id || undefined,
+  session: process.env.OPENFLOW_SESSION || resumeLog?.host?.session || undefined,
+}
 const startedMs = Date.now()
+stand.startedMs = startedMs
 const predecessors: string[] = []
+stand.predecessors = predecessors
 let log: any
 // Alles, was aus früheren Läufen übernommen ist (Resume-Checkpoint, dann jeder
 // Versuch dieses Prozesses). K11: ohne diesen Speicher verlor ein Versuch, der
@@ -198,12 +244,21 @@ for (let attempt = 1; attempt <= attemptsMax; attempt++) {
     },
     onRun: (current: any) => {
       // Wer den Run hält: of-reap beendet einen lebenden, aber stummen Prozess.
-      current.host = { pid: process.pid }
+      // Aufrufer (W2.4): of-run.sh erbt OPENFLOW_SESSION/OPENFLOW_AUFRUF_ID
+      // vom fabrik-gate-Plugin; der Reaper ordnet einen Rückruf darüber dem
+      // Ledger-Eintrag des Starts zu. Ein Resume ohne eigene Umgebung erbt
+      // sie vom fortgesetzten Lauf — sonst bliebe jede Heilung stumm.
+      current.host = {
+        pid: process.pid,
+        ...(aufrufer.aufruf_id ? { aufruf_id: aufrufer.aufruf_id } : {}),
+        ...(aufrufer.session ? { session: aufrufer.session } : {}),
+      }
       // Herkunft ab dem ERSTEN Checkpoint jedes Versuchs (Abnahme 12.10.2026:
       // stand sie nur im letzten Log, sah Versuch 1 eines Resume wie ein
       // Ursprung aus, und of-loop heilte Heilungsläufe im 5-Minuten-Takt).
       Object.assign(current, herkunft({ resumeRef, checkpoint: resumeCheckpoint, vorige: predecessors }))
       log = current
+      stand.log = current
       if (!vorgaengerGeschlossen) {
         vorgaengerGeschlossen = true
         void schliesseVorgaenger(current.id).catch((error) => console.error(`Vorgänger nicht geschlossen: ${String(error)}`))
@@ -219,7 +274,10 @@ for (let attempt = 1; attempt <= attemptsMax; attempt++) {
     onQuestion: () => Promise.resolve(undefined),
     onEngineStale: () => console.error("engine config is stale — restart opencode serve"),
   }, { resume: resumeOutputs, sessions: resumeSessions, turns: resumeTurns })
+  stand.run = run
+  stand.attempts = attempt
   log = await run.done
+  stand.log = log
   uebernimm(log, carried, carriedSessions)
   seedFrom(log, carried, carriedSessions)
   predecessors.push(log.id)
@@ -239,9 +297,9 @@ void flow(`runs/${encodeURIComponent(log.id)}`, {
   headers: { "content-type": "application/json" },
   body: JSON.stringify(log),
 }).catch((error) => console.error(`scorecard save failed: ${String(error)}`))
-await Bun.write(`/tmp/openflow-checkpoint-${log.id}.json`, JSON.stringify(log, null, 2)).catch(() => undefined)
-// Checkpoint-Zeile zuletzt, auf stdout nach allen Modelltexten (Befund (c)).
 const angeboten = uebernahme(log, Object.keys(initialResume))
 if (angeboten.zeile) console.error(angeboten.zeile)
-bericht(log, scorecard, { out: (s) => console.log(s), err: (s) => console.error(s) })
+// Ein Abschluss für jedes Ende (W2.2): Checkpoint + ergebnis.md, Bericht,
+// `checkpoint:` nach allen Modelltexten (Befund (c)), `ergebnis:` zuletzt.
+abschliessen(log, scorecard, { out: (s) => console.log(s), err: (s) => console.error(s) })
 process.exit(log.status === "done" ? 0 : 1)

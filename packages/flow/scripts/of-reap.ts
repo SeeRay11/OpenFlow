@@ -5,14 +5,18 @@
  * immer "running" in der Run-Liste: Niemand finalisiert ihn. Gemessen
  * 26.09.2026: 8 solcher Zombies in flow-lab/.openflow/runs.
  *
- * Zombie-Kriterium (beweisbar ohne PID-Datei):
- *   status === "running"
- *   UND (Checkpoint /tmp/openflow-checkpoint-<id>.json fehlt und der Run
- *        started vor mehr als --grace-min Minuten
- *        ODER Checkpoint mtime älter als --min-age-min Minuten)
+ * Zombie-Kriterium: die Regel steht in of-lebendig.ts (`reapUrteil`, EINE
+ * Schwellen-Quelle für of-reap, of-loop und of-run.sh). Kurz: Prozess tot →
+ * nach Grace abräumen; Prozess lebt → erst nach Karten-Timeout + Puffer
+ * (35 min) Stille; Prozess unbekannt (Run ohne host.pid) → Stille-Schwelle
+ * (--min-age-min, Vorgabe dieselben 35 min). Stille allein beweist nichts:
+ * Die Engine schreibt den Checkpoint nur bei Änderungen, eine Karte mit einem
+ * langen Zug ist still und lebt (W2.1, 23.10.2026 — vorher reapten of-loop
+ * nach 10 und of-run.sh nach 15 min und erschossen lebende Läufe).
  *
- * Der Runner schreibt den Checkpoint bei JEDEM onRun-Patch neu — ein lebender
- * Run hat also einen frischen Checkpoint. Stille = tot.
+ * Rückruf (W2.4): Jeder Reap und jeder Run, der nach STUMM_MELDUNG_MIN noch
+ * kein Ende hat, wird der aufrufenden opencode-Sitzung gemeldet (of-rueckruf.ts,
+ * genau einmal, fail-open). --dry-run meldet nichts.
  *
  * Hänger (Abnahme 12.10.2026): Ein Run kann stumm sein, während sein Prozess
  * LEBT — eine Karte hing 43 min in einer Session, die der Server weiter als
@@ -28,12 +32,15 @@
  * der Canvas-Store nie eine halbe JSON liest.
  *
  * Usage:
- *   bun of-reap.ts [--runs-dir DIR] [--min-age-min 30] [--grace-min 5] [--dry-run]
+ *   bun of-reap.ts [--runs-dir DIR] [--min-age-min 35] [--grace-min 5] [--dry-run]
+ *   (Runs-Verzeichnis auch per OPENFLOW_RUNS_DIR)
  *   of-run.sh --reap [weitere Flags]
  */
 
 import { readdirSync, readFileSync, existsSync, statSync, writeFileSync, renameSync } from "node:fs"
-import { lebenderLauf, letzteAktivitaet } from "./of-lauf"
+import { lebenderLauf, letzteAktivitaet, pidStatus } from "./of-lauf"
+import { reapUrteil, REAP_SCHWELLE_MIN, STUMM_MELDUNG_MIN, TOT_SCHWELLE_MIN } from "./of-lebendig"
+import { rueckruf } from "./of-rueckruf"
 
 import { join } from "node:path"
 import { homedir } from "node:os"
@@ -43,9 +50,9 @@ const flag = (name: string, fallback?: string) => {
   const i = argv.indexOf(name)
   return i >= 0 ? argv[i + 1] : fallback
 }
-const RUNS_DIR = flag("--runs-dir", join(homedir(), "workspace/flow-lab/.openflow/runs"))
-const MIN_AGE_MIN = Number(flag("--min-age-min", "30"))
-const GRACE_MIN = Number(flag("--grace-min", "5"))
+const RUNS_DIR = flag("--runs-dir", process.env.OPENFLOW_RUNS_DIR || join(homedir(), "workspace/flow-lab/.openflow/runs"))!
+const MIN_AGE_MIN = Number(flag("--min-age-min", String(REAP_SCHWELLE_MIN)))
+const GRACE_MIN = Number(flag("--grace-min", String(TOT_SCHWELLE_MIN)))
 const DRY = argv.includes("--dry-run")
 
 if (!existsSync(RUNS_DIR)) {
@@ -58,15 +65,16 @@ let inspected = 0
 let reaped = 0
 let haenger = 0
 const details: string[] = []
+const meldungen: Array<{ run: any; art: "abgeraeumt" | "stumm"; grund: string; checkpoint: string }> = []
 
-/** Beendet den hängenden Prozess eines Runs; true, wenn einer lebte. */
-function beende(file: string, log: any, grund: string): boolean {
+/** Beendet den hängenden Prozess eines Runs; seine PID, wenn einer lebte. */
+function beende(file: string, log: any, grund: string): number | undefined {
   const pid = lebenderLauf(log?.host?.pid)
-  if (pid === undefined) return false
+  if (pid === undefined) return undefined
   haenger++
   if (DRY) {
     details.push(`DRY ${file} — Hänger: Prozess ${pid} lebt (${grund}), würde SIGTERM senden`)
-    return true
+    return pid
   }
   try {
     process.kill(pid, "SIGTERM")
@@ -74,7 +82,19 @@ function beende(file: string, log: any, grund: string): boolean {
   } catch (error) {
     details.push(`HAENGER ${file} — Prozess ${pid} lebt (${grund}), SIGTERM scheiterte: ${String(error)}`)
   }
-  return true
+  return pid
+}
+
+/**
+ * W2.2: headless-run schließt sich auf SIGTERM selbst ab (Verdict stopped,
+ * ergebnis.md, Store-PUT, höchstens ~4 s). Der Reaper wartet dieses Ende ab
+ * und legt seinen reaped-Block auf DIESEN Stand — sonst überschriebe der PUT
+ * des Sterbenden den Reap, und die Scorecard verlöre ihn.
+ */
+const ABSCHLUSS_WARTEN_MS = 6_000
+function warteAufAbschluss(pid: number) {
+  const bis = Date.now() + ABSCHLUSS_WARTEN_MS
+  while (lebenderLauf(pid) !== undefined && Date.now() < bis) Bun.sleepSync(100)
 }
 
 for (const file of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json")).sort()) {
@@ -106,14 +126,24 @@ for (const file of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json")).sort
     lastActivityMs = Math.max(lastActivityMs, statSync(checkpoint).mtimeMs)
   }
 
-  const silentMin = (now - lastActivityMs) / 60_000
-  const noCheckpointOld = !hasCheckpoint && (now - startedMs) / 60_000 > GRACE_MIN
-  const checkpointStale = hasCheckpoint && silentMin > MIN_AGE_MIN
-  if (!noCheckpointOld && !checkpointStale) continue
-
-  const reason = hasCheckpoint
-    ? `zombie — checkpoint seit ${Math.round(silentMin)} min stumm (Schwelle ${MIN_AGE_MIN} min)`
-    : `zombie — kein Checkpoint, Run startete vor ${Math.round((now - startedMs) / 60_000)} min (Grace ${GRACE_MIN} min)`
+  const urteil = reapUrteil({
+    jetzt: now,
+    started: startedMs,
+    letzteAktivitaet: lastActivityMs,
+    hatCheckpoint: hasCheckpoint,
+    pid: pidStatus(log?.host?.pid),
+    minAgeMin: MIN_AGE_MIN,
+    graceMin: GRACE_MIN,
+  })
+  if (!urteil.reapen) {
+    // Stumm (W2.4): läuft, ist nicht abzuräumen, hat aber nach
+    // STUMM_MELDUNG_MIN noch kein Ende — die aufrufende Sitzung erfährt es.
+    if (!DRY && (now - startedMs) / 60_000 > STUMM_MELDUNG_MIN) {
+      meldungen.push({ run: log, art: "stumm", grund: `läuft seit ${Math.round((now - startedMs) / 60_000)} min ohne Ende (${urteil.grund})`, checkpoint })
+    }
+    continue
+  }
+  const reason = urteil.grund
 
   if (DRY) {
     details.push(`DRY ${file} — würde reaps: ${reason}`)
@@ -121,7 +151,16 @@ for (const file of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json")).sort
     reaped++
     continue
   }
-  beende(file, log, reason)
+  const getoetet = beende(file, log, reason)
+  if (getoetet !== undefined) {
+    warteAufAbschluss(getoetet)
+    try {
+      const frisch = JSON.parse(readFileSync(path, "utf8"))
+      if (frisch?.id === log.id) log = frisch
+    } catch {
+      /* unlesbar: der eigene Stand bleibt */
+    }
+  }
 
   log.status = "stopped"
   log.error = `reaped: ${reason}`
@@ -135,7 +174,16 @@ for (const file of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json")).sort
   writeFileSync(tmp, JSON.stringify(log, null, 2))
   renameSync(tmp, path)
   details.push(`REAPED ${file} — ${reason}`)
+  meldungen.push({ run: log, art: "abgeraeumt", grund: reason, checkpoint })
   reaped++
+}
+
+// Rückruf an die aufrufende Sitzung — nach dem Schreiben, damit eine hängende
+// Verbindung nie einen Reap aufhält; fail-open (of-rueckruf schreibt einen
+// Fehlschlag ins Ledger, wirft nie).
+for (const m of meldungen) {
+  const r = await rueckruf(m)
+  details.push(`RUECKRUF ${m.run.id} (${m.art}): ${r.status}${r.grund ? ` — ${r.grund}` : ""}`)
 }
 
 for (const line of details) console.error(line)

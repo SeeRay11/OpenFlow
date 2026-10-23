@@ -2,7 +2,17 @@
 # OpenFlow headless, in two modes:
 #
 #   of-run.sh <pipeline> <task words...>       detached (setsid); prints PID/LOG
-#   of-run.sh --wait <pipeline> <task...>      foreground; exits with the run's code
+#   of-run.sh --wait <pipeline> <task...>      blocks until the run ends; prints
+#                                              LOG= first, then a summary (verdict,
+#                                              start of ergebnis.md, checkpoint:,
+#                                              ergebnis: as LAST line) and exits
+#                                              with the run's code. Meant for a
+#                                              BACKGROUND shell (opencode
+#                                              shell{background:true}: no timeout,
+#                                              the end wakes the caller with this
+#                                              stdout). In a FOREGROUND agent shell
+#                                              the shell timeout (120 s) kills it —
+#                                              there, start detached.
 #   of-run.sh --resume <checkpoint|run-id> [task...]
 #                                              continue an interrupted run: done
 #                                              cards keep their output, the rest
@@ -18,7 +28,9 @@
 #   of-run.sh --scorecard [flags]              verdict statistics over all runs
 #                                              (of-scorecard.ts; --limit N --json)
 #
-# Every start reaps first (15 min silence = dead) so the run list stays honest.
+# Every start reaps first so the run list stays honest — rule and thresholds
+# in of-lebendig.ts (one source with of-loop; a living process is never reaped
+# inside the card timeout + buffer).
 # Failed runs retry themselves once via checkpoint-resume (OPENFLOW_AUTO_RETRY,
 # default 1) and end with a SCORECARD block on stdout.
 #
@@ -117,16 +129,55 @@ STAMP=$(date +%Y%m%d-%H%M%S)-$$
 LOG="${OPENFLOW_LOG_DIR:-/tmp}/of-run-${PIPELINE}-${STAMP}.log"
 FRUEH_PIPELINE="$PIPELINE"
 
-# Zombie-Reap vor jedem Start: 15 Minuten stummer Checkpoint = Prozessor tot.
-# Sichtbar gescheitert ist besser als still gescheitert: der Reap darf ins
-# Log scheiben, er darf den Start nur bei Reap-HÄRTEN nicht blocken.
-"$BUN" "$ROOT/packages/flow/scripts/of-reap.ts" --min-age-min 15 --grace-min 5 2>&1 | head -2 || true
+# Zombie-Reap vor jedem Start. KEINE eigene Schwelle (W2.1): hier stand 15 min,
+# in of-loop 10, das Karten-Timeout ist 30 — lebende Karten wurden erschossen.
+# Regel und Zahlen stehen in of-lebendig.ts. Sichtbar gescheitert ist besser
+# als still gescheitert: der Reap darf melden, den Start aber nie blockieren.
+# Ausgabe nach stderr: im --wait-Modus ist stdout die Fertig-Meldung.
+"$BUN" "$ROOT/packages/flow/scripts/of-reap.ts" 2>&1 | head -2 >&2 || true
+
+# --wait: Zusammenfassung für die Fertig-Meldung des Aufrufers (W0-Spike
+# 23.10.2026: opencode liefert die STDOUT eines Hintergrund-Shellbefehls als
+# Meldung an die Eltern-Sitzung). Verdict, Anfang der ergebnis.md, dann
+# checkpoint: und ergebnis: — die ergebnis:-Zeile ist die LETZTE (Leser nehmen
+# den letzten Treffer; ein Modelltext kann Zeilen derselben Form tragen).
+ERGEBNIS_AUSZUG="${OPENFLOW_ERGEBNIS_AUSZUG:-3000}"
+zusammenfassung() {
+  local log="$1" rc="$2" erg cp verdict n
+  # jeder Pfad, nicht nur /…: auf Windows heißen sie C:\… (CI-Lauf 23.10.:
+  # mit '^ergebnis: /' gewann die Zeile eines Modelltexts)
+  erg=$(grep -a '^ergebnis: .' "$log" 2>/dev/null | tail -1 | sed 's/^ergebnis: //') || true
+  cp=$(grep -a '^checkpoint: .' "$log" 2>/dev/null | tail -1 | sed 's/^checkpoint: //') || true
+  verdict=$(grep -a '^verdict: ' "$log" 2>/dev/null | tail -1) || true
+  echo "${verdict:-verdict: UNBEKANNT — kein Abschluss im Log}"
+  echo "exit: $rc"
+  if [ -n "$erg" ] && [ -f "$erg" ]; then
+    n=$(wc -c < "$erg" | tr -d ' ')
+    echo "--- ergebnis.md (Anfang) ---"
+    if command -v iconv >/dev/null 2>&1; then head -c "$ERGEBNIS_AUSZUG" "$erg" | iconv -f utf-8 -t utf-8 -c; else head -c "$ERGEBNIS_AUSZUG" "$erg"; fi
+    echo
+    if [ "$n" -gt "$ERGEBNIS_AUSZUG" ]; then echo "--- gekürzt: $ERGEBNIS_AUSZUG von $n Byte, vollständig in der ergebnis.md ---"; fi
+  else
+    echo "--- keine ergebnis.md; Log-Ende ---"
+    tail -n 20 "$log" 2>/dev/null || true
+  fi
+  if [ -n "$cp" ]; then echo "checkpoint: $cp"; fi
+  if [ -n "$erg" ]; then echo "ergebnis: $erg"; fi
+  return 0
+}
 
 if [ "$MODE" = "wait" ]; then
   # Ab dem Aufruf von headless-run ist der Lauf gestartet; sein Ergebnis
-  # meldet er selbst (Log + Checkpoint), nicht diese Falle.
+  # meldet er selbst (Log + Checkpoint + ergebnis.md), nicht diese Falle.
   GESTARTET=1
-  "$BUN" "$ENTRY" "${RESUME_ARGS[@]}" "${SPREAD_ARGS[@]}" "$PIPELINE" "$@" > "$LOG" 2>&1 || true
+  # LOG= VOR dem Start: das fabrik-gate-Plugin und ein Leser, der mitten im
+  # Lauf nachsieht, finden das Log, ohne auf das Ende zu warten.
+  echo "LOG=$LOG"
+  RC=0
+  # A9: früher `|| true` — --wait meldete jeden Lauf mit Exit 0.
+  "$BUN" "$ENTRY" "${RESUME_ARGS[@]}" "${SPREAD_ARGS[@]}" "$PIPELINE" "$@" > "$LOG" 2>&1 || RC=$?
+  zusammenfassung "$LOG" "$RC"
+  exit "$RC"
 else
   setsid nohup "$BUN" "$ENTRY" "${RESUME_ARGS[@]}" "${SPREAD_ARGS[@]}" "$PIPELINE" "$@" > "$LOG" 2>&1 < /dev/null &
   GESTARTET=1
