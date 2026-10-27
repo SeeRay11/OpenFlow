@@ -18,7 +18,7 @@
  * `packages/flow/lib/launch.ts` (unit-tested); this file only spawns, streams,
  * waits, and tears down.
  */
-import { launchPlan } from "./packages/flow/lib/launch"
+import { launchPlan, listeningPids } from "./packages/flow/lib/launch"
 import { healthy } from "./packages/flow/lib/opencode-process"
 
 const repo = import.meta.dir
@@ -56,15 +56,7 @@ async function pipe(stream: ReadableStream<Uint8Array> | number | undefined, pre
 function freePort(port: string) {
   if (process.platform === "win32") {
     const { stdout } = Bun.spawnSync(["netstat", "-ano"], { stdout: "pipe" })
-    const pids = new Set(
-      stdout
-        .toString()
-        .split(/\r?\n/)
-        .filter((line) => line.includes(`:${port}`) && line.includes("LISTENING"))
-        .map((line) => line.trim().split(/\s+/).pop())
-        .filter((pid): pid is string => !!pid && pid !== "0"),
-    )
-    for (const pid of pids) Bun.spawnSync(["taskkill", "/pid", pid, "/T", "/F"], { stdout: "ignore", stderr: "ignore" })
+    for (const pid of listeningPids(stdout.toString(), port)) Bun.spawnSync(["taskkill", "/pid", pid, "/T", "/F"], { stdout: "ignore", stderr: "ignore" })
     return
   }
   const { stdout } = Bun.spawnSync(["lsof", "-ti", `tcp:${port}`], { stdout: "pipe" })

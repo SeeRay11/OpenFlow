@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { launchPlan } from "./launch"
+import { launchPlan, listeningPids } from "./launch"
 
 const repo = "/repo"
 
@@ -101,5 +101,32 @@ describe("launchPlan", () => {
     expect(plan.managed).toBe(false)
     expect(plan.canvas.argv).toEqual(["bun", "--cwd", "packages/flow", "dev"])
     expect(plan.engine.skip).toBe(false)
+  })
+})
+
+describe("listeningPids", () => {
+  const netstat = [
+    "Active Connections",
+    "",
+    "  Proto  Local Address          Foreign Address        State           PID",
+    "  TCP    0.0.0.0:4096           0.0.0.0:0              LISTENING       100",
+    "  TCP    [::]:4096              [::]:0                 LISTENING       100",
+    "  TCP    0.0.0.0:40961          0.0.0.0:0              LISTENING       200",
+    "  TCP    127.0.0.1:51234        127.0.0.1:4096         ESTABLISHED     300",
+    "  TCP    0.0.0.0:5174           0.0.0.0:0              ABHÖREN         400",
+    "  UDP    0.0.0.0:4096           *:*                                    500",
+  ].join("\r\n")
+
+  test("matches the port exactly, not as a prefix of a longer one", () => {
+    expect(listeningPids(netstat, "4096")).toEqual(["100"])
+    expect(listeningPids(netstat, "409")).toEqual([])
+  })
+
+  test("ignores a connection whose remote end is the port", () => {
+    expect(listeningPids(netstat, "51234")).toEqual([])
+  })
+
+  test("finds a listener whatever language the state column is in", () => {
+    expect(listeningPids(netstat, "5174")).toEqual(["400"])
   })
 })

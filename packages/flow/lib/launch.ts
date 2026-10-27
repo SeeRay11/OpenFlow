@@ -92,3 +92,28 @@ export async function launchPlan(input: {
     built,
   }
 }
+
+/**
+ * PIDs listening on exactly `port`, read from Windows `netstat -ano` output.
+ *
+ * The port is compared against the local-address column rather than searched
+ * for in the line: `:4096` is a substring of `:40961`, so a substring test hands
+ * an unrelated process to `taskkill /T /F`. A listening socket is told by its
+ * foreign address (`0.0.0.0:0` or `[::]:0`), not by the state column, because
+ * that column is translated on non-English Windows.
+ */
+export function listeningPids(netstat: string, port: string) {
+  return [
+    ...new Set(
+      netstat
+        .split(/\r?\n/)
+        .map((line) => line.trim().split(/\s+/))
+        .filter(
+          ([proto, local, foreign]) =>
+            proto === "TCP" && local?.endsWith(`:${port}`) && (foreign === "0.0.0.0:0" || foreign === "[::]:0"),
+        )
+        .map((columns) => columns.at(-1))
+        .filter((pid): pid is string => !!pid && pid !== "0"),
+    ),
+  ]
+}
