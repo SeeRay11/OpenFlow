@@ -193,6 +193,30 @@ describe("agentBlock", () => {
     expect(result["test-coder-coder"].permission).toEqual({ read: "allow", grep: "allow" })
     expect(result["test-coder-coder2"].permission).toEqual({ edit: "allow", bash: "allow" })
   })
+
+  test("publishes a named node under its name as well as its key", () => {
+    // The engine starts a session with `agent: node.agent.name` and the
+    // preflight refuses the whole run when that name is unknown — so a card
+    // that carries a name has to be reachable under it. Keyed-only defs made
+    // every named card fail with "the server does not know an agent named …".
+    const named = withAgents(pipeline("planner"), { planner: { name: "Wissen Pull", prompt: "pull" } })
+
+    const result = agentBlock(named) as Record<string, any>
+
+    expect(Object.keys(result).sort()).toEqual(["Wissen Pull", "test-planner-planner"])
+    expect(result["Wissen Pull"]).toEqual(result["test-planner-planner"])
+    expect(result["Wissen Pull"].prompt).toBe("pull")
+  })
+
+  test("stays a single entry when the node carries no name", () => {
+    const plain = agentBlock(pipeline("planner")) as Record<string, any>
+    expect(Object.keys(plain)).toEqual(["test-planner-planner"])
+  })
+
+  test("does not duplicate a name that already is the key", () => {
+    const same = withAgents(pipeline("planner"), { planner: { name: "test-planner-planner" } })
+    expect(Object.keys(agentBlock(same))).toEqual(["test-planner-planner"])
+  })
 })
 
 describe("mcpBlock", () => {

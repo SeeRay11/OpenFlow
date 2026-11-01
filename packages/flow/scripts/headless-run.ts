@@ -198,7 +198,12 @@ const names = servers.map((entry) => entry.name)
 await flow(`pipelines/${encodeURIComponent(name)}/agents?merge=1`, {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify(agentBlock(pipeline, names)),
+  // { agent: ... }-Wrapper ist Pflicht: writeAgents() liest body.agent — der
+  // Canvas-Caller (src/server/store.ts saveAgents) wrappt genauso. Nackter
+  // agentBlock()-Body erzeugte LEERE Merges (gemessen 01.11.2026: alle headless
+  // gemergten Pipelines seit Okt hatten 66-Byte-Leerblöcke → "the server does
+  // not know an agent named …").
+  body: JSON.stringify({ agent: agentBlock(pipeline, names) }),
 })
 console.error(`agents merged (${names.length} mcp server(s) known)`)
 

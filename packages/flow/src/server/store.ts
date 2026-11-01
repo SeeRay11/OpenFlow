@@ -344,13 +344,20 @@ export function agentBlock(pipeline: Pipeline, servers: string[] = []) {
   for (const node of pipeline.nodes) {
     const key = agentKey(pipeline, node)
     const permission = { ...permissionBlock(node.agent.tools), ...mcpBlock(node.agent.mcp, servers) }
-    block[key] = {
+    const entry = {
       mode: "primary",
       description: `OpenFlow node ${node.id} (${node.role}) of pipeline ${pipeline.name}`,
       ...(node.agent.model ? { model: node.agent.model } : {}),
       ...(node.agent.prompt ? { prompt: node.agent.prompt } : {}),
       ...(Object.keys(permission).length ? { permission } : {}),
     }
+    block[key] = entry
+    // Karten mit explizitem agent.name starten ihre Session unter DIESEM Namen
+    // (engine.ts createSession({ agent: node.agent.name })), der Preflight
+    // (unknownAgents) prüft ebenfalls den name. Ohne diesen Zweit-Key war die
+    // Def nur unter dem agentKey auffindbar und jeder Run verweigerte mit
+    // "the server does not know an agent named …" (gemessen 01.11.2026).
+    if (node.agent.name && node.agent.name !== key) block[node.agent.name] = entry
   }
   return block
 }
